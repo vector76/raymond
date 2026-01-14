@@ -18,6 +18,8 @@ When implementing features or making changes:
 
 **Test execution strategy:** During development, run only tests relevant to the feature being worked on. Run the full test suite before commits.
 
+**Shell commands:** Don't use `cd` in commands. Use `pwd` to check the current directory if unsure.
+
 ## Wiki Documentation
 
 The `wiki/` folder contains topic-oriented markdown documents organized in a **flat structure** (no subfolders). These documents serve as timeless knowledge base for the project.

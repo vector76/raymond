@@ -16,7 +16,8 @@ def parse_transitions(output: str) -> List[Transition]:
     Returns list of Transition(tag, filename, attributes) objects.
     Handles:
         <goto>FILE.md</goto>
-        <function>FILE.md</function>
+        <reset>FILE.md</reset>
+        <function model="haiku">FILE.md</function>
         <call return="NEXT.md">CHILD.md</call>
         <fork item="foo">WORKER.md</fork>
 
@@ -24,7 +25,7 @@ def parse_transitions(output: str) -> List[Transition]:
     """
 ```
 
-**Deliverable:** `src/parsing.py` with `parse_transition()` function and tests.
+**Deliverable:** `src/parsing.py` with `parse_transitions()` function and tests.
 
 ### Step 1.2: State File Management
 
@@ -47,6 +48,19 @@ def load_prompt(filename: str) -> str
 ```
 
 **Deliverable:** Extend `src/state.py` or create `src/prompts.py`.
+
+### Step 1.4: Template Substitution
+
+Add a function to substitute `{{variable}}` placeholders in prompts.
+
+```python
+def render_prompt(template: str, variables: dict) -> str
+    """Replace {{key}} placeholders with values from variables dict."""
+```
+
+Variables come from transition attributes, workflow metadata, and child results.
+
+**Deliverable:** Add to `src/prompts.py` with tests.
 
 ## Phase 2: Single Workflow Orchestration
 
@@ -77,15 +91,27 @@ Implement session continuation using `--resume` flag. This requires:
 
 **Deliverable:** Extend `wrap_claude_code()` to accept `session_id` parameter.
 
-### Step 2.4: Pattern 2 - Fork with Return
+### Step 2.4: Pattern 2 - Call with Return
 
-Implement fork-and-return:
-- Store parent session ID before forking
+Implement call-and-return:
+- Store parent session ID before calling child
 - Run child workflow (may iterate)
-- Extract result from child's final output
-- Resume parent with result as prompt
+- Extract result from child's `<result>` tag
+- Resume parent with result injected via `{{result}}` template variable
 
-**Deliverable:** `run_forked_workflow()` function.
+**Deliverable:** `run_child_workflow()` function.
+
+### Step 2.5: Pattern 4 - Reset (Fresh Start)
+
+Implement context reset:
+- Start a fresh Claude Code session (no `--resume`)
+- Update session ID in state file (so future `<goto>` uses new session)
+- Workflow continues from new state
+
+This is simpler than Pattern 3 - just don't pass `--resume`. The key is
+updating the state file's session ID.
+
+**Deliverable:** Handle `<reset>` tag in orchestrator loop.
 
 ## Phase 3: Concurrent Workflows
 

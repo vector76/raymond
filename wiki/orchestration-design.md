@@ -29,24 +29,26 @@ Raymond treats workflows as a state machine where:
 
 ### Self-Describing Transitions
 
-Prompts instruct the AI how to signal transitions:
+Prompts instruct the AI how to signal transitions using distinct tags:
 
 ```markdown
 Review the code for issues. If you find problems, fix them. If everything
-looks good, end your response with <transition>COMMIT.md</transition>
+looks good, end your response with <goto>COMMIT.md</goto>
 ```
 
 The Python orchestrator:
-1. Parses `<transition>FILE.md</transition>` from output
-2. Reads the referenced file (COMMIT.md) to get the next prompt
+1. Parses transition tags (`<goto>`, `<call>`, `<fork>`, `<function>`) from output
+2. Reads the referenced file to get the next prompt
 3. Launches the next Claude Code session with that prompt
 4. Remains agnostic to workflow logic - it just follows the declared transitions
 
 This keeps workflow definitions in markdown, not Python code.
 
-**Note:** The transition tag specifies *which state* to go to (the prompt file).
-*How* that state is invoked (which pattern - see below) is determined by
-workflow configuration or conventions, not the transition tag itself.
+**Tag types:**
+- `<goto>FILE.md</goto>` - continue in same context (Pattern 3)
+- `<function>FILE.md</function>` - stateless evaluation (Pattern 1)
+- `<call return="NEXT.md">CHILD.md</call>` - fork with return (Pattern 2)
+- `<fork item="data">WORKER.md</fork>` - independent spawn
 
 ### Branching and Looping
 
@@ -54,15 +56,15 @@ States can loop or branch based on output. For example, a review state might
 iterate up to five times, with the prompt instructing:
 
 ```markdown
-If no issues are found, respond with <transition>COMMIT.md</transition>
-Otherwise, fix the issues and respond with <transition>REVIEW.md</transition>
+If no issues are found, respond with <goto>COMMIT.md</goto>
+Otherwise, fix the issues and respond with <goto>REVIEW.md</goto>
 ```
 
 A lightweight evaluator (pattern match or small model) can also inspect output
 to determine branches. This enables conditions like "max 5 iterations" at the
-Python level - if the AI outputs `<transition>REVIEW.md</transition>` but the
-orchestrator detects we've hit the iteration limit, it can override and
-transition to COMMIT.md instead.
+Python level - if the AI outputs `<goto>REVIEW.md</goto>` but the orchestrator
+detects we've hit the iteration limit, it can override and transition to
+COMMIT.md instead.
 
 ## Context Management: The Call Stack Parallel
 
@@ -142,7 +144,7 @@ difference:
 
 1. Model receives a prompt and context
 2. Model completes its task and signals a transition (e.g.,
-   `<transition>REVIEW.md</transition>`)
+   `<goto>REVIEW.md</goto>`)
 3. Model outputs a final response (the session ends)
 4. Orchestrator intercepts the transition tag
 5. Orchestrator reads REVIEW.md to get the next state's prompt
@@ -179,14 +181,14 @@ The workflow definition (or orchestrator configuration) determines which
 pattern to use for each state transition. The AI signals *what* state to
 transition to; the orchestrator decides *how* to invoke it.
 
-Pattern selection could be configured via:
-- Naming conventions (e.g., `EVAL-*.md` files use Pattern 1)
-- Metadata in the prompt files (e.g., a YAML frontmatter block)
-- A separate workflow definition file mapping states to patterns
-- Explicit tags in the transition (e.g., `<transition fork>REFINE.md</transition>`)
+Pattern selection is determined by the tag itself:
+- `<goto>FILE.md</goto>` - Pattern 3 (resume in same context)
+- `<function>FILE.md</function>` - Pattern 1 (stateless)
+- `<call return="NEXT.md">CHILD.md</call>` - Pattern 2 (fork with return)
+- `<fork item="data">WORKER.md</fork>` - independent spawn
 
-The exact mechanism is an implementation choice; the key point is that the
-orchestrator has this control, not the AI.
+Each tag name is self-documenting: `<goto>` continues, `<call>` invokes a
+subroutine, `<function>` evaluates statelessly, `<fork>` spawns independently.
 
 ### Pattern 1: Pure Function (No Context)
 
@@ -362,6 +364,206 @@ isolated forks (steps 3, 5) and quick decisions use stateless calls (steps 1,
 stateless evaluations that won't be resumed. The distinction is about intent:
 Pattern 1 sessions are disposable; main sessions are persistent.
 
+## Persistent State and Crash Recovery
+
+The Python orchestrator should be mostly stateless, keeping critical workflow
+state in the filesystem rather than in memory. This shares a virtue with the
+Ralph loop: if the process crashes, minimal context is lost.
+
+### The Problem
+
+Without persistent state, a crash mid-workflow creates problems:
+- An issue is claimed but no record exists of which workflow owns it
+- A git branch is created but the session ID is lost
+- The current state (which prompt file) is unknown
+- Partially completed work cannot be resumed
+
+### The Solution: State File
+
+Each active workflow writes its state to a lightweight JSON file:
+
+```json
+{
+  "workflow_id": "issue-195-abc123",
+  "current_state": "IMPLEMENT.md",
+  "session_id": "session_2024-01-15_abc123",
+  "parent_session_id": "session_2024-01-15_xyz789",
+  "started_at": "2024-01-15T10:30:00Z",
+  "iteration_count": 3,
+  "metadata": {
+    "issue": "bd-195",
+    "branch": "feature/bd-195-user-auth"
+  }
+}
+```
+
+**Key fields:**
+- `current_state`: The prompt file for the current state
+- `session_id`: Claude Code session ID for `--resume`
+- `parent_session_id`: For returning from forked subtasks
+- `metadata`: Workflow-specific data (issue numbers, branch names, etc.)
+
+### Stateless Orchestrator Design
+
+The orchestrator operates as a simple loop:
+
+```
+1. Read state file
+2. Determine next action based on current_state
+3. Invoke Claude Code (with appropriate pattern)
+4. Parse output for transition tags
+5. Update state file with new state
+6. Repeat until terminal state
+```
+
+**Natural resistance to "stuck" states:** Claude Code always terminates - it
+either completes its task, hits an error, or reaches a stopping point. There's
+no risk of it waiting indefinitely for human input (in headless mode). This
+means the orchestrator doesn't need watchdog timers or timeout logic to detect
+stuck processes. Completion of a Claude Code invocation is the natural signal
+to take the next action.
+
+If the orchestrator crashes at any point:
+- Steps 1-2: No changes made, restart picks up where it left off
+- Steps 3-4: Claude Code session exists, can be resumed or restarted
+- Step 5: State file has old state, but session ID allows recovery
+- Step 6: Clean state, restart continues normally
+
+The main risk is if the Python process dies while Claude Code is mid-execution
+(e.g., editing files). In practice this is rare and usually recoverable - the
+session can be resumed, or at worst the workflow restarts from the current
+state with a fresh session.
+
+### Multiple Concurrent Workflows
+
+A single Python process manages all active workflows using async/await. No
+worker threads, multiprocessing, or separate application instances are needed.
+The orchestrator runs multiple Claude Code invocations concurrently and
+processes each completion as it arrives:
+
+```python
+async def run_orchestrator():
+    pending = {asyncio.create_task(step_workflow(wf)): wf
+               for wf in active_workflows}
+
+    while pending:
+        # Wait for ANY task to complete (not all)
+        done, _ = await asyncio.wait(pending.keys(), return_when=FIRST_COMPLETED)
+
+        for task in done:
+            wf = pending.pop(task)
+            result = task.result()
+            # Process this completion immediately
+            # Maybe spawn new workflows, update state file, etc.
+            if next_state := get_next_state(result):
+                new_task = asyncio.create_task(step_workflow(wf))
+                pending[new_task] = wf
+```
+
+Each workflow has its own state file:
+
+```
+.raymond/
+  workflows/
+    issue-195-abc123.json
+    issue-196-def456.json
+    issue-197-ghi789.json
+```
+
+This keeps the architecture simple: one Python process, multiple async Claude
+Code invocations, state persisted to disk for crash recovery.
+
+## Independent Session Spawning
+
+Beyond the fork-and-return pattern (Pattern 2), Raymond supports spawning
+fully independent workflows that run in parallel with the original.
+
+### Unix fork() Analogy
+
+In Unix, `fork()` creates a child process that runs independently:
+- Parent and child execute concurrently
+- Each has its own execution path
+- They don't wait for each other (unless explicitly synchronized)
+
+Raymond can achieve similar behavior:
+
+```
+Workflow A (main loop)              Workflow B (spawned)
+┌─────────────────────┐            ┌─────────────────────┐
+│ Check for issues    │            │                     │
+│ Found issue 195     │──spawn──→  │ Work on issue 195   │
+│ Continue checking   │            │ Plan, implement...  │
+│ Found issue 196     │──spawn──→  │ Commit, close       │
+│ Continue checking   │            └─────────────────────┘
+│ ...                 │            ┌─────────────────────┐
+└─────────────────────┘            │ Work on issue 196   │
+                                   │ ...                 │
+                                   └─────────────────────┘
+```
+
+### Contrast with Pattern 2 (Fork with Return)
+
+| Aspect | Pattern 2 (Fork) | Independent Spawn |
+|--------|------------------|-------------------|
+| Parent waits? | Yes, for result | No, continues immediately |
+| Result returns? | Yes, via resume | No, independent completion |
+| Lifecycle | Tied to parent | Fully independent |
+| Use case | Subtasks | Parallel workstreams |
+
+### Implementation
+
+Spawning creates a new state file and (optionally) starts a new orchestrator:
+
+```python
+# Parent workflow spawns a child
+child_state = {
+    "workflow_id": f"issue-{issue_num}-{uuid}",
+    "current_state": "START-ISSUE.md",
+    "session_id": None,  # Fresh start
+    "metadata": {"issue": issue_num}
+}
+write_state_file(f".raymond/workflows/{child_state['workflow_id']}.json", child_state)
+
+# Parent continues immediately without waiting
+```
+
+The spawned workflow:
+- Has its own state file
+- Runs independently (same or different orchestrator process)
+- Completes on its own timeline
+- Can spawn further workflows if needed
+
+### Use Cases
+
+**Timed polling loop:**
+```
+1. [Loop] Check issue tracker every 5 minutes
+2. [Spawn] For each new issue, spawn independent workflow
+3. [Continue] Loop continues checking, doesn't wait
+```
+
+**Parallel batch processing:**
+```
+1. [Start] Given list of 10 files to refactor
+2. [Spawn] Spawn independent workflow for each file
+3. [Monitor] Optional: Track completion via state files
+```
+
+**Event-driven workflows:**
+```
+1. [Watch] Monitor for webhook events
+2. [Spawn] On PR created, spawn review workflow
+3. [Spawn] On issue labeled "urgent", spawn priority workflow
+```
+
+### Coordination (Optional)
+
+Spawned workflows are independent by default, but can coordinate if needed:
+- **Shared state**: Write to a common JSON file or database
+- **File locks**: Prevent conflicts on shared resources
+- **Completion markers**: Write a `.done` file when finished
+- **Aggregation workflow**: A separate workflow that waits for others
+
 ## Summary
 
 | Aspect | Ralph | Raymond |
@@ -372,3 +574,5 @@ Pattern 1 sessions are disposable; main sessions are persistent.
 | State carry | None | Via resume to parent |
 | Configuration | One prompt file | Multiple markdown files |
 | Invocation patterns | One (fresh) | Three (pure/fork/resume) |
+| Crash recovery | Restart from scratch | Resume via state file |
+| Concurrency | Single loop | Multiple independent workflows |

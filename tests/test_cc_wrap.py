@@ -36,3 +36,55 @@ async def test_claude_batch():
     results = await wrap_claude_code(prompt)
 
     assert len(results) > 0, "Expected at least one JSON object"
+
+
+@pytest.mark.asyncio
+async def test_claude_stream_haiku():
+    """
+    Integration test that invokes claude with haiku model and streams output.
+    """
+    prompt = "say hello"
+
+    results = []
+    async for json_obj in wrap_claude_code_stream(prompt, model="haiku"):
+        results.append(json_obj)
+
+    assert len(results) > 0, "Expected at least one JSON object from stream"
+
+
+@pytest.mark.asyncio
+async def test_claude_stream_sonnet():
+    """
+    Integration test that invokes claude with sonnet model and streams output.
+    """
+    prompt = "say hello"
+
+    results = []
+    async for json_obj in wrap_claude_code_stream(prompt, model="sonnet"):
+        results.append(json_obj)
+
+    assert len(results) > 0, "Expected at least one JSON object from stream"
+
+
+@pytest.mark.asyncio
+async def test_claude_batch_haiku():
+    """
+    Integration test that invokes claude with haiku model and collects all output.
+    """
+    prompt = "say hello"
+
+    results = await wrap_claude_code(prompt, model="haiku")
+
+    assert len(results) > 0, "Expected at least one JSON object"
+
+
+@pytest.mark.asyncio
+async def test_claude_batch_sonnet():
+    """
+    Integration test that invokes claude with sonnet model and collects all output.
+    """
+    prompt = "say hello"
+
+    results = await wrap_claude_code(prompt, model="sonnet")
+
+    assert len(results) > 0, "Expected at least one JSON object"

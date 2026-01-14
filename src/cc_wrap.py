@@ -4,13 +4,14 @@ import sys
 from typing import List, Dict, Any, AsyncIterator
 
 
-async def wrap_claude_code(prompt: str, **kwargs) -> List[Dict[str, Any]]:
+async def wrap_claude_code(prompt: str, model: str = None, **kwargs) -> List[Dict[str, Any]]:
     """
     Wraps claude code invocation in headless mode with stream-json output.
     This is an async function that can be run concurrently with other instances.
 
     Args:
         prompt: The prompt to send to claude
+        model: The model to use (e.g., "haiku", "sonnet", "opus")
         **kwargs: Additional arguments to pass to claude command
 
     Returns:
@@ -22,8 +23,12 @@ async def wrap_claude_code(prompt: str, **kwargs) -> List[Dict[str, Any]]:
         "-p",  # headless/print mode
         "--output-format", "stream-json",
         "--verbose",
-        prompt
     ]
+
+    if model:
+        cmd.extend(["--model", model])
+
+    cmd.append(prompt)
 
     # Add any additional kwargs as command-line arguments
     for key, value in kwargs.items():
@@ -71,13 +76,14 @@ async def wrap_claude_code(prompt: str, **kwargs) -> List[Dict[str, Any]]:
     return results
 
 
-async def wrap_claude_code_stream(prompt: str, **kwargs) -> AsyncIterator[Dict[str, Any]]:
+async def wrap_claude_code_stream(prompt: str, model: str = None, **kwargs) -> AsyncIterator[Dict[str, Any]]:
     """
     Wraps claude code invocation and yields JSON objects as they arrive.
     This is an async generator that can be run concurrently with other instances.
 
     Args:
         prompt: The prompt to send to claude
+        model: The model to use (e.g., "haiku", "sonnet", "opus")
         **kwargs: Additional arguments to pass to claude command
 
     Yields:
@@ -89,8 +95,12 @@ async def wrap_claude_code_stream(prompt: str, **kwargs) -> AsyncIterator[Dict[s
         "-p",  # headless/print mode
         "--output-format", "stream-json",
         "--verbose",
-        prompt
     ]
+
+    if model:
+        cmd.extend(["--model", model])
+
+    cmd.append(prompt)
 
     # Add any additional kwargs as command-line arguments
     for key, value in kwargs.items():

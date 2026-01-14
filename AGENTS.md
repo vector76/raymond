@@ -16,6 +16,8 @@ When implementing features or making changes:
 3. Use tests to guide the design and validate behavior
 4. Maintain high test coverage
 
+**Test execution strategy:** During development, run only tests relevant to the feature being worked on. Run the full test suite before commits.
+
 ## Wiki Documentation
 
 The `wiki/` folder contains topic-oriented markdown documents organized in a **flat structure** (no subfolders). These documents serve as timeless knowledge base for the project.

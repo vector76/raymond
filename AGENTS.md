@@ -1,0 +1,35 @@
+# Agent Instructions
+
+## Test-Driven Development (TDD)
+
+This project follows Test-Driven Development principles, where **tests are central to the validation of the application**. 
+
+- Tests should be written before or alongside implementation code
+- All features must have corresponding tests
+- Tests serve as the primary validation mechanism for correctness
+- Code changes should be validated through the test suite
+- The test suite should be comprehensive and cover edge cases
+
+When implementing features or making changes:
+1. Write or update tests first (or in parallel with implementation)
+2. Ensure all tests pass before considering work complete
+3. Use tests to guide the design and validate behavior
+4. Maintain high test coverage
+
+## Wiki Documentation
+
+The `wiki/` folder contains topic-oriented markdown documents organized in a **flat structure** (no subfolders). These documents serve as timeless knowledge base for the project.
+
+**Purpose:**
+- Document program architecture and design decisions
+- Explain implementation choices and rationale
+- Provide reference material for developers and agents
+- Maintain permanent, stable documentation
+
+**Guidelines:**
+- ✅ Focus on architecture, design patterns, and implementation choices
+- ✅ Keep documents timeless (no progress reports or implementation plans)
+- ✅ Use descriptive filenames (e.g., `application-purpose.md`, `data-model.md`)
+- ❌ Do NOT include ephemeral content (such as planning docs) in thie `wiki/` folder
+- ❌ Do NOT create subfolders (keep structure flat)
+

@@ -38,10 +38,15 @@ looks good, end your response with <transition>COMMIT.md</transition>
 
 The Python orchestrator:
 1. Parses `<transition>FILE.md</transition>` from output
-2. Launches the next Claude Code instance with that file as the prompt
-3. Remains agnostic to workflow logic - it just follows the declared transitions
+2. Reads the referenced file (COMMIT.md) to get the next prompt
+3. Launches the next Claude Code session with that prompt
+4. Remains agnostic to workflow logic - it just follows the declared transitions
 
 This keeps workflow definitions in markdown, not Python code.
+
+**Note:** The transition tag specifies *which state* to go to (the prompt file).
+*How* that state is invoked (which pattern - see below) is determined by
+workflow configuration or conventions, not the transition tag itself.
 
 ### Branching and Looping
 
@@ -54,8 +59,10 @@ Otherwise, fix the issues and respond with <transition>REVIEW.md</transition>
 ```
 
 A lightweight evaluator (pattern match or small model) can also inspect output
-to determine branches, enabling conditions like "max 5 iterations" at the
-Python level.
+to determine branches. This enables conditions like "max 5 iterations" at the
+Python level - if the AI outputs `<transition>REVIEW.md</transition>` but the
+orchestrator detects we've hit the iteration limit, it can override and
+transition to COMMIT.md instead.
 
 ## Context Management: The Call Stack Parallel
 
@@ -87,12 +94,14 @@ The child context is like a function's stack frame:
 ### Resume as Return
 
 When a forked task completes:
-1. Python captures the result/summary from the child
-2. Resumes the parent context with `--resume`
-3. Passes the child's result as the next prompt
+1. The child's prompt instructs it to end with a summary (e.g., "End your
+   response with a one-line summary of what was accomplished")
+2. Python extracts this summary from the child's final output
+3. Resumes the parent context with `--resume`
+4. Passes the summary as the next prompt to the parent
 
 The parent context never sees the messy iterations - just like a caller never
-sees a function's internal variables.
+sees a function's internal variables, only the return value.
 
 ### When to Fork vs. Continue
 
@@ -136,15 +145,17 @@ difference:
    `<transition>REVIEW.md</transition>`)
 3. Model outputs a final response (the session ends)
 4. Orchestrator intercepts the transition tag
-5. Orchestrator launches a new Claude Code session with the referenced prompt
-6. Result becomes the prompt for the **next session**, not a tool response
+5. Orchestrator reads REVIEW.md to get the next state's prompt
+6. Orchestrator launches a new Claude Code session with that prompt
+7. The cycle continues until a terminal state (no transition tag)
 
 The key difference: instead of injecting results into the same context, the
-transition **ends the current session** and the result flows to a new (or
-resumed) session. This gives the orchestrator control over context boundaries.
+transition **ends the current session**. The orchestrator controls whether the
+next session starts fresh, forks from the current context, or resumes a parent
+context.
 
-In effect, the model is "calling a tool" where the tool is: "start another
-Claude Code session with this prompt and return what it produces."
+In effect, the model is "calling a tool" where the tool is: "end this session
+and start another Claude Code session with a different prompt."
 
 ### Relationship to Sub-Agents
 
@@ -164,6 +175,19 @@ in multi-step workflows.
 Raymond supports three distinct patterns for invoking Claude Code sessions.
 Each pattern serves different needs and maps to familiar programming concepts.
 
+The workflow definition (or orchestrator configuration) determines which
+pattern to use for each state transition. The AI signals *what* state to
+transition to; the orchestrator decides *how* to invoke it.
+
+Pattern selection could be configured via:
+- Naming conventions (e.g., `EVAL-*.md` files use Pattern 1)
+- Metadata in the prompt files (e.g., a YAML frontmatter block)
+- A separate workflow definition file mapping states to patterns
+- Explicit tags in the transition (e.g., `<transition fork>REFINE.md</transition>`)
+
+The exact mechanism is an implementation choice; the key point is that the
+orchestrator has this control, not the AI.
+
 ### Pattern 1: Pure Function (No Context)
 
 **Invocation:** Launch Claude Code with only a prompt, no session history.
@@ -172,7 +196,7 @@ Each pattern serves different needs and maps to familiar programming concepts.
 - Completely stateless - no prior context
 - Output depends only on the prompt (and model behavior)
 - Fast and cheap (minimal tokens)
-- Deterministic in structure (though not in exact output)
+- Reproducible setup (same prompt always starts from the same state)
 
 **Programming analogy:** A pure function like `f(x) -> y`. Given the same input,
 the function's behavior is self-contained. It cannot access variables from the
@@ -258,9 +282,11 @@ same context.
 - Efficient when history is needed
 - Can become cluttered over many transitions
 
-**Programming analogy:** A `goto` statement within a function. Execution jumps
-to a new label, but you're still in the same scope with access to all the same
-variables. Nothing is discarded.
+**Programming analogy:** Sequential execution within a single function scope.
+Each new state is like reaching the next block of code - you're still in the
+same scope with access to all prior variables. Alternatively, think of it like
+a `goto` to a new label within the same function: execution continues but at a
+different point, with full access to accumulated state.
 
 ```
 same scope throughout
@@ -308,10 +334,10 @@ await resume_session(session_id, new_state_prompt)
 A complete workflow might use all three patterns:
 
 ```
-1. [Pattern 1] Evaluator decides which issue to work on
+1. [Pattern 1] Evaluator decides which issue to work on → "issue 195"
        ↓
-2. [Pattern 3] Main context: "Work on issue 195"
-       ↓
+2. [Fresh start] Main session begins: "Work on issue 195"
+       ↓           (this session will be resumed later)
 3. [Pattern 2] Fork: "Create and refine plan" (iterates 3x)
        ↓ returns: "Plan complete in plan-195.md"
 4. [Pattern 3] Resume main: "Plan complete. Now implement."
@@ -323,11 +349,18 @@ A complete workflow might use all three patterns:
 7. [Pattern 1] Evaluator: "Is this ready to commit?" → YES
        ↓
 8. [Pattern 3] Resume main: "Commit and close issue."
+       ↓
+   [Terminal] No transition tag - workflow complete
 ```
 
 The main context stays clean (steps 2, 4, 6, 8) while messy work happens in
 isolated forks (steps 3, 5) and quick decisions use stateless calls (steps 1,
 7).
+
+**Note on step 2:** Starting a new main session is technically a fresh start
+(like Pattern 1), but with the intent to resume it later. Pattern 1 is for
+stateless evaluations that won't be resumed. The distinction is about intent:
+Pattern 1 sessions are disposable; main sessions are persistent.
 
 ## Summary
 

@@ -37,7 +37,7 @@ looks good, end your response with <goto>COMMIT.md</goto>
 ```
 
 The Python orchestrator:
-1. Parses transition tags (`<goto>`, `<call>`, `<fork>`, `<function>`) from output
+1. Parses transition tags (`<goto>`, `<reset>`, `<call>`, `<fork>`, `<function>`) from output
 2. Reads the referenced file to get the next prompt
 3. Launches the next Claude Code session with that prompt
 4. Remains agnostic to workflow logic - it just follows the declared transitions
@@ -45,10 +45,11 @@ The Python orchestrator:
 This keeps workflow definitions in markdown, not Python code.
 
 **Tag types:**
-- `<goto>FILE.md</goto>` - continue in same context (Pattern 3)
-- `<function>FILE.md</function>` - stateless evaluation (Pattern 1)
-- `<call return="NEXT.md">CHILD.md</call>` - fork with return (Pattern 2)
-- `<fork item="data">WORKER.md</fork>` - independent spawn
+- `<goto>FILE.md</goto>` - continue in same context
+- `<reset>FILE.md</reset>` - discard context, start fresh, continue workflow
+- `<function model="haiku">FILE.md</function>` - stateless evaluation (model optional)
+- `<call return="NEXT.md">CHILD.md</call>` - isolated subtask with return
+- `<fork item="data">WORKER.md</fork>` - independent spawn (attributes become template variables)
 
 ### Branching and Looping
 
@@ -95,12 +96,12 @@ The child context is like a function's stack frame:
 
 ### Resume as Return
 
-When a forked task completes:
-1. The child's prompt instructs it to end with a summary (e.g., "End your
-   response with a one-line summary of what was accomplished")
-2. Python extracts this summary from the child's final output
+When a called child task completes:
+1. The child's prompt instructs it to end with a `<result>` tag containing a
+   summary of what was accomplished
+2. Python extracts this result from the child's final output
 3. Resumes the parent context with `--resume`
-4. Passes the summary as the next prompt to the parent
+4. Injects the result into the return state's prompt via `{{result}}` template
 
 The parent context never sees the messy iterations - just like a caller never
 sees a function's internal variables, only the return value.
@@ -172,23 +173,25 @@ internally. However, Raymond provides explicit control over:
 This explicit control is valuable when you need predictable, auditable behavior
 in multi-step workflows.
 
-## The Three Invocation Patterns
+## Invocation Patterns
 
-Raymond supports three distinct patterns for invoking Claude Code sessions.
-Each pattern serves different needs and maps to familiar programming concepts.
+Raymond supports five transition types for invoking Claude Code sessions.
+Each serves different needs and maps to familiar programming concepts.
 
 The workflow definition (or orchestrator configuration) determines which
 pattern to use for each state transition. The AI signals *what* state to
 transition to; the orchestrator decides *how* to invoke it.
 
-Pattern selection is determined by the tag itself:
-- `<goto>FILE.md</goto>` - Pattern 3 (resume in same context)
-- `<function>FILE.md</function>` - Pattern 1 (stateless)
-- `<call return="NEXT.md">CHILD.md</call>` - Pattern 2 (fork with return)
-- `<fork item="data">WORKER.md</fork>` - independent spawn
+The transition type is determined by the tag itself:
+- `<goto>` - resume in same context
+- `<reset>` - discard context, start fresh, continue workflow
+- `<function>` - stateless evaluation (supports `model` attribute)
+- `<call>` - isolated subtask with return (requires `return` attribute)
+- `<fork>` - independent spawn (attributes become template variables)
 
-Each tag name is self-documenting: `<goto>` continues, `<call>` invokes a
-subroutine, `<function>` evaluates statelessly, `<fork>` spawns independently.
+Each tag name is self-documenting: `<goto>` continues, `<reset>` clears and
+restarts, `<call>` invokes a subroutine, `<function>` evaluates statelessly,
+`<fork>` spawns independently.
 
 ### Pattern 1: Pure Function (No Context)
 
@@ -223,10 +226,10 @@ result = await wrap_claude_code(prompt, model="haiku")
 - You need a "circuit breaker" or decision point in the workflow
 - Isolation is more important than continuity
 
-### Pattern 2: Fork with Return (Isolated Subtask)
+### Pattern 2: Call with Return (Isolated Subtask)
 
-**Invocation:** Fork from current session, execute subtask, return result to
-parent via resume.
+**Invocation:** Call a child workflow, execute subtask in isolated context,
+return result to parent via resume.
 
 **Characteristics:**
 - Child session inherits parent's context at fork point
@@ -260,11 +263,11 @@ caller's scope                    function's scope
 
 **Implementation:**
 ```python
-# Fork from current session
-child_result = await run_forked_session(parent_session_id, subtask_prompt)
+# Call child workflow
+child_result = await run_child_workflow(parent_session_id, child_prompt)
 
-# Resume parent with the result
-await resume_session(parent_session_id, f"Subtask complete: {child_result}")
+# Resume parent with result injected into return state
+await resume_session(parent_session_id, render_prompt(return_prompt, {"result": child_result}))
 ```
 
 **When to use:**
@@ -321,43 +324,100 @@ await resume_session(session_id, new_state_prompt)
 - The workflow is linear without need for isolation
 - You're doing a "handoff" rather than a "subtask"
 
+### Pattern 4: Reset (Fresh Start)
+
+**Invocation:** Discard current context, start a fresh session, continue the
+workflow.
+
+**Characteristics:**
+- Current context is discarded entirely
+- New session starts with only the prompt (like Pattern 1)
+- But workflow continues (unlike Pattern 1 which is disposable)
+- Session ID is updated in state file for future `<goto>` transitions
+
+**Programming analogy:** Starting a new function scope after completing the
+previous one. Like finishing one phase of work, writing results to disk, then
+starting a new phase that reads from disk rather than relying on memory.
+
+```
+phase A scope                     phase B scope (fresh)
+┌─────────────────┐              ┌─────────────────┐
+│ planning work...│              │ reads plan.md   │
+│ writes plan.md  │   reset →    │ implementation..│
+│ (context full)  │              │ (context clean) │
+└─────────────────┘              └─────────────────┘
+   (discarded)
+```
+
+**Example use cases:**
+- **Plan then implement**: After creating plan.md, reset to implementation
+  phase. The plan is in the file; no need to carry planning iterations in
+  context.
+- **Phase transitions**: Moving from research to execution, where accumulated
+  research context would be noise.
+- **Context hygiene**: Intentionally clearing context when approaching limits
+  rather than letting it overflow.
+
+**Implementation:**
+```python
+# Discard current session, start fresh with new state
+new_session_id = await start_fresh_session(new_state_prompt)
+state["session_id"] = new_session_id  # Update for future <goto>
+```
+
+**When to use:**
+- Prior work is captured in files, not needed in context
+- Context is getting large and cluttered
+- Clean break between workflow phases
+- You want the benefits of Ralph's fresh-start approach at specific points
+
+**Contrast with other patterns:**
+
+| Aspect | `<goto>` | `<reset>` | `<function>` |
+|--------|----------|-----------|--------------|
+| Context | Preserved | Discarded | Discarded |
+| Workflow | Continues | Continues | Disposable |
+| Future `<goto>` | Same session | New session | N/A |
+
 ## Choosing the Right Pattern
 
 | Question | Yes → | No → |
 |----------|-------|------|
-| Does the task need any prior context? | Pattern 2 or 3 | Pattern 1 |
-| Should intermediate work be discarded? | Pattern 2 | Pattern 3 |
-| Is this a decision/evaluation point? | Pattern 1 | Pattern 2 or 3 |
-| Will there be messy iterations? | Pattern 2 | Pattern 3 |
-| Does the next step need this step's history? | Pattern 3 | Pattern 1 or 2 |
+| Does the task need any prior context? | Pattern 2, 3, or 4 | Pattern 1 |
+| Should intermediate work be discarded? | Pattern 2 or 4 | Pattern 3 |
+| Is this a decision/evaluation point? | Pattern 1 | Others |
+| Will there be messy iterations? | Pattern 2 | Pattern 3 or 4 |
+| Does the next step need this step's history? | Pattern 3 | Pattern 1, 2, or 4 |
+| Is prior work saved to files? | Pattern 4 | Pattern 3 |
+| Should workflow continue after? | Pattern 2, 3, or 4 | Pattern 1 |
 
 ### Combined Example
 
-A complete workflow might use all three patterns:
+A complete workflow might use multiple patterns:
 
 ```
 1. [Pattern 1] Evaluator decides which issue to work on → "issue 195"
        ↓
 2. [Fresh start] Main session begins: "Work on issue 195"
        ↓           (this session will be resumed later)
-3. [Pattern 2] Fork: "Create and refine plan" (iterates 3x)
+3. [Pattern 2] Call: "Create and refine plan" (iterates 3x)
        ↓ returns: "Plan complete in plan-195.md"
-4. [Pattern 3] Resume main: "Plan complete. Now implement."
+4. [Pattern 4] Reset: "Implement per plan-195.md" (fresh context, reads plan from file)
        ↓
-5. [Pattern 2] Fork: "Implement and fix until tests pass" (iterates 5x)
+5. [Pattern 2] Call: "Implement and fix until tests pass" (iterates 5x)
        ↓ returns: "Implementation complete, all tests passing"
-6. [Pattern 3] Resume main: "Implementation complete. Review and commit."
+6. [Pattern 3] Goto: "Review the implementation and commit."
        ↓
 7. [Pattern 1] Evaluator: "Is this ready to commit?" → YES
        ↓
-8. [Pattern 3] Resume main: "Commit and close issue."
+8. [Pattern 3] Goto: "Commit and close issue."
        ↓
    [Terminal] No transition tag - workflow complete
 ```
 
-The main context stays clean (steps 2, 4, 6, 8) while messy work happens in
-isolated forks (steps 3, 5) and quick decisions use stateless calls (steps 1,
-7).
+Step 4 uses `<reset>` to discard the planning context (which is now captured in
+plan-195.md) and start implementation fresh. Steps 6 and 8 use `<goto>` to
+preserve implementation context for the commit message.
 
 **Note on step 2:** Starting a new main session is technically a fresh start
 (like Pattern 1), but with the intent to resume it later. Pattern 1 is for
@@ -400,7 +460,7 @@ Each active workflow writes its state to a lightweight JSON file:
 **Key fields:**
 - `current_state`: The prompt file for the current state
 - `session_id`: Claude Code session ID for `--resume`
-- `parent_session_id`: For returning from forked subtasks
+- `parent_session_id`: For returning from `<call>` subtasks to parent
 - `metadata`: Workflow-specific data (issue numbers, branch names, etc.)
 
 ### Stateless Orchestrator Design
@@ -475,7 +535,7 @@ Code invocations, state persisted to disk for crash recovery.
 
 ## Independent Session Spawning
 
-Beyond the fork-and-return pattern (Pattern 2), Raymond supports spawning
+Beyond the call-and-return pattern (Pattern 2), Raymond supports spawning
 fully independent workflows that run in parallel with the original.
 
 ### Unix fork() Analogy
@@ -501,10 +561,10 @@ Workflow A (main loop)              Workflow B (spawned)
                                    └─────────────────────┘
 ```
 
-### Contrast with Pattern 2 (Fork with Return)
+### Contrast with Pattern 2 (Call with Return)
 
-| Aspect | Pattern 2 (Fork) | Independent Spawn |
-|--------|------------------|-------------------|
+| Aspect | Pattern 2 (Call) | Independent Spawn (Fork) |
+|--------|------------------|--------------------------|
 | Parent waits? | Yes, for result | No, continues immediately |
 | Result returns? | Yes, via resume | No, independent completion |
 | Lifecycle | Tied to parent | Fully independent |
@@ -573,6 +633,6 @@ Spawned workflows are independent by default, but can coordinate if needed:
 | Branching | None | Declared in prompts |
 | State carry | None | Via resume to parent |
 | Configuration | One prompt file | Multiple markdown files |
-| Invocation patterns | One (fresh) | Three (pure/fork/resume) |
+| Invocation patterns | One (fresh) | Five (goto/reset/call/fork/function) |
 | Crash recovery | Restart from scratch | Resume via state file |
 | Concurrency | Single loop | Multiple independent workflows |

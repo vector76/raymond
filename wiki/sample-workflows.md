@@ -97,11 +97,11 @@ persist.
 
 ---
 
-## Test 3: Fork with Return (Pattern 2)
+## Test 3: Call with Return (Pattern 2)
 
 **Purpose:** Test isolated subtask that returns a result to parent context.
 
-**Workflow:** Parent asks child to research something, child returns summary.
+**Workflow:** Parent calls child to research something, child returns summary.
 
 **Files:**
 
@@ -138,7 +138,9 @@ End with no transition tag.
 
 `workflows/test-fork/SUMMARIZE.md`:
 ```markdown
-You received research results from your assistant. Review what they found.
+You received research results from your assistant:
+
+{{result}}
 
 Write a one-paragraph summary of the research to sandbox/output.txt.
 
@@ -147,12 +149,15 @@ Mention at least two of the facts from the research in your summary.
 End with no transition tag.
 ```
 
+Note: The `{{result}}` placeholder is replaced with the content from the
+child's `<result>` tag. This is how the parent receives the child's return value.
+
 **Test procedure:**
 1. Write "purple elephants" to `sandbox/input.txt`
 2. Start workflow at MAIN.md
-3. Verify it forks to RESEARCH.md
-4. Verify RESEARCH.md returns facts about purple elephants
-5. Verify parent resumes at SUMMARIZE.md with the research result
+3. Verify it calls RESEARCH.md as a child workflow
+4. Verify RESEARCH.md returns facts about purple elephants via `<result>` tag
+5. Verify parent resumes at SUMMARIZE.md with `{{result}}` populated
 6. Verify output.txt contains a summary referencing the fictional facts
 
 **Success criteria:** Child context is isolated, only result returns to parent.
@@ -189,22 +194,19 @@ state file, accessible to WORKER.md.
 
 `workflows/test-spawn/WORKER.md`:
 ```markdown
-You are a worker processing one item.
+Your assigned item is: {{item}}
 
-Check this workflow's metadata to find your assigned item. The orchestrator
-will have set an "item" field based on the spawn transition.
+Write a haiku about this item.
 
-"Process" this item by writing a haiku about it.
-
-Write your haiku to sandbox/worker-{item}.txt (replace {item} with your
-assigned item name, no spaces).
+Write your haiku to sandbox/worker-{{item}}.txt.
 
 End with no transition tag.
 ```
 
-Note: In practice, the orchestrator would inject the item into the prompt or
-make it available through a convention (e.g., prepending "Your item: X" to the
-prompt).
+Note: The orchestrator performs template substitution before sending the prompt
+to Claude Code. The `{{item}}` placeholder is replaced with the value from the
+`item="..."` attribute in the `<fork>` tag. This is simpler than trying to pass
+metadata through Claude Code's session state.
 
 **Test procedure:**
 1. Write three items to `sandbox/input.txt`:
@@ -266,6 +268,56 @@ AI's transition when limit is reached, terminates workflow cleanly.
 
 ---
 
+## Test 6: Reset (Fresh Context)
+
+**Purpose:** Test intentional context discard between workflow phases.
+
+**Workflow:** Two-phase process where phase 1 writes to a file, then resets
+to phase 2 which reads from the file (proving context was discarded).
+
+**Files:**
+
+`workflows/test-reset/PHASE1.md`:
+```markdown
+You are in phase 1. Generate a random 4-digit number and remember it.
+
+Write "Phase 1 generated: [your number]" to sandbox/output.txt.
+
+Also write something that ONLY exists in your context (do not write it to any
+file): "The secret word is: elephant"
+
+When done, signal a reset to phase 2:
+<reset>PHASE2.md</reset>
+```
+
+`workflows/test-reset/PHASE2.md`:
+```markdown
+You are in phase 2, starting with fresh context.
+
+First, read sandbox/output.txt to see what phase 1 generated.
+
+Now answer these questions by appending to sandbox/output.txt:
+1. What number did phase 1 generate? (read from file)
+2. What was the secret word from phase 1? (you should NOT know this)
+
+Be honest - if you don't know the secret word, say "I don't know".
+
+End with no transition tag.
+```
+
+**Test procedure:**
+1. Start workflow at PHASE1.md
+2. Verify it generates a number and writes to output.txt
+3. Verify it resets to PHASE2.md (new session ID in state file)
+4. Verify PHASE2.md can read the number from file
+5. Verify PHASE2.md does NOT know the secret word (context was discarded)
+
+**Success criteria:** Phase 2 can access file-persisted data but NOT context
+from phase 1. This proves reset discarded the context while continuing the
+workflow.
+
+---
+
 ## Running the Tests
 
 Each test should be runnable independently:
@@ -277,14 +329,17 @@ python -m raymond test-pure
 # Test goto/resume
 python -m raymond test-goto
 
-# Test fork
-python -m raymond test-fork
+# Test call (child workflow with return)
+python -m raymond test-call
 
-# Test spawn
+# Test spawn (independent workflows)
 python -m raymond test-spawn
 
-# Test evaluator
+# Test evaluator override
 python -m raymond test-eval --max-iterations=3
+
+# Test reset (fresh context)
+python -m raymond test-reset
 ```
 
 ## Cleanup

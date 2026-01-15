@@ -24,7 +24,7 @@ def parse_transitions(output: str) -> List[Transition]:
     """Extract transition tags from output.
 
     Returns list of Transition(tag, filename, attributes) objects.
-    Handles:
+    Recognizes:
         <goto>FILE.md</goto>
         <reset>FILE.md</reset>
         <function return="NEXT.md">EVAL.md</function>
@@ -32,7 +32,8 @@ def parse_transitions(output: str) -> List[Transition]:
         <fork next="NEXT.md" item="foo">WORKER.md</fork>
         <result>...</result>
 
-    Multiple tags may be present (e.g., multiple <fork> for spawning).
+    Returns a list for potential future multi-tag support, but the
+    initial implementation requires exactly one tag per response.
     """
 ```
 
@@ -114,29 +115,48 @@ workflows have a single agent, but the async infrastructure is ready.
 
 ### Step 2.1: Basic Orchestrator Loop
 
-Implement the core async loop:
+Implement the core async event pump:
 1. Read state file
 2. For each agent, create an async task to step that agent
 3. Use `asyncio.wait(..., return_when=FIRST_COMPLETED)` to process completions
 4. For each completed task:
    a. Parse output for exactly one protocol tag (`goto`, `reset`, `function`, `call`, `fork`, or `result`)
    b. If zero tags or multiple tags, raise a parse error (re-prompting is a future feature)
-   c. If `<fork>` tag, raise "not implemented" (until Phase 3)
-   d. Apply the tag's semantics per `wiki/workflow-protocol.md`
-   e. Update state file
+   c. Dispatch to tag handler (initially all raise "not implemented")
+   d. Update state file
 5. Repeat until all agents terminate
 
-**Termination semantics:**
+**Termination semantics** (implemented incrementally in later steps):
 - `<result>` with non-empty stack: pop frame, resume caller session at return state
 - `<result>` with empty stack: agent terminates (removed from `agents` array)
-- When `agents` array is empty, workflow is complete
+- When `agents` array is empty, orchestrator exits
 
 **Deferred:** YAML frontmatter policy enforcement. Initially, we rely on the
 model producing compliant tags.
 
-**Deliverable:** `src/orchestrator.py` with async `run_workflow()` function.
+**Deliverable:** `src/orchestrator.py` with async `run_all_agents()` function
+and stub handlers for each tag type.
 
-### Step 2.2: Pattern 1 - Function (Stateless with Return)
+### Step 2.2: Goto (Resume Session)
+
+Implement session continuation using `--resume` flag. This requires:
+- Storing session ID in agent state
+- Passing `--resume` to Claude Code on subsequent invocations
+
+**Deliverable:** Extend `wrap_claude_code()` to accept `session_id` parameter.
+Implement `<goto>` and `<result>` (with empty stack = termination) handlers.
+
+### Step 2.3: Reset (Fresh Start)
+
+Implement context reset:
+- Start a fresh Claude Code session (no `--resume`)
+- Update session ID in agent state (so future `<goto>` uses new session)
+- Clear return stack (log warning if non-empty per protocol)
+- Agent continues from new state
+
+**Deliverable:** Handle `<reset>` tag in orchestrator loop.
+
+### Step 2.4: Function (Stateless with Return)
 
 Implement stateless invocation for `<function>` tags. Despite being "stateless"
 (no session context), `<function>` is **not** a fire-and-forget operation:
@@ -148,38 +168,22 @@ Implement stateless invocation for `<function>` tags. Despite being "stateless"
 This differs from a pure evaluator (which returns immediately without stack
 manipulation) and from `<call>` (which may branch context from the caller).
 
-**Deliverable:** Integrate existing `wrap_claude_code()`, implement stack
-push/pop for `<function>` tags.
+**Deliverable:** Implement stack push/pop for `<function>` tags, extend
+`<result>` handler for non-empty stack case.
 
-### Step 2.3: Pattern 3 - Resume (Goto)
-
-Implement session continuation using `--resume` flag. This requires:
-- Storing session ID in state file
-- Passing `--resume` to Claude Code on subsequent invocations
-
-**Deliverable:** Extend `wrap_claude_code()` to accept `session_id` parameter.
-
-### Step 2.4: Pattern 2 - Call with Return
+### Step 2.5: Call with Return
 
 Implement call-and-return:
-- Store parent session ID before calling child
-- Run child workflow (may iterate)
-- Extract result from child's `<result>` tag
-- Resume parent with result injected via `{{result}}` template variable
+- Push frame to return stack (caller session + return state)
+- Start callee, typically by branching context from caller (Claude Code `--fork`)
+- Callee may iterate through multiple states before returning
+- On `<result>`, pop stack and resume caller with result injected via `{{result}}`
 
-**Deliverable:** `run_child_workflow()` function.
+Unlike `<function>`, `<call>` preserves context from the caller via history
+branching, which is useful when the callee needs to see what the caller was
+working on.
 
-### Step 2.5: Pattern 4 - Reset (Fresh Start)
-
-Implement context reset:
-- Start a fresh Claude Code session (no `--resume`)
-- Update session ID in state file (so future `<goto>` uses new session)
-- Workflow continues from new state
-
-This is simpler than Pattern 3 - just don't pass `--resume`. The key is
-updating the state file's session ID.
-
-**Deliverable:** Handle `<reset>` tag in orchestrator loop.
+**Deliverable:** `handle_call_transition()` function.
 
 ## Phase 3: Fork (Multi-Agent)
 
@@ -263,8 +267,9 @@ Each phase includes tests:
 ## Suggested Order
 
 1. Start with Phase 1 (infrastructure) - these are independent utilities
-2. Phase 2.1-2.2 gives us a working async orchestrator with single agent
-3. Test with sample workflows before adding complexity
-4. Phase 2.3-2.5 adds session management patterns (goto, call, reset)
-5. Phase 3 enables `<fork>` to spawn additional agents
-6. Phase 4-5 as needed based on real usage
+2. Phase 2.1-2.2 gives a working orchestrator: basic loop + goto + result
+3. Phase 2.3 adds reset (simple, no stack complexity)
+4. Test with sample workflows before adding stack-based patterns
+5. Phase 2.4-2.5 adds function and call (stack push/pop)
+6. Phase 3 enables `<fork>` to spawn additional agents
+7. Phase 4-5 as needed based on real usage

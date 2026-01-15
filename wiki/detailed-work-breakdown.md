@@ -67,11 +67,11 @@ support TDD. See `implementation-plan.md` for context on each phase and step.
 
 Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
-- [ ] **2.2.1** Write tests: `wrap_claude_code()` accepts optional `session_id` parameter
-- [ ] **2.2.2** Write tests: when `session_id` provided, passes `--resume` flag
-- [ ] **2.2.3** Write tests: when `session_id` is None, no `--resume` flag
-- [ ] **2.2.4** Write tests: `wrap_claude_code()` returns session_id from Claude Code output
-- [ ] **2.2.5** Extend `wrap_claude_code()` implementation
+- [x] **2.2.1** Write tests: `wrap_claude_code()` accepts optional `session_id` parameter
+- [x] **2.2.2** Write tests: when `session_id` provided, passes `--resume` flag
+- [x] **2.2.3** Write tests: when `session_id` is None, no `--resume` flag
+- [x] **2.2.4** Write tests: `wrap_claude_code()` returns session_id from Claude Code output
+- [x] **2.2.5** Extend `wrap_claude_code()` implementation
 - [ ] **2.2.6** Write tests: orchestrator stores returned session_id in agent state
 - [ ] **2.2.7** Write tests: `<goto>` handler updates agent's `current_state`
 - [ ] **2.2.8** Write tests: `<goto>` handler preserves `session_id` for resume

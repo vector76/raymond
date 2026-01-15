@@ -1,18 +1,12 @@
 import asyncio
+import copy
 import logging
-from typing import Dict, Any, List, Optional
-try:
-    # When installed as a package
-    from .cc_wrap import wrap_claude_code
-    from .state import read_state, write_state, StateFileError as StateFileErrorFromState
-    from .prompts import load_prompt, render_prompt
-    from .parsing import parse_transitions, validate_single_transition, Transition
-except ImportError:
-    # When running tests with sys.path manipulation
-    from cc_wrap import wrap_claude_code
-    from state import read_state, write_state, StateFileError as StateFileErrorFromState
-    from prompts import load_prompt, render_prompt
-    from parsing import parse_transitions, validate_single_transition, Transition
+from typing import Dict, Any, List, Optional, Tuple
+
+from .cc_wrap import wrap_claude_code
+from .state import read_state, write_state, StateFileError as StateFileErrorFromState
+from .prompts import load_prompt, render_prompt
+from .parsing import parse_transitions, validate_single_transition, Transition
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +98,16 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
                     if result is not None:
                         # Update agent in state
                         agent_idx = next(
-                            i for i, a in enumerate(state["agents"])
-                            if a["id"] == agent["id"]
+                            (i for i, a in enumerate(state["agents"])
+                             if a["id"] == agent["id"]),
+                            None
                         )
+                        if agent_idx is None:
+                            logger.warning(
+                                f"Agent {agent['id']} not found in state, skipping update",
+                                extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
+                            )
+                            continue
                         old_state = state["agents"][agent_idx].get("current_state")
                         new_state = result.get("current_state")
                         
@@ -139,9 +140,16 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
                 except (ClaudeCodeError, PromptFileError) as e:
                     # Handle recoverable errors with retry logic
                     agent_idx = next(
-                        i for i, a in enumerate(state["agents"])
-                        if a["id"] == agent["id"]
+                        (i for i, a in enumerate(state["agents"])
+                         if a["id"] == agent["id"]),
+                        None
                     )
+                    if agent_idx is None:
+                        logger.warning(
+                            f"Agent {agent['id']} not found in state during error handling",
+                            extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
+                        )
+                        continue
                     current_agent = state["agents"][agent_idx]
                     
                     # Increment retry counter
@@ -358,8 +366,9 @@ async def step_agent(
         }
     )
     
-    # Create a copy of agent for handler (to avoid mutating original)
-    agent_copy = agent.copy()
+    # Create a deep copy of agent for handler (to avoid mutating original)
+    # Deep copy ensures nested structures like stack are also copied
+    agent_copy = copy.deepcopy(agent)
     
     # Update session_id if returned
     if new_session_id:
@@ -392,7 +401,8 @@ async def step_agent(
         raise ValueError(f"Unknown transition tag: {transition.tag}")
     
     # Call handler with agent_copy, transition, and state
-    handler_result = await handler(agent_copy, transition, state, state_dir)
+    # Handlers are sync functions - no await needed
+    handler_result = handler(agent_copy, transition, state)
     
     # Fork handler returns a tuple (updated_agent, new_agent)
     # Other handlers return just updated_agent
@@ -405,11 +415,10 @@ async def step_agent(
         return handler_result
 
 
-async def handle_goto_transition(
+def handle_goto_transition(
     agent: Dict[str, Any],
     transition: Transition,
     state: Dict[str, Any],
-    state_dir: Optional[str] = None
 ) -> Dict[str, Any]:
     """Handle <goto> transition tag.
     
@@ -420,27 +429,21 @@ async def handle_goto_transition(
     Args:
         agent: Agent state dictionary
         transition: Transition object with target filename
-        state: Full workflow state dictionary
-        state_dir: Optional custom state directory
+        state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
         Updated agent state dictionary
     """
-    # Create updated agent with new current_state
-    updated_agent = agent.copy()
-    updated_agent["current_state"] = transition.target
-    
+    agent["current_state"] = transition.target
     # session_id is already updated in step_agent if new_session_id was returned
     # Return stack is preserved (unchanged)
-    
-    return updated_agent
+    return agent
 
 
-async def handle_reset_transition(
+def handle_reset_transition(
     agent: Dict[str, Any],
     transition: Transition,
     state: Dict[str, Any],
-    state_dir: Optional[str] = None
 ) -> Dict[str, Any]:
     """Handle <reset> transition tag.
     
@@ -452,8 +455,7 @@ async def handle_reset_transition(
     Args:
         agent: Agent state dictionary
         transition: Transition object with target filename
-        state: Full workflow state dictionary
-        state_dir: Optional custom state directory
+        state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
         Updated agent state dictionary
@@ -471,20 +473,16 @@ async def handle_reset_transition(
             }
         )
     
-    # Create updated agent
-    updated_agent = agent.copy()
-    updated_agent["current_state"] = transition.target
-    updated_agent["session_id"] = None  # Fresh start
-    updated_agent["stack"] = []  # Clear return stack
-    
-    return updated_agent
+    agent["current_state"] = transition.target
+    agent["session_id"] = None  # Fresh start
+    agent["stack"] = []  # Clear return stack
+    return agent
 
 
-async def handle_function_transition(
+def handle_function_transition(
     agent: Dict[str, Any],
     transition: Transition,
     state: Dict[str, Any],
-    state_dir: Optional[str] = None
 ) -> Dict[str, Any]:
     """Handle <function> transition tag.
     
@@ -496,8 +494,7 @@ async def handle_function_transition(
     Args:
         agent: Agent state dictionary
         transition: Transition object with target filename and return attribute
-        state: Full workflow state dictionary
-        state_dir: Optional custom state directory
+        state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
         Updated agent state dictionary
@@ -512,31 +509,27 @@ async def handle_function_transition(
     return_state = transition.attributes["return"]
     caller_session_id = agent.get("session_id")
     
-    # Create updated agent
-    updated_agent = agent.copy()
-    
     # Push frame to return stack
-    stack = updated_agent.get("stack", [])
+    stack = agent.get("stack", [])
     frame = {
         "session": caller_session_id,
         "state": return_state
     }
-    updated_agent["stack"] = stack + [frame]  # Push to end (LIFO)
+    agent["stack"] = stack + [frame]  # Push to end (LIFO)
     
     # Set session_id to None (fresh context for stateless function)
-    updated_agent["session_id"] = None
+    agent["session_id"] = None
     
     # Update current_state to function target
-    updated_agent["current_state"] = transition.target
+    agent["current_state"] = transition.target
     
-    return updated_agent
+    return agent
 
 
-async def handle_call_transition(
+def handle_call_transition(
     agent: Dict[str, Any],
     transition: Transition,
     state: Dict[str, Any],
-    state_dir: Optional[str] = None
 ) -> Dict[str, Any]:
     """Handle <call> transition tag.
     
@@ -552,8 +545,7 @@ async def handle_call_transition(
     Args:
         agent: Agent state dictionary
         transition: Transition object with target filename and return attribute
-        state: Full workflow state dictionary
-        state_dir: Optional custom state directory
+        state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
         Updated agent state dictionary
@@ -568,33 +560,29 @@ async def handle_call_transition(
     return_state = transition.attributes["return"]
     caller_session_id = agent.get("session_id")
     
-    # Create updated agent
-    updated_agent = agent.copy()
-    
     # Push frame to return stack
-    stack = updated_agent.get("stack", [])
+    stack = agent.get("stack", [])
     frame = {
         "session": caller_session_id,
         "state": return_state
     }
-    updated_agent["stack"] = stack + [frame]  # Push to end (LIFO)
+    agent["stack"] = stack + [frame]  # Push to end (LIFO)
     
     # Set fork_session_id to trigger --fork in next step_agent invocation
     # This branches context from the caller's session
-    updated_agent["fork_session_id"] = caller_session_id
+    agent["fork_session_id"] = caller_session_id
     
     # Update current_state to callee target
-    updated_agent["current_state"] = transition.target
+    agent["current_state"] = transition.target
     
-    return updated_agent
+    return agent
 
 
-async def handle_fork_transition(
+def handle_fork_transition(
     agent: Dict[str, Any],
     transition: Transition,
     state: Dict[str, Any],
-    state_dir: Optional[str] = None
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Handle <fork> transition tag.
     
     Spawns an independent agent ("process-like") while the current agent continues.
@@ -607,8 +595,7 @@ async def handle_fork_transition(
     Args:
         agent: Agent state dictionary (the parent)
         transition: Transition object with target filename and next attribute
-        state: Full workflow state dictionary
-        state_dir: Optional custom state directory
+        state: Full workflow state dictionary (used to check existing agent IDs)
         
     Returns:
         Tuple of (updated parent agent, new worker agent)
@@ -648,18 +635,16 @@ async def handle_fork_transition(
         new_agent["fork_attributes"] = fork_attributes
     
     # Update parent agent (like goto - preserves session and stack)
-    updated_parent = agent.copy()
-    updated_parent["current_state"] = next_state
+    agent["current_state"] = next_state
     # session_id and stack are preserved (unchanged)
     
-    return (updated_parent, new_agent)
+    return (agent, new_agent)
 
 
-async def handle_result_transition(
+def handle_result_transition(
     agent: Dict[str, Any],
     transition: Transition,
     state: Dict[str, Any],
-    state_dir: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """Handle <result> transition tag.
     
@@ -670,8 +655,7 @@ async def handle_result_transition(
     Args:
         agent: Agent state dictionary
         transition: Transition object with payload
-        state: Full workflow state dictionary
-        state_dir: Optional custom state directory
+        state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
         Updated agent state dictionary, or None if agent terminates
@@ -687,20 +671,17 @@ async def handle_result_transition(
     frame = stack[-1]
     remaining_stack = stack[:-1]
     
-    # Create updated agent
-    updated_agent = agent.copy()
-    
     # Restore caller's session_id
-    updated_agent["session_id"] = frame["session"]
+    agent["session_id"] = frame["session"]
     
     # Set current_state to return state from frame
-    updated_agent["current_state"] = frame["state"]
+    agent["current_state"] = frame["state"]
     
     # Update stack (remove popped frame)
-    updated_agent["stack"] = remaining_stack
+    agent["stack"] = remaining_stack
     
     # Store result payload for template substitution in next step
     # step_agent will use this when rendering the return state prompt
-    updated_agent["pending_result"] = transition.payload
+    agent["pending_result"] = transition.payload
     
-    return updated_agent
+    return agent

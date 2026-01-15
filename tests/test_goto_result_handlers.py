@@ -1,17 +1,15 @@
 import pytest
-import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
-from orchestrator import handle_goto_transition, handle_result_transition
-from state import create_initial_state, write_state, read_state
-from parsing import Transition
+from unittest.mock import patch
+from src.orchestrator import handle_goto_transition, handle_result_transition
+from src.state import create_initial_state, write_state, read_state
+from src.parsing import Transition
 
 
 class TestGotoHandler:
     """Tests for <goto> handler (Step 2.2.7-2.2.8, 2.2.10)."""
 
-    @pytest.mark.asyncio
-    async def test_goto_handler_updates_current_state(self, tmp_path):
+    def test_goto_handler_updates_current_state(self, tmp_path):
         """Test 2.2.7: <goto> handler updates agent's current_state."""
         scope_dir = str(tmp_path / "workflows" / "test")
         Path(scope_dir).mkdir(parents=True)
@@ -25,12 +23,11 @@ class TestGotoHandler:
         
         transition = Transition("goto", "NEXT.md", {}, "")
         
-        updated_agent = await handle_goto_transition(agent, transition, {}, None)
+        updated_agent = handle_goto_transition(agent, transition, {})
         
         assert updated_agent["current_state"] == "NEXT.md"
 
-    @pytest.mark.asyncio
-    async def test_goto_handler_preserves_session_id(self, tmp_path):
+    def test_goto_handler_preserves_session_id(self, tmp_path):
         """Test 2.2.8: <goto> handler preserves session_id for resume."""
         scope_dir = str(tmp_path / "workflows" / "test")
         Path(scope_dir).mkdir(parents=True)
@@ -44,7 +41,7 @@ class TestGotoHandler:
         
         transition = Transition("goto", "NEXT.md", {}, "")
         
-        updated_agent = await handle_goto_transition(agent, transition, {}, None)
+        updated_agent = handle_goto_transition(agent, transition, {})
         
         assert updated_agent["session_id"] == "session_123"
 
@@ -52,8 +49,7 @@ class TestGotoHandler:
 class TestResultHandler:
     """Tests for <result> handler (Step 2.2.9, 2.2.11)."""
 
-    @pytest.mark.asyncio
-    async def test_result_with_empty_stack_removes_agent(self, tmp_path):
+    def test_result_with_empty_stack_removes_agent(self, tmp_path):
         """Test 2.2.9: <result> with empty stack removes agent from array."""
         scope_dir = str(tmp_path / "workflows" / "test")
         Path(scope_dir).mkdir(parents=True)
@@ -68,7 +64,7 @@ class TestResultHandler:
         transition = Transition("result", "", {}, "Task completed")
         
         # Result with empty stack should return None (agent terminates)
-        result = await handle_result_transition(agent, transition, {}, None)
+        result = handle_result_transition(agent, transition, {})
         
         assert result is None
 
@@ -103,14 +99,14 @@ class TestOrchestratorSessionId:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('orchestrator.wrap_claude_code') as mock_wrap:
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             # First call returns goto with session_id, second returns result to terminate
             mock_wrap.side_effect = [
                 (mock_output, new_session_id),
                 ([{"type": "content", "text": "Done\n<result>Complete</result>"}], new_session_id)
             ]
             
-            from orchestrator import run_all_agents
+            from src.orchestrator import run_all_agents
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify session_id was stored in state file after first transition

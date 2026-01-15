@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import sys
 from typing import List, Dict, Any, AsyncIterator, Tuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -18,7 +17,7 @@ class ClaudeCodeTimeoutError(Exception):
 
 def _build_claude_command(
     prompt: str,
-    model: str = None,
+    model: Optional[str] = None,
     session_id: Optional[str] = None,
     **kwargs
 ) -> List[str]:
@@ -28,7 +27,10 @@ def _build_claude_command(
         prompt: The prompt to send to claude
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session
-        **kwargs: Additional arguments to pass to claude command
+        **kwargs: Additional arguments to pass to claude command.
+            Supported kwargs include:
+            - fork (bool): If True, passes --fork flag to branch from session_id
+            - Any other kwargs are converted to --key value CLI arguments
         
     Returns:
         List of command arguments
@@ -65,7 +67,7 @@ def _build_claude_command(
 
 async def wrap_claude_code(
     prompt: str, 
-    model: str = None, 
+    model: Optional[str] = None, 
     session_id: Optional[str] = None,
     timeout: Optional[float] = None,
     **kwargs
@@ -79,7 +81,9 @@ async def wrap_claude_code(
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
         timeout: Optional timeout in seconds (default: 600). Set to None for no timeout.
-        **kwargs: Additional arguments to pass to claude command
+        **kwargs: Additional arguments to pass to claude command.
+            Supported kwargs include:
+            - fork (bool): If True, passes --fork flag to branch from session_id
 
     Returns:
         Tuple of (list of parsed JSON objects from the stream, extracted session_id or None)
@@ -161,7 +165,7 @@ async def wrap_claude_code(
 
 async def wrap_claude_code_stream(
     prompt: str, 
-    model: str = None,
+    model: Optional[str] = None,
     session_id: Optional[str] = None,
     timeout: Optional[float] = None,
     **kwargs
@@ -175,7 +179,9 @@ async def wrap_claude_code_stream(
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
         timeout: Optional timeout in seconds (default: 600). Set to None for no timeout.
-        **kwargs: Additional arguments to pass to claude command
+        **kwargs: Additional arguments to pass to claude command.
+            Supported kwargs include:
+            - fork (bool): If True, passes --fork flag to branch from session_id
 
     Yields:
         Parsed JSON objects from the stream as they arrive
@@ -197,13 +203,14 @@ async def wrap_claude_code_stream(
         stderr=asyncio.subprocess.PIPE,
     )
 
-    start_time = asyncio.get_event_loop().time()
+    loop = asyncio.get_running_loop()
+    start_time = loop.time()
 
     # Read and parse the streamed JSON output line by line
     try:
         async for line in process.stdout:
             # Check timeout
-            elapsed = asyncio.get_event_loop().time() - start_time
+            elapsed = loop.time() - start_time
             if elapsed > effective_timeout:
                 logger.error(f"Claude Code timed out after {effective_timeout}s, killing process")
                 process.kill()

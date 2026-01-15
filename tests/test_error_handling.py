@@ -1,11 +1,8 @@
 import pytest
-import json
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
-from orchestrator import step_agent, run_all_agents, ClaudeCodeError, PromptFileError
-from cc_wrap import wrap_claude_code
-from prompts import load_prompt
-from state import read_state, write_state, StateFileError
+from src.orchestrator import step_agent, ClaudeCodeError, PromptFileError
+from src.state import read_state, StateFileError
 
 
 class TestClaudeCodeErrorHandling:
@@ -32,7 +29,7 @@ class TestClaudeCodeErrorHandling:
         }
         
         # Mock wrap_claude_code to raise RuntimeError (simulating non-zero exit)
-        with patch('orchestrator.wrap_claude_code', new_callable=AsyncMock) as mock_wrap:
+        with patch('src.orchestrator.wrap_claude_code', new_callable=AsyncMock) as mock_wrap:
             mock_wrap.side_effect = RuntimeError(
                 "Claude command failed with return code 1\nStderr: Error message"
             )

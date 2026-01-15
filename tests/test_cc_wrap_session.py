@@ -1,7 +1,6 @@
 import pytest
-import json
 from unittest.mock import AsyncMock, patch
-from cc_wrap import wrap_claude_code
+from src.cc_wrap import wrap_claude_code
 
 
 class TestWrapClaudeCodeSession:
@@ -10,7 +9,7 @@ class TestWrapClaudeCodeSession:
     @pytest.mark.asyncio
     async def test_wrap_claude_code_accepts_session_id_parameter(self):
         """Test 2.2.1: wrap_claude_code() accepts optional session_id parameter."""
-        with patch('cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
+        with patch('src.cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
             
             async def mock_stdout():
@@ -30,7 +29,7 @@ class TestWrapClaudeCodeSession:
     @pytest.mark.asyncio
     async def test_session_id_provided_passes_resume_flag(self):
         """Test 2.2.2: when session_id provided, passes --resume flag."""
-        with patch('cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
+        with patch('src.cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
             
             async def mock_stdout():
@@ -57,7 +56,7 @@ class TestWrapClaudeCodeSession:
     @pytest.mark.asyncio
     async def test_session_id_none_no_resume_flag(self):
         """Test 2.2.3: when session_id is None, no --resume flag."""
-        with patch('cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
+        with patch('src.cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
             
             async def mock_stdout():
@@ -89,7 +88,7 @@ class TestWrapClaudeCodeSession:
             b'{"type": "message", "session_id": "session_abc123", "content": "text"}\n',
         ]
         
-        with patch('cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
+        with patch('src.cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
             
             async def mock_stdout():

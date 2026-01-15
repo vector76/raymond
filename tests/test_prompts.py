@@ -1,7 +1,6 @@
 import pytest
-import tempfile
 from pathlib import Path
-from prompts import load_prompt, render_prompt
+from src.prompts import load_prompt, render_prompt
 
 
 class TestLoadPrompt:

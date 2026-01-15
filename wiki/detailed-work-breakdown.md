@@ -83,26 +83,26 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 2.3: Reset (Fresh Start)
 
-- [ ] **2.3.1** Write tests: `<reset>` handler updates `current_state`
-- [ ] **2.3.2** Write tests: `<reset>` handler sets `session_id` to None (fresh start)
-- [ ] **2.3.3** Write tests: `<reset>` handler clears return stack
-- [ ] **2.3.4** Write tests: `<reset>` with non-empty stack logs warning
-- [ ] **2.3.5** Implement `<reset>` handler
+- [x] **2.3.1** Write tests: `<reset>` handler updates `current_state`
+- [x] **2.3.2** Write tests: `<reset>` handler sets `session_id` to None (fresh start)
+- [x] **2.3.3** Write tests: `<reset>` handler clears return stack
+- [x] **2.3.4** Write tests: `<reset>` with non-empty stack logs warning
+- [x] **2.3.5** Implement `<reset>` handler
 
 **Integration checkpoint:** Can run reset workflow (Test 6 from `sample-workflows.md`).
 
 ### Step 2.4: Function (Stateless with Return)
 
-- [ ] **2.4.1** Write tests: `<function>` handler pushes frame to stack
-- [ ] **2.4.2** Write tests: pushed frame contains caller's session_id and return state
-- [ ] **2.4.3** Write tests: `<function>` handler sets `session_id` to None (fresh)
-- [ ] **2.4.4** Write tests: `<function>` handler updates `current_state` to function target
-- [ ] **2.4.5** Implement `<function>` handler
-- [ ] **2.4.6** Write tests: `<result>` with non-empty stack pops frame
-- [ ] **2.4.7** Write tests: `<result>` resumes caller's session_id
-- [ ] **2.4.8** Write tests: `<result>` sets `current_state` to return state from frame
-- [ ] **2.4.9** Write tests: `<result>` payload available as `{{result}}` variable
-- [ ] **2.4.10** Extend `<result>` handler for non-empty stack case
+- [x] **2.4.1** Write tests: `<function>` handler pushes frame to stack
+- [x] **2.4.2** Write tests: pushed frame contains caller's session_id and return state
+- [x] **2.4.3** Write tests: `<function>` handler sets `session_id` to None (fresh)
+- [x] **2.4.4** Write tests: `<function>` handler updates `current_state` to function target
+- [x] **2.4.5** Implement `<function>` handler
+- [x] **2.4.6** Write tests: `<result>` with non-empty stack pops frame
+- [x] **2.4.7** Write tests: `<result>` resumes caller's session_id
+- [x] **2.4.8** Write tests: `<result>` sets `current_state` to return state from frame
+- [x] **2.4.9** Write tests: `<result>` payload available as `{{result}}` variable
+- [x] **2.4.10** Extend `<result>` handler for non-empty stack case
 
 **Integration checkpoint:** Create and run a minimal `<function>` test case (not in
 `sample-workflows.md` — Test 1 there is stateless without return stack semantics).

@@ -54,14 +54,14 @@ support TDD. See `implementation-plan.md` for context on each phase and step.
 
 ### Step 2.1: Basic Orchestrator Loop
 
-- [ ] **2.1.1** Write tests: `run_all_agents()` reads state file at start
-- [ ] **2.1.2** Write tests: orchestrator exits when `agents` array is empty
-- [ ] **2.1.3** Write tests: orchestrator calls Claude Code wrapper for each agent
-- [ ] **2.1.4** Write tests: orchestrator parses output and dispatches to handler
-- [ ] **2.1.5** Write tests: parse error (zero tags) raises exception
-- [ ] **2.1.6** Write tests: parse error (multiple tags) raises exception
-- [ ] **2.1.7** Implement `run_all_agents()` skeleton with stub handlers (all raise NotImplementedError)
-- [ ] **2.1.8** Implement dispatcher that routes tag type to handler
+- [x] **2.1.1** Write tests: `run_all_agents()` reads state file at start
+- [x] **2.1.2** Write tests: orchestrator exits when `agents` array is empty
+- [x] **2.1.3** Write tests: orchestrator calls Claude Code wrapper for each agent
+- [x] **2.1.4** Write tests: orchestrator parses output and dispatches to handler
+- [x] **2.1.5** Write tests: parse error (zero tags) raises exception
+- [x] **2.1.6** Write tests: parse error (multiple tags) raises exception
+- [x] **2.1.7** Implement `run_all_agents()` skeleton with stub handlers (all raise NotImplementedError)
+- [x] **2.1.8** Implement dispatcher that routes tag type to handler
 
 ### Step 2.2: Goto (Resume Session)
 
@@ -72,12 +72,12 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 - [x] **2.2.3** Write tests: when `session_id` is None, no `--resume` flag
 - [x] **2.2.4** Write tests: `wrap_claude_code()` returns session_id from Claude Code output
 - [x] **2.2.5** Extend `wrap_claude_code()` implementation
-- [ ] **2.2.6** Write tests: orchestrator stores returned session_id in agent state
-- [ ] **2.2.7** Write tests: `<goto>` handler updates agent's `current_state`
-- [ ] **2.2.8** Write tests: `<goto>` handler preserves `session_id` for resume
-- [ ] **2.2.9** Write tests: `<result>` with empty stack removes agent from array
-- [ ] **2.2.10** Implement `<goto>` handler
-- [ ] **2.2.11** Implement `<result>` handler (empty stack case only)
+- [x] **2.2.6** Write tests: orchestrator stores returned session_id in agent state
+- [x] **2.2.7** Write tests: `<goto>` handler updates agent's `current_state`
+- [x] **2.2.8** Write tests: `<goto>` handler preserves `session_id` for resume
+- [x] **2.2.9** Write tests: `<result>` with empty stack removes agent from array
+- [x] **2.2.10** Implement `<goto>` handler
+- [x] **2.2.11** Implement `<result>` handler (empty stack case only)
 
 **Integration checkpoint:** Can run a simple goto+result workflow (Test 2 from `sample-workflows.md`).
 

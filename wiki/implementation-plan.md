@@ -17,9 +17,10 @@ def parse_transitions(output: str) -> List[Transition]:
     Handles:
         <goto>FILE.md</goto>
         <reset>FILE.md</reset>
-        <function model="haiku">FILE.md</function>
+        <function return="NEXT.md" model="haiku">EVAL.md</function>
         <call return="NEXT.md">CHILD.md</call>
-        <fork item="foo">WORKER.md</fork>
+        <fork next="NEXT.md" item="foo">WORKER.md</fork>
+        <result>...</result>
 
     Multiple tags may be present (e.g., multiple <fork> for spawning).
     """
@@ -27,10 +28,13 @@ def parse_transitions(output: str) -> List[Transition]:
 
 **Deliverable:** `src/parsing.py` with `parse_transitions()` function and tests.
 
-**Note (initial scope):** Multi-tag semantics (e.g., multiple transitions in a
+**Note (initial scope):** Multi-tag semantics (multiple protocol tags in a
 single response) are a future feature. The initial implementation should accept
-exactly one transition tag per response, or no transition tag (in which case a
-`<result>...</result>` tag is required).
+exactly **one** protocol tag per response, as defined in
+`wiki/workflow-protocol.md`.
+
+**Parsing detail:** The single protocol tag may appear anywhere in the agent's
+final message; parsing should not depend on it being on the last line.
 
 ### Step 1.2: State File Management
 
@@ -75,10 +79,11 @@ Implement the core loop for a single workflow:
 1. Read state file
 2. Load prompt for current state
 3. Invoke Claude Code
-4. Parse transition tag
-5. If no transition tag is present, require a `<result>...</result>` tag; if
-   neither is present, re-prompt with a short reminder to emit a valid tag
-6. Update state file
+4. Parse output for exactly one protocol tag (`goto`, `reset`, `function`, `call`, `fork`, or `result`)
+5. If the output has zero tags or multiple tags, re-prompt with a short protocol reminder
+6. Apply the tag's semantics (including return stack push/pop) per `wiki/workflow-protocol.md`
+7. Enforce per-state YAML frontmatter policy (allowed tags / allowed targets), if present
+7. Update state file
 6. Repeat or terminate
 
 **Deliverable:** `src/orchestrator.py` with `run_workflow()` function.

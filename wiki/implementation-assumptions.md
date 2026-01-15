@@ -30,21 +30,25 @@ artifacts.
   `workflows/coding/START.md`).
 - All subsequent transitions (e.g. `<goto>REVIEW.md</goto>`) are resolved
   **only within that same directory** (here: `workflows/coding/`).
-- **Cross-directory transitions are not allowed** (for now). This prevents name
+- **Cross-directory transitions are not allowed.** This prevents name
   collisions and keeps workflow collections self-contained.
 
 This implies you can start a workflow from a prompt file located anywhere, not
 just under `workflows/`; the orchestrator simply treats the starting file's
 directory as the workflow's scope.
 
+**Path safety rule:** Transition targets are filenames, not paths. Tag targets
+must not contain `/` or `\` anywhere.
+
 ## Transition Tag Format
 
 **Assumption:** Use distinct tags for each transition type:
 - `<goto>FILE.md</goto>` - Pattern 3 (resume/continue in same context)
 - `<reset>FILE.md</reset>` - Pattern 4 (discard context, start fresh, continue)
-- `<function>FILE.md</function>` - Pattern 1 (stateless/pure, disposable)
 - `<call return="NEXT.md">CHILD.md</call>` - Pattern 2 (call with return)
-- `<fork item="data">WORKER.md</fork>` - Independent spawn
+- `<function return="NEXT.md">EVAL.md</function>` - Pattern 1 (stateless evaluation with return)
+- `<fork next="NEXT.md" item="data">WORKER.md</fork>` - Independent spawn (parent continues at `next`)
+- `<result>...</result>` - Return/terminate
 
 The `<call>` tag requires a `return` attribute specifying which state to
 resume at when the child completes. The `<fork>` tag accepts arbitrary
@@ -63,6 +67,14 @@ session to resume. The orchestrator treats this as an implicit fresh start.
 Subsequent `<goto>` tags resume the existing session. `<reset>` explicitly
 creates a new session, discarding the current one.
 
+**Protocol note:** The authoritative protocol is defined in
+`wiki/workflow-protocol.md`, including the return stack model and the rule that
+each Claude Code run must end with exactly one protocol tag.
+
+**Per-state policy:** Prompt files may optionally include YAML frontmatter that
+declares allowed tags/targets for that state; the orchestrator enforces it (see
+`wiki/workflow-protocol.md`).
+
 **Future consideration:** A `<compact>` tag could perform context summarization
 rather than full discard - partially preserving context while reducing token
 usage. However, this is deferred; the philosophy is to avoid context overflow
@@ -79,7 +91,7 @@ unfortunate in this context. In Raymond docs:
 
 **Assumption:** Use the default Claude Code model (currently Sonnet) unless
 explicitly specified. The `<function>` tag supports an optional `model`
-attribute: `<function model="haiku">EVAL.md</function>`
+attribute: `<function return="NEXT.md" model="haiku">EVAL.md</function>`
 
 **Rationale:** Let Claude Code manage model selection by default. Override only
 when cost/speed tradeoffs matter (evaluators). The `model` attribute on
@@ -92,7 +104,7 @@ use naming conventions.
 
 **Assumption:** Prompt files support `{{variable}}` placeholders that the
 orchestrator substitutes before sending to Claude Code. Variables come from:
-- Transition tag attributes (e.g., `<fork item="X">` makes `{{item}}` available)
+- Transition tag attributes (e.g., `<fork next="NEXT.md" item="X">` makes `{{item}}` available)
 - Workflow metadata in the state file
 - Result tags from child workflows (for `<call>` returns)
 
@@ -124,12 +136,13 @@ opaque string.
 
 ## Result Extraction
 
-**Assumption:** Child workflows signal their result using a `<result>` tag:
-`<result>Summary of what was accomplished</result>`
+**Assumption:** Return/termination uses a `<result>` tag:
+`<result>...</result>`
 
-The prompt for child workflows (invoked via `<call>`) should instruct the AI
-to include this tag.
-The orchestrator extracts it and passes it to the parent on resume.
+The orchestrator treats `<result>` as a control-flow operation:
+- If there is a caller on the return stack, `<result>` returns to it (resuming
+  the caller session and transitioning to the caller's return state).
+- If there is no caller, `<result>` terminates the workflow successfully.
 
 **Rationale:** Consistent with the transition tag pattern. Explicit is better
 than trying to summarize arbitrary output.
@@ -137,15 +150,9 @@ than trying to summarize arbitrary output.
 **Alternative considered:** Last paragraph, AI-generated summary, or structured
 JSON output.
 
-**Required result behavior (robustness):**
-- If the orchestrator detects **no transition tag**, it must also require a
-  `<result>...</result>` tag.
-- If neither a transition tag nor a `<result>` tag is present, the orchestrator
-  can re-prompt the agent with a short "reminder" prompt instructing it to
-  respond with one of the allowed tags.
-
-This makes it possible to distinguish "legal termination" (no transition + a
-result) from "model forgot the protocol" (no transition + no result).
+**Robustness rule:** If the output contains no valid protocol tag, or multiple
+tags, the orchestrator re-prompts with a short reminder to output exactly one
+protocol tag.
 
 ## Error Handling Strategy
 

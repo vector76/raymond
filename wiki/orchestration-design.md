@@ -27,6 +27,16 @@ Raymond treats workflows as a state machine where:
 - Transitions are declared within the prompts themselves
 - The Python orchestrator parses transition tags and routes accordingly
 
+**Protocol note:** The authoritative protocol (including the return stack model
+and directory scoping) is defined in `wiki/workflow-protocol.md`.
+
+Two key protocol points worth calling out here:
+- The agent's final message must contain **exactly one** protocol tag, and that
+  tag may appear **anywhere** in the message.
+- Each state may optionally declare a YAML frontmatter policy (allowed tags /
+  allowed targets). The orchestrator enforces this as part of interpreting the
+  workflow.
+
 ### Self-Describing Transitions
 
 Prompts instruct the AI how to signal transitions using distinct tags:
@@ -45,16 +55,21 @@ The Python orchestrator:
 **Workflow directory scoping (important):**
 - A workflow is started from a specific prompt file path (e.g. `workflows/coding/START.md`).
 - Transitions that reference a filename (e.g. `<goto>REVIEW.md</goto>`) are resolved **only within the starting file's directory**.
-- Cross-directory transitions are not allowed (for now). This keeps workflow collections self-contained and prevents name collisions.
+- Cross-directory transitions are not allowed. This keeps workflow collections self-contained and prevents name collisions.
+
+**Path safety rule:** Transition targets are filenames, not paths. Tag targets
+must not contain `/` or `\` anywhere.
 
 This keeps workflow definitions in markdown, not Python code.
 
 **Tag types:**
 - `<goto>FILE.md</goto>` - continue in same context
 - `<reset>FILE.md</reset>` - discard context, start fresh, continue workflow
-- `<function model="haiku">FILE.md</function>` - stateless evaluation (model optional)
+- `<function return="NEXT.md" model="haiku">EVAL.md</function>` - stateless evaluation with return (model optional)
 - `<call return="NEXT.md">CHILD.md</call>` - isolated subtask with return
-- `<fork item="data">WORKER.md</fork>` - independent spawn (attributes become template variables)
+- `<function return="NEXT.md" model="haiku">EVAL.md</function>` - stateless evaluation with return
+- `<fork next="NEXT.md" item="data">WORKER.md</fork>` - independent spawn (parent continues at `next`)
+- `<result>...</result>` - return/terminate
 
 ### Branching and Looping
 
@@ -161,7 +176,8 @@ difference:
 4. Orchestrator intercepts the transition tag
 5. Orchestrator reads REVIEW.md to get the next state's prompt
 6. Orchestrator launches a new Claude Code session with that prompt
-7. The cycle continues until a terminal state (no transition tag)
+7. The cycle continues until a terminal `<result>...</result>` with an empty
+   return stack (workflow termination)
 
 The key difference: instead of injecting results into the same context, the
 transition **ends the current session**. The orchestrator controls whether the
@@ -206,8 +222,7 @@ restarts, `<call>` invokes a subroutine, `<function>` evaluates statelessly,
 
 **Initial protocol scope:** Multi-tag semantics (multiple transition tags in a
 single response) are a future feature. Initially, require either:
-- exactly one transition tag, or
-- no transition tag + exactly one `<result>...</result>` tag.
+- exactly one protocol tag (`goto`, `reset`, `function`, `call`, `fork`, or `result`).
 
 ### Pattern 1: Pure Function (No Context)
 

@@ -85,8 +85,8 @@ interesting trait to solve the problem. Write 2-3 sentences.
 
 Reference details from both previous steps to demonstrate continuity.
 
-When done, write the complete mini-story to sandbox/output.txt and respond with
-no transition tag (this ends the workflow).
+When done, write the complete mini-story to sandbox/output.txt and respond with:
+<result>Story complete</result>
 ```
 
 **Test procedure:**
@@ -138,7 +138,7 @@ Three facts about [topic]:
 3. [fact 3]
 </result>
 
-End with no transition tag.
+Do not include any other protocol tags.
 ```
 
 `workflows/test-call/SUMMARIZE.md`:
@@ -151,7 +151,8 @@ Write a one-paragraph summary of the research to sandbox/output.txt.
 
 Mention at least two of the facts from the research in your summary.
 
-End with no transition tag.
+Then respond with:
+<result>Summary written to sandbox/output.txt</result>
 ```
 
 Note: The `{{result}}` placeholder is replaced with the content from the
@@ -182,16 +183,28 @@ child's `<result>` tag. This is how the parent receives the child's return value
 You are a task dispatcher. Read sandbox/input.txt which contains a list of
 items (one per line).
 
-For EACH item in the list, spawn an independent worker by outputting a fork
-tag with the item as an attribute. For example, if the items are "mountains",
-"rivers", "clouds", output:
+If the list is empty, write "Dispatched 0 workers" to sandbox/dispatch-log.txt
+and respond with:
+<goto>DONE.md</goto>
 
-<fork item="mountains">WORKER.md</fork>
-<fork item="rivers">WORKER.md</fork>
-<fork item="clouds">WORKER.md</fork>
+Otherwise, respond with:
+<goto>DISPATCH-ANOTHER.md</goto>
+```
 
-After listing all fork tags, write "Dispatched N workers" to
-sandbox/dispatch-log.txt (where N is the count) and end with no further text.
+`workflows/test-spawn/DISPATCH-ANOTHER.md`:
+```markdown
+You are dispatching workers one at a time.
+
+From the current conversation context, keep track of which items from
+sandbox/input.txt have already had workers spawned.
+
+If all items already have workers, write "Dispatched N workers" to
+sandbox/dispatch-log.txt (where N is the total count) and respond with:
+<goto>DONE.md</goto>
+
+Otherwise, choose ONE remaining item that does not yet have a worker and spawn
+exactly one worker by responding with:
+<fork next="DISPATCH-ANOTHER.md" item="[the item]">WORKER.md</fork>
 ```
 
 Note: Each `item="..."` attribute becomes metadata in the spawned workflow's
@@ -205,7 +218,16 @@ Write a haiku about this item.
 
 Write your haiku to sandbox/worker-{{item}}.txt.
 
-End with no transition tag.
+Then respond with:
+<result>Haiku written for {{item}}</result>
+```
+
+`workflows/test-spawn/DONE.md`:
+```markdown
+All workers have been dispatched.
+
+Respond with:
+<result>Dispatch complete</result>
 ```
 
 Note: The orchestrator performs template substitution before sending the prompt
@@ -307,7 +329,8 @@ Now answer these questions by appending to sandbox/output.txt:
 
 Be honest - if you don't know the secret word, say "I don't know".
 
-End with no transition tag.
+Then respond with:
+<result>Reset test complete</result>
 ```
 
 **Test procedure:**

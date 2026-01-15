@@ -136,19 +136,17 @@ log a warning when this occurs.
 - **Session behavior**: Start the callee (typically by branching context from the
   caller so the callee can use relevant context without polluting the caller).
 
-### `<function return="NEXT.md" ...>EVAL.md</function>`
+### `<function return="NEXT.md">EVAL.md</function>`
 
 - **Meaning**: Run a stateless/pure evaluation task that returns to the caller.
 - **Required attribute**: `return="NEXT.md"`
-- **Optional attributes**: `model="..."` (e.g. `haiku`)
 - **Return stack**: Push a frame for the caller (resume session + `NEXT.md`).
-- **Session behavior**: Run in fresh context (no session history) unless a future
-  implementation explicitly chooses otherwise.
+- **Session behavior**: Run in fresh context (no session history).
 
 ### `<fork next="NEXT.md" ...>WORKER.md</fork>`
 
-- **Meaning**: Spawn an independent workflow ("process-like") while the current
-  workflow continues.
+- **Meaning**: Spawn an independent agent ("process-like") while the current
+  agent continues.
 - **Required attribute**: `next="NEXT.md"` (the state the parent continues at)
 - **Return stack**:
   - **Worker**: starts with an empty return stack.

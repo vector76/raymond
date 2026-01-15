@@ -65,9 +65,8 @@ This keeps workflow definitions in markdown, not Python code.
 **Tag types:**
 - `<goto>FILE.md</goto>` - continue in same context
 - `<reset>FILE.md</reset>` - discard context, start fresh, continue workflow
-- `<function return="NEXT.md" model="haiku">EVAL.md</function>` - stateless evaluation with return (model optional)
+- `<function return="NEXT.md">EVAL.md</function>` - stateless evaluation with return
 - `<call return="NEXT.md">CHILD.md</call>` - isolated subtask with return
-- `<function return="NEXT.md" model="haiku">EVAL.md</function>` - stateless evaluation with return
 - `<fork next="NEXT.md" item="data">WORKER.md</fork>` - independent spawn (parent continues at `next`)
 - `<result>...</result>` - return/terminate
 
@@ -129,7 +128,7 @@ sees a function's internal variables, only the return value.
 
 **Important naming note:** This section is about Claude Code's `--fork` flag
 (branching conversation history). It is unrelated to Raymond's `<fork>...</fork>`
-transition tag, which represents spawning an independent workflow (Unix fork()
+transition tag, which represents spawning an independent agent (Unix fork()
 analogy).
 
 ### When to Fork vs. Continue
@@ -212,7 +211,7 @@ transition to; the orchestrator decides *how* to invoke it.
 The transition type is determined by the tag itself:
 - `<goto>` - resume in same context
 - `<reset>` - discard context, start fresh, continue workflow
-- `<function>` - stateless evaluation (supports `model` attribute)
+- `<function>` - stateless evaluation with return (requires `return` attribute)
 - `<call>` - isolated subtask with return (requires `return` attribute)
 - `<fork>` - independent spawn (attributes become template variables)
 
@@ -248,7 +247,7 @@ caller's scope.
 **Implementation:**
 ```python
 # Invoke with no session context
-result = await wrap_claude_code(prompt, model="haiku")
+result = await wrap_claude_code(prompt)
 ```
 
 **When to use:**
@@ -545,7 +544,7 @@ async def run_orchestrator():
             wf = pending.pop(task)
             result = task.result()
             # Process this completion immediately
-            # Maybe spawn new workflows, update state file, etc.
+            # Maybe fork new agents, update state file, etc.
             if next_state := get_next_state(result):
                 new_task = asyncio.create_task(step_workflow(wf))
                 pending[new_task] = wf
@@ -564,12 +563,12 @@ Each workflow has its own state file:
 This keeps the architecture simple: one Python process, multiple async Claude
 Code invocations, state persisted to disk for crash recovery.
 
-## Independent Session Spawning
+## Fork: Spawning Independent Agents
 
-Beyond the call-and-return pattern (Pattern 2), Raymond supports spawning fully
-independent workflows that run in parallel with the original. This is what the
-`<fork>...</fork>` transition tag represents (Unix fork() analogy), and it is
-distinct from Claude Code's `--fork` flag.
+Beyond the call-and-return pattern (Pattern 2), Raymond supports spawning
+independent agents that run in parallel. This is what the `<fork>...</fork>`
+transition tag represents (Unix fork() analogy), and it is distinct from Claude
+Code's `--fork` flag (which branches conversation history).
 
 ### Unix fork() Analogy
 
@@ -578,84 +577,81 @@ In Unix, `fork()` creates a child process that runs independently:
 - Each has its own execution path
 - They don't wait for each other (unless explicitly synchronized)
 
-Raymond can achieve similar behavior:
+Raymond achieves similar behavior with agents:
 
 ```
-Workflow A (main loop)              Workflow B (spawned)
+Agent A (dispatcher)                Agent B (spawned)
 ┌─────────────────────┐            ┌─────────────────────┐
 │ Check for issues    │            │                     │
-│ Found issue 195     │──spawn──→  │ Work on issue 195   │
+│ Found issue 195     │──fork───→  │ Work on issue 195   │
 │ Continue checking   │            │ Plan, implement...  │
-│ Found issue 196     │──spawn──→  │ Commit, close       │
+│ Found issue 196     │──fork───→  │ Commit, close       │
 │ Continue checking   │            └─────────────────────┘
 │ ...                 │            ┌─────────────────────┐
-└─────────────────────┘            │ Work on issue 196   │
+└─────────────────────┘            │ Agent C (spawned)   │
+                                   │ Work on issue 196   │
                                    │ ...                 │
                                    └─────────────────────┘
 ```
 
+All agents exist within the same orchestrator instance and state file.
+
 ### Contrast with Pattern 2 (Call with Return)
 
-| Aspect | Pattern 2 (Call) | Independent Spawn (Fork) |
-|--------|------------------|--------------------------|
+| Aspect | Pattern 2 (Call) | Fork |
+|--------|------------------|------|
 | Parent waits? | Yes, for result | No, continues immediately |
 | Result returns? | Yes, via resume | No, independent completion |
-| Lifecycle | Tied to parent | Fully independent |
+| Lifecycle | Tied to caller's stack | Fully independent |
 | Use case | Subtasks | Parallel workstreams |
 
 ### Implementation
 
-Spawning creates a new state file and (optionally) starts a new orchestrator:
+Fork adds a new agent to the same state file:
 
 ```python
-# Parent workflow spawns a child
-child_state = {
-    "workflow_id": f"issue-{issue_num}-{uuid}",
-    "current_state": "START-ISSUE.md",
-    "session_id": None,  # Fresh start
-    "metadata": {"issue": issue_num}
+# On <fork next="NEXT.md" item="foo">WORKER.md</fork>
+new_agent = {
+    "id": generate_agent_id(),
+    "current_state": "WORKER.md",
+    "session_id": None,  # Fresh session
+    "stack": [],         # Empty return stack
+    "metadata": {"item": "foo"}
 }
-write_state_file(f".raymond/workflows/{child_state['workflow_id']}.json", child_state)
+state["agents"].append(new_agent)
 
-# Parent continues immediately without waiting
+# Parent agent continues at NEXT.md (like goto)
+parent_agent["current_state"] = "NEXT.md"
 ```
 
-The spawned workflow:
-- Has its own state file
-- Runs independently (same or different orchestrator process)
-- Completes on its own timeline
-- Can spawn further workflows if needed
+The spawned agent:
+- Is added to the `agents` array in the same state file
+- Managed by the same orchestrator instance
+- Runs concurrently via `asyncio.wait()`
+- Terminates when it emits `<result>` with an empty stack
 
 ### Use Cases
 
 **Timed polling loop:**
 ```
 1. [Loop] Check issue tracker every 5 minutes
-2. [Spawn] For each new issue, spawn independent workflow
-3. [Continue] Loop continues checking, doesn't wait
+2. [Fork] For each new issue, fork an agent to handle it
+3. [Continue] Dispatcher agent continues checking
 ```
 
 **Parallel batch processing:**
 ```
 1. [Start] Given list of 10 files to refactor
-2. [Spawn] Spawn independent workflow for each file
-3. [Monitor] Optional: Track completion via state files
-```
-
-**Event-driven workflows:**
-```
-1. [Watch] Monitor for webhook events
-2. [Spawn] On PR created, spawn review workflow
-3. [Spawn] On issue labeled "urgent", spawn priority workflow
+2. [Fork] Fork an agent for each file
+3. [Complete] Each agent terminates independently when done
 ```
 
 ### Coordination (Optional)
 
-Spawned workflows are independent by default, but can coordinate if needed:
-- **Shared state**: Write to a common JSON file or database
+Forked agents are independent by default, but can coordinate if needed:
+- **Shared files**: Write to common files in the workspace
 - **File locks**: Prevent conflicts on shared resources
 - **Completion markers**: Write a `.done` file when finished
-- **Aggregation workflow**: A separate workflow that waits for others
 
 ## Summary
 

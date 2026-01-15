@@ -52,7 +52,7 @@ must not contain `/` or `\` anywhere.
 
 The `<call>` tag requires a `return` attribute specifying which state to
 resume at when the child completes. The `<fork>` tag accepts arbitrary
-attributes that become metadata for the spawned workflow.
+attributes that become metadata for the spawned agent.
 
 **Rationale:** Distinct tag names are self-documenting. `<goto>` clearly
 indicates same-context continuation. `<reset>` indicates intentional context
@@ -82,7 +82,7 @@ in the first place through intentional `<reset>` at phase boundaries.
 
 **Naming clarification:** Claude Code has a `--fork` CLI flag whose name is
 unfortunate in this context. In Raymond docs:
-- The `<fork>...</fork>` **tag** refers to spawning an independent workflow
+- The `<fork>...</fork>` **tag** refers to spawning an independent agent
   (process-like, fork() syscall analogy).
 - Claude Code `--fork` (flag) refers to branching a conversation history and is
   an implementation detail unrelated to the `<fork>` tag's meaning.
@@ -91,7 +91,7 @@ unfortunate in this context. In Raymond docs:
 
 **Assumption:** Use the default Claude Code model (currently Sonnet) unless
 explicitly specified. The `<function>` tag supports an optional `model`
-attribute: `<function return="NEXT.md" model="haiku">EVAL.md</function>`
+attribute: `<function return="NEXT.md">EVAL.md</function>`
 
 **Rationale:** Let Claude Code manage model selection by default. Override only
 when cost/speed tradeoffs matter (evaluators). The `model` attribute on

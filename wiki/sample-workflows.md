@@ -170,11 +170,11 @@ child's `<result>` tag. This is how the parent receives the child's return value
 
 ---
 
-## Test 4: Independent Spawn
+## Test 4: Fork (Independent Agents)
 
-**Purpose:** Test spawning independent workflows that run in parallel.
+**Purpose:** Test spawning independent agents that run in parallel.
 
-**Workflow:** A dispatcher that spawns separate workers for multiple items.
+**Workflow:** A dispatcher that forks separate worker agents for multiple items.
 
 **Files:**
 
@@ -207,8 +207,8 @@ exactly one worker by responding with:
 <fork next="DISPATCH-ANOTHER.md" item="[the item]">WORKER.md</fork>
 ```
 
-Note: Each `item="..."` attribute becomes metadata in the spawned workflow's
-state file, accessible to WORKER.md.
+Note: Each `item="..."` attribute becomes metadata for the spawned agent,
+accessible to WORKER.md via template substitution.
 
 `workflows/test-spawn/WORKER.md`:
 ```markdown
@@ -243,12 +243,12 @@ metadata through Claude Code's session state.
    clouds
    ```
 2. Start workflow at DISPATCH.md
-3. Verify three independent WORKER workflows are spawned
+3. Verify three independent WORKER agents are spawned (all in same state file)
 4. Verify each worker creates its own output file with a haiku
 5. Verify dispatch-log.txt says "Dispatched 3 workers"
-6. Verify all workflows complete independently
+6. Verify all agents complete independently
 
-**Success criteria:** Multiple independent workflows run concurrently, each
+**Success criteria:** Multiple independent agents run concurrently, each
 produces its own output.
 
 ---
@@ -363,7 +363,7 @@ python -m raymond test-goto
 # Test call (child workflow with return)
 python -m raymond test-call
 
-# Test spawn (independent workflows)
+# Test fork (independent agents)
 python -m raymond test-spawn
 
 # Test evaluator override

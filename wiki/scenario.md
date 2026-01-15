@@ -3,6 +3,9 @@
 This project is a harness to help automate AI agent programs like Claude Code
 or Amp or similar.
 
+**Platform note:** Development can happen on Windows, but production is intended
+to run on Linux (typically inside a Linux container for containment).
+
 Claude Code is good at executing toward a single goal, but it is not built to
 chain multiple tasks or run continuous loops without human interaction.
 

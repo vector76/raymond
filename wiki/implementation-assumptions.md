@@ -8,24 +8,34 @@ reasonable choices existed. These can be revisited if they prove problematic.
 **Assumption:** State files live in `.raymond/workflows/` relative to the
 project root.
 
-**Rationale:** Dot-prefix keeps it hidden from casual directory listings.
-Dedicated `workflows/` subdirectory keeps state files separate from any future
-config files.
+**Rationale:** Dedicated `.raymond/` directory keeps runtime artifacts separate
+from version-controlled workflow prompt files and any future configuration.
+The dot-prefix is a convention; it is not relied upon for "hiding" files.
 
 **Alternative considered:** XDG-style config directories, or alongside prompt
 files.
 
 ## Prompt File Location
 
-**Assumption:** Prompt files live in `workflows/` (without dot prefix) relative
-to project root.
+**Assumption:** Prompt files are typically stored under `workflows/` (without
+dot prefix) relative to project root, but this is a convention, not a hard
+requirement.
 
 **Rationale:** These are user-authored content that should be version
 controlled and easily browsable. Separate from state files which are runtime
 artifacts.
 
-**Alternative considered:** Same directory as state files, or configurable
-location.
+**Directory scoping rule (important):**
+- A workflow is started from a specific prompt file path (e.g.
+  `workflows/coding/START.md`).
+- All subsequent transitions (e.g. `<goto>REVIEW.md</goto>`) are resolved
+  **only within that same directory** (here: `workflows/coding/`).
+- **Cross-directory transitions are not allowed** (for now). This prevents name
+  collisions and keeps workflow collections self-contained.
+
+This implies you can start a workflow from a prompt file located anywhere, not
+just under `workflows/`; the orchestrator simply treats the starting file's
+directory as the workflow's scope.
 
 ## Transition Tag Format
 
@@ -57,6 +67,13 @@ creates a new session, discarding the current one.
 rather than full discard - partially preserving context while reducing token
 usage. However, this is deferred; the philosophy is to avoid context overflow
 in the first place through intentional `<reset>` at phase boundaries.
+
+**Naming clarification:** Claude Code has a `--fork` CLI flag whose name is
+unfortunate in this context. In Raymond docs:
+- The `<fork>...</fork>` **tag** refers to spawning an independent workflow
+  (process-like, fork() syscall analogy).
+- Claude Code `--fork` (flag) refers to branching a conversation history and is
+  an implementation detail unrelated to the `<fork>` tag's meaning.
 
 ## Default Model
 
@@ -120,6 +137,16 @@ than trying to summarize arbitrary output.
 **Alternative considered:** Last paragraph, AI-generated summary, or structured
 JSON output.
 
+**Required result behavior (robustness):**
+- If the orchestrator detects **no transition tag**, it must also require a
+  `<result>...</result>` tag.
+- If neither a transition tag nor a `<result>` tag is present, the orchestrator
+  can re-prompt the agent with a short "reminder" prompt instructing it to
+  respond with one of the allowed tags.
+
+This makes it possible to distinguish "legal termination" (no transition + a
+result) from "model forgot the protocol" (no transition + no result).
+
 ## Error Handling Strategy
 
 **Assumption:** On Claude Code failure:
@@ -166,6 +193,11 @@ between runs). Allows the same prompt to be used with different limits.
 
 **Alternative considered:** Limits in prompt file frontmatter, or as attributes
 on transition tags.
+
+## State File Schema
+
+**Assumption:** The state file schema shown in documentation is illustrative
+and may evolve as implementation progresses.
 
 ## Logging Format
 

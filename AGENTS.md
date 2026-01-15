@@ -32,8 +32,11 @@ The `wiki/` folder contains topic-oriented markdown documents organized in a **f
 
 **Guidelines:**
 - ✅ Focus on architecture, design patterns, and implementation choices
-- ✅ Keep documents timeless (no progress reports or implementation plans)
+- ✅ Prefer timeless documents; it's also OK to include design/implementation plans when they are useful context for the project
 - ✅ Use descriptive filenames (e.g., `application-purpose.md`, `data-model.md`)
-- ❌ Do NOT include ephemeral content (such as planning docs) in thie `wiki/` folder
 - ❌ Do NOT create subfolders (keep structure flat)
 
+## AGENTS.md vs CLAUDE.md
+
+- **Source of truth**: `AGENTS.md` is the authoritative copy.
+- **Synchronization**: `CLAUDE.md` is intended to be a copy for tooling compatibility. If they ever differ, update `CLAUDE.md` to match `AGENTS.md`.

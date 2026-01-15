@@ -25,10 +25,8 @@ raymond/
 │
 ├── .gitignore
 ├── requirements.txt        # Production dependencies
-├── requirements-dev.txt    # Development dependencies (pytest, etc.)
 ├── AGENTS.md              # Agent instructions
-├── CLAUDE.md              # (symlink to AGENTS.md)
-└── README.md
+└── CLAUDE.md              # Copy of AGENTS.md (keep synchronized)
 ```
 
 ## Key Principles
@@ -46,9 +44,14 @@ raymond/
 
 ### Package Structure
 - `src/` is a Python package (with `__init__.py`)
-- Use `conftest.py` to add `src/` to the import path for tests
-- Within `src/`, modules use **relative imports** (e.g., `from .cc_wrap import ...`)
-- This ensures IDE navigation (ctrl-click) works properly without runtime path manipulation
+- **Current test setup**: `tests/conftest.py` adds `src/` to the import path so tests can import modules like `cc_wrap` directly.
+- **Runtime entrypoints**: root `main.py` runs `src.main` as a module (via `runpy`) so runtime imports work without `sys.path` manipulation.
+- Within `src/`, modules use **relative imports** (e.g., `from .cc_wrap import ...`) to behave well when run as a package.
+
+**Note on IDE support:** The current `sys.path` approach in tests is pragmatic
+and matches the repository today, but some IDEs may provide better intellisense
+with an installable package / editable install. Treat this as a future
+refinement rather than a hard requirement.
 
 ## Testing
 
@@ -120,3 +123,9 @@ pytest                          # Run all tests
 pytest tests/test_cc_wrap.py    # Run specific test file
 pytest -v                       # Verbose output
 ```
+
+## Platform Support
+
+- **Production**: Linux only (typically in a Linux container for containment).
+- **Development**: Windows is supported for development/testing, but some docs
+  include Linux-specific commands.

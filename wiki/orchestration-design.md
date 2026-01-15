@@ -40,7 +40,12 @@ The Python orchestrator:
 1. Parses transition tags (`<goto>`, `<reset>`, `<call>`, `<fork>`, `<function>`) from output
 2. Reads the referenced file to get the next prompt
 3. Launches the next Claude Code session with that prompt
-4. Remains agnostic to workflow logic - it just follows the declared transitions
+4. Acts as an interpreter for a small "workflow language" defined in markdown: it follows the declared transitions and enforces the rules of what transitions are allowed
+
+**Workflow directory scoping (important):**
+- A workflow is started from a specific prompt file path (e.g. `workflows/coding/START.md`).
+- Transitions that reference a filename (e.g. `<goto>REVIEW.md</goto>`) are resolved **only within the starting file's directory**.
+- Cross-directory transitions are not allowed (for now). This keeps workflow collections self-contained and prevents name collisions.
 
 This keeps workflow definitions in markdown, not Python code.
 
@@ -75,14 +80,15 @@ Traditional programs use a call stack for function calls:
 - Returning pops the frame, discarding locals, passing only the return value
 - The caller resumes with its original context plus the result
 
-Raymond achieves similar behavior using Claude Code's `--fork` and `--resume`:
+Raymond achieves similar behavior using Claude Code session mechanisms (e.g.
+`--resume`) and, where useful, Claude Code's history-branching flag (`--fork`).
 
-### Fork as Function Call
+### Claude Code `--fork` as History Branching (Implementation Detail)
 
 ```
 main context: "Create plan for issue 195"
     │
-    ├── fork → child context: "Refine the plan iteratively"
+    ├── (Claude Code --fork) → child context: "Refine the plan iteratively"
     │          (may iterate multiple times, accumulating noise)
     │          returns: "Plan finalized in plan-195.md"
     │
@@ -105,6 +111,11 @@ When a called child task completes:
 
 The parent context never sees the messy iterations - just like a caller never
 sees a function's internal variables, only the return value.
+
+**Important naming note:** This section is about Claude Code's `--fork` flag
+(branching conversation history). It is unrelated to Raymond's `<fork>...</fork>`
+transition tag, which represents spawning an independent workflow (Unix fork()
+analogy).
 
 ### When to Fork vs. Continue
 
@@ -192,6 +203,11 @@ The transition type is determined by the tag itself:
 Each tag name is self-documenting: `<goto>` continues, `<reset>` clears and
 restarts, `<call>` invokes a subroutine, `<function>` evaluates statelessly,
 `<fork>` spawns independently.
+
+**Initial protocol scope:** Multi-tag semantics (multiple transition tags in a
+single response) are a future feature. Initially, require either:
+- exactly one transition tag, or
+- no transition tag + exactly one `<result>...</result>` tag.
 
 ### Pattern 1: Pure Function (No Context)
 
@@ -440,7 +456,8 @@ Without persistent state, a crash mid-workflow creates problems:
 
 ### The Solution: State File
 
-Each active workflow writes its state to a lightweight JSON file:
+Each active workflow writes its state to a lightweight JSON file. The schema
+shown here is illustrative and may evolve during implementation:
 
 ```json
 {
@@ -476,12 +493,11 @@ The orchestrator operates as a simple loop:
 6. Repeat until terminal state
 ```
 
-**Natural resistance to "stuck" states:** Claude Code always terminates - it
-either completes its task, hits an error, or reaches a stopping point. There's
-no risk of it waiting indefinitely for human input (in headless mode). This
-means the orchestrator doesn't need watchdog timers or timeout logic to detect
-stuck processes. Completion of a Claude Code invocation is the natural signal
-to take the next action.
+**On "stuck" states:** In headless mode, Claude Code should not wait for human
+input. However, processes can still hang (e.g., slow network, tool deadlock).
+The orchestrator should apply timeouts and retry logic. In streaming mode,
+timeouts can be based on "no output seen for N seconds" rather than a single
+hard limit for an entire long run.
 
 If the orchestrator crashes at any point:
 - Steps 1-2: No changes made, restart picks up where it left off
@@ -535,8 +551,10 @@ Code invocations, state persisted to disk for crash recovery.
 
 ## Independent Session Spawning
 
-Beyond the call-and-return pattern (Pattern 2), Raymond supports spawning
-fully independent workflows that run in parallel with the original.
+Beyond the call-and-return pattern (Pattern 2), Raymond supports spawning fully
+independent workflows that run in parallel with the original. This is what the
+`<fork>...</fork>` transition tag represents (Unix fork() analogy), and it is
+distinct from Claude Code's `--fork` flag.
 
 ### Unix fork() Analogy
 

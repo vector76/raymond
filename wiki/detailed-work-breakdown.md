@@ -9,44 +9,44 @@ support TDD. See `implementation-plan.md` for context on each phase and step.
 
 ### Step 1.1: Transition Tag Parsing
 
-- [ ] **1.1.1** Define `Transition` data structure (tag name, target filename, attributes dict)
-- [ ] **1.1.2** Write tests: parse `<goto>FILE.md</goto>` → Transition
-- [ ] **1.1.3** Write tests: parse `<reset>FILE.md</reset>` → Transition
-- [ ] **1.1.4** Write tests: parse `<result>payload</result>` → Transition with payload
-- [ ] **1.1.5** Write tests: parse `<function return="X.md">Y.md</function>` → Transition with attributes
-- [ ] **1.1.6** Write tests: parse `<call return="X.md">Y.md</call>` → Transition with attributes
-- [ ] **1.1.7** Write tests: parse `<fork next="X.md" item="foo">Y.md</fork>` → Transition with attributes
-- [ ] **1.1.8** Write tests: tag anywhere in text (not just last line)
-- [ ] **1.1.9** Write tests: zero tags → empty list
-- [ ] **1.1.10** Write tests: multiple tags → list with multiple items
-- [ ] **1.1.11** Write tests: path safety — reject `../FILE.md`, `foo/bar.md`, `C:\FILE.md`
-- [ ] **1.1.12** Implement `parse_transitions()` to pass all tests
-- [ ] **1.1.13** Add helper: `validate_single_transition()` that raises if count ≠ 1
+- [x] **1.1.1** Define `Transition` data structure (tag name, target filename, attributes dict)
+- [x] **1.1.2** Write tests: parse `<goto>FILE.md</goto>` → Transition
+- [x] **1.1.3** Write tests: parse `<reset>FILE.md</reset>` → Transition
+- [x] **1.1.4** Write tests: parse `<result>payload</result>` → Transition with payload
+- [x] **1.1.5** Write tests: parse `<function return="X.md">Y.md</function>` → Transition with attributes
+- [x] **1.1.6** Write tests: parse `<call return="X.md">Y.md</call>` → Transition with attributes
+- [x] **1.1.7** Write tests: parse `<fork next="X.md" item="foo">Y.md</fork>` → Transition with attributes
+- [x] **1.1.8** Write tests: tag anywhere in text (not just last line)
+- [x] **1.1.9** Write tests: zero tags → empty list
+- [x] **1.1.10** Write tests: multiple tags → list with multiple items
+- [x] **1.1.11** Write tests: path safety — reject `../FILE.md`, `foo/bar.md`, `C:\FILE.md`
+- [x] **1.1.12** Implement `parse_transitions()` to pass all tests
+- [x] **1.1.13** Add helper: `validate_single_transition()` that raises if count ≠ 1
 
 ### Step 1.2: State File Management
 
-- [ ] **1.2.1** Define state file location convention (e.g., `.raymond/state/{workflow_id}.json`)
-- [ ] **1.2.2** Write tests: `write_state()` creates file with correct JSON structure
-- [ ] **1.2.3** Write tests: `read_state()` returns dict matching written state
-- [ ] **1.2.4** Write tests: `read_state()` raises for missing file
-- [ ] **1.2.5** Write tests: `list_workflows()` returns IDs of existing state files
-- [ ] **1.2.6** Implement `read_state()`, `write_state()`, `list_workflows()`
-- [ ] **1.2.7** Add helper: `create_initial_state()` for starting a new workflow
+- [x] **1.2.1** Define state file location convention (e.g., `.raymond/state/{workflow_id}.json`)
+- [x] **1.2.2** Write tests: `write_state()` creates file with correct JSON structure
+- [x] **1.2.3** Write tests: `read_state()` returns dict matching written state
+- [x] **1.2.4** Write tests: `read_state()` raises for missing file
+- [x] **1.2.5** Write tests: `list_workflows()` returns IDs of existing state files
+- [x] **1.2.6** Implement `read_state()`, `write_state()`, `list_workflows()`
+- [x] **1.2.7** Add helper: `create_initial_state()` for starting a new workflow
 
 ### Step 1.3: Prompt File Loading
 
-- [ ] **1.3.1** Write tests: `load_prompt(scope_dir, filename)` returns file contents
-- [ ] **1.3.2** Write tests: raises for missing file
-- [ ] **1.3.3** Write tests: raises if filename contains path separators (defense in depth)
-- [ ] **1.3.4** Implement `load_prompt()`
+- [x] **1.3.1** Write tests: `load_prompt(scope_dir, filename)` returns file contents
+- [x] **1.3.2** Write tests: raises for missing file
+- [x] **1.3.3** Write tests: raises if filename contains path separators (defense in depth)
+- [x] **1.3.4** Implement `load_prompt()`
 
 ### Step 1.4: Template Substitution
 
-- [ ] **1.4.1** Write tests: `render_prompt()` replaces `{{key}}` with value
-- [ ] **1.4.2** Write tests: multiple placeholders in same template
-- [ ] **1.4.3** Write tests: missing key in variables → leave placeholder or raise (decide policy)
-- [ ] **1.4.4** Write tests: `{{result}}` placeholder specifically (common case)
-- [ ] **1.4.5** Implement `render_prompt()`
+- [x] **1.4.1** Write tests: `render_prompt()` replaces `{{key}}` with value
+- [x] **1.4.2** Write tests: multiple placeholders in same template
+- [x] **1.4.3** Write tests: missing key in variables → leave placeholder or raise (decide policy)
+- [x] **1.4.4** Write tests: `{{result}}` placeholder specifically (common case)
+- [x] **1.4.5** Implement `render_prompt()`
 
 ---
 

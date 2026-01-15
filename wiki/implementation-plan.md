@@ -88,7 +88,7 @@ is simply one with a single entry in `agents`.
 Add a function to load prompt files from a workflows directory.
 
 ```python
-def load_prompt(filename: str) -> str
+def load_prompt(scope_dir: str, filename: str) -> str
 ```
 
 **Deliverable:** Extend `src/state.py` or create `src/prompts.py`.

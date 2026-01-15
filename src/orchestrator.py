@@ -1,9 +1,12 @@
 import asyncio
+import logging
 from typing import Dict, Any, List, Optional
 from cc_wrap import wrap_claude_code
 from state import read_state, write_state
 from prompts import load_prompt, render_prompt
 from parsing import parse_transitions, validate_single_transition, Transition
+
+logger = logging.getLogger(__name__)
 
 
 async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
@@ -94,8 +97,16 @@ async def step_agent(
     # Load prompt for current state
     prompt_template = load_prompt(scope_dir, current_state)
     
-    # Render template with any variables (for now, empty)
-    prompt = render_prompt(prompt_template, {})
+    # Prepare template variables
+    variables = {}
+    
+    # If there's a pending result from a function/call return, include it
+    pending_result = agent.get("pending_result")
+    if pending_result is not None:
+        variables["result"] = pending_result
+    
+    # Render template with variables
+    prompt = render_prompt(prompt_template, variables)
     
     # Invoke Claude Code
     results, new_session_id = await wrap_claude_code(prompt, session_id=session_id)
@@ -118,9 +129,16 @@ async def step_agent(
     
     transition = transitions[0]
     
+    # Create a copy of agent for handler (to avoid mutating original)
+    agent_copy = agent.copy()
+    
     # Update session_id if returned
     if new_session_id:
-        agent["session_id"] = new_session_id
+        agent_copy["session_id"] = new_session_id
+    
+    # Clear pending_result after using it (it was only for this step's template)
+    if "pending_result" in agent_copy:
+        del agent_copy["pending_result"]
     
     # Dispatch to appropriate handler
     handler_map = {
@@ -136,8 +154,8 @@ async def step_agent(
     if handler is None:
         raise ValueError(f"Unknown transition tag: {transition.tag}")
     
-    # Call handler with agent, transition, and state
-    updated_agent = await handler(agent, transition, state, state_dir)
+    # Call handler with agent_copy, transition, and state
+    updated_agent = await handler(agent_copy, transition, state, state_dir)
     
     return updated_agent
 
@@ -181,9 +199,35 @@ async def handle_reset_transition(
 ) -> Dict[str, Any]:
     """Handle <reset> transition tag.
     
-    Raises NotImplementedError until Step 2.3.5.
+    Starts a fresh session and continues at the target state.
+    - Updates current_state to transition target
+    - Sets session_id to None (fresh start)
+    - Clears return stack (logs warning if non-empty)
+    
+    Args:
+        agent: Agent state dictionary
+        transition: Transition object with target filename
+        state: Full workflow state dictionary
+        state_dir: Optional custom state directory
+        
+    Returns:
+        Updated agent state dictionary
     """
-    raise NotImplementedError("handle_reset_transition not yet implemented")
+    # Log warning if return stack is non-empty
+    stack = agent.get("stack", [])
+    if stack:
+        logger.warning(
+            f"Agent {agent.get('id')} executing <reset> with non-empty return stack. "
+            f"Stack will be cleared, discarding {len(stack)} pending return(s)."
+        )
+    
+    # Create updated agent
+    updated_agent = agent.copy()
+    updated_agent["current_state"] = transition.target
+    updated_agent["session_id"] = None  # Fresh start
+    updated_agent["stack"] = []  # Clear return stack
+    
+    return updated_agent
 
 
 async def handle_function_transition(
@@ -194,9 +238,48 @@ async def handle_function_transition(
 ) -> Dict[str, Any]:
     """Handle <function> transition tag.
     
-    Raises NotImplementedError until Step 2.4.5.
+    Runs a stateless/pure evaluation task that returns to the caller.
+    - Pushes frame to return stack (caller session + return state)
+    - Sets session_id to None (fresh context)
+    - Updates current_state to function target
+    
+    Args:
+        agent: Agent state dictionary
+        transition: Transition object with target filename and return attribute
+        state: Full workflow state dictionary
+        state_dir: Optional custom state directory
+        
+    Returns:
+        Updated agent state dictionary
     """
-    raise NotImplementedError("handle_function_transition not yet implemented")
+    # Validate required return attribute
+    if "return" not in transition.attributes:
+        raise ValueError(
+            f"<function> tag requires 'return' attribute. "
+            f"Example: <function return=\"NEXT.md\">EVAL.md</function>"
+        )
+    
+    return_state = transition.attributes["return"]
+    caller_session_id = agent.get("session_id")
+    
+    # Create updated agent
+    updated_agent = agent.copy()
+    
+    # Push frame to return stack
+    stack = updated_agent.get("stack", [])
+    frame = {
+        "session": caller_session_id,
+        "state": return_state
+    }
+    updated_agent["stack"] = stack + [frame]  # Push to end (LIFO)
+    
+    # Set session_id to None (fresh context for stateless function)
+    updated_agent["session_id"] = None
+    
+    # Update current_state to function target
+    updated_agent["current_state"] = transition.target
+    
+    return updated_agent
 
 
 async def handle_call_transition(
@@ -234,7 +317,8 @@ async def handle_result_transition(
     """Handle <result> transition tag.
     
     If return stack is empty: agent terminates (returns None).
-    If return stack is non-empty: pops frame and resumes caller (Step 2.4.10).
+    If return stack is non-empty: pops frame, resumes caller session, and transitions
+    to return state with result payload available as {{result}} variable.
     
     Args:
         agent: Agent state dictionary
@@ -251,8 +335,25 @@ async def handle_result_transition(
     if not stack:
         return None
     
-    # Non-empty stack case: will be implemented in Step 2.4.10
-    # For now, raise NotImplementedError
-    raise NotImplementedError(
-        "handle_result_transition with non-empty stack not yet implemented (Step 2.4.10)"
-    )
+    # Non-empty stack case: pop frame and resume caller
+    # Pop the most recent frame (LIFO - last in, first out)
+    frame = stack[-1]
+    remaining_stack = stack[:-1]
+    
+    # Create updated agent
+    updated_agent = agent.copy()
+    
+    # Restore caller's session_id
+    updated_agent["session_id"] = frame["session"]
+    
+    # Set current_state to return state from frame
+    updated_agent["current_state"] = frame["state"]
+    
+    # Update stack (remove popped frame)
+    updated_agent["stack"] = remaining_stack
+    
+    # Store result payload for template substitution in next step
+    # step_agent will use this when rendering the return state prompt
+    updated_agent["pending_result"] = transition.payload
+    
+    return updated_agent

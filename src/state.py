@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Any, Union
+from typing import Dict, List, Any, Optional
 
 
 class StateFileError(Exception):
@@ -10,7 +10,7 @@ class StateFileError(Exception):
     pass
 
 
-def get_state_dir(state_dir: str = None) -> Path:
+def get_state_dir(state_dir: Optional[str] = None) -> Path:
     """Get the state directory path.
     
     Args:
@@ -25,7 +25,7 @@ def get_state_dir(state_dir: str = None) -> Path:
     return Path(state_dir)
 
 
-def read_state(workflow_id: str, state_dir: str = None) -> Dict[str, Any]:
+def read_state(workflow_id: str, state_dir: Optional[str] = None) -> Dict[str, Any]:
     """Read workflow state from JSON file.
     
     Args:
@@ -53,7 +53,7 @@ def read_state(workflow_id: str, state_dir: str = None) -> Dict[str, Any]:
         ) from e
 
 
-def write_state(workflow_id: str, state: Dict[str, Any], state_dir: str = None) -> None:
+def write_state(workflow_id: str, state: Dict[str, Any], state_dir: Optional[str] = None) -> None:
     """Write workflow state to JSON file atomically.
     
     Uses atomic write pattern: write to temp file, then rename. This prevents
@@ -87,7 +87,7 @@ def write_state(workflow_id: str, state: Dict[str, Any], state_dir: str = None) 
         raise
 
 
-def list_workflows(state_dir: str = None) -> List[str]:
+def list_workflows(state_dir: Optional[str] = None) -> List[str]:
     """List all workflow IDs from existing state files.
     
     Args:
@@ -136,7 +136,7 @@ def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str) -
     }
 
 
-def recover_workflows(state_dir: str = None) -> List[str]:
+def recover_workflows(state_dir: Optional[str] = None) -> List[str]:
     """Find all in-progress workflows (workflows with at least one active agent).
     
     A workflow is considered "in-progress" if it has at least one agent
@@ -159,14 +159,15 @@ def recover_workflows(state_dir: str = None) -> List[str]:
     for file_path in state_path.iterdir():
         if file_path.is_file() and file_path.suffix == ".json":
             try:
-                workflow_id = file_path.stem
-                state = read_state(workflow_id, state_dir=state_dir)
+                # Read file directly for efficiency (avoid re-constructing path in read_state)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
                 
                 # Check if workflow has active agents
                 agents = state.get("agents", [])
                 if agents:  # At least one agent means in-progress
-                    in_progress.append(workflow_id)
-            except (FileNotFoundError, StateFileError, json.JSONDecodeError):
+                    in_progress.append(file_path.stem)
+            except (json.JSONDecodeError, OSError):
                 # Skip malformed or unreadable state files
                 continue
     

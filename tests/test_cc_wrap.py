@@ -1,9 +1,7 @@
 import json
-import sys
-import asyncio
 import pytest
 
-from cc_wrap import wrap_claude_code, wrap_claude_code_stream
+from src.cc_wrap import wrap_claude_code, wrap_claude_code_stream
 
 
 # All tests in this file are integration tests that require the Claude CLI

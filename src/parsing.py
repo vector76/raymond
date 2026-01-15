@@ -1,5 +1,10 @@
 import re
-from typing import List, Dict, NamedTuple
+from typing import List, Dict, NamedTuple, FrozenSet
+
+# Recognized transition tag names
+RECOGNIZED_TAGS: FrozenSet[str] = frozenset({
+    "goto", "reset", "function", "call", "fork", "result"
+})
 
 # Pre-compiled regex patterns for better performance
 # Pattern to match transition tags with optional attributes
@@ -54,7 +59,7 @@ def parse_transitions(output: str) -> List[Transition]:
         content = match.group(3)
         
         # Only process known transition tags
-        if tag_name not in ("goto", "reset", "function", "call", "fork", "result"):
+        if tag_name not in RECOGNIZED_TAGS:
             continue
         
         # Parse attributes

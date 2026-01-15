@@ -1,5 +1,9 @@
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
+
+# Placeholder format for template variables
+PLACEHOLDER_PREFIX = "{{"
+PLACEHOLDER_SUFFIX = "}}"
 
 
 def load_prompt(scope_dir: str, filename: str) -> str:
@@ -32,12 +36,13 @@ def load_prompt(scope_dir: str, filename: str) -> str:
         return f.read()
 
 
-def render_prompt(template: str, variables: Dict[str, str]) -> str:
+def render_prompt(template: str, variables: Dict[str, Any]) -> str:
     """Replace {{key}} placeholders with values from variables dict.
     
     Args:
         template: Template string with {{key}} placeholders
-        variables: Dictionary mapping placeholder keys to values
+        variables: Dictionary mapping placeholder keys to values.
+            Values are converted to strings if not already strings.
         
     Returns:
         Template with placeholders replaced. Missing keys leave placeholders unchanged.
@@ -46,7 +51,9 @@ def render_prompt(template: str, variables: Dict[str, str]) -> str:
     
     # Replace each variable in the template
     for key, value in variables.items():
-        placeholder = f"{{{{{key}}}}}"
-        result = result.replace(placeholder, value)
+        placeholder = PLACEHOLDER_PREFIX + key + PLACEHOLDER_SUFFIX
+        # Convert value to string if needed
+        str_value = value if isinstance(value, str) else str(value)
+        result = result.replace(placeholder, str_value)
     
     return result

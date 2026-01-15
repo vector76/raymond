@@ -3,27 +3,54 @@
 import argparse
 import asyncio
 import logging
+import re
 import sys
 from pathlib import Path
+from typing import Optional
 
-try:
-    from .orchestrator import run_all_agents
-    from .state import (
-        create_initial_state,
-        write_state,
-        read_state,
-        list_workflows,
-        recover_workflows,
-    )
-except ImportError:
-    from orchestrator import run_all_agents
-    from state import (
-        create_initial_state,
-        write_state,
-        read_state,
-        list_workflows,
-        recover_workflows,
-    )
+from .orchestrator import run_all_agents
+from .state import (
+    create_initial_state,
+    write_state,
+    read_state,
+    list_workflows,
+    recover_workflows,
+)
+
+
+# Pattern for valid workflow IDs: alphanumeric, hyphens, underscores only
+WORKFLOW_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def validate_workflow_id(workflow_id: str) -> Optional[str]:
+    """Validate workflow_id is safe for use in file paths.
+    
+    Args:
+        workflow_id: The workflow identifier to validate
+        
+    Returns:
+        Error message if invalid, None if valid
+    """
+    if not workflow_id:
+        return "Workflow ID cannot be empty"
+    
+    if len(workflow_id) > 255:
+        return "Workflow ID too long (max 255 characters)"
+    
+    if not WORKFLOW_ID_PATTERN.match(workflow_id):
+        return (
+            "Workflow ID contains invalid characters. "
+            "Only letters, numbers, hyphens, and underscores are allowed."
+        )
+    
+    # Prevent reserved names on Windows
+    reserved_names = {'CON', 'PRN', 'AUX', 'NUL', 
+                      'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+                      'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'}
+    if workflow_id.upper() in reserved_names:
+        return f"Workflow ID '{workflow_id}' is a reserved name"
+    
+    return None
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -42,6 +69,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     scope_dir = args.scope_dir
     initial_state = args.initial_state
     state_dir = args.state_dir
+    
+    # Validate workflow_id
+    error = validate_workflow_id(workflow_id)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     
     # Validate scope_dir exists
     if not Path(scope_dir).is_dir():
@@ -78,10 +111,15 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Run/resume a workflow."""
+    # Validate workflow_id
+    error = validate_workflow_id(args.workflow_id)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: str, verbose: bool) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
     
@@ -125,6 +163,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     """Show status of a workflow."""
     workflow_id = args.workflow_id
     state_dir = args.state_dir
+    
+    # Validate workflow_id
+    error = validate_workflow_id(workflow_id)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     
     try:
         state = read_state(workflow_id, state_dir=state_dir)

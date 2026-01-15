@@ -1,5 +1,5 @@
 import pytest
-from parsing import parse_transitions, Transition, validate_single_transition
+from src.parsing import parse_transitions, Transition, validate_single_transition
 
 
 class TestParseTransitions:

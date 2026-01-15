@@ -1,6 +1,11 @@
-"""Entry point launcher - runs src.main as a module"""
-import runpy
+"""Entry point launcher for the raymond CLI.
+
+This file provides a simple entry point that can be run with `python main.py`.
+For production use, install the package with `pip install -e .` and use the
+`raymond` command directly.
+"""
+import sys
 
 if __name__ == "__main__":
-    # Run src.main as a module - this allows proper package imports without path hacks
-    runpy.run_module("src.main", run_name="__main__")
+    from src.cli import main
+    sys.exit(main())

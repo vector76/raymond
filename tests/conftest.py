@@ -1,7 +1,7 @@
-import sys
-from pathlib import Path
+# Test configuration for pytest
+#
+# Note: Tests require the package to be installed.
+# Run `pip install -e .` from the project root before running tests.
+# This installs the package in development mode, allowing proper imports.
 
-# Add src directory to path for test imports
-# This allows tests to import from src modules without installing the package
-# Once the package is installed (pip install -e .), this is no longer needed
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+import pytest

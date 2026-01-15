@@ -1,11 +1,9 @@
 import pytest
-import json
-import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
-from orchestrator import run_all_agents
-from state import create_initial_state, write_state, read_state
-from parsing import Transition
+from unittest.mock import AsyncMock, patch
+from src.orchestrator import run_all_agents
+from src.state import create_initial_state, write_state
+from src.parsing import Transition
 
 
 class TestBasicOrchestratorLoop:
@@ -36,7 +34,7 @@ class TestBasicOrchestratorLoop:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('orchestrator.wrap_claude_code') as mock_wrap:
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             # First call returns goto, second call returns result to terminate
             mock_wrap.side_effect = [
                 (mock_output, None),
@@ -96,7 +94,7 @@ class TestBasicOrchestratorLoop:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('orchestrator.wrap_claude_code') as mock_wrap:
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             # First call returns goto, second call returns result to terminate
             mock_wrap.side_effect = [
                 (mock_output, None),
@@ -133,7 +131,7 @@ class TestBasicOrchestratorLoop:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('orchestrator.wrap_claude_code') as mock_wrap:
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             # First call returns goto, second call returns result to terminate
             mock_wrap.side_effect = [
                 (mock_output, None),
@@ -141,7 +139,7 @@ class TestBasicOrchestratorLoop:
             ]
             
             # Mock parse_transitions
-            with patch('orchestrator.parse_transitions') as mock_parse:
+            with patch('src.orchestrator.parse_transitions') as mock_parse:
                 # First call returns goto, second returns result
                 mock_parse.side_effect = [
                     [Transition("goto", "NEXT.md", {}, "")],
@@ -174,11 +172,11 @@ class TestBasicOrchestratorLoop:
         # Mock wrap_claude_code to return output with no tags
         mock_output = [{"type": "content", "text": "Some output with no tags"}]
         
-        with patch('orchestrator.wrap_claude_code') as mock_wrap:
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             mock_wrap.return_value = (mock_output, None)
             
             # Mock parse_transitions to return empty list
-            with patch('orchestrator.parse_transitions') as mock_parse:
+            with patch('src.orchestrator.parse_transitions') as mock_parse:
                 mock_parse.return_value = []
                 
                 # Should raise an exception for zero tags
@@ -206,11 +204,11 @@ class TestBasicOrchestratorLoop:
         # Mock wrap_claude_code
         mock_output = [{"type": "content", "text": "Some output"}]
         
-        with patch('orchestrator.wrap_claude_code') as mock_wrap:
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             mock_wrap.return_value = (mock_output, None)
             
             # Mock parse_transitions to return multiple tags
-            with patch('orchestrator.parse_transitions') as mock_parse:
+            with patch('src.orchestrator.parse_transitions') as mock_parse:
                 mock_parse.return_value = [
                     Transition("goto", "A.md", {}, ""),
                     Transition("goto", "B.md", {}, "")

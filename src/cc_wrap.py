@@ -1,10 +1,15 @@
 import asyncio
 import json
 import sys
-from typing import List, Dict, Any, AsyncIterator
+from typing import List, Dict, Any, AsyncIterator, Tuple, Optional
 
 
-async def wrap_claude_code(prompt: str, model: str = None, **kwargs) -> List[Dict[str, Any]]:
+async def wrap_claude_code(
+    prompt: str, 
+    model: str = None, 
+    session_id: Optional[str] = None,
+    **kwargs
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
     Wraps claude code invocation in headless mode with stream-json output.
     This is an async function that can be run concurrently with other instances.
@@ -12,10 +17,11 @@ async def wrap_claude_code(prompt: str, model: str = None, **kwargs) -> List[Dic
     Args:
         prompt: The prompt to send to claude
         model: The model to use (e.g., "haiku", "sonnet", "opus")
+        session_id: Optional session ID to resume an existing session (passes --resume flag)
         **kwargs: Additional arguments to pass to claude command
 
     Returns:
-        List of parsed JSON objects from the stream
+        Tuple of (list of parsed JSON objects from the stream, extracted session_id or None)
     """
     # Build the command
     cmd = [
@@ -27,6 +33,10 @@ async def wrap_claude_code(prompt: str, model: str = None, **kwargs) -> List[Dic
 
     if model:
         cmd.extend(["--model", model])
+
+    # Add --resume flag if session_id is provided
+    if session_id is not None:
+        cmd.extend(["--resume", session_id])
 
     cmd.append(prompt)
 
@@ -46,6 +56,7 @@ async def wrap_claude_code(prompt: str, model: str = None, **kwargs) -> List[Dic
     )
 
     results = []
+    extracted_session_id = None
 
     # Read and parse the streamed JSON output line by line
     async for line in process.stdout:
@@ -56,6 +67,16 @@ async def wrap_claude_code(prompt: str, model: str = None, **kwargs) -> List[Dic
         try:
             parsed = json.loads(line)
             results.append(parsed)
+            
+            # Extract session_id from JSON objects if present
+            # Claude Code may output session_id in various formats
+            if isinstance(parsed, dict):
+                if "session_id" in parsed:
+                    extracted_session_id = parsed["session_id"]
+                # Also check for nested session_id (e.g., in metadata)
+                elif "metadata" in parsed and isinstance(parsed["metadata"], dict):
+                    if "session_id" in parsed["metadata"]:
+                        extracted_session_id = parsed["metadata"]["session_id"]
         except json.JSONDecodeError as e:
             # If a line isn't valid JSON, log it but continue
             print(f"Warning: Failed to parse JSON line: {line}", file=sys.stderr)
@@ -73,7 +94,7 @@ async def wrap_claude_code(prompt: str, model: str = None, **kwargs) -> List[Dic
             f"Stderr: {stderr_text}"
         )
 
-    return results
+    return results, extracted_session_id
 
 
 async def wrap_claude_code_stream(prompt: str, model: str = None, **kwargs) -> AsyncIterator[Dict[str, Any]]:

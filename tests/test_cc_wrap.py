@@ -33,7 +33,7 @@ async def test_claude_batch():
     """
     prompt = "say hello"
 
-    results = await wrap_claude_code(prompt)
+    results, session_id = await wrap_claude_code(prompt)
 
     assert len(results) > 0, "Expected at least one JSON object"
 
@@ -73,7 +73,7 @@ async def test_claude_batch_haiku():
     """
     prompt = "say hello"
 
-    results = await wrap_claude_code(prompt, model="haiku")
+    results, session_id = await wrap_claude_code(prompt, model="haiku")
 
     assert len(results) > 0, "Expected at least one JSON object"
 
@@ -85,6 +85,6 @@ async def test_claude_batch_sonnet():
     """
     prompt = "say hello"
 
-    results = await wrap_claude_code(prompt, model="sonnet")
+    results, session_id = await wrap_claude_code(prompt, model="sonnet")
 
     assert len(results) > 0, "Expected at least one JSON object"

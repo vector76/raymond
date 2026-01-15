@@ -4,6 +4,11 @@ These sample workflows test Raymond's orchestration mechanisms without modifying
 code or making dangerous changes. They operate on text files in a `sandbox/`
 directory.
 
+## Platform note (production vs development)
+
+- **Production**: Linux only (typically inside a Linux container with broad permissions, for containment).
+- **Development**: Tests and local experimentation can be done on Windows, but some workflow examples use Linux commands.
+
 ## Setup
 
 Create a sandbox directory for test workflows:
@@ -105,7 +110,7 @@ persist.
 
 **Files:**
 
-`workflows/test-fork/MAIN.md`:
+`workflows/test-call/MAIN.md`:
 ```markdown
 You are managing a task. You need to find out information about a topic.
 
@@ -118,7 +123,7 @@ Then signal that you want to delegate the research:
 Note: The `return="SUMMARIZE.md"` attribute tells the orchestrator which state
 to resume at when the called RESEARCH.md workflow completes.
 
-`workflows/test-fork/RESEARCH.md`:
+`workflows/test-call/RESEARCH.md`:
 ```markdown
 You are a research assistant. Read sandbox/input.txt for the topic.
 
@@ -136,7 +141,7 @@ Three facts about [topic]:
 End with no transition tag.
 ```
 
-`workflows/test-fork/SUMMARIZE.md`:
+`workflows/test-call/SUMMARIZE.md`:
 ```markdown
 You received research results from your assistant:
 
@@ -320,7 +325,10 @@ workflow.
 
 ## Running the Tests
 
-Each test should be runnable independently:
+Each test should be runnable independently.
+
+Note: The CLI shown below is illustrative and not implemented yet; it represents
+the intended developer experience once a `raymond` module/CLI exists.
 
 ```bash
 # Test pure function
@@ -345,6 +353,11 @@ python -m raymond test-reset
 ## Cleanup
 
 After tests, the sandbox directory can be deleted:
+
 ```bash
+# Linux / macOS
 rm -rf sandbox/
+
+# Windows (PowerShell)
+Remove-Item -Recurse -Force sandbox
 ```

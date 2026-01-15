@@ -27,6 +27,11 @@ def parse_transitions(output: str) -> List[Transition]:
 
 **Deliverable:** `src/parsing.py` with `parse_transitions()` function and tests.
 
+**Note (initial scope):** Multi-tag semantics (e.g., multiple transitions in a
+single response) are a future feature. The initial implementation should accept
+exactly one transition tag per response, or no transition tag (in which case a
+`<result>...</result>` tag is required).
+
 ### Step 1.2: State File Management
 
 Add functions to read/write workflow state JSON files.
@@ -71,7 +76,9 @@ Implement the core loop for a single workflow:
 2. Load prompt for current state
 3. Invoke Claude Code
 4. Parse transition tag
-5. Update state file
+5. If no transition tag is present, require a `<result>...</result>` tag; if
+   neither is present, re-prompt with a short reminder to emit a valid tag
+6. Update state file
 6. Repeat or terminate
 
 **Deliverable:** `src/orchestrator.py` with `run_workflow()` function.

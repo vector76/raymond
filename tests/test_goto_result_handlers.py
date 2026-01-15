@@ -99,25 +99,23 @@ class TestOrchestratorSessionId:
         mock_output = [{"type": "content", "text": "Output\n<goto>NEXT.md</goto>"}]
         new_session_id = "session_new_123"
         
+        # Create NEXT.md so the workflow can continue
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("Next prompt")
+        
         with patch('orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, new_session_id)
+            # First call returns goto with session_id, second returns result to terminate
+            mock_wrap.side_effect = [
+                (mock_output, new_session_id),
+                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], new_session_id)
+            ]
             
-            # Mock handlers to avoid NotImplementedError
-            with patch('orchestrator.handle_goto_transition') as mock_handler:
-                mock_handler.return_value = {
-                    "id": "main",
-                    "current_state": "NEXT.md",
-                    "session_id": new_session_id,
-                    "stack": []
-                }
-                
-                try:
-                    from orchestrator import run_all_agents
-                    await run_all_agents(workflow_id, state_dir=str(state_dir))
-                except Exception:
-                    pass  # May fail on next iteration, but that's OK
-            
-            # Verify session_id was stored
-            final_state = read_state(workflow_id, state_dir=str(state_dir))
-            # The agent should have the new session_id
-            # (This test verifies the orchestrator updates session_id from wrap_claude_code return)
+            from orchestrator import run_all_agents
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify session_id was stored in state file after first transition
+        # The workflow completed, so we check state was written correctly
+        final_state = read_state(workflow_id, state_dir=str(state_dir))
+        
+        # After result with empty stack, agents array should be empty (agent terminated)
+        assert final_state["agents"] == []

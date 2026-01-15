@@ -1,10 +1,18 @@
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional
-from cc_wrap import wrap_claude_code
-from state import read_state, write_state, StateFileError as StateFileErrorFromState
-from prompts import load_prompt, render_prompt
-from parsing import parse_transitions, validate_single_transition, Transition
+try:
+    # When installed as a package
+    from .cc_wrap import wrap_claude_code
+    from .state import read_state, write_state, StateFileError as StateFileErrorFromState
+    from .prompts import load_prompt, render_prompt
+    from .parsing import parse_transitions, validate_single_transition, Transition
+except ImportError:
+    # When running tests with sys.path manipulation
+    from cc_wrap import wrap_claude_code
+    from state import read_state, write_state, StateFileError as StateFileErrorFromState
+    from prompts import load_prompt, render_prompt
+    from parsing import parse_transitions, validate_single_transition, Transition
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +91,9 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
                 pending_tasks.keys(),
                 return_when=asyncio.FIRST_COMPLETED
             )
+            
+            # Track if agents list changes (termination or fork)
+            initial_agent_count = len(state["agents"])
             
             # Process completed tasks
             for task in done:
@@ -203,8 +214,8 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
             # Write updated state
             write_state(workflow_id, state, state_dir=state_dir)
             
-            # If we removed an agent, break inner loop to re-read state
-            if any(task not in pending_tasks for task in done):
+            # If agents were added or removed, break inner loop to re-read state
+            if len(state["agents"]) != initial_agent_count:
                 break
 
 

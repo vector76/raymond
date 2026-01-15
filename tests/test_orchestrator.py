@@ -43,11 +43,8 @@ class TestBasicOrchestratorLoop:
                 ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
             ]
             
-            # Should read state file and process
-            try:
-                await run_all_agents(workflow_id, state_dir=str(state_dir))
-            except Exception:
-                pass  # May fail, but we just want to verify it reads state
+            # Should read state file and process until completion
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Verify wrap_claude_code was called (which means state was read)
             assert mock_wrap.called
@@ -106,10 +103,7 @@ class TestBasicOrchestratorLoop:
                 ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
             ]
             
-            try:
-                await run_all_agents(workflow_id, state_dir=str(state_dir))
-            except Exception:
-                pass  # May fail, but we just want to verify wrap_claude_code was called
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Verify wrap_claude_code was called
             assert mock_wrap.called
@@ -154,10 +148,7 @@ class TestBasicOrchestratorLoop:
                     [Transition("result", "", {}, "Complete")]
                 ]
                 
-                try:
-                    await run_all_agents(workflow_id, state_dir=str(state_dir))
-                except Exception:
-                    pass  # May fail, but we just want to verify parse_transitions was called
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
                 
                 # Verify parse_transitions was called
                 assert mock_parse.called

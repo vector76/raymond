@@ -109,10 +109,10 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 2.5: Call with Return
 
-- [ ] **2.5.1** Write tests: `<call>` handler pushes frame to stack (like function)
-- [ ] **2.5.2** Write tests: `<call>` handler uses Claude Code `--fork` to branch context from caller
-- [ ] **2.5.3** Write tests: `<call>` handler updates `current_state` to callee target
-- [ ] **2.5.4** Implement `handle_call_transition()`
+- [x] **2.5.1** Write tests: `<call>` handler pushes frame to stack (like function)
+- [x] **2.5.2** Write tests: `<call>` handler uses Claude Code `--fork` to branch context from caller
+- [x] **2.5.3** Write tests: `<call>` handler updates `current_state` to callee target
+- [x] **2.5.4** Implement `handle_call_transition()`
 
 **Integration checkpoint:** Can run call-with-return workflow (Test 3 from `sample-workflows.md`).
 
@@ -122,14 +122,14 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 3.1: Fork Implementation
 
-- [ ] **3.1.1** Write tests: `<fork>` handler creates new agent in `agents` array
-- [ ] **3.1.2** Write tests: new agent has unique ID
-- [ ] **3.1.3** Write tests: new agent has empty return stack
-- [ ] **3.1.4** Write tests: new agent has `session_id` = None (fresh)
-- [ ] **3.1.5** Write tests: new agent's `current_state` is fork target
-- [ ] **3.1.6** Write tests: parent agent continues at `next` state
-- [ ] **3.1.7** Write tests: fork attributes available as template variables for new agent
-- [ ] **3.1.8** Implement `<fork>` handler
+- [x] **3.1.1** Write tests: `<fork>` handler creates new agent in `agents` array
+- [x] **3.1.2** Write tests: new agent has unique ID
+- [x] **3.1.3** Write tests: new agent has empty return stack
+- [x] **3.1.4** Write tests: new agent has `session_id` = None (fresh)
+- [x] **3.1.5** Write tests: new agent's `current_state` is fork target
+- [x] **3.1.6** Write tests: parent agent continues at `next` state
+- [x] **3.1.7** Write tests: fork attributes available as template variables for new agent
+- [x] **3.1.8** Implement `<fork>` handler
 
 **Integration checkpoint:** Can run fork workflow (Test 4 from `sample-workflows.md`).
 
@@ -139,23 +139,23 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 4.1: Error Handling
 
-- [ ] **4.1.1** Write tests: Claude Code non-zero exit raises appropriate exception
-- [ ] **4.1.2** Write tests: missing prompt file raises appropriate exception
-- [ ] **4.1.3** Write tests: malformed state file raises appropriate exception
-- [ ] **4.1.4** Add exception handling throughout orchestrator
-- [ ] **4.1.5** Define recovery strategies (retry, skip, abort)
+- [x] **4.1.1** Write tests: Claude Code non-zero exit raises appropriate exception
+- [x] **4.1.2** Write tests: missing prompt file raises appropriate exception
+- [x] **4.1.3** Write tests: malformed state file raises appropriate exception
+- [x] **4.1.4** Add exception handling throughout orchestrator
+- [x] **4.1.5** Define recovery strategies (retry, skip, abort)
 
 ### Step 4.2: Crash Recovery
 
-- [ ] **4.2.1** Write tests: orchestrator can resume from existing state file
-- [ ] **4.2.2** Write tests: `recover_workflows()` finds in-progress workflows
-- [ ] **4.2.3** Implement `recover_workflows()`
+- [x] **4.2.1** Write tests: orchestrator can resume from existing state file
+- [x] **4.2.2** Write tests: `recover_workflows()` finds in-progress workflows
+- [x] **4.2.3** Implement `recover_workflows()`
 
 ### Step 4.3: Logging
 
-- [ ] **4.3.1** Add structured logging for state transitions
-- [ ] **4.3.2** Add structured logging for Claude Code invocations
-- [ ] **4.3.3** Add structured logging for errors
+- [x] **4.3.1** Add structured logging for state transitions
+- [x] **4.3.2** Add structured logging for Claude Code invocations
+- [x] **4.3.3** Add structured logging for errors
 
 ---
 

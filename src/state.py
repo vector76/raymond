@@ -3,6 +3,11 @@ from pathlib import Path
 from typing import Dict, List, Any
 
 
+class StateFileError(Exception):
+    """Raised when state file operations fail."""
+    pass
+
+
 def get_state_dir(state_dir: str = None) -> Path:
     """Get the state directory path.
     
@@ -30,14 +35,20 @@ def read_state(workflow_id: str, state_dir: str = None) -> Dict[str, Any]:
         
     Raises:
         FileNotFoundError: If the state file does not exist
+        StateFileError: If the state file is malformed (invalid JSON)
     """
     state_path = get_state_dir(state_dir) / f"{workflow_id}.json"
     
     if not state_path.exists():
         raise FileNotFoundError(f"State file not found: {state_path}")
     
-    with open(state_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(state_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise StateFileError(
+            f"Malformed state file {state_path}: {e}"
+        ) from e
 
 
 def write_state(workflow_id: str, state: Dict[str, Any], state_dir: str = None) -> None:
@@ -104,3 +115,40 @@ def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str) -
             }
         ]
     }
+
+
+def recover_workflows(state_dir: str = None) -> List[str]:
+    """Find all in-progress workflows (workflows with at least one active agent).
+    
+    A workflow is considered "in-progress" if it has at least one agent
+    in the agents array. This function scans the state directory and returns
+    workflow IDs for workflows that can be resumed.
+    
+    Args:
+        state_dir: Optional custom state directory. If None, uses default.
+        
+    Returns:
+        List of workflow IDs that are in-progress (have active agents)
+    """
+    state_path = get_state_dir(state_dir)
+    
+    if not state_path.exists():
+        return []
+    
+    in_progress = []
+    
+    for file_path in state_path.iterdir():
+        if file_path.is_file() and file_path.suffix == ".json":
+            try:
+                workflow_id = file_path.stem
+                state = read_state(workflow_id, state_dir=state_dir)
+                
+                # Check if workflow has active agents
+                agents = state.get("agents", [])
+                if agents:  # At least one agent means in-progress
+                    in_progress.append(workflow_id)
+            except (FileNotFoundError, StateFileError, json.JSONDecodeError):
+                # Skip malformed or unreadable state files
+                continue
+    
+    return in_progress

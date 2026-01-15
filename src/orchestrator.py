@@ -2,11 +2,43 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 from cc_wrap import wrap_claude_code
-from state import read_state, write_state
+from state import read_state, write_state, StateFileError as StateFileErrorFromState
 from prompts import load_prompt, render_prompt
 from parsing import parse_transitions, validate_single_transition, Transition
 
 logger = logging.getLogger(__name__)
+
+
+# Custom exception classes for error handling
+class OrchestratorError(Exception):
+    """Base exception for orchestrator errors."""
+    pass
+
+
+class ClaudeCodeError(OrchestratorError):
+    """Raised when Claude Code execution fails."""
+    pass
+
+
+class PromptFileError(OrchestratorError):
+    """Raised when prompt file operations fail."""
+    pass
+
+
+# Import StateFileError from state module (aliased to avoid conflict)
+StateFileError = StateFileErrorFromState
+
+
+# Recovery strategies
+class RecoveryStrategy:
+    """Recovery strategies for handling errors."""
+    RETRY = "retry"
+    SKIP = "skip"
+    ABORT = "abort"
+
+
+# Default retry configuration
+MAX_RETRIES = 3
 
 
 async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
@@ -23,13 +55,21 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
         workflow_id: Unique identifier for the workflow
         state_dir: Optional custom state directory. If None, uses default.
     """
+    logger.info(f"Starting orchestrator for workflow: {workflow_id}")
+    
     while True:
-        # Read state file
+        # Read state file (may raise StateFileError)
         state = read_state(workflow_id, state_dir=state_dir)
         
         # Exit if no agents remain
         if not state.get("agents", []):
+            logger.info(f"Workflow {workflow_id} completed: no agents remaining")
             break
+        
+        logger.debug(
+            f"Workflow {workflow_id}: {len(state['agents'])} agent(s) active",
+            extra={"workflow_id": workflow_id, "agent_count": len(state["agents"])}
+        )
         
         # Create async tasks for each agent
         pending_tasks = {}
@@ -56,15 +96,108 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
                             i for i, a in enumerate(state["agents"])
                             if a["id"] == agent["id"]
                         )
+                        old_state = state["agents"][agent_idx].get("current_state")
+                        new_state = result.get("current_state")
+                        
+                        # Log state transition
+                        if old_state != new_state:
+                            logger.info(
+                                f"Agent {agent['id']} transition: {old_state} -> {new_state}",
+                                extra={
+                                    "workflow_id": workflow_id,
+                                    "agent_id": agent["id"],
+                                    "old_state": old_state,
+                                    "new_state": new_state
+                                }
+                            )
+                        
                         state["agents"][agent_idx] = result
+                        # Clear retry counter on success
+                        if "retry_count" in state["agents"][agent_idx]:
+                            del state["agents"][agent_idx]["retry_count"]
                     else:
                         # Agent terminated - remove from agents array
+                        logger.info(
+                            f"Agent {agent['id']} terminated",
+                            extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
+                        )
                         state["agents"] = [
                             a for a in state["agents"]
                             if a["id"] != agent["id"]
                         ]
+                except (ClaudeCodeError, PromptFileError) as e:
+                    # Handle recoverable errors with retry logic
+                    agent_idx = next(
+                        i for i, a in enumerate(state["agents"])
+                        if a["id"] == agent["id"]
+                    )
+                    current_agent = state["agents"][agent_idx]
+                    
+                    # Increment retry counter
+                    retry_count = current_agent.get("retry_count", 0) + 1
+                    current_agent["retry_count"] = retry_count
+                    
+                    logger.warning(
+                        f"Agent {agent['id']} error (attempt {retry_count}/{MAX_RETRIES}): {e}",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent["id"],
+                            "error_type": type(e).__name__,
+                            "retry_count": retry_count,
+                            "max_retries": MAX_RETRIES,
+                            "error_message": str(e)
+                        }
+                    )
+                    
+                    if retry_count >= MAX_RETRIES:
+                        # Max retries exceeded - mark agent as failed
+                        logger.error(
+                            f"Agent {agent['id']} failed after {MAX_RETRIES} retries. "
+                            f"Marking as failed.",
+                            extra={
+                                "workflow_id": workflow_id,
+                                "agent_id": agent["id"],
+                                "error_type": type(e).__name__,
+                                "retry_count": retry_count,
+                                "error_message": str(e)
+                            }
+                        )
+                        current_agent["status"] = "failed"
+                        current_agent["error"] = str(e)
+                        # Remove failed agent from active agents
+                        state["agents"] = [
+                            a for a in state["agents"]
+                            if a["id"] != agent["id"]
+                        ]
+                    else:
+                        # Keep agent in state for retry (don't advance state)
+                        state["agents"][agent_idx] = current_agent
+                        
+                except StateFileError as e:
+                    # State file errors are critical - abort workflow
+                    logger.error(
+                        f"State file error: {e}. Aborting workflow.",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent["id"],
+                            "error_type": "StateFileError",
+                            "error_message": str(e)
+                        },
+                        exc_info=True
+                    )
+                    raise
                 except Exception as e:
-                    # Handle errors (for now, just re-raise)
+                    # Unexpected errors - log and re-raise
+                    logger.error(
+                        f"Unexpected error in agent {agent['id']}: {e}",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent["id"],
+                            "error_type": type(e).__name__,
+                            "error_message": str(e)
+                        },
+                        exc_info=True
+                    )
                     raise
             
             # Write updated state
@@ -91,11 +224,38 @@ async def step_agent(
         Updated agent state dictionary, or None if agent terminated
     """
     scope_dir = state["scope_dir"]
+    workflow_id = state.get("workflow_id", "unknown")
     current_state = agent["current_state"]
+    agent_id = agent.get("id", "unknown")
     session_id = agent.get("session_id")
     
-    # Load prompt for current state
-    prompt_template = load_prompt(scope_dir, current_state)
+    logger.debug(
+        f"Stepping agent {agent_id} in state {current_state}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "current_state": current_state,
+            "has_session": session_id is not None
+        }
+    )
+    
+    # Check if we need to fork from a caller's session (for <call> transitions)
+    fork_session_id = agent.get("fork_session_id")
+    
+    # Load prompt for current state (may raise PromptFileError)
+    try:
+        prompt_template = load_prompt(scope_dir, current_state)
+    except FileNotFoundError as e:
+        logger.error(
+            f"Prompt file not found for agent {agent_id}: {current_state}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "scope_dir": scope_dir
+            }
+        )
+        raise PromptFileError(f"Prompt file not found: {e}") from e
     
     # Prepare template variables
     variables = {}
@@ -105,11 +265,59 @@ async def step_agent(
     if pending_result is not None:
         variables["result"] = pending_result
     
+    # If there are fork attributes, include them as template variables
+    fork_attributes = agent.get("fork_attributes", {})
+    variables.update(fork_attributes)
+    
     # Render template with variables
     prompt = render_prompt(prompt_template, variables)
     
-    # Invoke Claude Code
-    results, new_session_id = await wrap_claude_code(prompt, session_id=session_id)
+    # Invoke Claude Code (may raise ClaudeCodeError)
+    logger.info(
+        f"Invoking Claude Code for agent {agent_id}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "current_state": current_state,
+            "session_id": session_id,
+            "fork_session_id": fork_session_id,
+            "using_fork": fork_session_id is not None
+        }
+    )
+    
+    try:
+        if fork_session_id is not None:
+            results, new_session_id = await wrap_claude_code(
+                prompt, 
+                session_id=fork_session_id,
+                fork=True
+            )
+        else:
+            results, new_session_id = await wrap_claude_code(prompt, session_id=session_id)
+        
+        logger.debug(
+            f"Claude Code invocation completed for agent {agent_id}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "new_session_id": new_session_id,
+                "result_count": len(results)
+            }
+        )
+    except RuntimeError as e:
+        # Wrap RuntimeError from cc_wrap as ClaudeCodeError
+        if "Claude command failed" in str(e):
+            logger.error(
+                f"Claude Code execution failed for agent {agent_id}",
+                extra={
+                    "workflow_id": workflow_id,
+                    "agent_id": agent_id,
+                    "current_state": current_state,
+                    "error_message": str(e)
+                }
+            )
+            raise ClaudeCodeError(f"Claude Code execution failed: {e}") from e
+        raise
     
     # Extract text output from results
     # Claude Code stream-json format may vary, so we'll concatenate text fields
@@ -129,6 +337,16 @@ async def step_agent(
     
     transition = transitions[0]
     
+    logger.debug(
+        f"Parsed transition for agent {agent_id}: {transition.tag} -> {transition.target}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "transition_tag": transition.tag,
+            "transition_target": transition.target
+        }
+    )
+    
     # Create a copy of agent for handler (to avoid mutating original)
     agent_copy = agent.copy()
     
@@ -139,6 +357,14 @@ async def step_agent(
     # Clear pending_result after using it (it was only for this step's template)
     if "pending_result" in agent_copy:
         del agent_copy["pending_result"]
+    
+    # Clear fork_session_id after using it (fork only happens on first invocation)
+    if "fork_session_id" in agent_copy:
+        del agent_copy["fork_session_id"]
+    
+    # Clear fork_attributes after using them (they're only for first step)
+    if "fork_attributes" in agent_copy:
+        del agent_copy["fork_attributes"]
     
     # Dispatch to appropriate handler
     handler_map = {
@@ -155,9 +381,17 @@ async def step_agent(
         raise ValueError(f"Unknown transition tag: {transition.tag}")
     
     # Call handler with agent_copy, transition, and state
-    updated_agent = await handler(agent_copy, transition, state, state_dir)
+    handler_result = await handler(agent_copy, transition, state, state_dir)
     
-    return updated_agent
+    # Fork handler returns a tuple (updated_agent, new_agent)
+    # Other handlers return just updated_agent
+    if transition.tag == "fork" and isinstance(handler_result, tuple):
+        updated_agent, new_agent = handler_result
+        # Add new agent to state's agents array
+        state["agents"].append(new_agent)
+        return updated_agent
+    else:
+        return handler_result
 
 
 async def handle_goto_transition(
@@ -218,7 +452,12 @@ async def handle_reset_transition(
     if stack:
         logger.warning(
             f"Agent {agent.get('id')} executing <reset> with non-empty return stack. "
-            f"Stack will be cleared, discarding {len(stack)} pending return(s)."
+            f"Stack will be cleared, discarding {len(stack)} pending return(s).",
+            extra={
+                "agent_id": agent.get("id"),
+                "stack_size": len(stack),
+                "transition_tag": "reset"
+            }
         )
     
     # Create updated agent
@@ -290,9 +529,53 @@ async def handle_call_transition(
 ) -> Dict[str, Any]:
     """Handle <call> transition tag.
     
-    Raises NotImplementedError until Step 2.5.4.
+    Enters a subroutine-like workflow that will eventually return to the caller.
+    - Pushes frame to return stack (caller session + return state)
+    - Sets fork_session_id to caller's session_id (for --fork in next step)
+    - Updates current_state to callee target
+    
+    Unlike <function>, <call> preserves context from the caller via history
+    branching (Claude Code --fork flag), which is useful when the callee needs
+    to see what the caller was working on.
+    
+    Args:
+        agent: Agent state dictionary
+        transition: Transition object with target filename and return attribute
+        state: Full workflow state dictionary
+        state_dir: Optional custom state directory
+        
+    Returns:
+        Updated agent state dictionary
     """
-    raise NotImplementedError("handle_call_transition not yet implemented")
+    # Validate required return attribute
+    if "return" not in transition.attributes:
+        raise ValueError(
+            f"<call> tag requires 'return' attribute. "
+            f"Example: <call return=\"NEXT.md\">CHILD.md</call>"
+        )
+    
+    return_state = transition.attributes["return"]
+    caller_session_id = agent.get("session_id")
+    
+    # Create updated agent
+    updated_agent = agent.copy()
+    
+    # Push frame to return stack
+    stack = updated_agent.get("stack", [])
+    frame = {
+        "session": caller_session_id,
+        "state": return_state
+    }
+    updated_agent["stack"] = stack + [frame]  # Push to end (LIFO)
+    
+    # Set fork_session_id to trigger --fork in next step_agent invocation
+    # This branches context from the caller's session
+    updated_agent["fork_session_id"] = caller_session_id
+    
+    # Update current_state to callee target
+    updated_agent["current_state"] = transition.target
+    
+    return updated_agent
 
 
 async def handle_fork_transition(
@@ -300,12 +583,65 @@ async def handle_fork_transition(
     transition: Transition,
     state: Dict[str, Any],
     state_dir: Optional[str] = None
-) -> Dict[str, Any]:
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Handle <fork> transition tag.
     
-    Raises NotImplementedError until Step 3.1.8.
+    Spawns an independent agent ("process-like") while the current agent continues.
+    - Creates new agent in agents array
+    - New agent has unique ID, empty return stack, fresh session
+    - New agent's current_state is fork target
+    - Parent agent continues at next state (preserves session and stack)
+    - Fork attributes (beyond 'next') are available as template variables for new agent
+    
+    Args:
+        agent: Agent state dictionary (the parent)
+        transition: Transition object with target filename and next attribute
+        state: Full workflow state dictionary
+        state_dir: Optional custom state directory
+        
+    Returns:
+        Tuple of (updated parent agent, new worker agent)
     """
-    raise NotImplementedError("handle_fork_transition not yet implemented")
+    # Validate required next attribute
+    if "next" not in transition.attributes:
+        raise ValueError(
+            f"<fork> tag requires 'next' attribute. "
+            f"Example: <fork next=\"NEXT.md\">WORKER.md</fork>"
+        )
+    
+    next_state = transition.attributes["next"]
+    parent_id = agent.get("id", "main")
+    
+    # Generate unique ID for new agent
+    # Check existing agent IDs to ensure uniqueness
+    existing_ids = {a.get("id") for a in state.get("agents", [])}
+    worker_id = f"{parent_id}_worker"
+    counter = 1
+    while worker_id in existing_ids:
+        worker_id = f"{parent_id}_worker_{counter}"
+        counter += 1
+    
+    # Create new worker agent
+    new_agent = {
+        "id": worker_id,
+        "current_state": transition.target,
+        "session_id": None,  # Fresh session
+        "stack": []  # Empty return stack
+    }
+    
+    # Store fork attributes (excluding 'next') for template substitution
+    fork_attributes = {
+        k: v for k, v in transition.attributes.items() if k != "next"
+    }
+    if fork_attributes:
+        new_agent["fork_attributes"] = fork_attributes
+    
+    # Update parent agent (like goto - preserves session and stack)
+    updated_parent = agent.copy()
+    updated_parent["current_state"] = next_state
+    # session_id and stack are preserved (unchanged)
+    
+    return (updated_parent, new_agent)
 
 
 async def handle_result_transition(

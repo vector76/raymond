@@ -1,6 +1,15 @@
 import re
 from typing import List, Dict, NamedTuple
 
+# Pre-compiled regex patterns for better performance
+# Pattern to match transition tags with optional attributes
+# Matches: <tag attr="value">content</tag>
+# Captures: tag name, attributes string, content
+_TRANSITION_PATTERN = re.compile(r'<(\w+)([^>]*)>(.*?)</\1>', re.DOTALL)
+
+# Pattern to match key="value" or key='value' attributes
+_ATTRIBUTE_PATTERN = re.compile(r'(\w+)=["\']([^"\']*)["\']')
+
 
 class Transition(NamedTuple):
     """Represents a transition tag parsed from agent output.
@@ -37,14 +46,9 @@ def parse_transitions(output: str) -> List[Transition]:
     Raises:
         ValueError: If any tag target contains path separators (/ or \)
     """
-    # Pattern to match transition tags with optional attributes
-    # Matches: <tag attr="value">content</tag>
-    # Captures: tag name, attributes string, content, closing tag name
-    pattern = r'<(\w+)([^>]*)>(.*?)</\1>'
-    
     transitions = []
     
-    for match in re.finditer(pattern, output, re.DOTALL):
+    for match in _TRANSITION_PATTERN.finditer(output):
         tag_name = match.group(1)
         attrs_str = match.group(2).strip()
         content = match.group(3)
@@ -104,10 +108,7 @@ def _parse_attributes(attrs_str: str) -> Dict[str, str]:
     if not attrs_str:
         return attributes
     
-    # Pattern to match key="value" or key='value'
-    attr_pattern = r'(\w+)=["\']([^"\']*)["\']'
-    
-    for match in re.finditer(attr_pattern, attrs_str):
+    for match in _ATTRIBUTE_PATTERN.finditer(attrs_str):
         key = match.group(1)
         value = match.group(2)
         attributes[key] = value

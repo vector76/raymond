@@ -6,6 +6,10 @@ import pytest
 from cc_wrap import wrap_claude_code, wrap_claude_code_stream
 
 
+# All tests in this file are integration tests that require the Claude CLI
+pytestmark = pytest.mark.integration
+
+
 @pytest.mark.asyncio
 async def test_claude_stream():
     """

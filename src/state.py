@@ -1,6 +1,8 @@
 import json
+import os
+import tempfile
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Union
 
 
 class StateFileError(Exception):
@@ -52,7 +54,10 @@ def read_state(workflow_id: str, state_dir: str = None) -> Dict[str, Any]:
 
 
 def write_state(workflow_id: str, state: Dict[str, Any], state_dir: str = None) -> None:
-    """Write workflow state to JSON file.
+    """Write workflow state to JSON file atomically.
+    
+    Uses atomic write pattern: write to temp file, then rename. This prevents
+    state corruption if the process crashes mid-write.
     
     Args:
         workflow_id: Unique identifier for the workflow
@@ -64,8 +69,22 @@ def write_state(workflow_id: str, state: Dict[str, Any], state_dir: str = None) 
     # Create directory if it doesn't exist
     state_path.parent.mkdir(parents=True, exist_ok=True)
     
-    with open(state_path, 'w', encoding='utf-8') as f:
-        json.dump(state, f, indent=2)
+    # Write to temp file in same directory, then rename (atomic on most filesystems)
+    fd, tmp_path = tempfile.mkstemp(
+        suffix='.tmp',
+        prefix=f'{workflow_id}_',
+        dir=state_path.parent
+    )
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+        # Atomic rename
+        os.replace(tmp_path, state_path)
+    except Exception:
+        # Clean up temp file on failure
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
 
 def list_workflows(state_dir: str = None) -> List[str]:

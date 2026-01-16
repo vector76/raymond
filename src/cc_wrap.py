@@ -29,7 +29,7 @@ def _build_claude_command(
         session_id: Optional session ID to resume an existing session
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
-            - fork (bool): If True, passes --fork flag to branch from session_id
+            - fork (bool): If True, passes --fork-session flag to branch from session_id
             - Any other kwargs are converted to --key value CLI arguments
         
     Returns:
@@ -40,6 +40,7 @@ def _build_claude_command(
         "-p",  # headless/print mode
         "--output-format", "stream-json",
         "--verbose",
+        "--permission-mode", "acceptEdits"
     ]
 
     if model:
@@ -55,6 +56,11 @@ def _build_claude_command(
     for key, value in kwargs.items():
         if key == "timeout":
             # timeout is handled separately, not passed to CLI
+            continue
+        if key == "fork":
+            # fork is converted to --fork-session flag
+            if value is True:
+                cmd.append("--fork-session")
             continue
         if value is True:
             cmd.append(f"--{key.replace('_', '-')}")
@@ -83,7 +89,7 @@ async def wrap_claude_code(
         timeout: Optional timeout in seconds (default: 600). Set to None for no timeout.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
-            - fork (bool): If True, passes --fork flag to branch from session_id
+            - fork (bool): If True, passes --fork-session flag to branch from session_id
 
     Returns:
         Tuple of (list of parsed JSON objects from the stream, extracted session_id or None)
@@ -181,7 +187,7 @@ async def wrap_claude_code_stream(
         timeout: Optional timeout in seconds (default: 600). Set to None for no timeout.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
-            - fork (bool): If True, passes --fork flag to branch from session_id
+            - fork (bool): If True, passes --fork-session flag to branch from session_id
 
     Yields:
         Parsed JSON objects from the stream as they arrive

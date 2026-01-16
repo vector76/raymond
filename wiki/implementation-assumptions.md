@@ -80,11 +80,11 @@ rather than full discard - partially preserving context while reducing token
 usage. However, this is deferred; the philosophy is to avoid context overflow
 in the first place through intentional `<reset>` at phase boundaries.
 
-**Naming clarification:** Claude Code has a `--fork` CLI flag whose name is
+**Naming clarification:** Claude Code has a `--fork-session` CLI flag whose name is
 unfortunate in this context. In Raymond docs:
 - The `<fork>...</fork>` **tag** refers to spawning an independent agent
   (process-like, fork() syscall analogy).
-- Claude Code `--fork` (flag) refers to branching a conversation history and is
+- Claude Code `--fork-session` (flag) refers to branching a conversation history and is
   an implementation detail unrelated to the `<fork>` tag's meaning.
 
 ## Default Model
@@ -129,7 +129,7 @@ runtime prompt construction in Python.
 ## Session ID Format
 
 **Assumption:** Use whatever session ID format Claude Code provides via
-`--resume` / `--fork` flags. Store it opaquely in the state file.
+`--resume` / `--fork-session` flags. Store it opaquely in the state file.
 
 **Rationale:** Don't couple to Claude Code internals. Treat session ID as an
 opaque string.

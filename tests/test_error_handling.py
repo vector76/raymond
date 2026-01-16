@@ -14,11 +14,15 @@ class TestClaudeCodeErrorHandling:
         scope_dir = str(tmp_path / "workflows" / "test")
         Path(scope_dir).mkdir(parents=True)
         
+        # Use test-specific state directory to avoid polluting real error files
+        state_dir = str(tmp_path / ".raymond" / "state")
+        
         # Create a prompt file
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
         
         state = {
+            "workflow_id": "test-workflow",
             "scope_dir": scope_dir,
             "agents": [{
                 "id": "main",
@@ -36,9 +40,14 @@ class TestClaudeCodeErrorHandling:
             
             # step_agent should raise ClaudeCodeError (wrapped from RuntimeError)
             with pytest.raises(ClaudeCodeError) as exc_info:
-                await step_agent(state["agents"][0], state, None)
+                await step_agent(state["agents"][0], state, state_dir=state_dir)
             
             assert "Claude Code execution failed" in str(exc_info.value)
+            
+            # Verify error file was created in test directory
+            errors_dir = Path(state_dir).parent / "errors"
+            error_files = list(errors_dir.glob("test-workflow_main_*.txt"))
+            assert len(error_files) > 0, "Error file should be created in test directory"
 
 
 class TestMissingPromptFileErrorHandling:

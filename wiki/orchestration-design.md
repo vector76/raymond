@@ -95,14 +95,14 @@ Traditional programs use a call stack for function calls:
 - The caller resumes with its original context plus the result
 
 Raymond achieves similar behavior using Claude Code session mechanisms (e.g.
-`--resume`) and, where useful, Claude Code's history-branching flag (`--fork`).
+`--resume`) and, where useful, Claude Code's history-branching flag (`--fork-session`).
 
-### Claude Code `--fork` as History Branching (Implementation Detail)
+### Claude Code `--fork-session` as History Branching (Implementation Detail)
 
 ```
 main context: "Create plan for issue 195"
     │
-    ├── (Claude Code --fork) → child context: "Refine the plan iteratively"
+    ├── (Claude Code --fork-session) → child context: "Refine the plan iteratively"
     │          (may iterate multiple times, accumulating noise)
     │          returns: "Plan finalized in plan-195.md"
     │
@@ -126,7 +126,7 @@ When a called child task completes:
 The parent context never sees the messy iterations - just like a caller never
 sees a function's internal variables, only the return value.
 
-**Important naming note:** This section is about Claude Code's `--fork` flag
+**Important naming note:** This section is about Claude Code's `--fork-session` flag
 (branching conversation history). It is unrelated to Raymond's `<fork>...</fork>`
 transition tag, which represents spawning an independent agent (Unix fork()
 analogy).
@@ -568,7 +568,7 @@ Code invocations, state persisted to disk for crash recovery.
 Beyond the call-and-return pattern (Pattern 2), Raymond supports spawning
 independent agents that run in parallel. This is what the `<fork>...</fork>`
 transition tag represents (Unix fork() analogy), and it is distinct from Claude
-Code's `--fork` flag (which branches conversation history).
+Code's `--fork-session` flag (which branches conversation history).
 
 ### Unix fork() Analogy
 

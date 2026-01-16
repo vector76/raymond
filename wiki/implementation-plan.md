@@ -175,7 +175,7 @@ manipulation) and from `<call>` (which may branch context from the caller).
 
 Implement call-and-return:
 - Push frame to return stack (caller session + return state)
-- Start callee, typically by branching context from caller (Claude Code `--fork`)
+- Start callee, typically by branching context from caller (Claude Code `--fork-session`)
 - Callee may iterate through multiple states before returning
 - On `<result>`, pop stack and resume caller with result injected via `{{result}}`
 

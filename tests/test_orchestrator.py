@@ -171,9 +171,10 @@ class TestBasicOrchestratorLoop:
         
         # Mock wrap_claude_code to return output with no tags
         mock_output = [{"type": "content", "text": "Some output with no tags"}]
+        mock_session_id = "test-session-123"
         
         with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
+            mock_wrap.return_value = (mock_output, mock_session_id)
             
             # Mock parse_transitions to return empty list
             with patch('src.orchestrator.parse_transitions') as mock_parse:
@@ -182,6 +183,20 @@ class TestBasicOrchestratorLoop:
                 # Should raise an exception for zero tags
                 with pytest.raises(ValueError, match="Expected exactly one transition"):
                     await run_all_agents(workflow_id, state_dir=str(state_dir))
+                
+                # Verify error file was created
+                errors_dir = state_dir.parent / "errors"
+                error_files = list(errors_dir.glob(f"{workflow_id}_main_*.txt"))
+                assert len(error_files) > 0, "Error file should be created"
+                
+                # Verify error file contents
+                error_file = error_files[0]
+                error_content = error_file.read_text(encoding='utf-8')
+                assert "ERROR REPORT" in error_content
+                assert workflow_id in error_content
+                assert "main" in error_content
+                assert mock_session_id in error_content
+                assert "Some output with no tags" in error_content
 
     @pytest.mark.asyncio
     async def test_parse_error_multiple_tags_raises_exception(self, tmp_path):

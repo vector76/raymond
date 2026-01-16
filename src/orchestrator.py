@@ -1,10 +1,13 @@
 import asyncio
 import copy
+import json
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from .cc_wrap import wrap_claude_code
-from .state import read_state, write_state, StateFileError as StateFileErrorFromState
+from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
 from .prompts import load_prompt, render_prompt
 from .parsing import parse_transitions, validate_single_transition, Transition
 
@@ -43,6 +46,100 @@ class RecoveryStrategy:
 MAX_RETRIES = 3
 
 
+def save_error_response(
+    workflow_id: str,
+    agent_id: str,
+    error: Exception,
+    output_text: str,
+    raw_results: List[Any],
+    session_id: Optional[str],
+    current_state: str,
+    state_dir: Optional[str] = None
+) -> Path:
+    """Save failed response and error information to a text file for analysis.
+    
+    Args:
+        workflow_id: Workflow identifier
+        agent_id: Agent identifier
+        error: The exception that occurred
+        output_text: Extracted text output from Claude
+        raw_results: Raw results from Claude Code
+        session_id: Claude session ID
+        current_state: Current state/prompt file
+        state_dir: Optional custom state directory
+        
+    Returns:
+        Path to the saved error file
+    """
+    # Create errors directory next to state directory
+    state_path = get_state_dir(state_dir)
+    errors_dir = state_path.parent / "errors"
+    errors_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{workflow_id}_{agent_id}_{timestamp}.txt"
+    error_file = errors_dir / filename
+    
+    # Prepare error information
+    error_info = {
+        "timestamp": datetime.now().isoformat(),
+        "workflow_id": workflow_id,
+        "agent_id": agent_id,
+        "current_state": current_state,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "session_id": session_id,
+    }
+    
+    # Write error file
+    with open(error_file, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("ERROR REPORT\n")
+        f.write("=" * 80 + "\n\n")
+        
+        # Error metadata
+        f.write("ERROR INFORMATION:\n")
+        f.write("-" * 80 + "\n")
+        for key, value in error_info.items():
+            f.write(f"{key}: {value}\n")
+        f.write("\n")
+        
+        # Raw results (JSON formatted)
+        f.write("RAW CLAUDE CODE RESULTS:\n")
+        f.write("-" * 80 + "\n")
+        try:
+            f.write(json.dumps(raw_results, indent=2, ensure_ascii=False))
+        except (TypeError, ValueError):
+            # Fallback if results aren't JSON serializable
+            f.write(str(raw_results))
+        f.write("\n\n")
+        
+        # Extracted text output
+        f.write("EXTRACTED TEXT OUTPUT:\n")
+        f.write("-" * 80 + "\n")
+        f.write(output_text)
+        f.write("\n\n")
+        
+        # Full traceback if available
+        import traceback
+        f.write("TRACEBACK:\n")
+        f.write("-" * 80 + "\n")
+        f.write(traceback.format_exc())
+        f.write("\n")
+    
+    logger.info(
+        f"Saved error response to {error_file}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "error_file": str(error_file)
+        }
+    )
+    
+    return error_file
+
+
 async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
     """Run all agents in a workflow until they all terminate.
     
@@ -66,6 +163,11 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
         # Exit if no agents remain
         if not state.get("agents", []):
             logger.info(f"Workflow {workflow_id} completed: no agents remaining")
+            # Clean up state file - workflow completed successfully
+            # Remove internal tracking data before deletion
+            state.pop("_agent_termination_results", None)
+            delete_state(workflow_id, state_dir=state_dir)
+            logger.debug(f"Deleted state file for completed workflow: {workflow_id}")
             break
         
         logger.debug(
@@ -129,13 +231,23 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
                             del state["agents"][agent_idx]["retry_count"]
                     else:
                         # Agent terminated - remove from agents array
+                        agent_id = agent["id"]
+                        # Get termination result from state (stored by handle_result_transition)
+                        termination_results = state.get("_agent_termination_results", {})
+                        termination_result = termination_results.pop(agent_id, "")
+                        
+                        print(f"Agent {agent_id} terminated with result: {termination_result}")
                         logger.info(
-                            f"Agent {agent['id']} terminated",
-                            extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
+                            f"Agent {agent_id} terminated",
+                            extra={
+                                "workflow_id": workflow_id,
+                                "agent_id": agent_id,
+                                "result": termination_result
+                            }
                         )
                         state["agents"] = [
                             a for a in state["agents"]
-                            if a["id"] != agent["id"]
+                            if a["id"] != agent_id
                         ]
                 except (ClaudeCodeError, PromptFileError) as e:
                     # Handle recoverable errors with retry logic
@@ -206,7 +318,27 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
                     )
                     raise
                 except Exception as e:
-                    # Unexpected errors - log and re-raise
+                    # Unexpected errors - save error info and re-raise
+                    # Check if error was already saved in step_agent
+                    if getattr(e, '_error_saved', False):
+                        # Error was already saved with full context, just log and re-raise
+                        logger.error(
+                            f"Unexpected error in agent {agent['id']}: {e}",
+                            extra={
+                                "workflow_id": workflow_id,
+                                "agent_id": agent["id"],
+                                "error_type": type(e).__name__,
+                                "error_message": str(e)
+                            },
+                            exc_info=True
+                        )
+                        raise
+                    
+                    # Error wasn't saved yet - try to extract error context if available
+                    error_output_text = ""
+                    error_raw_results = []
+                    error_session_id = agent.get("session_id")
+                    
                     logger.error(
                         f"Unexpected error in agent {agent['id']}: {e}",
                         extra={
@@ -217,6 +349,24 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
                         },
                         exc_info=True
                     )
+                    
+                    # Save error information if we have context
+                    # This is for errors that occur outside of step_agent
+                    try:
+                        save_error_response(
+                            workflow_id=workflow_id,
+                            agent_id=agent["id"],
+                            error=e,
+                            output_text=error_output_text or "No output captured",
+                            raw_results=error_raw_results,
+                            session_id=error_session_id,
+                            current_state=agent.get("current_state", "unknown"),
+                            state_dir=state_dir
+                        )
+                    except Exception as save_error:
+                        # Don't fail if we can't save the error
+                        logger.warning(f"Failed to save error response: {save_error}")
+                    
                     raise
             
             # Write updated state
@@ -335,24 +485,82 @@ async def step_agent(
                     "error_message": str(e)
                 }
             )
+            # Save error information
+            save_error_response(
+                workflow_id=workflow_id,
+                agent_id=agent_id,
+                error=e,
+                output_text="Claude Code execution failed - no output received",
+                raw_results=[],
+                session_id=session_id or fork_session_id,
+                current_state=current_state,
+                state_dir=state_dir
+            )
             raise ClaudeCodeError(f"Claude Code execution failed: {e}") from e
         raise
     
     # Extract text output from results
     # Claude Code stream-json format may vary, so we'll concatenate text fields
+    # Text can be at top level or nested in message.content[].text
+    # Priority: result field (if present, use only that) > message.content > top-level text/content
     output_text = ""
+    has_result_field = False
+    
+    # First pass: check for result field (highest priority)
     for result in results:
-        if isinstance(result, dict):
-            if "text" in result:
-                output_text += result["text"]
-            elif "content" in result:
-                output_text += str(result["content"])
+        if isinstance(result, dict) and "result" in result and isinstance(result["result"], str):
+            output_text += result["result"]
+            has_result_field = True
+    
+    # If we found a result field, use only that (skip other extraction)
+    if has_result_field:
+        pass  # Already extracted, don't extract from other sources
+    else:
+        # Second pass: extract from message.content or top-level fields
+        for result in results:
+            if isinstance(result, dict):
+                # Check nested message.content structure (Claude Code format)
+                if "message" in result and isinstance(result["message"], dict):
+                    content = result["message"].get("content", [])
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and "text" in item:
+                                output_text += item["text"]
+                    elif isinstance(content, str):
+                        output_text += content
+                # Check top-level text field
+                elif "text" in result:
+                    output_text += result["text"]
+                # Check top-level content field
+                elif "content" in result:
+                    if isinstance(result["content"], str):
+                        output_text += result["content"]
+                    elif isinstance(result["content"], list):
+                        for item in result["content"]:
+                            if isinstance(item, dict) and "text" in item:
+                                output_text += item["text"]
     
     # Parse transitions from output
     transitions = parse_transitions(output_text)
     
     # Validate exactly one transition
-    validate_single_transition(transitions)
+    try:
+        validate_single_transition(transitions)
+    except ValueError as e:
+        # Save error information before re-raising
+        save_error_response(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=e,
+            output_text=output_text,
+            raw_results=results,
+            session_id=new_session_id,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        # Mark that this error was already saved to avoid duplicate saves
+        e._error_saved = True
+        raise
     
     transition = transitions[0]
     
@@ -535,11 +743,11 @@ def handle_call_transition(
     
     Enters a subroutine-like workflow that will eventually return to the caller.
     - Pushes frame to return stack (caller session + return state)
-    - Sets fork_session_id to caller's session_id (for --fork in next step)
+    - Sets fork_session_id to caller's session_id (for --fork-session in next step)
     - Updates current_state to callee target
     
     Unlike <function>, <call> preserves context from the caller via history
-    branching (Claude Code --fork flag), which is useful when the callee needs
+    branching (Claude Code --fork-session flag), which is useful when the callee needs
     to see what the caller was working on.
     
     Args:
@@ -568,7 +776,7 @@ def handle_call_transition(
     }
     agent["stack"] = stack + [frame]  # Push to end (LIFO)
     
-    # Set fork_session_id to trigger --fork in next step_agent invocation
+    # Set fork_session_id to trigger --fork-session in next step_agent invocation
     # This branches context from the caller's session
     agent["fork_session_id"] = caller_session_id
     
@@ -664,6 +872,12 @@ def handle_result_transition(
     
     # Empty stack case: agent terminates
     if not stack:
+        # Store result payload in state for console output when agent is removed
+        # Use agent_id as key to track termination results
+        agent_id = agent.get("id", "unknown")
+        if "_agent_termination_results" not in state:
+            state["_agent_termination_results"] = {}
+        state["_agent_termination_results"][agent_id] = transition.payload
         return None
     
     # Non-empty stack case: pop frame and resume caller

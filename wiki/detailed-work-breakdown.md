@@ -110,7 +110,7 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 ### Step 2.5: Call with Return
 
 - [x] **2.5.1** Write tests: `<call>` handler pushes frame to stack (like function)
-- [x] **2.5.2** Write tests: `<call>` handler uses Claude Code `--fork` to branch context from caller
+- [x] **2.5.2** Write tests: `<call>` handler uses Claude Code `--fork-session` to branch context from caller
 - [x] **2.5.3** Write tests: `<call>` handler updates `current_state` to callee target
 - [x] **2.5.4** Implement `handle_call_transition()`
 

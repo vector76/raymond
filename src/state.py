@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -53,6 +54,22 @@ def read_state(workflow_id: str, state_dir: Optional[str] = None) -> Dict[str, A
         ) from e
 
 
+def delete_state(workflow_id: str, state_dir: Optional[str] = None) -> None:
+    """Delete a workflow state file.
+    
+    Args:
+        workflow_id: Unique identifier for the workflow
+        state_dir: Optional custom state directory. If None, uses default.
+        
+    Raises:
+        OSError: If the file cannot be deleted
+    """
+    state_path = get_state_dir(state_dir) / f"{workflow_id}.json"
+    
+    if state_path.exists():
+        state_path.unlink()
+
+
 def write_state(workflow_id: str, state: Dict[str, Any], state_dir: Optional[str] = None) -> None:
     """Write workflow state to JSON file atomically.
     
@@ -85,6 +102,35 @@ def write_state(workflow_id: str, state: Dict[str, Any], state_dir: Optional[str
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         raise
+
+
+def generate_workflow_id(state_dir: Optional[str] = None) -> str:
+    """Generate a unique workflow ID based on timestamp.
+    
+    The ID format is: workflow_YYYY-MM-DD_HH-MM-SS-ffffff
+    Includes microseconds to ensure uniqueness. If a collision still occurs,
+    appends a counter.
+    
+    Args:
+        state_dir: Optional custom state directory. If None, uses default.
+        
+    Returns:
+        A unique workflow ID string
+    """
+    existing = set(list_workflows(state_dir=state_dir))
+    
+    # Generate base ID from timestamp with microseconds
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+    base_id = f"workflow_{timestamp}"
+    
+    # If collision occurs, append counter
+    workflow_id = base_id
+    counter = 1
+    while workflow_id in existing:
+        workflow_id = f"{base_id}_{counter}"
+        counter += 1
+    
+    return workflow_id
 
 
 def list_workflows(state_dir: Optional[str] = None) -> List[str]:

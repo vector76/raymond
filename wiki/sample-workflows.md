@@ -1,22 +1,49 @@
 # Sample Workflows
 
 These sample workflows test Raymond's orchestration mechanisms without modifying
-code or making dangerous changes. They operate on text files in a `sandbox/`
-directory.
+code or making dangerous changes. All sample workflows are organized in a single
+`workflows/test_cases/` directory.
 
 ## Platform note (production vs development)
 
 - **Production**: Linux only (typically inside a Linux container with broad permissions, for containment).
 - **Development**: Tests and local experimentation can be done on Windows, but some workflow examples use Linux commands.
 
-## Setup
+## Directory Structure
 
-Create a sandbox directory for test workflows:
+All sample workflows are consolidated in one location:
 ```
-sandbox/
-  input.txt      # Test input file
-  output.txt     # Test output file (created by workflows)
+workflows/test_cases/
+  CLASSIFY.md           # Test 1: Pure function workflow
+  START.md              # Test 2: Goto/resume workflow
+  CONFLICT.md           # Test 2: Goto/resume workflow
+  RESOLUTION.md         # Test 2: Goto/resume workflow
+  MAIN.md               # Test 3: Call workflow
+  RESEARCH.md           # Test 3: Call workflow
+  SUMMARIZE.md          # Test 3: Call workflow
+  DISPATCH.md           # Test 4: Fork workflow
+  DISPATCH-ANOTHER.md   # Test 4: Fork workflow
+  WORKER.md             # Test 4: Fork workflow
+  DONE.md               # Test 4: Fork workflow
+  IMPROVE.md            # Test 5: Evaluator override workflow
+  PHASE1.md             # Test 6: Reset workflow
+  PHASE2.md             # Test 6: Reset workflow
+  test_files/           # All test data files
+    input1.txt          # Test 1: Classification input
+    story-output.txt    # Test 2: Story output
+    research-input.txt  # Test 3: Research topic input
+    research-summary.txt # Test 3: Research summary output
+    dispatch-items.txt  # Test 4: Items to dispatch
+    dispatch-log.txt    # Test 4: Dispatch log
+    worker-*.txt        # Test 4: Worker outputs (one per item)
+    improve-output.txt # Test 5: Improvement iterations
+    reset-output.txt    # Test 6: Reset test output
+    ...
 ```
+
+**Important:** All workflow markdown files must have distinct names since they
+coexist in the same directory. Test data files in `test_files/` should also use
+distinct names to avoid collisions between workflows.
 
 ## Test 1: Pure Function (Pattern 1)
 
@@ -26,22 +53,20 @@ sandbox/
 
 **Files:**
 
-`workflows/test-pure/CLASSIFY.md`:
+`workflows/test_cases/CLASSIFY.md`:
 ```markdown
-Read the file sandbox/input.txt and classify its sentiment.
+Read the file workflows/test_cases/test_files/input1.txt and classify its sentiment.
 
-Respond with exactly one word: POSITIVE, NEGATIVE, or NEUTRAL.
-
-Do not include any other text in your response.
+Respond with a pair of "<result>" XML tags enclosing exactly one word: POSITIVE, NEGATIVE, or NEUTRAL, for example, you could respond with "<result>NEUTRAL</result>"
 ```
 
 **Test procedure:**
-1. Write "I love this beautiful sunny day!" to `sandbox/input.txt`
-2. Run workflow with CLASSIFY.md as pure function
-3. Verify orchestrator captures output containing "POSITIVE"
-4. Write "This is terrible and I hate it." to `sandbox/input.txt`
+1. Write "I love this beautiful sunny day!" to `workflows/test_cases/test_files/input1.txt`
+2. Run workflow: `python main.py start workflows/test_cases/CLASSIFY.md`
+3. Verify orchestrator captures output containing "POSITIVE" and prints: `Agent main terminated with result: POSITIVE`
+4. Write "This is terrible and I hate it." to `workflows/test_cases/test_files/input1.txt`
 5. Run workflow again
-6. Verify orchestrator captures output containing "NEGATIVE"
+6. Verify orchestrator captures output containing "NEGATIVE" and prints: `Agent main terminated with result: NEGATIVE`
 
 **Success criteria:** Each invocation is independent, orchestrator captures
 single-word classification from Claude Code output. (Pure function results are
@@ -57,7 +82,7 @@ captured by the orchestrator, not written to files.)
 
 **Files:**
 
-`workflows/test-goto/START.md`:
+`workflows/test_cases/START.md`:
 ```markdown
 We're going to write a short story together. I'll guide you through three
 phases.
@@ -68,7 +93,7 @@ trait. Write 2-3 sentences introducing this character.
 When done, respond with <goto>CONFLICT.md</goto>
 ```
 
-`workflows/test-goto/CONFLICT.md`:
+`workflows/test_cases/CONFLICT.md`:
 ```markdown
 Good! Now introduce a conflict or challenge for the character you just created.
 The conflict should relate to their occupation or trait. Write 2-3 sentences.
@@ -78,24 +103,24 @@ Remember the character from the previous step - refer to them by name.
 When done, respond with <goto>RESOLUTION.md</goto>
 ```
 
-`workflows/test-goto/RESOLUTION.md`:
+`workflows/test_cases/RESOLUTION.md`:
 ```markdown
 Now write a brief resolution to the conflict. The character should use their
 interesting trait to solve the problem. Write 2-3 sentences.
 
 Reference details from both previous steps to demonstrate continuity.
 
-When done, write the complete mini-story to sandbox/output.txt and respond with:
+When done, write the complete mini-story to workflows/test_cases/test_files/story-output.txt and respond with:
 <result>Story complete</result>
 ```
 
 **Test procedure:**
-1. Start workflow at START.md with a fresh session
+1. Start workflow: `python main.py start workflows/test_cases/START.md`
 2. Verify it transitions to CONFLICT.md
 3. Verify CONFLICT.md references the character by name (context preserved)
 4. Verify it transitions to RESOLUTION.md
 5. Verify RESOLUTION.md references both character and conflict
-6. Verify workflow terminates and output.txt contains the story
+6. Verify workflow terminates with result message and `workflows/test_cases/test_files/story-output.txt` contains the story
 
 **Success criteria:** Context flows through all three states, character details
 persist.
@@ -110,11 +135,11 @@ persist.
 
 **Files:**
 
-`workflows/test-call/MAIN.md`:
+`workflows/test_cases/MAIN.md`:
 ```markdown
 You are managing a task. You need to find out information about a topic.
 
-Read sandbox/input.txt to see what topic to research.
+Read workflows/test_cases/test_files/research-input.txt to see what topic to research.
 
 Then signal that you want to delegate the research:
 <call return="SUMMARIZE.md">RESEARCH.md</call>
@@ -123,9 +148,9 @@ Then signal that you want to delegate the research:
 Note: The `return="SUMMARIZE.md"` attribute tells the orchestrator which state
 to resume at when the called RESEARCH.md workflow completes.
 
-`workflows/test-call/RESEARCH.md`:
+`workflows/test_cases/RESEARCH.md`:
 ```markdown
-You are a research assistant. Read sandbox/input.txt for the topic.
+You are a research assistant. Read workflows/test_cases/test_files/research-input.txt for the topic.
 
 Do some "research" by making up 3 interesting fictional facts about this topic.
 Be creative and specific.
@@ -141,30 +166,30 @@ Three facts about [topic]:
 Do not include any other protocol tags.
 ```
 
-`workflows/test-call/SUMMARIZE.md`:
+`workflows/test_cases/SUMMARIZE.md`:
 ```markdown
 You received research results from your assistant:
 
 {{result}}
 
-Write a one-paragraph summary of the research to sandbox/output.txt.
+Write a one-paragraph summary of the research to workflows/test_cases/test_files/research-summary.txt.
 
 Mention at least two of the facts from the research in your summary.
 
 Then respond with:
-<result>Summary written to sandbox/output.txt</result>
+<result>Summary written to workflows/test_cases/test_files/research-summary.txt</result>
 ```
 
 Note: The `{{result}}` placeholder is replaced with the content from the
 child's `<result>` tag. This is how the parent receives the child's return value.
 
 **Test procedure:**
-1. Write "purple elephants" to `sandbox/input.txt`
-2. Start workflow at MAIN.md
+1. Write "purple elephants" to `workflows/test_cases/test_files/research-input.txt`
+2. Start workflow: `python main.py start workflows/test_cases/MAIN.md`
 3. Verify it calls RESEARCH.md as a child workflow
 4. Verify RESEARCH.md returns facts about purple elephants via `<result>` tag
 5. Verify parent resumes at SUMMARIZE.md with `{{result}}` populated
-6. Verify output.txt contains a summary referencing the fictional facts
+6. Verify research-summary.txt contains a summary referencing the fictional facts
 
 **Success criteria:** Child context is isolated, only result returns to parent.
 
@@ -178,12 +203,12 @@ child's `<result>` tag. This is how the parent receives the child's return value
 
 **Files:**
 
-`workflows/test-spawn/DISPATCH.md`:
+`workflows/test_cases/DISPATCH.md`:
 ```markdown
-You are a task dispatcher. Read sandbox/input.txt which contains a list of
+You are a task dispatcher. Read workflows/test_cases/test_files/dispatch-items.txt which contains a list of
 items (one per line).
 
-If the list is empty, write "Dispatched 0 workers" to sandbox/dispatch-log.txt
+If the list is empty, write "Dispatched 0 workers" to workflows/test_cases/test_files/dispatch-log.txt
 and respond with:
 <goto>DONE.md</goto>
 
@@ -191,15 +216,15 @@ Otherwise, respond with:
 <goto>DISPATCH-ANOTHER.md</goto>
 ```
 
-`workflows/test-spawn/DISPATCH-ANOTHER.md`:
+`workflows/test_cases/DISPATCH-ANOTHER.md`:
 ```markdown
 You are dispatching workers one at a time.
 
 From the current conversation context, keep track of which items from
-sandbox/input.txt have already had workers spawned.
+workflows/test_cases/test_files/dispatch-items.txt have already had workers spawned.
 
 If all items already have workers, write "Dispatched N workers" to
-sandbox/dispatch-log.txt (where N is the total count) and respond with:
+workflows/test_cases/test_files/dispatch-log.txt (where N is the total count) and respond with:
 <goto>DONE.md</goto>
 
 Otherwise, choose ONE remaining item that does not yet have a worker and spawn
@@ -210,19 +235,19 @@ exactly one worker by responding with:
 Note: Each `item="..."` attribute becomes metadata for the spawned agent,
 accessible to WORKER.md via template substitution.
 
-`workflows/test-spawn/WORKER.md`:
+`workflows/test_cases/WORKER.md`:
 ```markdown
 Your assigned item is: {{item}}
 
 Write a haiku about this item.
 
-Write your haiku to sandbox/worker-{{item}}.txt.
+Write your haiku to workflows/test_cases/test_files/worker-{{item}}.txt.
 
 Then respond with:
 <result>Haiku written for {{item}}</result>
 ```
 
-`workflows/test-spawn/DONE.md`:
+`workflows/test_cases/DONE.md`:
 ```markdown
 All workers have been dispatched.
 
@@ -236,16 +261,16 @@ to Claude Code. The `{{item}}` placeholder is replaced with the value from the
 metadata through Claude Code's session state.
 
 **Test procedure:**
-1. Write three items to `sandbox/input.txt`:
+1. Write three items to `workflows/test_cases/test_files/dispatch-items.txt`:
    ```
    mountains
    rivers
    clouds
    ```
-2. Start workflow at DISPATCH.md
+2. Start workflow: `python main.py start workflows/test_cases/DISPATCH.md`
 3. Verify three independent WORKER agents are spawned (all in same state file)
 4. Verify each worker creates its own output file with a haiku
-5. Verify dispatch-log.txt says "Dispatched 3 workers"
+5. Verify `workflows/test_cases/test_files/dispatch-log.txt` says "Dispatched 3 workers"
 6. Verify all agents complete independently
 
 **Success criteria:** Multiple independent agents run concurrently, each
@@ -262,12 +287,12 @@ limit.
 
 **Files:**
 
-`workflows/test-eval/IMPROVE.md`:
+`workflows/test_cases/IMPROVE.md`:
 ```markdown
-Read sandbox/output.txt (create it if it doesn't exist with "Draft 1").
+Read workflows/test_cases/test_files/improve-output.txt (create it if it doesn't exist with "Draft 1").
 
 "Improve" the content by incrementing the draft number and adding one word.
-Write the result back to sandbox/output.txt.
+Write the result back to workflows/test_cases/test_files/improve-output.txt.
 
 Example: "Draft 1" becomes "Draft 2 banana"
 
@@ -276,18 +301,11 @@ Then request another iteration:
 ```
 
 **Test procedure:**
-1. Delete sandbox/output.txt if it exists
-2. Start workflow at IMPROVE.md with initial state file containing:
-   ```json
-   {
-     "workflow_id": "test-eval-001",
-     "current_state": "IMPROVE.md",
-     "max_iterations": 3,
-     "iteration_count": 0
-   }
-   ```
+1. Delete `workflows/test_cases/test_files/improve-output.txt` if it exists
+2. Start workflow: `python main.py start workflows/test_cases/IMPROVE.md`
+   (Note: Iteration limiting is a future feature - this test documents the intended behavior)
 3. Verify workflow runs exactly 3 times despite AI requesting more iterations
-4. Verify output.txt contains "Draft 3" with two added words
+4. Verify `workflows/test_cases/test_files/improve-output.txt` contains "Draft 3" with two added words
 5. Verify state file shows `iteration_count: 3` and workflow terminated
 
 **Success criteria:** Orchestrator tracks iterations in state file, overrides
@@ -304,11 +322,11 @@ to phase 2 which reads from the file (proving context was discarded).
 
 **Files:**
 
-`workflows/test-reset/PHASE1.md`:
+`workflows/test_cases/PHASE1.md`:
 ```markdown
 You are in phase 1. Generate a random 4-digit number and remember it.
 
-Write "Phase 1 generated: [your number]" to sandbox/output.txt.
+Write "Phase 1 generated: [your number]" to workflows/test_cases/test_files/reset-output.txt.
 
 Also write something that ONLY exists in your context (do not write it to any
 file): "The secret word is: elephant"
@@ -317,13 +335,13 @@ When done, signal a reset to phase 2:
 <reset>PHASE2.md</reset>
 ```
 
-`workflows/test-reset/PHASE2.md`:
+`workflows/test_cases/PHASE2.md`:
 ```markdown
 You are in phase 2, starting with fresh context.
 
-First, read sandbox/output.txt to see what phase 1 generated.
+First, read workflows/test_cases/test_files/reset-output.txt to see what phase 1 generated.
 
-Now answer these questions by appending to sandbox/output.txt:
+Now answer these questions by appending to workflows/test_cases/test_files/reset-output.txt:
 1. What number did phase 1 generate? (read from file)
 2. What was the secret word from phase 1? (you should NOT know this)
 
@@ -334,8 +352,8 @@ Then respond with:
 ```
 
 **Test procedure:**
-1. Start workflow at PHASE1.md
-2. Verify it generates a number and writes to output.txt
+1. Start workflow: `python main.py start workflows/test_cases/PHASE1.md`
+2. Verify it generates a number and writes to `workflows/test_cases/test_files/reset-output.txt`
 3. Verify it resets to PHASE2.md (new session ID in state file)
 4. Verify PHASE2.md can read the number from file
 5. Verify PHASE2.md does NOT know the secret word (context was discarded)
@@ -348,39 +366,52 @@ workflow.
 
 ## Running the Tests
 
-Each test should be runnable independently.
-
-Note: The CLI shown below is illustrative and not implemented yet; it represents
-the intended developer experience once a `raymond` module/CLI exists.
+Each test should be runnable independently using the `start` command with the
+workflow file path:
 
 ```bash
-# Test pure function
-python -m raymond test-pure
+# Test 1: Pure function
+python main.py start workflows/test_cases/CLASSIFY.md
 
-# Test goto/resume
-python -m raymond test-goto
+# Test 2: Goto/resume
+python main.py start workflows/test_cases/START.md
 
-# Test call (child workflow with return)
-python -m raymond test-call
+# Test 3: Call (child workflow with return)
+python main.py start workflows/test_cases/MAIN.md
 
-# Test fork (independent agents)
-python -m raymond test-spawn
+# Test 4: Fork (independent agents)
+python main.py start workflows/test_cases/DISPATCH.md
 
-# Test evaluator override
-python -m raymond test-eval --max-iterations=3
+# Test 5: Evaluator override (future feature)
+python main.py start workflows/test_cases/IMPROVE.md
 
-# Test reset (fresh context)
-python -m raymond test-reset
+# Test 6: Reset (fresh context)
+python main.py start workflows/test_cases/PHASE1.md
 ```
+
+## File Naming
+
+Since all workflow markdown files coexist in `workflows/test_cases/`, each file
+must have a unique name. The examples above use descriptive names that indicate
+their purpose (CLASSIFY.md, START.md, CONFLICT.md, etc.).
+
+Test data files in `test_files/` should also use distinct names to avoid
+collisions between workflows. Examples:
+- `input1.txt`, `input2.txt` (for different workflows)
+- `research-input.txt`, `dispatch-items.txt` (workflow-specific names)
+- `story-output.txt`, `research-summary.txt` (workflow-specific output names)
 
 ## Cleanup
 
-After tests, the sandbox directory can be deleted:
+After tests, the test files directory can be cleaned up:
 
 ```bash
 # Linux / macOS
-rm -rf sandbox/
+rm -rf workflows/test_cases/test_files/*
 
 # Windows (PowerShell)
-Remove-Item -Recurse -Force sandbox
+Remove-Item workflows/test_cases/test_files/* -Force
 ```
+
+Note: The workflow markdown files in `workflows/test_cases/` should be preserved
+as they are the workflow definitions themselves.

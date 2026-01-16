@@ -109,9 +109,7 @@ class TestOrchestratorSessionId:
             from src.orchestrator import run_all_agents
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
-        # Verify session_id was stored in state file after first transition
-        # The workflow completed, so we check state was written correctly
-        final_state = read_state(workflow_id, state_dir=str(state_dir))
-        
-        # After result with empty stack, agents array should be empty (agent terminated)
-        assert final_state["agents"] == []
+        # Verify state file was deleted after workflow completed successfully
+        # Completed workflows should not leave state files behind
+        state_file = Path(state_dir) / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted when workflow completes"

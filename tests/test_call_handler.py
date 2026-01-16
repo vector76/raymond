@@ -29,10 +29,10 @@ class TestCallHandler:
         assert "state" in frame
 
     def test_call_handler_uses_fork_flag(self, tmp_path):
-        """Test 2.5.2: <call> handler uses Claude Code --fork to branch context from caller.
+        """Test 2.5.2: <call> handler uses Claude Code --fork-session to branch context from caller.
         
         This test verifies that the agent state includes fork_session_id indicating that
-        the next Claude Code invocation should use --fork. The actual --fork flag
+        the next Claude Code invocation should use --fork-session. The actual --fork-session flag
         will be passed when step_agent invokes wrap_claude_code.
         """
         scope_dir = str(tmp_path / "workflows" / "test")
@@ -54,7 +54,7 @@ class TestCallHandler:
         frame = updated_agent["stack"][0]
         assert frame["session"] == caller_session
         
-        # Verify fork_session_id is set to trigger --fork in next step_agent invocation
+        # Verify fork_session_id is set to trigger --fork-session in next step_agent invocation
         assert updated_agent["fork_session_id"] == caller_session
 
     def test_call_handler_updates_current_state_to_callee_target(self, tmp_path):

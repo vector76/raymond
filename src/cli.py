@@ -15,6 +15,7 @@ from .state import (
     read_state,
     list_workflows,
     recover_workflows,
+    generate_workflow_id,
 )
 
 
@@ -65,27 +66,30 @@ def setup_logging(verbose: bool = False) -> None:
 
 def cmd_start(args: argparse.Namespace) -> int:
     """Start a new workflow."""
-    workflow_id = args.workflow_id
-    scope_dir = args.scope_dir
-    initial_state = args.initial_state
-    state_dir = args.state_dir
+    # Generate workflow_id if not provided
+    if args.workflow_id is None:
+        workflow_id = generate_workflow_id(state_dir=args.state_dir)
+        print(f"Generated workflow ID: {workflow_id}")
+    else:
+        workflow_id = args.workflow_id
+        # Validate workflow_id if provided
+        error = validate_workflow_id(workflow_id)
+        if error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
     
-    # Validate workflow_id
-    error = validate_workflow_id(workflow_id)
-    if error:
-        print(f"Error: {error}", file=sys.stderr)
-        return 1
-    
-    # Validate scope_dir exists
-    if not Path(scope_dir).is_dir():
-        print(f"Error: Scope directory does not exist: {scope_dir}", file=sys.stderr)
-        return 1
+    # Parse the initial file path to extract scope_dir and initial_state
+    initial_path = Path(args.initial_file)
     
     # Validate initial state file exists
-    initial_path = Path(scope_dir) / initial_state
     if not initial_path.is_file():
         print(f"Error: Initial state file does not exist: {initial_path}", file=sys.stderr)
         return 1
+    
+    # Infer scope directory and initial state filename
+    scope_dir = str(initial_path.parent.resolve())
+    initial_state = initial_path.name
+    state_dir = args.state_dir
     
     # Check if workflow already exists
     existing = list_workflows(state_dir=state_dir)
@@ -101,7 +105,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     print(f"  Scope directory: {scope_dir}")
     print(f"  Initial state: {initial_state}")
     
-    if args.run:
+    if not args.no_run:
         print("\nStarting orchestrator...")
         return cmd_run_workflow(workflow_id, state_dir, args.verbose)
     
@@ -242,21 +246,20 @@ def create_parser() -> argparse.ArgumentParser:
         help="Start a new workflow",
     )
     start_parser.add_argument(
-        "workflow_id",
-        help="Unique identifier for the workflow",
+        "initial_file",
+        help="Path to initial prompt file (e.g., workflows/test/START.md). The containing directory becomes the scope directory.",
     )
     start_parser.add_argument(
-        "scope_dir",
-        help="Directory containing prompt files",
+        "--workflow-id",
+        dest="workflow_id",
+        default=None,
+        help="Unique identifier for the workflow (auto-generated if not provided)",
     )
     start_parser.add_argument(
-        "initial_state",
-        help="Initial prompt filename (e.g., START.md)",
-    )
-    start_parser.add_argument(
-        "--run",
+        "--no-run",
+        dest="no_run",
         action="store_true",
-        help="Immediately run the workflow after creating it",
+        help="Create the workflow without running it (default: runs immediately)",
     )
     start_parser.set_defaults(func=cmd_start)
     

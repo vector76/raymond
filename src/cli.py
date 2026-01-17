@@ -110,7 +110,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     
     if not args.no_run:
         print("\nStarting orchestrator...")
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose)
+        debug = getattr(args, 'debug', False)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug)
     
     print(f"\nRun with: raymond run {workflow_id}")
     return 0
@@ -123,15 +124,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     if error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose)
+    debug = getattr(args, 'debug', False)
+    return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose, debug)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
     
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir))
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug))
         print(f"\nWorkflow '{workflow_id}' completed.")
         return 0
     except FileNotFoundError as e:
@@ -271,6 +273,11 @@ def create_parser() -> argparse.ArgumentParser:
         default=None,
         help="Cost budget limit in USD (default: 1.00). Workflow terminates when total cost exceeds this limit.",
     )
+    start_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode: save Claude Code outputs and state transitions to .raymond/debug/",
+    )
     start_parser.set_defaults(func=cmd_start)
     
     # run command
@@ -281,6 +288,11 @@ def create_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "workflow_id",
         help="Workflow identifier to run",
+    )
+    run_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode: save Claude Code outputs and state transitions to .raymond/debug/",
     )
     run_parser.set_defaults(func=cmd_run)
     

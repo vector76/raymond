@@ -145,10 +145,8 @@ The orchestrator treats `<result>` as a control-flow operation:
 - If there is no caller, `<result>` terminates the workflow successfully.
 
 **Rationale:** Consistent with the transition tag pattern. Explicit is better
-than trying to summarize arbitrary output.
-
-**Alternative considered:** Last paragraph, AI-generated summary, or structured
-JSON output.
+than trying to summarize arbitrary output. The result payload is used directly
+as-is without any transformation or extraction.
 
 **Robustness rule:** If the output contains no valid protocol tag, or multiple
 tags, the orchestrator re-prompts with a short reminder to output exactly one

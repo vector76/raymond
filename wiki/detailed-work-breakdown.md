@@ -167,6 +167,17 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 - [x] **5.1.2** Add cost tracking to workflow state
 - [x] **5.1.3** Implement budget limit enforcement
 
+### Step 5.2: Implicit Transition Optimization
+
+- [ ] **5.2.1** Write tests: when policy has exactly one non-result transition, no tag required
+- [ ] **5.2.2** Write tests: when model emits tag matching policy, validate and accept
+- [ ] **5.2.3** Write tests: when model emits tag not matching policy, raise error
+- [ ] **5.2.4** Write tests: result tags always require explicit emission (even if only one allowed)
+- [ ] **5.2.5** Write tests: multiple allowed transitions still require explicit tag
+- [ ] **5.2.6** Implement logic to detect single-allowed-transition scenarios
+- [ ] **5.2.7** Implement implicit transition fallback when no tag emitted
+- [ ] **5.2.8** Update prompt generation to omit tag requirement when implicit
+
 ### Step 5.3: Workflow Configuration
 
 - [x] **5.3.1** Design YAML frontmatter schema for per-state policy

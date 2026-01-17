@@ -154,3 +154,87 @@ def validate_transition_policy(transition: Transition, policy: Optional[Policy])
             f"Tag '{transition.tag}' is not allowed. "
             f"Allowed tags: {allowed_tags}"
         )
+
+
+def can_use_implicit_transition(policy: Optional[Policy]) -> bool:
+    """Check if implicit transition optimization can be used.
+    
+    Implicit transitions can be used when:
+    - Policy exists and has exactly one allowed transition
+    - The transition is NOT a result tag (result tags have variable payload)
+    - All required information (tag, target, attributes) is predetermined
+    
+    Args:
+        policy: The policy to check (None means no policy)
+        
+    Returns:
+        True if implicit transition can be used, False otherwise
+    """
+    # No policy means we can't use implicit transitions
+    if policy is None:
+        return False
+    
+    # Empty policy means no restrictions, can't use implicit
+    if not policy.allowed_transitions:
+        return False
+    
+    # Must have exactly one allowed transition
+    if len(policy.allowed_transitions) != 1:
+        return False
+    
+    # Get the single allowed transition
+    allowed = policy.allowed_transitions[0]
+    tag = allowed.get("tag")
+    
+    # Result tags cannot be implicit (payload is variable)
+    if tag == "result":
+        return False
+    
+    # For non-result tags, we need at least a target
+    # If target is missing, we can't construct the transition
+    if "target" not in allowed:
+        return False
+    
+    # All checks passed - can use implicit transition
+    return True
+
+
+def get_implicit_transition(policy: Optional[Policy]) -> Transition:
+    """Get the implicit transition from a policy.
+    
+    This function constructs a Transition object from the single allowed
+    transition in the policy. It should only be called when
+    can_use_implicit_transition() returns True.
+    
+    Args:
+        policy: The policy with exactly one non-result allowed transition
+        
+    Returns:
+        Transition object constructed from the policy
+        
+    Raises:
+        ValueError: If policy is None, empty, has multiple transitions,
+                   or the only transition is a result tag
+    """
+    if not can_use_implicit_transition(policy):
+        raise ValueError(
+            "Cannot get implicit transition: policy must have exactly one "
+            "non-result allowed transition"
+        )
+    
+    allowed = policy.allowed_transitions[0]
+    tag = allowed.get("tag")
+    target = allowed.get("target", "")
+    
+    # Build attributes dictionary (exclude 'tag' and 'target' which are not attributes)
+    attributes = {}
+    for key, value in allowed.items():
+        if key not in ("tag", "target"):
+            attributes[key] = value
+    
+    return Transition(
+        tag=tag,
+        target=target,
+        attributes=attributes,
+        payload=""
+    )

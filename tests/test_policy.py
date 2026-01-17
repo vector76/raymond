@@ -399,3 +399,150 @@ class TestValidateTransitionPolicy:
             Transition(tag="result", target="", attributes={}, payload=""),
             policy
         )
+
+
+class TestImplicitTransitions:
+    """Tests for implicit transition optimization feature."""
+
+    def test_can_use_implicit_transition_single_goto(self):
+        """Test that single goto transition can be implicit."""
+        from src.policy import can_use_implicit_transition, get_implicit_transition
+        
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "NEXT.md"}
+            ]
+        )
+        
+        assert can_use_implicit_transition(policy) is True
+        transition = get_implicit_transition(policy)
+        assert transition.tag == "goto"
+        assert transition.target == "NEXT.md"
+        assert transition.attributes == {}
+        assert transition.payload == ""
+
+    def test_can_use_implicit_transition_single_call(self):
+        """Test that single call transition can be implicit."""
+        from src.policy import can_use_implicit_transition, get_implicit_transition
+        
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "call", "target": "RESEARCH.md", "return": "SUMMARIZE.md"}
+            ]
+        )
+        
+        assert can_use_implicit_transition(policy) is True
+        transition = get_implicit_transition(policy)
+        assert transition.tag == "call"
+        assert transition.target == "RESEARCH.md"
+        assert transition.attributes == {"return": "SUMMARIZE.md"}
+        assert transition.payload == ""
+
+    def test_can_use_implicit_transition_single_function(self):
+        """Test that single function transition can be implicit."""
+        from src.policy import can_use_implicit_transition, get_implicit_transition
+        
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "function", "target": "EVAL.md", "return": "NEXT.md"}
+            ]
+        )
+        
+        assert can_use_implicit_transition(policy) is True
+        transition = get_implicit_transition(policy)
+        assert transition.tag == "function"
+        assert transition.target == "EVAL.md"
+        assert transition.attributes == {"return": "NEXT.md"}
+        assert transition.payload == ""
+
+    def test_can_use_implicit_transition_single_fork(self):
+        """Test that single fork transition can be implicit."""
+        from src.policy import can_use_implicit_transition, get_implicit_transition
+        
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "fork", "target": "WORKER.md", "next": "CONTINUE.md"}
+            ]
+        )
+        
+        assert can_use_implicit_transition(policy) is True
+        transition = get_implicit_transition(policy)
+        assert transition.tag == "fork"
+        assert transition.target == "WORKER.md"
+        assert transition.attributes == {"next": "CONTINUE.md"}
+        assert transition.payload == ""
+
+    def test_cannot_use_implicit_transition_result_tag(self):
+        """Test that result tags cannot be implicit (payload is variable)."""
+        from src.policy import can_use_implicit_transition
+        
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "result"}
+            ]
+        )
+        
+        assert can_use_implicit_transition(policy) is False
+
+    def test_cannot_use_implicit_transition_multiple_allowed(self):
+        """Test that multiple allowed transitions cannot be implicit."""
+        from src.policy import can_use_implicit_transition
+        
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "NEXT.md"},
+                {"tag": "goto", "target": "DONE.md"}
+            ]
+        )
+        
+        assert can_use_implicit_transition(policy) is False
+
+    def test_cannot_use_implicit_transition_no_policy(self):
+        """Test that None policy cannot use implicit transitions."""
+        from src.policy import can_use_implicit_transition
+        
+        assert can_use_implicit_transition(None) is False
+
+    def test_cannot_use_implicit_transition_empty_policy(self):
+        """Test that empty policy cannot use implicit transitions."""
+        from src.policy import can_use_implicit_transition
+        
+        policy = Policy(allowed_transitions=[])
+        assert can_use_implicit_transition(policy) is False
+
+    def test_cannot_use_implicit_transition_result_with_other(self):
+        """Test that policy with result and other transitions cannot be implicit."""
+        from src.policy import can_use_implicit_transition
+        
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "NEXT.md"},
+                {"tag": "result"}
+            ]
+        )
+        
+        assert can_use_implicit_transition(policy) is False
+
+    def test_get_implicit_transition_raises_when_not_applicable(self):
+        """Test that get_implicit_transition raises when not applicable."""
+        from src.policy import get_implicit_transition
+        
+        # Multiple transitions
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "NEXT.md"},
+                {"tag": "goto", "target": "DONE.md"}
+            ]
+        )
+        
+        with pytest.raises(ValueError, match="Cannot get implicit transition"):
+            get_implicit_transition(policy)
+        
+        # Result tag
+        policy = Policy(allowed_transitions=[{"tag": "result"}])
+        with pytest.raises(ValueError, match="Cannot get implicit transition"):
+            get_implicit_transition(policy)
+        
+        # None policy
+        with pytest.raises(ValueError, match="Cannot get implicit transition"):
+            get_implicit_transition(None)

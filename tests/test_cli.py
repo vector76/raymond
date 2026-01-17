@@ -28,7 +28,11 @@ class TestCLIStart:
             initial_file=str(initial_file),
             state_dir=str(state_dir),
             no_run=True,
-            verbose=False
+            verbose=False,
+            budget=None,
+            debug=False,
+            model=None,
+            timeout=None
         )
         
         # Run start command
@@ -69,7 +73,11 @@ class TestCLIStart:
             initial_file=str(initial_file),
             state_dir=str(state_dir),
             no_run=True,
-            verbose=False
+            verbose=False,
+            budget=None,
+            debug=False,
+            model=None,
+            timeout=None
         )
         
         # Run start command
@@ -111,7 +119,11 @@ class TestCLIStart:
             initial_file=str(initial_file),
             state_dir=str(state_dir),
             no_run=True,
-            verbose=False
+            verbose=False,
+            budget=None,
+            debug=False,
+            model=None,
+            timeout=None
         )
         
         # Run start command
@@ -130,7 +142,11 @@ class TestCLIStart:
             initial_file=str(tmp_path / "nonexistent" / "START.md"),
             state_dir=str(state_dir),
             no_run=True,
-            verbose=False
+            verbose=False,
+            budget=None,
+            debug=False,
+            model=None,
+            timeout=None
         )
         
         # Run start command

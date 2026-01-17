@@ -23,6 +23,52 @@ from .state import (
 WORKFLOW_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
+def positive_float_or_zero(value: str) -> float:
+    """Argparse type for non-negative float values (used for timeout).
+    
+    Args:
+        value: String value from command line
+        
+    Returns:
+        Float value if valid
+        
+    Raises:
+        argparse.ArgumentTypeError: If value is negative
+    """
+    try:
+        fval = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid float value: '{value}'")
+    
+    if fval < 0:
+        raise argparse.ArgumentTypeError(f"timeout must be non-negative, got {fval}")
+    
+    return fval
+
+
+def positive_float(value: str) -> float:
+    """Argparse type for positive float values (used for budget).
+    
+    Args:
+        value: String value from command line
+        
+    Returns:
+        Float value if valid
+        
+    Raises:
+        argparse.ArgumentTypeError: If value is not positive
+    """
+    try:
+        fval = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid float value: '{value}'")
+    
+    if fval <= 0:
+        raise argparse.ArgumentTypeError(f"budget must be positive, got {fval}")
+    
+    return fval
+
+
 def validate_workflow_id(workflow_id: str) -> Optional[str]:
     """Validate workflow_id is safe for use in file paths.
     
@@ -112,7 +158,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("\nStarting orchestrator...")
         debug = getattr(args, 'debug', False)
         default_model = getattr(args, 'model', None)
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, default_model)
+        timeout = getattr(args, 'timeout', None)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, default_model, timeout)
     
     print(f"\nRun with: raymond run {workflow_id}")
     return 0
@@ -127,15 +174,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     debug = getattr(args, 'debug', False)
     default_model = getattr(args, 'model', None)
-    return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose, debug, default_model)
+    timeout = getattr(args, 'timeout', None)
+    return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose, debug, default_model, timeout)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False, default_model: Optional[str] = None) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
     
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model))
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout))
         print(f"\nWorkflow '{workflow_id}' completed.")
         return 0
     except FileNotFoundError as e:
@@ -271,7 +319,7 @@ def create_parser() -> argparse.ArgumentParser:
     start_parser.add_argument(
         "--budget",
         dest="budget",
-        type=float,
+        type=positive_float,
         default=None,
         help="Cost budget limit in USD (default: 1.00). Workflow terminates when total cost exceeds this limit.",
     )
@@ -287,6 +335,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Default model to use for Claude Code invocations (opus, sonnet, or haiku). "
              "Can be overridden by 'model' field in prompt file frontmatter. "
              "If not specified, Claude Code uses its default (opus).",
+    )
+    start_parser.add_argument(
+        "--timeout",
+        type=positive_float_or_zero,
+        default=None,
+        help="Timeout in seconds for each Claude Code invocation (default: 600). "
+             "Set to 0 for no timeout.",
     )
     start_parser.set_defaults(func=cmd_start)
     
@@ -311,6 +366,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Default model to use for Claude Code invocations (opus, sonnet, or haiku). "
              "Can be overridden by 'model' field in prompt file frontmatter. "
              "If not specified, Claude Code uses its default (opus).",
+    )
+    run_parser.add_argument(
+        "--timeout",
+        type=positive_float_or_zero,
+        default=None,
+        help="Timeout in seconds for each Claude Code invocation (default: 600). "
+             "Set to 0 for no timeout.",
     )
     run_parser.set_defaults(func=cmd_run)
     

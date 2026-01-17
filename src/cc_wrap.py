@@ -86,7 +86,7 @@ async def wrap_claude_code(
         prompt: The prompt to send to claude
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
-        timeout: Optional timeout in seconds (default: 600). Set to None for no timeout.
+        timeout: Optional timeout in seconds (default: 600). Set to 0 for no timeout.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
@@ -102,7 +102,14 @@ async def wrap_claude_code(
     cmd = _build_claude_command(prompt, model, session_id, **kwargs)
     
     # Use default timeout if not specified
-    effective_timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
+    # timeout=0 means no timeout (None for asyncio.wait_for)
+    # timeout=None means use default
+    if timeout == 0:
+        effective_timeout = None
+    elif timeout is not None:
+        effective_timeout = timeout
+    else:
+        effective_timeout = DEFAULT_TIMEOUT
 
     # Run the command asynchronously and capture stdout
     process = await asyncio.create_subprocess_exec(
@@ -184,7 +191,7 @@ async def wrap_claude_code_stream(
         prompt: The prompt to send to claude
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
-        timeout: Optional timeout in seconds (default: 600). Set to None for no timeout.
+        timeout: Optional timeout in seconds (default: 600). Set to 0 for no timeout.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
@@ -200,7 +207,14 @@ async def wrap_claude_code_stream(
     cmd = _build_claude_command(prompt, model, session_id, **kwargs)
     
     # Use default timeout if not specified
-    effective_timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
+    # timeout=0 means no timeout (None)
+    # timeout=None means use default
+    if timeout == 0:
+        effective_timeout = None
+    elif timeout is not None:
+        effective_timeout = timeout
+    else:
+        effective_timeout = DEFAULT_TIMEOUT
 
     # Run the command asynchronously and capture stdout
     process = await asyncio.create_subprocess_exec(
@@ -215,15 +229,16 @@ async def wrap_claude_code_stream(
     # Read and parse the streamed JSON output line by line
     try:
         async for line in process.stdout:
-            # Check timeout
-            elapsed = loop.time() - start_time
-            if elapsed > effective_timeout:
-                logger.error(f"Claude Code timed out after {effective_timeout}s, killing process")
-                process.kill()
-                await process.wait()
-                raise ClaudeCodeTimeoutError(
-                    f"Claude Code invocation timed out after {effective_timeout} seconds"
-                )
+            # Check timeout (skip if no timeout set)
+            if effective_timeout is not None:
+                elapsed = loop.time() - start_time
+                if elapsed > effective_timeout:
+                    logger.error(f"Claude Code timed out after {effective_timeout}s, killing process")
+                    process.kill()
+                    await process.wait()
+                    raise ClaudeCodeTimeoutError(
+                        f"Claude Code invocation timed out after {effective_timeout} seconds"
+                    )
             
             line = line.decode('utf-8').strip()
             if not line:

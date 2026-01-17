@@ -8,10 +8,11 @@ This document defines the code organization for the raymond project.
 
 ```
 raymond/
-├── main.py                 # Entry point launcher (uses runpy to run src.main)
+├── main.py                 # Entry point launcher (delegates to src.cli)
 ├── src/                    # All source code
 │   ├── __init__.py
-│   ├── main.py            # Main application logic
+│   ├── cli.py             # Command-line interface (argparse)
+│   ├── orchestrator.py    # Main orchestration logic
 │   ├── cc_wrap.py         # Claude code wrapper
 │   └── ...                # Additional modules as needed
 │
@@ -85,18 +86,19 @@ from .models import SomeModel
 
 ### Root main.py (launcher)
 ```python
-# main.py - Simple launcher that runs src.main as a module
-import runpy
+# main.py - Simple launcher that runs the CLI
+import sys
+from src.cli import main
 
 if __name__ == "__main__":
-    runpy.run_module("src.main", run_name="__main__")
+    sys.exit(main())
 ```
 
 **Why this approach?**
 - No `sys.path` manipulation needed
 - IDE can resolve imports statically (ctrl-click works)
 - Clean package structure with proper relative imports
-- Can also run directly: `python -m src.main`
+- Can also run directly: `python -m src.cli`
 
 ## Virtual Environment
 
@@ -109,11 +111,15 @@ source .venv/bin/activate  # Linux/Mac
 ## Running the Application
 
 ```bash
-# Run via root launcher (recommended)
-python main.py
+# Run via installed command (recommended after pip install -e .)
+raymond --help
+raymond start workflows/test_cases/CLASSIFY.md
+
+# Or run via root launcher
+python main.py --help
 
 # Or run directly as a module
-python -m src.main
+python -m src.cli
 ```
 
 ## Running Tests

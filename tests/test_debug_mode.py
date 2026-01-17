@@ -381,7 +381,10 @@ class TestCLIDebugFlag:
             state_dir=str(state_dir),
             no_run=True,
             verbose=False,
-            debug=True
+            budget=None,
+            debug=True,
+            model=None,
+            timeout=None
         )
         
         # Should not raise

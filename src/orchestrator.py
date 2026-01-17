@@ -264,7 +264,7 @@ def save_error_response(
     return error_file
 
 
-async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False, default_model: Optional[str] = None) -> None:
+async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None) -> None:
     """Run all agents in a workflow until they all terminate.
     
     This is the main orchestrator loop that:
@@ -278,6 +278,8 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         workflow_id: Unique identifier for the workflow
         state_dir: Optional custom state directory. If None, uses default.
         debug: If True, enable debug mode (save outputs and log transitions)
+        default_model: Optional model to use if not specified in frontmatter
+        timeout: Optional timeout in seconds for Claude Code invocations (default: 600)
     """
     logger.info(f"Starting orchestrator for workflow: {workflow_id}")
     
@@ -327,7 +329,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             agent_id = agent["id"]
             if agent_id not in running_tasks:
                 task = asyncio.create_task(step_agent(
-                    agent, state, state_dir, debug_dir, agent_step_counters, default_model
+                    agent, state, state_dir, debug_dir, agent_step_counters, default_model, timeout
                 ))
                 running_tasks[agent_id] = task
         
@@ -549,7 +551,8 @@ async def step_agent(
     state_dir: Optional[str] = None,
     debug_dir: Optional[Path] = None,
     agent_step_counters: Optional[Dict[str, int]] = None,
-    default_model: Optional[str] = None
+    default_model: Optional[str] = None,
+    timeout: Optional[float] = None
 ) -> Optional[Dict[str, Any]]:
     """Step a single agent: load prompt, invoke Claude Code, parse output, dispatch.
     
@@ -560,6 +563,7 @@ async def step_agent(
         debug_dir: Optional debug directory path (for saving outputs)
         agent_step_counters: Optional dict to track step numbers per agent
         default_model: Optional model to use if not specified in frontmatter
+        timeout: Optional timeout in seconds for Claude Code invocations (default: 600)
         
     Returns:
         Updated agent state dictionary, or None if agent terminated
@@ -694,6 +698,7 @@ async def step_agent(
                     prompt, 
                     model=model_to_use,
                     session_id=fork_session_id,
+                    timeout=timeout,
                     fork=True
                 )
             else:
@@ -701,7 +706,8 @@ async def step_agent(
                 results, new_session_id = await wrap_claude_code(
                     prompt, 
                     model=model_to_use,
-                    session_id=new_session_id
+                    session_id=new_session_id,
+                    timeout=timeout
                 )
             
             logger.debug(

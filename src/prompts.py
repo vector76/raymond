@@ -1,24 +1,26 @@
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple, Optional
+from .policy import Policy, parse_frontmatter
 
 # Placeholder format for template variables
 PLACEHOLDER_PREFIX = "{{"
 PLACEHOLDER_SUFFIX = "}}"
 
 
-def load_prompt(scope_dir: str, filename: str) -> str:
-    """Load a prompt file from the scope directory.
+def load_prompt(scope_dir: str, filename: str) -> Tuple[str, Optional[Policy]]:
+    """Load a prompt file from the scope directory and parse frontmatter.
     
     Args:
         scope_dir: Directory containing prompt files
         filename: Name of the prompt file to load
         
     Returns:
-        Contents of the prompt file as a string
+        Tuple of (prompt content without frontmatter, Policy object or None)
         
     Raises:
         FileNotFoundError: If the prompt file does not exist
         ValueError: If filename contains path separators (defense in depth)
+        ValueError: If frontmatter contains invalid YAML
     """
     # Defense in depth: validate filename doesn't contain path separators
     if "/" in filename or "\\" in filename:
@@ -33,7 +35,11 @@ def load_prompt(scope_dir: str, filename: str) -> str:
         raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
     
     with open(prompt_path, 'r', encoding='utf-8') as f:
-        return f.read()
+        content = f.read()
+    
+    # Parse frontmatter and return content + policy
+    policy, body = parse_frontmatter(content)
+    return body, policy
 
 
 def render_prompt(template: str, variables: Dict[str, Any]) -> str:

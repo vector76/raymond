@@ -179,42 +179,66 @@ Multi-tag semantics (multiple transition tags in a single Claude Code output) ar
 - Persistent protocol failures should mark the workflow as failed after a small
   number of retries.
 
-## Per-State Policy (Allowed Tags / Allowed Targets)
+## Per-State Policy (Allowed Transitions)
 
 Workflows often want to restrict what a given state is allowed to do (e.g. "this
 state may not fork"). The orchestrator should treat each prompt file as having
 an optional **policy** declared in YAML frontmatter.
 
-Example:
+The policy lists allowed transition combinations explicitly. Each entry specifies
+a tag and its required attributes (target, return, next, etc.).
+
+Example with simple transitions:
 
 ```yaml
 ---
-allowed_tags: [goto, result]
-allowed_targets:
-  goto: [REVIEW.md, DONE.md]
+allowed_transitions:
+  - { tag: goto, target: REVIEW.md }
+  - { tag: goto, target: DONE.md }
+  - { tag: result }
 ---
 ```
 
-More detailed examples can constrain structured transitions:
+Multi-line format (equivalent):
 
 ```yaml
 ---
-allowed_tags: [call, goto, result]
-allowed_targets:
-  goto: [NEXT.md]
-  call:
-    - child: RESEARCH.md
-      return: SUMMARIZE.md
+allowed_transitions:
+  - tag: goto
+    target: REVIEW.md
+  - tag: goto
+    target: DONE.md
+  - tag: result
+---
+```
+
+Structured transitions with attributes:
+
+```yaml
+---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+  - tag: call
+    target: RESEARCH.md
+    return: SUMMARIZE.md
+  - tag: function
+    target: EVAL.md
+    return: NEXT.md
+  - tag: fork
+    target: WORKER.md
+    next: CONTINUE.md
+  - { tag: result }
 ---
 ```
 
 Validation rules:
 
-- If the agent emits a protocol tag that is not in `allowed_tags`, treat as an
+- The agent must emit a transition that exactly matches one of the entries in
+  `allowed_transitions` (tag, target, and all attributes must match).
+- If no matching entry is found, treat as an error and re-prompt (same as
   error and re-prompt (same as “zero/multiple tags”).
-- If the tag targets a filename not permitted by `allowed_targets`, treat as an
-  error and re-prompt.
+- If `allowed_transitions` is not specified, all transitions are allowed.
 
 This policy is also a natural input into a future reminder prompt generator: the
-orchestrator can remind the agent of the exact allowed tags/targets for the
+orchestrator can remind the agent of the exact allowed transitions for the
 current state.

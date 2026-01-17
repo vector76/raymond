@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 from src.orchestrator import run_all_agents
 from src.state import create_initial_state, write_state
 from src.parsing import Transition
+from src.policy import PolicyViolationError
 
 
 class TestBasicOrchestratorLoop:
@@ -232,3 +233,165 @@ class TestBasicOrchestratorLoop:
                 # Should raise an exception for multiple tags
                 with pytest.raises(ValueError, match="Expected exactly one transition"):
                     await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+
+class TestPolicyEnforcement:
+    """Tests for policy enforcement in orchestrator (Step 5.3)."""
+
+    @pytest.mark.asyncio
+    async def test_policy_violation_disallowed_tag_raises(self, tmp_path):
+        """Test that policy violation for disallowed tag raises PolicyViolationError."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-policy-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with policy that disallows fork
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+  - { tag: result }
+---
+# Start Prompt
+This state only allows goto and result.""")
+        
+        # Mock wrap_claude_code to return output with disallowed fork tag
+        mock_output = [{"type": "content", "text": "Some output\n<fork next=\"NEXT.md\">WORKER.md</fork>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            
+            # Should raise PolicyViolationError
+            with pytest.raises(PolicyViolationError, match="Tag 'fork' is not allowed"):
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
+            
+            # Verify error file was created
+            errors_dir = state_dir.parent / "errors"
+            error_files = list(errors_dir.glob(f"{workflow_id}_main_*.txt"))
+            assert len(error_files) > 0, "Error file should be created"
+
+    @pytest.mark.asyncio
+    async def test_policy_violation_disallowed_target_raises(self, tmp_path):
+        """Test that policy violation for disallowed target raises PolicyViolationError."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-policy-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with policy that restricts goto targets
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Start Prompt
+This state only allows goto to NEXT.md.""")
+        
+        # Create OTHER.md file (not allowed by policy)
+        other_file = Path(scope_dir) / "OTHER.md"
+        other_file.write_text("Other prompt")
+        
+        # Mock wrap_claude_code to return output with disallowed target
+        mock_output = [{"type": "content", "text": "Some output\n<goto>OTHER.md</goto>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            
+            # Should raise PolicyViolationError
+            with pytest.raises(PolicyViolationError, match="is not allowed"):
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.asyncio
+    async def test_policy_allows_valid_transition(self, tmp_path):
+        """Test that valid transitions according to policy are allowed."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-policy-003"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with policy
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+  - { tag: result }
+---
+# Start Prompt
+This state allows goto to NEXT.md.""")
+        
+        # Create NEXT.md file (allowed by policy)
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("Next prompt")
+        
+        # Mock wrap_claude_code to return output with allowed transition
+        mock_output = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            # First call returns goto, second call returns result to terminate
+            mock_wrap.side_effect = [
+                (mock_output, None),
+                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
+            ]
+            
+            # Should complete successfully without policy violation
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+            
+            # Verify wrap_claude_code was called
+            assert mock_wrap.called
+
+    @pytest.mark.asyncio
+    async def test_no_policy_allows_all_transitions(self, tmp_path):
+        """Test that absence of policy allows all transitions."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-policy-004"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file without policy (no frontmatter)
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("# Start Prompt\n\nNo policy restrictions.")
+        
+        # Create NEXT.md file
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("Next prompt")
+        
+        # Mock wrap_claude_code to return output with any transition
+        mock_output = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            # First call returns goto, second call returns result to terminate
+            mock_wrap.side_effect = [
+                (mock_output, None),
+                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
+            ]
+            
+            # Should complete successfully (no policy = no restrictions)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+            
+            # Verify wrap_claude_code was called
+            assert mock_wrap.called

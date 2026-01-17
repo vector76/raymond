@@ -742,23 +742,23 @@ This is the start.""")
             assert call_kwargs.get("model") == "sonnet"
 
     @pytest.mark.asyncio
-    async def test_goto_transition_breaks_loop_to_refresh_state(self, tmp_path):
-        """Test that after a goto transition, orchestrator breaks inner loop to re-read state.
+    async def test_goto_transition_uses_updated_state(self, tmp_path):
+        """Test that after a goto transition, the next invocation uses the updated state.
         
-        This test reproduces a bug where after a goto transition, the orchestrator
-        would continue processing without breaking the inner loop, causing the agent
-        to be invoked again with stale state (old current_state).
+        This test verifies that after a goto transition, the agent is invoked with
+        the new state, not the old state.
         
-        The bug manifests when:
+        The correct behavior:
         1. Agent is in STATE_A
         2. Agent transitions via goto to STATE_B
-        3. Orchestrator updates state but doesn't break inner loop
-        4. If there are other agents (workers) or the loop continues, agent might
-           be invoked again with stale STATE_A state
+        3. Orchestrator updates in-memory state
+        4. Next invocation uses STATE_B (not STATE_A again)
         
-        Expected behavior: After goto A -> B, the orchestrator should break the
-        inner loop, re-read state, and create fresh tasks. The agent should only
-        be invoked once in state B, not again in state A.
+        The architecture ensures this by:
+        - Using in-memory state as the single source of truth
+        - Tracking exactly one task per agent via running_tasks dict
+        - When a task completes, removing it and allowing a new task to be created
+          with the updated state
         """
         state_dir = tmp_path / ".raymond" / "state"
         state_dir.mkdir(parents=True)

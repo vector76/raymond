@@ -111,7 +111,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not args.no_run:
         print("\nStarting orchestrator...")
         debug = getattr(args, 'debug', False)
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug)
+        default_model = getattr(args, 'model', None)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, default_model)
     
     print(f"\nRun with: raymond run {workflow_id}")
     return 0
@@ -125,15 +126,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     debug = getattr(args, 'debug', False)
-    return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose, debug)
+    default_model = getattr(args, 'model', None)
+    return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose, debug, default_model)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False, default_model: Optional[str] = None) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
     
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug))
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model))
         print(f"\nWorkflow '{workflow_id}' completed.")
         return 0
     except FileNotFoundError as e:
@@ -278,6 +280,14 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable debug mode: save Claude Code outputs and state transitions to .raymond/debug/",
     )
+    start_parser.add_argument(
+        "--model",
+        choices=["opus", "sonnet", "haiku"],
+        default=None,
+        help="Default model to use for Claude Code invocations (opus, sonnet, or haiku). "
+             "Can be overridden by 'model' field in prompt file frontmatter. "
+             "If not specified, Claude Code uses its default (opus).",
+    )
     start_parser.set_defaults(func=cmd_start)
     
     # run command
@@ -293,6 +303,14 @@ def create_parser() -> argparse.ArgumentParser:
         "--debug",
         action="store_true",
         help="Enable debug mode: save Claude Code outputs and state transitions to .raymond/debug/",
+    )
+    run_parser.add_argument(
+        "--model",
+        choices=["opus", "sonnet", "haiku"],
+        default=None,
+        help="Default model to use for Claude Code invocations (opus, sonnet, or haiku). "
+             "Can be overridden by 'model' field in prompt file frontmatter. "
+             "If not specified, Claude Code uses its default (opus).",
     )
     run_parser.set_defaults(func=cmd_run)
     

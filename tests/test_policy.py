@@ -199,6 +199,84 @@ This is the start.""")
         assert policy is None
         assert content == "# Plain Prompt\n\nNo frontmatter here."
 
+    def test_load_prompt_with_model_in_frontmatter(self, tmp_path):
+        """Test that load_prompt() parses model field from frontmatter."""
+        scope_dir = tmp_path / "workflows" / "test"
+        scope_dir.mkdir(parents=True)
+        
+        prompt_file = scope_dir / "START.md"
+        prompt_file.write_text("""---
+model: sonnet
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Start Prompt
+This is the start.""")
+        
+        content, policy = load_prompt(str(scope_dir), "START.md")
+        
+        assert policy is not None
+        assert policy.model == "sonnet"
+        assert "Start Prompt" in content
+
+    def test_parse_frontmatter_with_model(self):
+        """Test parsing frontmatter with model field."""
+        content = """---
+model: haiku
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Prompt Content
+This is the prompt."""
+        
+        policy, body = parse_frontmatter(content)
+        
+        assert policy is not None
+        assert policy.model == "haiku"
+        assert body.strip() == "# Prompt Content\nThis is the prompt."
+
+    def test_parse_frontmatter_model_normalized_to_lowercase(self):
+        """Test that model field is normalized to lowercase."""
+        content = """---
+model: OpUs
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Prompt"""
+        
+        policy, body = parse_frontmatter(content)
+        
+        assert policy is not None
+        assert policy.model == "opus"
+
+    def test_parse_frontmatter_model_strips_whitespace(self):
+        """Test that model field strips whitespace."""
+        content = """---
+model: " sonnet "
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Prompt"""
+        
+        policy, body = parse_frontmatter(content)
+        
+        assert policy is not None
+        assert policy.model == "sonnet"
+
+    def test_parse_frontmatter_empty_model_treated_as_none(self):
+        """Test that empty model field is treated as None."""
+        content = """---
+model: ""
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Prompt"""
+        
+        policy, body = parse_frontmatter(content)
+        
+        assert policy is not None
+        assert policy.model is None
+
 
 class TestValidateTransitionPolicy:
     """Tests for validate_transition_policy() function."""

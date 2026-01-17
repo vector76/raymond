@@ -4,10 +4,13 @@ This module handles YAML frontmatter parsing and policy enforcement
 for per-state transition restrictions.
 """
 import re
+import logging
 import yaml
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from .parsing import Transition
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,8 +21,11 @@ class Policy:
         allowed_transitions: List of allowed transition combinations.
             Each entry is a dict with 'tag' and optionally 'target', 'return', 'next', etc.
             Example: [{"tag": "goto", "target": "NEXT.md"}, {"tag": "result"}]
+        model: Optional model specification from frontmatter (e.g., "opus", "sonnet", "haiku").
+            If specified, this model will be used for Claude Code invocations for this state.
     """
     allowed_transitions: List[Dict[str, Any]]
+    model: Optional[str] = None
 
 
 class PolicyViolationError(ValueError):
@@ -83,7 +89,31 @@ def parse_frontmatter(content: str) -> tuple[Optional[Policy], str]:
             if isinstance(entry, dict) and "tag" in entry:
                 validated_transitions.append(entry)
         
-        policy = Policy(allowed_transitions=validated_transitions)
+        # Extract model field (optional)
+        model = data.get("model")
+        if model is not None:
+            if not isinstance(model, str):
+                # Model must be a string if present
+                model = None
+            else:
+                # Normalize: strip whitespace and convert to lowercase
+                model = model.strip().lower()
+                # Treat empty strings as None
+                if not model:
+                    model = None
+                # Validate model value (only for Claude Code currently)
+                # Valid values: opus, sonnet, haiku
+                elif model not in ("opus", "sonnet", "haiku"):
+                    # Invalid model - log warning but don't fail
+                    # We'll let Claude Code handle invalid models
+                    # This allows for future expansion to other agent CLIs
+                    logger.warning(
+                        f"Unknown model '{model}' in frontmatter. "
+                        f"Valid values for Claude Code: opus, sonnet, haiku. "
+                        f"Passing to Claude Code as-is."
+                    )
+        
+        policy = Policy(allowed_transitions=validated_transitions, model=model)
         
         return policy, body
     except yaml.YAMLError as e:

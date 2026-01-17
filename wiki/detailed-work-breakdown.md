@@ -169,20 +169,34 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 5.2: Implicit Transition Optimization
 
-- [ ] **5.2.1** Write tests: when policy has exactly one non-result transition, no tag required
-- [ ] **5.2.2** Write tests: when model emits tag matching policy, validate and accept
-- [ ] **5.2.3** Write tests: when model emits tag not matching policy, raise error
-- [ ] **5.2.4** Write tests: result tags always require explicit emission (even if only one allowed)
-- [ ] **5.2.5** Write tests: multiple allowed transitions still require explicit tag
-- [ ] **5.2.6** Implement logic to detect single-allowed-transition scenarios
-- [ ] **5.2.7** Implement implicit transition fallback when no tag emitted
-- [ ] **5.2.8** Update prompt generation to omit tag requirement when implicit
+- [x] **5.2.1** Write tests: when policy has exactly one non-result transition, no tag required
+- [x] **5.2.2** Write tests: when model emits tag matching policy, validate and accept
+- [x] **5.2.3** Write tests: when model emits tag not matching policy, raise error
+- [x] **5.2.4** Write tests: result tags always require explicit emission (even if only one allowed)
+- [x] **5.2.5** Write tests: multiple allowed transitions still require explicit tag
+- [x] **5.2.6** Implement logic to detect single-allowed-transition scenarios
+- [x] **5.2.7** Implement implicit transition fallback when no tag emitted
+- [x] **5.2.8** Update prompt generation to omit tag requirement when implicit
 
 ### Step 5.3: Workflow Configuration
 
 - [x] **5.3.1** Design YAML frontmatter schema for per-state policy
 - [x] **5.3.2** Implement frontmatter parsing in `load_prompt()`
 - [x] **5.3.3** Implement policy enforcement in orchestrator
+
+### Step 5.3.1: Model Selection
+
+- [x] **5.3.1.1** Extend `Policy` dataclass to include optional `model` field
+- [x] **5.3.1.2** Update `parse_frontmatter()` to extract `model` from YAML
+- [x] **5.3.1.3** Update `step_agent()` to accept `default_model` parameter
+- [x] **5.3.1.4** Implement model precedence logic in `step_agent()` (frontmatter > CLI > none)
+- [x] **5.3.1.5** Update `run_all_agents()` to accept and pass `default_model` parameter
+- [x] **5.3.1.6** Add `--model` CLI argument to `start` command
+- [x] **5.3.1.7** Add `--model` CLI argument to `run` command
+- [x] **5.3.1.8** Update CLI to pass `default_model` to `run_all_agents()`
+- [x] **5.3.1.9** Write tests: frontmatter model overrides CLI default
+- [x] **5.3.1.10** Write tests: CLI model used when no frontmatter model
+- [x] **5.3.1.11** Write tests: no model passed when neither frontmatter nor CLI specify
 
 ### Step 5.4: Protocol Reminder
 

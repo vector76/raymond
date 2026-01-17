@@ -1,5 +1,5 @@
 You are a task dispatcher. Read workflows/test_cases/test_files/dispatch-items.txt which contains a list of
-items (one per line).
+items (one per line).  Ignore empty lines, if any.
 
 If the list is empty, write "Dispatched 0 workers" to workflows/test_cases/test_outputs/dispatch-log.txt
 and respond with:

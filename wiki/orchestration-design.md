@@ -619,18 +619,53 @@ Fork adds a new agent to the same state file:
 
 ```python
 # On <fork next="NEXT.md" item="foo">WORKER.md</fork>
+# Extract state name and create compact abbreviation
+state_name = transition.target.replace('.md', '').lower()[:6]  # e.g., "worker"
+# Fork counter ensures unique names even after workers terminate
+fork_counters = state.setdefault("fork_counters", {})
+fork_counters[parent_id] = fork_counters.get(parent_id, 0) + 1
+worker_id = f"{parent_id}.{state_name}{fork_counters[parent_id]}"
+
 new_agent = {
-    "id": generate_agent_id(),
+    "id": worker_id,  # e.g., "main_worker1", "main_worker1_analyz1", etc.
     "current_state": "WORKER.md",
     "session_id": None,  # Fresh session
     "stack": [],         # Empty return stack
-    "metadata": {"item": "foo"}
+    "fork_attributes": {"item": "foo"}  # Available as template variables
 }
 state["agents"].append(new_agent)
 
 # Parent agent continues at NEXT.md (like goto)
 parent_agent["current_state"] = "NEXT.md"
 ```
+
+**Agent Naming Strategy:**
+
+Forked agents are named using a compact hierarchical dot notation with
+state-based abbreviations. Names use persistent counters stored in the state
+file's `fork_counters` dictionary. Each parent agent maintains its own counter
+that increments for each fork, ensuring unique names even if previous workers
+have terminated and been removed from the agents array.
+
+The naming pattern is: `{parent_id}_{state_abbrev}{counter}` where:
+- `state_abbrev` is the first 6 characters of the target state name (lowercase, `.md` removed)
+- `counter` starts at 1 and increments for each fork from that parent
+
+Examples:
+- First fork from `main` to `WORKER.md`: `main_worker1`
+- Second fork from `main` to `WORKER.md`: `main_worker2`
+- Fork from `main` to `ANALYZE.md`: `main_analyz1`
+- Nested fork from `main_worker1` to `ANALYZE.md`: `main_worker1_analyz1`
+- Deeply nested: `main_worker1_analyz1_proces1` (forking to `PROCESS.md`)
+
+This approach guarantees that:
+- Agent names are always unique within a workflow
+- Names are compact and readable even with deep nesting
+- Names are informative, showing both hierarchy and target state
+- Names use underscores, making them valid identifiers
+- Names remain consistent and traceable in debug logs
+- No name reuse occurs even after workers terminate
+- The relationship between parent and worker is clear from the name
 
 The spawned agent:
 - Is added to the `agents` array in the same state file

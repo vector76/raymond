@@ -293,6 +293,11 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
     # Track step numbers per agent for debug file naming
     agent_step_counters: Dict[str, int] = {}
     
+    # Track task generations per agent to detect stale tasks
+    # When we break and re-enter the outer loop, we increment generations
+    # Stale tasks from previous iterations will see mismatched generations and abort
+    task_generations: Dict[str, int] = {}
+    
     while True:
         # Read state file (may raise StateFileError)
         state = read_state(workflow_id, state_dir=state_dir)
@@ -312,10 +317,20 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             extra={"workflow_id": workflow_id, "agent_count": len(state["agents"])}
         )
         
-        # Create async tasks for each agent
+        # Increment generation for all agents - this invalidates any stale tasks from previous iterations
+        for agent in state["agents"]:
+            agent_id = agent["id"]
+            task_generations[agent_id] = task_generations.get(agent_id, 0) + 1
+        
+        # Create async tasks for each agent, passing generation info for stale task detection
         pending_tasks = {}
         for agent in state["agents"]:
-            task = asyncio.create_task(step_agent(agent, state, state_dir, debug_dir, agent_step_counters, default_model))
+            agent_id = agent["id"]
+            generation = task_generations[agent_id]
+            task = asyncio.create_task(step_agent(
+                agent, state, state_dir, debug_dir, agent_step_counters, default_model,
+                task_generation=generation, task_generations_ref=task_generations
+            ))
             pending_tasks[task] = agent
         
         # Wait for any task to complete
@@ -327,6 +342,8 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             
             # Track if agents list changes (termination or fork)
             initial_agent_count = len(state["agents"])
+            # Track if any agent's state changed (for goto/reset transitions)
+            state_changed = False
             
             # Process completed tasks
             for task in done:
@@ -361,6 +378,8 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                                     "new_state": new_state
                                 }
                             )
+                            # Mark that state changed (for goto/reset transitions)
+                            state_changed = True
                         
                         state["agents"][agent_idx] = result
                         # Clear retry counter on success
@@ -386,6 +405,8 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                             a for a in state["agents"]
                             if a["id"] != agent_id
                         ]
+                        # Clean up generation tracking for terminated agent
+                        task_generations.pop(agent_id, None)
                 except (ClaudeCodeError, PromptFileError) as e:
                     # Handle recoverable errors with retry logic
                     agent_idx = next(
@@ -437,6 +458,8 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                             a for a in state["agents"]
                             if a["id"] != agent["id"]
                         ]
+                        # Clean up generation tracking for failed agent
+                        task_generations.pop(agent["id"], None)
                     else:
                         # Keep agent in state for retry (don't advance state)
                         state["agents"][agent_idx] = current_agent
@@ -509,8 +532,12 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             # Write updated state
             write_state(workflow_id, state, state_dir=state_dir)
             
-            # If agents were added or removed, break inner loop to re-read state
-            if len(state["agents"]) != initial_agent_count:
+            # If agents were added/removed or any agent's state changed, break inner loop to re-read state
+            # This ensures that after goto/reset transitions, we create fresh tasks with updated state
+            # Note: We do NOT cancel pending tasks - they may be mid-API-call and cancellation would waste that work.
+            # Instead, stale tasks detect their outdated generation (via task_generations_ref) and abort gracefully
+            # after their API call completes, without logging or processing their results.
+            if len(state["agents"]) != initial_agent_count or state_changed:
                 break
 
 
@@ -520,7 +547,9 @@ async def step_agent(
     state_dir: Optional[str] = None,
     debug_dir: Optional[Path] = None,
     agent_step_counters: Optional[Dict[str, int]] = None,
-    default_model: Optional[str] = None
+    default_model: Optional[str] = None,
+    task_generation: Optional[int] = None,
+    task_generations_ref: Optional[Dict[str, int]] = None
 ) -> Optional[Dict[str, Any]]:
     """Step a single agent: load prompt, invoke Claude Code, parse output, dispatch.
     
@@ -530,6 +559,8 @@ async def step_agent(
         state_dir: Optional custom state directory
         debug_dir: Optional debug directory path (for saving outputs)
         agent_step_counters: Optional dict to track step numbers per agent
+        task_generation: Generation number for this task (for stale task detection)
+        task_generations_ref: Shared dict of current generations per agent
         
     Returns:
         Updated agent state dictionary, or None if agent terminated
@@ -683,6 +714,23 @@ async def step_agent(
                     "result_count": len(results)
                 }
             )
+            
+            # Check if this task has been superseded by a newer generation
+            # This happens when we break the inner loop and create new tasks for the same agent
+            # Stale tasks should abort without logging or processing to avoid duplicate transitions
+            if task_generation is not None and task_generations_ref is not None:
+                current_generation = task_generations_ref.get(agent_id, 0)
+                if current_generation != task_generation:
+                    logger.debug(
+                        f"Agent {agent_id} task superseded (generation {task_generation} vs current {current_generation})",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent_id,
+                            "task_generation": task_generation,
+                            "current_generation": current_generation
+                        }
+                    )
+                    return None  # Abort - a newer task is handling this agent
             
             # Save Claude Code output to debug directory if debug mode is enabled
             if debug_dir is not None and agent_step_counters is not None:
@@ -1042,13 +1090,15 @@ async def step_agent(
         stack_depth = len(agent_copy.get("stack", []))
         
         # Determine new state and whether agent terminated
+        spawned_agent_id = None
         if handler_result is None:
             # Agent terminated
             new_state = None
         elif isinstance(handler_result, tuple):
             # Fork handler - parent agent continues
-            updated_agent, _ = handler_result
+            updated_agent, new_agent = handler_result
             new_state = updated_agent.get("current_state")
+            spawned_agent_id = new_agent.get("id")
         else:
             # Regular handler
             new_state = handler_result.get("current_state")
@@ -1077,6 +1127,10 @@ async def step_agent(
         if transition.tag == "function" or transition.tag == "call":
             if "return" in transition.attributes:
                 metadata["return_state"] = transition.attributes["return"]
+        elif transition.tag == "fork":
+            # Add spawned agent ID for fork transitions
+            if spawned_agent_id:
+                metadata["spawned_agent"] = spawned_agent_id
         elif transition.tag == "result":
             if transition.payload:
                 metadata["result_payload"] = transition.payload
@@ -1285,10 +1339,18 @@ def handle_fork_transition(
     - Parent agent continues at next state (preserves session and stack)
     - Fork attributes (beyond 'next') are available as template variables for new agent
     
+    Agent naming uses persistent fork counters per parent agent to ensure unique
+    names even after previous workers have terminated. Names use a compact
+    hierarchical underscore notation with state-based abbreviations:
+    {parent_id}_{state_abbrev}{counter} where:
+    - state_abbrev is the first 6 characters of the target state name (lowercase, no .md)
+    - counter starts at 1 and increments for each fork from that parent
+    Examples: main_worker1, main_worker1_analyz1, main_dispat1
+    
     Args:
         agent: Agent state dictionary (the parent)
         transition: Transition object with target filename and next attribute
-        state: Full workflow state dictionary (used to check existing agent IDs)
+        state: Full workflow state dictionary (used to track fork counters)
         
     Returns:
         Tuple of (updated parent agent, new worker agent)
@@ -1303,14 +1365,24 @@ def handle_fork_transition(
     next_state = transition.attributes["next"]
     parent_id = agent.get("id", "main")
     
-    # Generate unique ID for new agent
-    # Check existing agent IDs to ensure uniqueness
-    existing_ids = {a.get("id") for a in state.get("agents", [])}
-    worker_id = f"{parent_id}_worker"
-    counter = 1
-    while worker_id in existing_ids:
-        worker_id = f"{parent_id}_worker_{counter}"
-        counter += 1
+    # Extract state name from fork target (e.g., "WORKER.md" -> "worker")
+    # Remove .md extension and convert to lowercase
+    state_name = transition.target
+    if state_name.endswith('.md'):
+        state_name = state_name[:-3]  # Remove .md extension
+    state_name = state_name.lower()
+    
+    # Truncate to 6 characters to keep names compact while informative
+    # This gives us names like "worker", "analyz", "dispat", etc.
+    state_abbrev = state_name[:6] if len(state_name) > 6 else state_name
+    
+    # Generate unique ID for new agent using persistent fork counter
+    # This ensures unique names even if previous workers have terminated
+    # Use underscore notation for hierarchy: parent_state_abbrev{counter}
+    fork_counters = state.setdefault("fork_counters", {})
+    fork_counters[parent_id] = fork_counters.get(parent_id, 0) + 1
+    counter = fork_counters[parent_id]
+    worker_id = f"{parent_id}_{state_abbrev}{counter}"
     
     # Create new worker agent
     new_agent = {

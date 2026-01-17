@@ -57,8 +57,11 @@ class TestForkHandler:
         assert new_agent["id"] != agent["id"]
         assert new_agent["id"] != "main"
         
-        # Verify new agent ID follows a pattern (e.g., "main_worker_1" or similar)
-        assert "worker" in new_agent["id"].lower() or new_agent["id"].startswith(agent["id"])
+        # Verify new agent ID follows the pattern: {parent_id}_{state_abbrev}{counter}
+        # First fork to WORKER.md should be main_worker1
+        assert new_agent["id"] == "main_worker1"
+        assert new_agent["id"].startswith(agent["id"])
+        assert "worker" in new_agent["id"]
 
     def test_new_agent_has_empty_return_stack(self, tmp_path):
         """Test 3.1.3: new agent has empty return stack."""
@@ -201,3 +204,116 @@ class TestForkHandler:
         assert new_agent["fork_attributes"]["priority"] == "high"
         # 'next' should not be in fork_attributes (it's for parent, not worker)
         assert "next" not in new_agent["fork_attributes"]
+    
+    def test_fork_counters_persist_across_multiple_forks(self, tmp_path):
+        """Test that fork counters persist and increment correctly for multiple forks."""
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+        
+        state = {
+            "scope_dir": scope_dir,
+            "agents": [agent]
+        }
+        
+        transition = Transition("fork", "WORKER.md", {"next": "NEXT.md"}, "")
+        
+        # First fork
+        updated_agent, new_agent_1 = handle_fork_transition(agent, transition, state)
+        assert new_agent_1["id"] == "main_worker1"
+        assert state.get("fork_counters", {}).get("main") == 1
+        
+        # Add first worker to agents array (simulating what orchestrator does)
+        state["agents"].append(new_agent_1)
+        
+        # Second fork
+        updated_agent, new_agent_2 = handle_fork_transition(updated_agent, transition, state)
+        assert new_agent_2["id"] == "main_worker2"
+        assert state.get("fork_counters", {}).get("main") == 2
+        
+        # Third fork
+        updated_agent, new_agent_3 = handle_fork_transition(updated_agent, transition, state)
+        assert new_agent_3["id"] == "main_worker3"
+        assert state.get("fork_counters", {}).get("main") == 3
+        
+        # Verify all IDs are unique
+        agent_ids = {new_agent_1["id"], new_agent_2["id"], new_agent_3["id"]}
+        assert len(agent_ids) == 3
+    
+    def test_fork_counters_work_after_worker_termination(self, tmp_path):
+        """Test that fork counters continue incrementing even after workers terminate.
+        
+        This ensures that agent names remain unique even if previous workers
+        have been removed from the agents array.
+        """
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+        
+        state = {
+            "scope_dir": scope_dir,
+            "agents": [agent],
+            "fork_counters": {"main": 2}  # Simulate previous forks
+        }
+        
+        transition = Transition("fork", "WORKER.md", {"next": "NEXT.md"}, "")
+        
+        # Fork should use counter 3, not reuse 1 or 2
+        updated_agent, new_agent = handle_fork_transition(agent, transition, state)
+        assert new_agent["id"] == "main_worker3"
+        assert state.get("fork_counters", {}).get("main") == 3
+    
+    def test_nested_forks_use_hierarchical_naming(self, tmp_path):
+        """Test that nested forks create hierarchical names with state-based abbreviations."""
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+        
+        state = {
+            "scope_dir": scope_dir,
+            "agents": [agent]
+        }
+        
+        # First fork: main -> WORKER.md
+        transition1 = Transition("fork", "WORKER.md", {"next": "NEXT.md"}, "")
+        updated_agent, worker_agent = handle_fork_transition(agent, transition1, state)
+        assert worker_agent["id"] == "main_worker1"
+        state["agents"].append(worker_agent)
+        
+        # Second fork: main_worker1 -> ANALYZE.md (nested)
+        transition2 = Transition("fork", "ANALYZE.md", {"next": "CONTINUE.md"}, "")
+        updated_worker, analyze_agent = handle_fork_transition(worker_agent, transition2, state)
+        assert analyze_agent["id"] == "main_worker1_analyz1"
+        
+        # Third fork: main_worker1_analyz1 -> PROCESS.md (deeply nested)
+        transition3 = Transition("fork", "PROCESS.md", {"next": "DONE.md"}, "")
+        updated_analyze, process_agent = handle_fork_transition(analyze_agent, transition3, state)
+        assert process_agent["id"] == "main_worker1_analyz1_proces1"
+        
+        # Verify state names are truncated to 6 characters
+        assert len("analyz") == 6
+        assert len("proces") == 6
+        
+        # Verify different states create different abbreviations
+        # Note: counter is 2 because we already forked once from main (to WORKER.md)
+        transition4 = Transition("fork", "DISPATCH.md", {"next": "NEXT.md"}, "")
+        updated_agent, dispatch_agent = handle_fork_transition(agent, transition4, state)
+        assert dispatch_agent["id"] == "main_dispat2"  # "dispatch" truncated to 6 chars, counter is 2

@@ -395,3 +395,269 @@ This state allows goto to NEXT.md.""")
             
             # Verify wrap_claude_code was called
             assert mock_wrap.called
+
+
+class TestImplicitTransitions:
+    """Tests for implicit transition optimization (Step 5.2)."""
+
+    @pytest.mark.asyncio
+    async def test_implicit_transition_single_goto_no_tag(self, tmp_path):
+        """Test that single goto transition works without explicit tag."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-implicit-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with single allowed goto transition
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Start Prompt
+This state automatically transitions to NEXT.md.""")
+        
+        # Create NEXT.md file
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("""---
+allowed_transitions:
+  - { tag: result }
+---
+# Next Prompt
+This is the next state.""")
+        
+        # Mock wrap_claude_code to return output WITHOUT tag (should use implicit)
+        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
+        mock_output_result = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            # First call returns no tag (should use implicit goto), second returns result
+            mock_wrap.side_effect = [
+                (mock_output_no_tag, None),
+                (mock_output_result, None)
+            ]
+            
+            # Should complete successfully using implicit transition
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+            
+            # Verify wrap_claude_code was called twice
+            assert mock_wrap.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_implicit_transition_tag_matching_policy_accepted(self, tmp_path):
+        """Test that explicit tag matching policy is accepted even when implicit is available."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-implicit-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with single allowed goto transition
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Start Prompt
+This state automatically transitions to NEXT.md.""")
+        
+        # Create NEXT.md file
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("""---
+allowed_transitions:
+  - { tag: result }
+---
+# Next Prompt
+This is the next state.""")
+        
+        # Mock wrap_claude_code to return output WITH matching tag
+        mock_output_with_tag = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
+        mock_output_result = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            # First call returns matching tag (should be accepted), second returns result
+            mock_wrap.side_effect = [
+                (mock_output_with_tag, None),
+                (mock_output_result, None)
+            ]
+            
+            # Should complete successfully
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+            
+            # Verify wrap_claude_code was called twice
+            assert mock_wrap.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_implicit_transition_tag_not_matching_policy_raises(self, tmp_path):
+        """Test that explicit tag not matching policy raises error even when implicit is available."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-implicit-003"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with single allowed goto transition
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+# Start Prompt
+This state automatically transitions to NEXT.md.""")
+        
+        # Create OTHER.md file (not allowed by policy)
+        other_file = Path(scope_dir) / "OTHER.md"
+        other_file.write_text("Other prompt")
+        
+        # Mock wrap_claude_code to return output with WRONG tag
+        mock_output_wrong_tag = [{"type": "content", "text": "Some output\n<goto>OTHER.md</goto>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output_wrong_tag, None)
+            
+            # Should raise PolicyViolationError
+            with pytest.raises(PolicyViolationError, match="is not allowed"):
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.asyncio
+    async def test_implicit_transition_result_tag_always_required(self, tmp_path):
+        """Test that result tags always require explicit emission even if only one allowed."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-implicit-004"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with single allowed result transition
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: result }
+---
+# Start Prompt
+This state must explicitly emit result tag.""")
+        
+        # Mock wrap_claude_code to return output WITHOUT tag
+        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output_no_tag, None)
+            
+            # Should raise ValueError (no transition found, and result can't be implicit)
+            with pytest.raises(ValueError, match="Expected exactly one transition"):
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.asyncio
+    async def test_implicit_transition_multiple_allowed_still_requires_tag(self, tmp_path):
+        """Test that multiple allowed transitions still require explicit tag."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-implicit-005"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with multiple allowed transitions
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+  - { tag: goto, target: DONE.md }
+---
+# Start Prompt
+This state requires explicit tag.""")
+        
+        # Mock wrap_claude_code to return output WITHOUT tag
+        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output_no_tag, None)
+            
+            # Should raise ValueError (no transition found, multiple allowed so can't be implicit)
+            with pytest.raises(ValueError, match="Expected exactly one transition"):
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.asyncio
+    async def test_implicit_transition_call_with_attributes(self, tmp_path):
+        """Test that implicit transition works for call with return attribute."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-implicit-006"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with single allowed call transition
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - tag: call
+    target: CHILD.md
+    return: RETURN.md
+---
+# Start Prompt
+This state calls CHILD.md.""")
+        
+        # Create CHILD.md and RETURN.md files
+        child_file = Path(scope_dir) / "CHILD.md"
+        child_file.write_text("""---
+allowed_transitions:
+  - { tag: result }
+---
+# Child Prompt""")
+        
+        return_file = Path(scope_dir) / "RETURN.md"
+        return_file.write_text("""---
+allowed_transitions:
+  - { tag: result }
+---
+# Return Prompt""")
+        
+        # Mock wrap_claude_code to return output WITHOUT tag (should use implicit call)
+        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
+        mock_output_result = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            # First call returns no tag (should use implicit call), 
+            # second call (child) returns result,
+            # third call (return) returns result
+            mock_wrap.side_effect = [
+                (mock_output_no_tag, None),
+                (mock_output_result, None),
+                (mock_output_result, None)
+            ]
+            
+            # Should complete successfully using implicit transition
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+            
+            # Verify wrap_claude_code was called three times
+            assert mock_wrap.call_count == 3

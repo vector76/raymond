@@ -242,3 +242,42 @@ Validation rules:
 This policy is also a natural input into a future reminder prompt generator: the
 orchestrator can remind the agent of the exact allowed transitions for the
 current state.
+
+## Implicit Transitions (Optimization)
+
+When a state's policy specifies **exactly one allowed transition** (and it is not
+a `<result>` tag), the orchestrator may optimize by **assuming** that transition
+instead of requiring the model to emit it explicitly.
+
+**Conditions for implicit transition:**
+- The policy specifies exactly one entry in `allowed_transitions`
+- The transition is not `<result>` (result tags always require explicit emission
+  because they carry variable payload content)
+- All required information (tag, target, and all attributes) is predetermined
+  in the policy
+
+**Behavior:**
+- If the model emits **no tag**, the orchestrator uses the implicit transition
+  from the policy.
+- If the model emits a tag, it **must match** the policy exactly. If it doesn't
+  match, that is an error (same as a policy violation).
+- This optimization saves tokens by not requiring the model to emit redundant
+  transition tags when only one path is possible.
+
+**Example:**
+
+```yaml
+---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+```
+
+In this case, the model doesn't need to emit `<goto>NEXT.md</goto>`. The
+orchestrator will automatically use this transition if no tag is found. However,
+if the model does emit `<goto>NEXT.md</goto>`, it will be validated and accepted.
+If the model emits any other tag or a mismatched tag, it's an error.
+
+**Result tags are always explicit:**
+Even if a policy allows only `<result>`, the model must still emit the tag
+because the payload content is variable and cannot be predetermined.

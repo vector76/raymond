@@ -10,7 +10,7 @@ from .cc_wrap import wrap_claude_code
 from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
 from .prompts import load_prompt, render_prompt
 from .parsing import parse_transitions, validate_single_transition, Transition
-from .policy import validate_transition_policy, PolicyViolationError
+from .policy import validate_transition_policy, PolicyViolationError, can_use_implicit_transition, get_implicit_transition
 
 logger = logging.getLogger(__name__)
 
@@ -763,26 +763,59 @@ async def step_agent(
         # Parse transitions from output normally
         transitions = parse_transitions(output_text)
         
-        # Validate exactly one transition
-        try:
-            validate_single_transition(transitions)
-        except ValueError as e:
-            # Save error information before re-raising
+        # Check if we can use implicit transition optimization
+        if len(transitions) == 0 and can_use_implicit_transition(policy):
+            # No tag emitted, but we have an implicit transition available
+            # Use the implicit transition from the policy
+            transition = get_implicit_transition(policy)
+            logger.debug(
+                f"Using implicit transition for agent {agent_id}: {transition.tag} -> {transition.target}",
+                extra={
+                    "workflow_id": workflow_id,
+                    "agent_id": agent_id,
+                    "transition_tag": transition.tag,
+                    "transition_target": transition.target
+                }
+            )
+        elif len(transitions) == 0:
+            # No tag emitted and no implicit transition available
+            # This is an error
+            error = ValueError(
+                "Expected exactly one transition, found 0"
+            )
             save_error_response(
                 workflow_id=workflow_id,
                 agent_id=agent_id,
-                error=e,
+                error=error,
                 output_text=output_text,
                 raw_results=results,
                 session_id=new_session_id,
                 current_state=current_state,
                 state_dir=state_dir
             )
-            # Mark that this error was already saved to avoid duplicate saves
-            e._error_saved = True
-            raise
-        
-        transition = transitions[0]
+            error._error_saved = True
+            raise error
+        else:
+            # Tag(s) were emitted - validate exactly one
+            try:
+                validate_single_transition(transitions)
+            except ValueError as e:
+                # Save error information before re-raising
+                save_error_response(
+                    workflow_id=workflow_id,
+                    agent_id=agent_id,
+                    error=e,
+                    output_text=output_text,
+                    raw_results=results,
+                    session_id=new_session_id,
+                    current_state=current_state,
+                    state_dir=state_dir
+                )
+                # Mark that this error was already saved to avoid duplicate saves
+                e._error_saved = True
+                raise
+            
+            transition = transitions[0]
     
     logger.debug(
         f"Parsed transition for agent {agent_id}: {transition.tag} -> {transition.target}",

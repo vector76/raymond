@@ -29,3 +29,6 @@ build/
 .DS_Store
 Thumbs.db
 /.raymond
+
+# Test outputs
+workflows/test_cases/test_outputs/

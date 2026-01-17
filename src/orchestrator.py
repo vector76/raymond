@@ -70,6 +70,104 @@ class RecoveryStrategy:
 MAX_RETRIES = 3
 
 
+def create_debug_directory(workflow_id: str, state_dir: Optional[str] = None) -> Optional[Path]:
+    """Create debug directory for workflow execution.
+    
+    Args:
+        workflow_id: Workflow identifier
+        state_dir: Optional custom state directory (used to determine .raymond location)
+        
+    Returns:
+        Path to debug directory, or None if creation fails
+    """
+    # Determine base directory (same parent as state_dir)
+    state_path = get_state_dir(state_dir)
+    base_dir = state_path.parent  # .raymond/
+    
+    # Generate timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create debug directory path
+    debug_dir = base_dir / "debug" / f"{workflow_id}_{timestamp}"
+    
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        return debug_dir
+    except OSError as e:
+        logger.warning(f"Failed to create debug directory: {e}")
+        return None
+
+
+def save_claude_output(
+    debug_dir: Path,
+    agent_id: str,
+    state_name: str,
+    step_number: int,
+    results: List[Dict[str, Any]]
+) -> None:
+    """Save Claude Code JSON output to debug directory.
+    
+    Args:
+        debug_dir: Debug directory path
+        agent_id: Agent identifier
+        state_name: State name (filename without .md)
+        step_number: Step number for this agent
+        results: Raw JSON results from Claude Code
+    """
+    filename = f"{agent_id}_{state_name}_{step_number:03d}.json"
+    filepath = debug_dir / filename
+    
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        logger.warning(f"Failed to save Claude output to {filepath}: {e}")
+
+
+def log_state_transition(
+    debug_dir: Optional[Path],
+    timestamp: datetime,
+    agent_id: str,
+    old_state: str,
+    new_state: Optional[str],
+    transition_type: str,
+    transition_target: Optional[str],
+    metadata: Dict[str, Any]
+) -> None:
+    """Log state transition to transitions.log file.
+    
+    Args:
+        debug_dir: Debug directory path (None if debug disabled)
+        timestamp: Transition timestamp
+        agent_id: Agent identifier
+        old_state: Previous state filename
+        new_state: New state filename (None if agent terminated)
+        transition_type: Type of transition (goto, reset, function, call, fork, result)
+        transition_target: Transition target filename
+        metadata: Additional metadata (session_id, cost, stack_depth, etc.)
+    """
+    if debug_dir is None:
+        return
+    
+    log_file = debug_dir / "transitions.log"
+    
+    try:
+        with open(log_file, 'a', encoding='utf-8') as f:
+            # Format log entry
+            if new_state:
+                f.write(f"{timestamp.isoformat()} [{agent_id}] {old_state} -> {new_state} ({transition_type})\n")
+            else:
+                f.write(f"{timestamp.isoformat()} [{agent_id}] {old_state} -> (result, terminated)\n")
+            
+            # Write metadata
+            for key, value in metadata.items():
+                f.write(f"  {key}: {value}\n")
+            
+            f.write("\n")
+    except OSError as e:
+        logger.warning(f"Failed to write to transitions.log: {e}")
+
+
 def save_error_response(
     workflow_id: str,
     agent_id: str,
@@ -164,7 +262,7 @@ def save_error_response(
     return error_file
 
 
-async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
+async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False) -> None:
     """Run all agents in a workflow until they all terminate.
     
     This is the main orchestrator loop that:
@@ -177,8 +275,21 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
     Args:
         workflow_id: Unique identifier for the workflow
         state_dir: Optional custom state directory. If None, uses default.
+        debug: If True, enable debug mode (save outputs and log transitions)
     """
     logger.info(f"Starting orchestrator for workflow: {workflow_id}")
+    
+    # Create debug directory if debug mode is enabled
+    debug_dir = None
+    if debug:
+        debug_dir = create_debug_directory(workflow_id, state_dir=state_dir)
+        if debug_dir:
+            logger.info(f"Debug mode enabled: {debug_dir}")
+        else:
+            logger.warning("Debug mode requested but directory creation failed, continuing without debug")
+    
+    # Track step numbers per agent for debug file naming
+    agent_step_counters: Dict[str, int] = {}
     
     while True:
         # Read state file (may raise StateFileError)
@@ -202,7 +313,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
         # Create async tasks for each agent
         pending_tasks = {}
         for agent in state["agents"]:
-            task = asyncio.create_task(step_agent(agent, state, state_dir))
+            task = asyncio.create_task(step_agent(agent, state, state_dir, debug_dir, agent_step_counters))
             pending_tasks[task] = agent
         
         # Wait for any task to complete
@@ -404,7 +515,9 @@ async def run_all_agents(workflow_id: str, state_dir: str = None) -> None:
 async def step_agent(
     agent: Dict[str, Any],
     state: Dict[str, Any],
-    state_dir: Optional[str] = None
+    state_dir: Optional[str] = None,
+    debug_dir: Optional[Path] = None,
+    agent_step_counters: Optional[Dict[str, int]] = None
 ) -> Optional[Dict[str, Any]]:
     """Step a single agent: load prompt, invoke Claude Code, parse output, dispatch.
     
@@ -412,6 +525,8 @@ async def step_agent(
         agent: Agent state dictionary
         state: Full workflow state dictionary
         state_dir: Optional custom state directory
+        debug_dir: Optional debug directory path (for saving outputs)
+        agent_step_counters: Optional dict to track step numbers per agent
         
     Returns:
         Updated agent state dictionary, or None if agent terminated
@@ -497,6 +612,30 @@ async def step_agent(
                 "result_count": len(results)
             }
         )
+        
+        # Save Claude Code output to debug directory if debug mode is enabled
+        if debug_dir is not None and agent_step_counters is not None:
+            try:
+                # Increment step counter for this agent
+                if agent_id not in agent_step_counters:
+                    agent_step_counters[agent_id] = 0
+                agent_step_counters[agent_id] += 1
+                step_number = agent_step_counters[agent_id]
+                
+                # Extract state name (filename without .md extension)
+                state_name = current_state.replace('.md', '')
+                
+                # Save the JSON output
+                save_claude_output(
+                    debug_dir=debug_dir,
+                    agent_id=agent_id,
+                    state_name=state_name,
+                    step_number=step_number,
+                    results=results
+                )
+            except OSError as e:
+                # Debug operations should not fail the workflow
+                logger.warning(f"Failed to save Claude output for debug: {e}")
     except RuntimeError as e:
         # Wrap RuntimeError from cc_wrap as ClaudeCodeError
         if "Claude command failed" in str(e):
@@ -679,6 +818,69 @@ async def step_agent(
     # Call handler with agent_copy, transition, and state
     # Handlers are sync functions - no await needed
     handler_result = handler(agent_copy, transition, state)
+    
+    # Log state transition for debug mode
+    if debug_dir is not None:
+        old_state = current_state
+        new_state = None
+        transition_target = transition.target
+        stack_depth = len(agent_copy.get("stack", []))
+        
+        # Determine new state and whether agent terminated
+        if handler_result is None:
+            # Agent terminated
+            new_state = None
+        elif isinstance(handler_result, tuple):
+            # Fork handler - parent agent continues
+            updated_agent, _ = handler_result
+            new_state = updated_agent.get("current_state")
+        else:
+            # Regular handler
+            new_state = handler_result.get("current_state")
+        
+        # Prepare metadata
+        metadata = {
+            "stack_depth": stack_depth,
+        }
+        
+        # Add session_id information
+        if new_session_id:
+            if session_id is None:
+                metadata["session_id"] = f"{new_session_id} (new)"
+            else:
+                metadata["session_id"] = f"{new_session_id} (resumed)"
+        elif session_id:
+            metadata["session_id"] = session_id
+        
+        # Add cost information
+        if invocation_cost > 0:
+            metadata["cost"] = f"${invocation_cost:.4f}"
+            total_cost = state.get("total_cost_usd", 0.0)
+            metadata["total_cost"] = f"${total_cost:.4f}"
+        
+        # Add transition-specific metadata
+        if transition.tag == "function" or transition.tag == "call":
+            if "return" in transition.attributes:
+                metadata["return_state"] = transition.attributes["return"]
+        elif transition.tag == "result":
+            if transition.payload:
+                metadata["result_payload"] = transition.payload
+        
+        # Log the transition
+        try:
+            log_state_transition(
+                debug_dir=debug_dir,
+                timestamp=datetime.now(),
+                agent_id=agent_id,
+                old_state=old_state,
+                new_state=new_state,
+                transition_type=transition.tag,
+                transition_target=transition_target,
+                metadata=metadata
+            )
+        except OSError as e:
+            # Debug operations should not fail the workflow
+            logger.warning(f"Failed to log state transition for debug: {e}")
     
     # Fork handler returns a tuple (updated_agent, new_agent)
     # Other handlers return just updated_agent

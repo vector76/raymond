@@ -240,12 +240,6 @@ Add support for lightweight evaluators:
 - Override transition based on evaluator result
 - Cost budget tracking and limits (track cumulative cost from Claude Code invocations, terminate when budget exceeded)
 
-### Step 5.2: Result Extraction
-
-Add configurable result extraction from child workflows:
-- Tag-based extraction (e.g., `<result>...</result>`)
-- Summary generation prompts
-
 ### Step 5.3: Workflow Configuration
 
 Add optional configuration mechanism:

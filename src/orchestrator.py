@@ -34,6 +34,30 @@ class PromptFileError(OrchestratorError):
 StateFileError = StateFileErrorFromState
 
 
+def extract_cost_from_results(results: List[Dict[str, Any]]) -> float:
+    """Extract total_cost_usd from Claude Code response results.
+    
+    Claude Code returns cost information in the final result object.
+    This function searches through the results list for total_cost_usd.
+    
+    Args:
+        results: List of JSON objects from Claude Code stream-json output
+        
+    Returns:
+        Cost in USD (float), or 0.0 if not found
+    """
+    # Search through results for total_cost_usd field
+    # Check in reverse order (final result is likely at the end)
+    for result in reversed(results):
+        if isinstance(result, dict):
+            if "total_cost_usd" in result:
+                cost = result["total_cost_usd"]
+                # Ensure it's a number
+                if isinstance(cost, (int, float)):
+                    return float(cost)
+    return 0.0
+
+
 # Recovery strategies
 class RecoveryStrategy:
     """Recovery strategies for handling errors."""
@@ -540,29 +564,73 @@ async def step_agent(
                             if isinstance(item, dict) and "text" in item:
                                 output_text += item["text"]
     
-    # Parse transitions from output
-    transitions = parse_transitions(output_text)
-    
-    # Validate exactly one transition
-    try:
-        validate_single_transition(transitions)
-    except ValueError as e:
-        # Save error information before re-raising
-        save_error_response(
-            workflow_id=workflow_id,
-            agent_id=agent_id,
-            error=e,
-            output_text=output_text,
-            raw_results=results,
-            session_id=new_session_id,
-            current_state=current_state,
-            state_dir=state_dir
+    # Extract cost from Claude Code response and accumulate in state
+    invocation_cost = extract_cost_from_results(results)
+    if invocation_cost > 0:
+        # Initialize cost tracking if not present (for backward compatibility)
+        if "total_cost_usd" not in state:
+            state["total_cost_usd"] = 0.0
+        state["total_cost_usd"] += invocation_cost
+        
+        logger.info(
+            f"Cost for agent {agent_id} invocation: ${invocation_cost:.4f}, "
+            f"Total cost: ${state['total_cost_usd']:.4f}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "invocation_cost": invocation_cost,
+                "total_cost": state["total_cost_usd"]
+            }
         )
-        # Mark that this error was already saved to avoid duplicate saves
-        e._error_saved = True
-        raise
     
-    transition = transitions[0]
+    # Check budget limit
+    budget_usd = state.get("budget_usd", 1.0)  # Default budget if not set
+    total_cost = state.get("total_cost_usd", 0.0)
+    
+    if total_cost > budget_usd:
+        logger.warning(
+            f"Budget exceeded: ${total_cost:.4f} > ${budget_usd:.4f}. "
+            f"Terminating workflow.",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "total_cost": total_cost,
+                "budget": budget_usd
+            }
+        )
+        # Override transition: force termination by creating a <result> transition
+        # This will terminate the agent cleanly
+        from .parsing import Transition
+        transition = Transition(
+            tag="result",
+            target="",
+            attributes={},
+            payload=f"Workflow terminated: budget exceeded (${total_cost:.4f} > ${budget_usd:.4f})"
+        )
+    else:
+        # Parse transitions from output normally
+        transitions = parse_transitions(output_text)
+        
+        # Validate exactly one transition
+        try:
+            validate_single_transition(transitions)
+        except ValueError as e:
+            # Save error information before re-raising
+            save_error_response(
+                workflow_id=workflow_id,
+                agent_id=agent_id,
+                error=e,
+                output_text=output_text,
+                raw_results=results,
+                session_id=new_session_id,
+                current_state=current_state,
+                state_dir=state_dir
+            )
+            # Mark that this error was already saved to avoid duplicate saves
+            e._error_saved = True
+            raise
+        
+        transition = transitions[0]
     
     logger.debug(
         f"Parsed transition for agent {agent_id}: {transition.tag} -> {transition.target}",

@@ -263,7 +263,7 @@ def save_error_response(
     return error_file
 
 
-async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False) -> None:
+async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False, default_model: Optional[str] = None) -> None:
     """Run all agents in a workflow until they all terminate.
     
     This is the main orchestrator loop that:
@@ -314,7 +314,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         # Create async tasks for each agent
         pending_tasks = {}
         for agent in state["agents"]:
-            task = asyncio.create_task(step_agent(agent, state, state_dir, debug_dir, agent_step_counters))
+            task = asyncio.create_task(step_agent(agent, state, state_dir, debug_dir, agent_step_counters, default_model))
             pending_tasks[task] = agent
         
         # Wait for any task to complete
@@ -518,7 +518,8 @@ async def step_agent(
     state: Dict[str, Any],
     state_dir: Optional[str] = None,
     debug_dir: Optional[Path] = None,
-    agent_step_counters: Optional[Dict[str, int]] = None
+    agent_step_counters: Optional[Dict[str, int]] = None,
+    default_model: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """Step a single agent: load prompt, invoke Claude Code, parse output, dispatch.
     
@@ -593,6 +594,17 @@ async def step_agent(
     # Render template with variables
     prompt = render_prompt(prompt_template, variables)
     
+    # Determine which model to use based on precedence:
+    # 1. Frontmatter model (highest priority)
+    # 2. Default model from CLI (if no frontmatter model)
+    # 3. None (let Claude Code use its default)
+    model_to_use = None
+    if policy and policy.model:
+        model_to_use = policy.model
+    elif default_model:
+        # Normalize CLI model to lowercase for consistency
+        model_to_use = default_model.lower() if isinstance(default_model, str) else default_model
+    
     # Invoke Claude Code (may raise ClaudeCodeError)
     logger.info(
         f"Invoking Claude Code for agent {agent_id}",
@@ -602,7 +614,8 @@ async def step_agent(
             "current_state": current_state,
             "session_id": session_id,
             "fork_session_id": fork_session_id,
-            "using_fork": fork_session_id is not None
+            "using_fork": fork_session_id is not None,
+            "model": model_to_use or "default"
         }
     )
     
@@ -610,11 +623,16 @@ async def step_agent(
         if fork_session_id is not None:
             results, new_session_id = await wrap_claude_code(
                 prompt, 
+                model=model_to_use,
                 session_id=fork_session_id,
                 fork=True
             )
         else:
-            results, new_session_id = await wrap_claude_code(prompt, session_id=session_id)
+            results, new_session_id = await wrap_claude_code(
+                prompt, 
+                model=model_to_use,
+                session_id=session_id
+            )
         
         logger.debug(
             f"Claude Code invocation completed for agent {agent_id}",

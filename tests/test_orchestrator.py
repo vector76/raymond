@@ -661,3 +661,120 @@ allowed_transitions:
             
             # Verify wrap_claude_code was called three times
             assert mock_wrap.call_count == 3
+
+
+class TestModelSelection:
+    """Tests for model selection precedence (Step 5.3.1)."""
+
+    @pytest.mark.asyncio
+    async def test_frontmatter_model_overrides_cli_default(self, tmp_path):
+        """Test 5.3.1.9: frontmatter model overrides CLI default."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-model-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file with model in frontmatter
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+model: haiku
+allowed_transitions:
+  - { tag: result }
+---
+# Start Prompt
+This is the start.""")
+        
+        mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            
+            # Run with CLI default model "sonnet", but frontmatter specifies "haiku"
+            await run_all_agents(workflow_id, state_dir=str(state_dir), default_model="sonnet")
+            
+            # Verify wrap_claude_code was called with haiku (from frontmatter), not sonnet (from CLI)
+            assert mock_wrap.called
+            # Check keyword arguments (call_args is a tuple of (args, kwargs))
+            call_kwargs = mock_wrap.call_args.kwargs
+            assert call_kwargs.get("model") == "haiku"
+
+    @pytest.mark.asyncio
+    async def test_cli_model_used_when_no_frontmatter_model(self, tmp_path):
+        """Test 5.3.1.10: CLI model used when no frontmatter model."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-model-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file WITHOUT model in frontmatter
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: result }
+---
+# Start Prompt
+This is the start.""")
+        
+        mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            
+            # Run with CLI default model "sonnet"
+            await run_all_agents(workflow_id, state_dir=str(state_dir), default_model="sonnet")
+            
+            # Verify wrap_claude_code was called with sonnet (from CLI)
+            assert mock_wrap.called
+            # Check keyword arguments
+            call_kwargs = mock_wrap.call_args.kwargs
+            assert call_kwargs.get("model") == "sonnet"
+
+    @pytest.mark.asyncio
+    async def test_no_model_passed_when_neither_specified(self, tmp_path):
+        """Test 5.3.1.11: no model passed when neither frontmatter nor CLI specify."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-model-003"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt file WITHOUT model in frontmatter
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: result }
+---
+# Start Prompt
+This is the start.""")
+        
+        mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            
+            # Run with no CLI default model (None)
+            await run_all_agents(workflow_id, state_dir=str(state_dir), default_model=None)
+            
+            # Verify wrap_claude_code was called with model=None (or not passed)
+            assert mock_wrap.called
+            # Check keyword arguments
+            call_kwargs = mock_wrap.call_args.kwargs
+            # Model should be None or not in kwargs
+            assert call_kwargs.get("model") is None or "model" not in call_kwargs

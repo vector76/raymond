@@ -246,6 +246,44 @@ Add optional configuration mechanism:
 - YAML frontmatter in prompt files for per-state policy (allowed tags/targets)
 - Or separate workflow definition file
 
+### Step 5.3.1: Model Selection
+
+Add support for specifying which Claude model to use for each state or as a default.
+
+**YAML Frontmatter:**
+- Add optional `model` field to frontmatter (values: "opus", "sonnet", "haiku")
+- Example:
+  ```yaml
+  ---
+  model: sonnet
+  allowed_transitions:
+    - { tag: goto, target: NEXT.md }
+  ---
+  ```
+
+**CLI Parameter:**
+- Add `--model` parameter to `start` and `run` commands
+- Accepts: "opus", "sonnet", or "haiku"
+- Provides default model when frontmatter doesn't specify one
+
+**Precedence:**
+1. Frontmatter `model` field (highest priority) - overrides CLI default
+2. CLI `--model` parameter - used if no frontmatter model
+3. None - Claude Code uses its default (opus) when no `--model` flag is passed
+
+**Implementation:**
+- Extend `Policy` dataclass to include optional `model` field
+- Update `parse_frontmatter()` to extract `model` from YAML
+- Update `step_agent()` to determine model based on precedence
+- Pass determined model to `wrap_claude_code()` (which already accepts `model` parameter)
+- Add `--model` CLI argument to `start` and `run` commands
+- Pass `default_model` through `run_all_agents()` to `step_agent()`
+
+**Deliverable:**
+- Model selection via frontmatter and CLI
+- Precedence logic implemented correctly
+- Tests verifying precedence behavior
+
 ### Step 5.4: Protocol Reminder on Parse Failure
 
 When the model produces zero or multiple protocol tags, instead of raising an

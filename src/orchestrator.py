@@ -293,252 +293,254 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
     # Track step numbers per agent for debug file naming
     agent_step_counters: Dict[str, int] = {}
     
-    # Track task generations per agent to detect stale tasks
-    # When we break and re-enter the outer loop, we increment generations
-    # Stale tasks from previous iterations will see mismatched generations and abort
-    task_generations: Dict[str, int] = {}
+    # Read state once at startup - in-memory state is authoritative during execution
+    # State file is only for crash recovery (written after each step for persistence)
+    state = read_state(workflow_id, state_dir=state_dir)
+    
+    # Track running tasks by agent ID - ensures exactly one task per agent
+    # This makes stale tasks impossible by construction
+    running_tasks: Dict[str, asyncio.Task] = {}
     
     while True:
-        # Read state file (may raise StateFileError)
-        state = read_state(workflow_id, state_dir=state_dir)
-        
         # Exit if no agents remain
         if not state.get("agents", []):
             logger.info(f"Workflow {workflow_id} completed: no agents remaining")
             # Clean up state file - workflow completed successfully
-            # Remove internal tracking data before deletion
             state.pop("_agent_termination_results", None)
             delete_state(workflow_id, state_dir=state_dir)
             logger.debug(f"Deleted state file for completed workflow: {workflow_id}")
             break
         
         logger.debug(
-            f"Workflow {workflow_id}: {len(state['agents'])} agent(s) active",
-            extra={"workflow_id": workflow_id, "agent_count": len(state["agents"])}
+            f"Workflow {workflow_id}: {len(state['agents'])} agent(s) active, "
+            f"{len(running_tasks)} task(s) running",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_count": len(state["agents"]),
+                "running_task_count": len(running_tasks)
+            }
         )
         
-        # Increment generation for all agents - this invalidates any stale tasks from previous iterations
+        # Create tasks only for agents that don't already have a running task
+        # This ensures exactly one task per agent at any time
         for agent in state["agents"]:
             agent_id = agent["id"]
-            task_generations[agent_id] = task_generations.get(agent_id, 0) + 1
+            if agent_id not in running_tasks:
+                task = asyncio.create_task(step_agent(
+                    agent, state, state_dir, debug_dir, agent_step_counters, default_model
+                ))
+                running_tasks[agent_id] = task
         
-        # Create async tasks for each agent, passing generation info for stale task detection
-        pending_tasks = {}
-        for agent in state["agents"]:
-            agent_id = agent["id"]
-            generation = task_generations[agent_id]
-            task = asyncio.create_task(step_agent(
-                agent, state, state_dir, debug_dir, agent_step_counters, default_model,
-                task_generation=generation, task_generations_ref=task_generations
-            ))
-            pending_tasks[task] = agent
+        # If no tasks are running, we're stuck (shouldn't happen normally)
+        if not running_tasks:
+            logger.warning(
+                f"Workflow {workflow_id}: no running tasks but agents remain",
+                extra={"workflow_id": workflow_id, "agents": [a["id"] for a in state["agents"]]}
+            )
+            break
         
         # Wait for any task to complete
-        while pending_tasks:
-            done, pending = await asyncio.wait(
-                pending_tasks.keys(),
-                return_when=asyncio.FIRST_COMPLETED
+        done, _ = await asyncio.wait(
+            running_tasks.values(),
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # Process completed tasks
+        for task in done:
+            # Find which agent this task was for
+            agent_id = next(
+                (aid for aid, t in running_tasks.items() if t is task),
+                None
+            )
+            if agent_id is None:
+                logger.warning("Completed task not found in running_tasks")
+                continue
+            
+            # Remove from running tasks - task is done
+            del running_tasks[agent_id]
+            
+            # Get the agent dict (may have been updated by other operations)
+            agent = next(
+                (a for a in state["agents"] if a["id"] == agent_id),
+                None
             )
             
-            # Track if agents list changes (termination or fork)
-            initial_agent_count = len(state["agents"])
-            # Track if any agent's state changed (for goto/reset transitions)
-            state_changed = False
-            
-            # Process completed tasks
-            for task in done:
-                agent = pending_tasks.pop(task)
-                try:
-                    result = task.result()
-                    # result contains updated agent state or None if agent terminated
-                    if result is not None:
-                        # Update agent in state
-                        agent_idx = next(
-                            (i for i, a in enumerate(state["agents"])
-                             if a["id"] == agent["id"]),
-                            None
-                        )
-                        if agent_idx is None:
-                            logger.warning(
-                                f"Agent {agent['id']} not found in state, skipping update",
-                                extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
-                            )
-                            continue
-                        old_state = state["agents"][agent_idx].get("current_state")
-                        new_state = result.get("current_state")
-                        
-                        # Log state transition
-                        if old_state != new_state:
-                            logger.info(
-                                f"Agent {agent['id']} transition: {old_state} -> {new_state}",
-                                extra={
-                                    "workflow_id": workflow_id,
-                                    "agent_id": agent["id"],
-                                    "old_state": old_state,
-                                    "new_state": new_state
-                                }
-                            )
-                            # Mark that state changed (for goto/reset transitions)
-                            state_changed = True
-                        
-                        state["agents"][agent_idx] = result
-                        # Clear retry counter on success
-                        if "retry_count" in state["agents"][agent_idx]:
-                            del state["agents"][agent_idx]["retry_count"]
-                    else:
-                        # Agent terminated - remove from agents array
-                        agent_id = agent["id"]
-                        # Get termination result from state (stored by handle_result_transition)
-                        termination_results = state.get("_agent_termination_results", {})
-                        termination_result = termination_results.pop(agent_id, "")
-                        
-                        print(f"Agent {agent_id} terminated with result: {termination_result}")
-                        logger.info(
-                            f"Agent {agent_id} terminated",
-                            extra={
-                                "workflow_id": workflow_id,
-                                "agent_id": agent_id,
-                                "result": termination_result
-                            }
-                        )
-                        state["agents"] = [
-                            a for a in state["agents"]
-                            if a["id"] != agent_id
-                        ]
-                        # Clean up generation tracking for terminated agent
-                        task_generations.pop(agent_id, None)
-                except (ClaudeCodeError, PromptFileError) as e:
-                    # Handle recoverable errors with retry logic
+            try:
+                result = task.result()
+                
+                # result contains updated agent state or None if agent terminated
+                if result is not None:
+                    # Update agent in state
                     agent_idx = next(
-                        (i for i, a in enumerate(state["agents"])
-                         if a["id"] == agent["id"]),
+                        (i for i, a in enumerate(state["agents"]) if a["id"] == agent_id),
                         None
                     )
                     if agent_idx is None:
                         logger.warning(
-                            f"Agent {agent['id']} not found in state during error handling",
-                            extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
+                            f"Agent {agent_id} not found in state, skipping update",
+                            extra={"workflow_id": workflow_id, "agent_id": agent_id}
                         )
                         continue
-                    current_agent = state["agents"][agent_idx]
+                    old_state = state["agents"][agent_idx].get("current_state")
+                    new_state = result.get("current_state")
                     
-                    # Increment retry counter
-                    retry_count = current_agent.get("retry_count", 0) + 1
-                    current_agent["retry_count"] = retry_count
+                    # Log state transition
+                    if old_state != new_state:
+                        logger.info(
+                            f"Agent {agent_id} transition: {old_state} -> {new_state}",
+                            extra={
+                                "workflow_id": workflow_id,
+                                "agent_id": agent_id,
+                                "old_state": old_state,
+                                "new_state": new_state
+                            }
+                        )
                     
-                    logger.warning(
-                        f"Agent {agent['id']} error (attempt {retry_count}/{MAX_RETRIES}): {e}",
+                    state["agents"][agent_idx] = result
+                    # Clear retry counter on success
+                    if "retry_count" in state["agents"][agent_idx]:
+                        del state["agents"][agent_idx]["retry_count"]
+                else:
+                    # Agent terminated - remove from agents array
+                    # Get termination result from state (stored by handle_result_transition)
+                    termination_results = state.get("_agent_termination_results", {})
+                    termination_result = termination_results.pop(agent_id, "")
+                    
+                    print(f"Agent {agent_id} terminated with result: {termination_result}")
+                    logger.info(
+                        f"Agent {agent_id} terminated",
                         extra={
                             "workflow_id": workflow_id,
-                            "agent_id": agent["id"],
+                            "agent_id": agent_id,
+                            "result": termination_result
+                        }
+                    )
+                    state["agents"] = [
+                        a for a in state["agents"]
+                        if a["id"] != agent_id
+                    ]
+            except (ClaudeCodeError, PromptFileError) as e:
+                # Handle recoverable errors with retry logic
+                agent_idx = next(
+                    (i for i, a in enumerate(state["agents"]) if a["id"] == agent_id),
+                    None
+                )
+                if agent_idx is None:
+                    logger.warning(
+                        f"Agent {agent_id} not found in state during error handling",
+                        extra={"workflow_id": workflow_id, "agent_id": agent_id}
+                    )
+                    continue
+                current_agent = state["agents"][agent_idx]
+                
+                # Increment retry counter
+                retry_count = current_agent.get("retry_count", 0) + 1
+                current_agent["retry_count"] = retry_count
+                
+                logger.warning(
+                    f"Agent {agent_id} error (attempt {retry_count}/{MAX_RETRIES}): {e}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "error_type": type(e).__name__,
+                        "retry_count": retry_count,
+                        "max_retries": MAX_RETRIES,
+                        "error_message": str(e)
+                    }
+                )
+                
+                if retry_count >= MAX_RETRIES:
+                    # Max retries exceeded - mark agent as failed
+                    logger.error(
+                        f"Agent {agent_id} failed after {MAX_RETRIES} retries. "
+                        f"Marking as failed.",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent_id,
                             "error_type": type(e).__name__,
                             "retry_count": retry_count,
-                            "max_retries": MAX_RETRIES,
                             "error_message": str(e)
                         }
                     )
+                    current_agent["status"] = "failed"
+                    current_agent["error"] = str(e)
+                    # Remove failed agent from active agents
+                    state["agents"] = [
+                        a for a in state["agents"]
+                        if a["id"] != agent_id
+                    ]
+                else:
+                    # Keep agent in state for retry (don't advance state)
+                    # A new task will be created in the next loop iteration
+                    state["agents"][agent_idx] = current_agent
                     
-                    if retry_count >= MAX_RETRIES:
-                        # Max retries exceeded - mark agent as failed
-                        logger.error(
-                            f"Agent {agent['id']} failed after {MAX_RETRIES} retries. "
-                            f"Marking as failed.",
-                            extra={
-                                "workflow_id": workflow_id,
-                                "agent_id": agent["id"],
-                                "error_type": type(e).__name__,
-                                "retry_count": retry_count,
-                                "error_message": str(e)
-                            }
-                        )
-                        current_agent["status"] = "failed"
-                        current_agent["error"] = str(e)
-                        # Remove failed agent from active agents
-                        state["agents"] = [
-                            a for a in state["agents"]
-                            if a["id"] != agent["id"]
-                        ]
-                        # Clean up generation tracking for failed agent
-                        task_generations.pop(agent["id"], None)
-                    else:
-                        # Keep agent in state for retry (don't advance state)
-                        state["agents"][agent_idx] = current_agent
-                        
-                except StateFileError as e:
-                    # State file errors are critical - abort workflow
+            except StateFileError as e:
+                # State file errors are critical - abort workflow
+                logger.error(
+                    f"State file error: {e}. Aborting workflow.",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "error_type": "StateFileError",
+                        "error_message": str(e)
+                    },
+                    exc_info=True
+                )
+                raise
+            except Exception as e:
+                # Unexpected errors - save error info and re-raise
+                # Check if error was already saved in step_agent
+                if getattr(e, '_error_saved', False):
+                    # Error was already saved with full context, just log and re-raise
                     logger.error(
-                        f"State file error: {e}. Aborting workflow.",
+                        f"Unexpected error in agent {agent_id}: {e}",
                         extra={
                             "workflow_id": workflow_id,
-                            "agent_id": agent["id"],
-                            "error_type": "StateFileError",
-                            "error_message": str(e)
-                        },
-                        exc_info=True
-                    )
-                    raise
-                except Exception as e:
-                    # Unexpected errors - save error info and re-raise
-                    # Check if error was already saved in step_agent
-                    if getattr(e, '_error_saved', False):
-                        # Error was already saved with full context, just log and re-raise
-                        logger.error(
-                            f"Unexpected error in agent {agent['id']}: {e}",
-                            extra={
-                                "workflow_id": workflow_id,
-                                "agent_id": agent["id"],
-                                "error_type": type(e).__name__,
-                                "error_message": str(e)
-                            },
-                            exc_info=True
-                        )
-                        raise
-                    
-                    # Error wasn't saved yet - try to extract error context if available
-                    error_output_text = ""
-                    error_raw_results = []
-                    error_session_id = agent.get("session_id")
-                    
-                    logger.error(
-                        f"Unexpected error in agent {agent['id']}: {e}",
-                        extra={
-                            "workflow_id": workflow_id,
-                            "agent_id": agent["id"],
+                            "agent_id": agent_id,
                             "error_type": type(e).__name__,
                             "error_message": str(e)
                         },
                         exc_info=True
                     )
-                    
-                    # Save error information if we have context
-                    # This is for errors that occur outside of step_agent
-                    try:
-                        save_error_response(
-                            workflow_id=workflow_id,
-                            agent_id=agent["id"],
-                            error=e,
-                            output_text=error_output_text or "No output captured",
-                            raw_results=error_raw_results,
-                            session_id=error_session_id,
-                            current_state=agent.get("current_state", "unknown"),
-                            state_dir=state_dir
-                        )
-                    except Exception as save_error:
-                        # Don't fail if we can't save the error
-                        logger.warning(f"Failed to save error response: {save_error}")
-                    
                     raise
-            
-            # Write updated state
-            write_state(workflow_id, state, state_dir=state_dir)
-            
-            # If agents were added/removed or any agent's state changed, break inner loop to re-read state
-            # This ensures that after goto/reset transitions, we create fresh tasks with updated state
-            # Note: We do NOT cancel pending tasks - they may be mid-API-call and cancellation would waste that work.
-            # Instead, stale tasks detect their outdated generation (via task_generations_ref) and abort gracefully
-            # after their API call completes, without logging or processing their results.
-            if len(state["agents"]) != initial_agent_count or state_changed:
-                break
+                
+                # Error wasn't saved yet - try to extract error context if available
+                error_output_text = ""
+                error_raw_results = []
+                error_session_id = agent.get("session_id") if agent else None
+                
+                logger.error(
+                    f"Unexpected error in agent {agent_id}: {e}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    },
+                    exc_info=True
+                )
+                
+                # Save error information if we have context
+                # This is for errors that occur outside of step_agent
+                try:
+                    save_error_response(
+                        workflow_id=workflow_id,
+                        agent_id=agent_id,
+                        error=e,
+                        output_text=error_output_text or "No output captured",
+                        raw_results=error_raw_results,
+                        session_id=error_session_id,
+                        current_state=agent.get("current_state", "unknown") if agent else "unknown",
+                        state_dir=state_dir
+                    )
+                except Exception as save_error:
+                    # Don't fail if we can't save the error
+                    logger.warning(f"Failed to save error response: {save_error}")
+                
+                raise
+        
+        # Write updated state for crash recovery
+        write_state(workflow_id, state, state_dir=state_dir)
 
 
 async def step_agent(
@@ -547,9 +549,7 @@ async def step_agent(
     state_dir: Optional[str] = None,
     debug_dir: Optional[Path] = None,
     agent_step_counters: Optional[Dict[str, int]] = None,
-    default_model: Optional[str] = None,
-    task_generation: Optional[int] = None,
-    task_generations_ref: Optional[Dict[str, int]] = None
+    default_model: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """Step a single agent: load prompt, invoke Claude Code, parse output, dispatch.
     
@@ -559,8 +559,7 @@ async def step_agent(
         state_dir: Optional custom state directory
         debug_dir: Optional debug directory path (for saving outputs)
         agent_step_counters: Optional dict to track step numbers per agent
-        task_generation: Generation number for this task (for stale task detection)
-        task_generations_ref: Shared dict of current generations per agent
+        default_model: Optional model to use if not specified in frontmatter
         
     Returns:
         Updated agent state dictionary, or None if agent terminated
@@ -714,23 +713,6 @@ async def step_agent(
                     "result_count": len(results)
                 }
             )
-            
-            # Check if this task has been superseded by a newer generation
-            # This happens when we break the inner loop and create new tasks for the same agent
-            # Stale tasks should abort without logging or processing to avoid duplicate transitions
-            if task_generation is not None and task_generations_ref is not None:
-                current_generation = task_generations_ref.get(agent_id, 0)
-                if current_generation != task_generation:
-                    logger.debug(
-                        f"Agent {agent_id} task superseded (generation {task_generation} vs current {current_generation})",
-                        extra={
-                            "workflow_id": workflow_id,
-                            "agent_id": agent_id,
-                            "task_generation": task_generation,
-                            "current_generation": current_generation
-                        }
-                    )
-                    return None  # Abort - a newer task is handling this agent
             
             # Save Claude Code output to debug directory if debug mode is enabled
             if debug_dir is not None and agent_step_counters is not None:

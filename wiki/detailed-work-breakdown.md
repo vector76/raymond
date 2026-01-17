@@ -163,9 +163,9 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 5.1: Evaluator Integration
 
-- [ ] **5.1.1** Design evaluator override mechanism
-- [ ] **5.1.2** Add iteration counting to agent state
-- [ ] **5.1.3** Implement iteration limit enforcement
+- [ ] **5.1.1** Design evaluator override mechanism (cost budget)
+- [ ] **5.1.2** Add cost tracking to workflow state
+- [ ] **5.1.3** Implement budget limit enforcement
 
 ### Step 5.2: Result Extraction
 

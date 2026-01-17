@@ -188,18 +188,25 @@ limit is API rate limits and system resources.
 **Alternative considered:** Configurable semaphore limiting concurrent
 invocations.
 
-## Iteration Limits
+## Cost Budget Limits
 
-**Assumption:** Iteration limits are specified in the state file when the
-workflow is started, e.g., `{"max_iterations": 5}`. The orchestrator tracks
-`iteration_count` in the state file and overrides transitions when the limit
-is reached.
+**Assumption:** Cost budget limits are specified in the state file when the
+workflow is started, e.g., `{"budget_usd": 1.00}`. The orchestrator tracks
+`total_cost_usd` in the state file (accumulated from all Claude Code invocations)
+and overrides transitions when the budget is exceeded. Default budget is $1.00
+if not specified.
 
 **Rationale:** Keeps limits external to the prompt files (which don't change
-between runs). Allows the same prompt to be used with different limits.
+between runs). Allows the same prompt to be used with different budgets.
+Directly addresses cost control concerns. More flexible than iteration limits
+since expensive operations naturally consume more budget.
 
-**Alternative considered:** Limits in prompt file frontmatter, or as attributes
-on transition tags.
+**Cost extraction:** Claude Code returns `total_cost_usd` in the final result
+object of each JSON response. The orchestrator extracts this value and
+accumulates it across all invocations.
+
+**Alternative considered:** Iteration limits, time limits, or limits in prompt
+file frontmatter.
 
 ## State File Schema
 

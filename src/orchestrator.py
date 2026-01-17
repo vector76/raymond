@@ -10,7 +10,7 @@ from .cc_wrap import wrap_claude_code
 from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
 from .prompts import load_prompt, render_prompt
 from .parsing import parse_transitions, validate_single_transition, Transition
-from .policy import validate_transition_policy, PolicyViolationError, can_use_implicit_transition, get_implicit_transition
+from .policy import validate_transition_policy, PolicyViolationError, can_use_implicit_transition, get_implicit_transition, should_use_reminder_prompt, generate_reminder_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,7 @@ class RecoveryStrategy:
 
 # Default retry configuration
 MAX_RETRIES = 3
+MAX_REMINDER_ATTEMPTS = 3  # Maximum number of reminder prompts before terminating
 
 
 def create_debug_directory(workflow_id: str, state_dir: Optional[str] = None) -> Optional[Path]:
@@ -592,7 +593,7 @@ async def step_agent(
     variables.update(fork_attributes)
     
     # Render template with variables
-    prompt = render_prompt(prompt_template, variables)
+    base_prompt = render_prompt(prompt_template, variables)
     
     # Determine which model to use based on precedence:
     # 1. Frontmatter model (highest priority)
@@ -605,180 +606,220 @@ async def step_agent(
         # Normalize CLI model to lowercase for consistency
         model_to_use = default_model.lower() if isinstance(default_model, str) else default_model
     
-    # Invoke Claude Code (may raise ClaudeCodeError)
-    logger.info(
-        f"Invoking Claude Code for agent {agent_id}",
-        extra={
-            "workflow_id": workflow_id,
-            "agent_id": agent_id,
-            "current_state": current_state,
-            "session_id": session_id,
-            "fork_session_id": fork_session_id,
-            "using_fork": fork_session_id is not None,
-            "model": model_to_use or "default"
-        }
-    )
+    # Retry loop for reminder prompts
+    # If allowed_transitions are defined, we can re-prompt with reminders
+    # Otherwise, parse failures terminate the agent
+    transition = None
+    new_session_id = session_id
+    reminder_attempt = 0
     
-    try:
-        if fork_session_id is not None:
-            results, new_session_id = await wrap_claude_code(
-                prompt, 
-                model=model_to_use,
-                session_id=fork_session_id,
-                fork=True
-            )
-        else:
-            results, new_session_id = await wrap_claude_code(
-                prompt, 
-                model=model_to_use,
-                session_id=session_id
-            )
+    while transition is None:
+        # Build prompt (base + reminder if this is a retry)
+        prompt = base_prompt
+        if reminder_attempt > 0:
+            # Append reminder prompt
+            try:
+                reminder = generate_reminder_prompt(policy)
+                prompt = base_prompt + reminder
+                logger.info(
+                    f"Re-prompting agent {agent_id} with reminder (attempt {reminder_attempt})",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "current_state": current_state,
+                        "reminder_attempt": reminder_attempt
+                    }
+                )
+            except ValueError as e:
+                # This shouldn't happen if we checked should_use_reminder_prompt
+                logger.error(
+                    f"Failed to generate reminder prompt: {e}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "current_state": current_state
+                    }
+                )
+                raise
         
-        logger.debug(
-            f"Claude Code invocation completed for agent {agent_id}",
+        # Invoke Claude Code (may raise ClaudeCodeError)
+        logger.info(
+            f"Invoking Claude Code for agent {agent_id}",
             extra={
                 "workflow_id": workflow_id,
                 "agent_id": agent_id,
-                "new_session_id": new_session_id,
-                "result_count": len(results)
+                "current_state": current_state,
+                "session_id": new_session_id,
+                "fork_session_id": fork_session_id,
+                "using_fork": fork_session_id is not None,
+                "model": model_to_use or "default",
+                "reminder_attempt": reminder_attempt
             }
         )
         
-        # Save Claude Code output to debug directory if debug mode is enabled
-        if debug_dir is not None and agent_step_counters is not None:
-            try:
-                # Increment step counter for this agent
-                if agent_id not in agent_step_counters:
-                    agent_step_counters[agent_id] = 0
-                agent_step_counters[agent_id] += 1
-                step_number = agent_step_counters[agent_id]
-                
-                # Extract state name (filename without .md extension)
-                state_name = current_state.replace('.md', '')
-                
-                # Save the JSON output
-                save_claude_output(
-                    debug_dir=debug_dir,
-                    agent_id=agent_id,
-                    state_name=state_name,
-                    step_number=step_number,
-                    results=results
+        try:
+            if fork_session_id is not None and reminder_attempt == 0:
+                # Only use fork_session_id on first attempt
+                results, new_session_id = await wrap_claude_code(
+                    prompt, 
+                    model=model_to_use,
+                    session_id=fork_session_id,
+                    fork=True
                 )
-            except OSError as e:
-                # Debug operations should not fail the workflow
-                logger.warning(f"Failed to save Claude output for debug: {e}")
-    except RuntimeError as e:
-        # Wrap RuntimeError from cc_wrap as ClaudeCodeError
-        if "Claude command failed" in str(e):
-            logger.error(
-                f"Claude Code execution failed for agent {agent_id}",
+            else:
+                # Use regular session_id (or new_session_id from previous attempt)
+                results, new_session_id = await wrap_claude_code(
+                    prompt, 
+                    model=model_to_use,
+                    session_id=new_session_id
+                )
+            
+            logger.debug(
+                f"Claude Code invocation completed for agent {agent_id}",
                 extra={
                     "workflow_id": workflow_id,
                     "agent_id": agent_id,
-                    "current_state": current_state,
-                    "error_message": str(e)
+                    "new_session_id": new_session_id,
+                    "result_count": len(results)
                 }
             )
-            # Save error information
-            save_error_response(
-                workflow_id=workflow_id,
-                agent_id=agent_id,
-                error=e,
-                output_text="Claude Code execution failed - no output received",
-                raw_results=[],
-                session_id=session_id or fork_session_id,
-                current_state=current_state,
-                state_dir=state_dir
-            )
-            raise ClaudeCodeError(f"Claude Code execution failed: {e}") from e
-        raise
-    
-    # Extract text output from results
-    # Claude Code stream-json format may vary, so we'll concatenate text fields
-    # Text can be at top level or nested in message.content[].text
-    # Priority: result field (if present, use only that) > message.content > top-level text/content
-    output_text = ""
-    has_result_field = False
-    
-    # First pass: check for result field (highest priority)
-    for result in results:
-        if isinstance(result, dict) and "result" in result and isinstance(result["result"], str):
-            output_text += result["result"]
-            has_result_field = True
-    
-    # If we found a result field, use only that (skip other extraction)
-    if has_result_field:
-        pass  # Already extracted, don't extract from other sources
-    else:
-        # Second pass: extract from message.content or top-level fields
-        for result in results:
-            if isinstance(result, dict):
-                # Check nested message.content structure (Claude Code format)
-                if "message" in result and isinstance(result["message"], dict):
-                    content = result["message"].get("content", [])
-                    if isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and "text" in item:
-                                output_text += item["text"]
-                    elif isinstance(content, str):
-                        output_text += content
-                # Check top-level text field
-                elif "text" in result:
-                    output_text += result["text"]
-                # Check top-level content field
-                elif "content" in result:
-                    if isinstance(result["content"], str):
-                        output_text += result["content"]
-                    elif isinstance(result["content"], list):
-                        for item in result["content"]:
-                            if isinstance(item, dict) and "text" in item:
-                                output_text += item["text"]
-    
-    # Extract cost from Claude Code response and accumulate in state
-    invocation_cost = extract_cost_from_results(results)
-    if invocation_cost > 0:
-        # Initialize cost tracking if not present (for backward compatibility)
-        if "total_cost_usd" not in state:
-            state["total_cost_usd"] = 0.0
-        state["total_cost_usd"] += invocation_cost
+            
+            # Save Claude Code output to debug directory if debug mode is enabled
+            if debug_dir is not None and agent_step_counters is not None:
+                try:
+                    # Increment step counter for this agent
+                    if agent_id not in agent_step_counters:
+                        agent_step_counters[agent_id] = 0
+                    agent_step_counters[agent_id] += 1
+                    step_number = agent_step_counters[agent_id]
+                    
+                    # Extract state name (filename without .md extension)
+                    state_name = current_state.replace('.md', '')
+                    
+                    # Save the JSON output
+                    save_claude_output(
+                        debug_dir=debug_dir,
+                        agent_id=agent_id,
+                        state_name=state_name,
+                        step_number=step_number,
+                        results=results
+                    )
+                except OSError as e:
+                    # Debug operations should not fail the workflow
+                    logger.warning(f"Failed to save Claude output for debug: {e}")
+        except RuntimeError as e:
+            # Wrap RuntimeError from cc_wrap as ClaudeCodeError
+            if "Claude command failed" in str(e):
+                logger.error(
+                    f"Claude Code execution failed for agent {agent_id}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "current_state": current_state,
+                        "error_message": str(e)
+                    }
+                )
+                # Save error information
+                save_error_response(
+                    workflow_id=workflow_id,
+                    agent_id=agent_id,
+                    error=e,
+                    output_text="Claude Code execution failed - no output received",
+                    raw_results=[],
+                    session_id=new_session_id or session_id or fork_session_id,
+                    current_state=current_state,
+                    state_dir=state_dir
+                )
+                raise ClaudeCodeError(f"Claude Code execution failed: {e}") from e
+            raise
         
-        logger.info(
-            f"Cost for agent {agent_id} invocation: ${invocation_cost:.4f}, "
-            f"Total cost: ${state['total_cost_usd']:.4f}",
-            extra={
-                "workflow_id": workflow_id,
-                "agent_id": agent_id,
-                "invocation_cost": invocation_cost,
-                "total_cost": state["total_cost_usd"]
-            }
-        )
-    
-    # Check budget limit
-    budget_usd = state.get("budget_usd", 1.0)  # Default budget if not set
-    total_cost = state.get("total_cost_usd", 0.0)
-    
-    if total_cost > budget_usd:
-        logger.warning(
-            f"Budget exceeded: ${total_cost:.4f} > ${budget_usd:.4f}. "
-            f"Terminating workflow.",
-            extra={
-                "workflow_id": workflow_id,
-                "agent_id": agent_id,
-                "total_cost": total_cost,
-                "budget": budget_usd
-            }
-        )
-        # Override transition: force termination by creating a <result> transition
-        # This will terminate the agent cleanly
-        from .parsing import Transition
-        transition = Transition(
-            tag="result",
-            target="",
-            attributes={},
-            payload=f"Workflow terminated: budget exceeded (${total_cost:.4f} > ${budget_usd:.4f})"
-        )
-    else:
-        # Parse transitions from output normally
+        # Extract text output from results
+        # Claude Code stream-json format may vary, so we'll concatenate text fields
+        # Text can be at top level or nested in message.content[].text
+        # Priority: result field (if present, use only that) > message.content > top-level text/content
+        output_text = ""
+        has_result_field = False
+        
+        # First pass: check for result field (highest priority)
+        for result in results:
+            if isinstance(result, dict) and "result" in result and isinstance(result["result"], str):
+                output_text += result["result"]
+                has_result_field = True
+        
+        # If we found a result field, use only that (skip other extraction)
+        if has_result_field:
+            pass  # Already extracted, don't extract from other sources
+        else:
+            # Second pass: extract from message.content or top-level fields
+            for result in results:
+                if isinstance(result, dict):
+                    # Check nested message.content structure (Claude Code format)
+                    if "message" in result and isinstance(result["message"], dict):
+                        content = result["message"].get("content", [])
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and "text" in item:
+                                    output_text += item["text"]
+                        elif isinstance(content, str):
+                            output_text += content
+                    # Check top-level text field
+                    elif "text" in result:
+                        output_text += result["text"]
+                    # Check top-level content field
+                    elif "content" in result:
+                        if isinstance(result["content"], str):
+                            output_text += result["content"]
+                        elif isinstance(result["content"], list):
+                            for item in result["content"]:
+                                if isinstance(item, dict) and "text" in item:
+                                    output_text += item["text"]
+        
+        # Extract cost from Claude Code response and accumulate in state
+        invocation_cost = extract_cost_from_results(results)
+        if invocation_cost > 0:
+            # Initialize cost tracking if not present (for backward compatibility)
+            if "total_cost_usd" not in state:
+                state["total_cost_usd"] = 0.0
+            state["total_cost_usd"] += invocation_cost
+            
+            logger.info(
+                f"Cost for agent {agent_id} invocation: ${invocation_cost:.4f}, "
+                f"Total cost: ${state['total_cost_usd']:.4f}",
+                extra={
+                    "workflow_id": workflow_id,
+                    "agent_id": agent_id,
+                    "invocation_cost": invocation_cost,
+                    "total_cost": state["total_cost_usd"]
+                }
+            )
+        
+        # Check budget limit
+        budget_usd = state.get("budget_usd", 1.0)  # Default budget if not set
+        total_cost = state.get("total_cost_usd", 0.0)
+        
+        if total_cost > budget_usd:
+            logger.warning(
+                f"Budget exceeded: ${total_cost:.4f} > ${budget_usd:.4f}. "
+                f"Terminating workflow.",
+                extra={
+                    "workflow_id": workflow_id,
+                    "agent_id": agent_id,
+                    "total_cost": total_cost,
+                    "budget": budget_usd
+                }
+            )
+            # Override transition: force termination by creating a <result> transition
+            # This will terminate the agent cleanly
+            from .parsing import Transition
+            transition = Transition(
+                tag="result",
+                target="",
+                attributes={},
+                payload=f"Workflow terminated: budget exceeded (${total_cost:.4f} > ${budget_usd:.4f})"
+            )
+            break
+        
+        # Parse transitions from output
         transitions = parse_transitions(output_text)
         
         # Check if we can use implicit transition optimization
@@ -795,45 +836,155 @@ async def step_agent(
                     "transition_target": transition.target
                 }
             )
+            break
         elif len(transitions) == 0:
             # No tag emitted and no implicit transition available
-            # This is an error
-            error = ValueError(
-                "Expected exactly one transition, found 0"
-            )
-            save_error_response(
-                workflow_id=workflow_id,
-                agent_id=agent_id,
-                error=error,
-                output_text=output_text,
-                raw_results=results,
-                session_id=new_session_id,
-                current_state=current_state,
-                state_dir=state_dir
-            )
-            error._error_saved = True
-            raise error
-        else:
-            # Tag(s) were emitted - validate exactly one
-            try:
-                validate_single_transition(transitions)
-            except ValueError as e:
-                # Save error information before re-raising
+            if should_use_reminder_prompt(policy):
+                # Can re-prompt with reminder
+                reminder_attempt += 1
+                if reminder_attempt >= MAX_REMINDER_ATTEMPTS:
+                    # Too many reminder attempts - terminate
+                    error = ValueError(
+                        f"Expected exactly one transition, found 0 after {MAX_REMINDER_ATTEMPTS} reminder attempts"
+                    )
+                    save_error_response(
+                        workflow_id=workflow_id,
+                        agent_id=agent_id,
+                        error=error,
+                        output_text=output_text,
+                        raw_results=results,
+                        session_id=new_session_id,
+                        current_state=current_state,
+                        state_dir=state_dir
+                    )
+                    error._error_saved = True
+                    raise error
+                # Continue loop to re-prompt with reminder
+                continue
+            else:
+                # No reminder available - terminate with error
+                error = ValueError(
+                    "Expected exactly one transition, found 0"
+                )
                 save_error_response(
                     workflow_id=workflow_id,
                     agent_id=agent_id,
-                    error=e,
+                    error=error,
                     output_text=output_text,
                     raw_results=results,
                     session_id=new_session_id,
                     current_state=current_state,
                     state_dir=state_dir
                 )
-                # Mark that this error was already saved to avoid duplicate saves
-                e._error_saved = True
-                raise
+                error._error_saved = True
+                raise error
+        else:
+            # Tag(s) were emitted - validate exactly one
+            try:
+                validate_single_transition(transitions)
+            except ValueError as e:
+                if should_use_reminder_prompt(policy):
+                    # Can re-prompt with reminder
+                    reminder_attempt += 1
+                    if reminder_attempt >= MAX_REMINDER_ATTEMPTS:
+                        # Too many reminder attempts - terminate
+                        save_error_response(
+                            workflow_id=workflow_id,
+                            agent_id=agent_id,
+                            error=e,
+                            output_text=output_text,
+                            raw_results=results,
+                            session_id=new_session_id,
+                            current_state=current_state,
+                            state_dir=state_dir
+                        )
+                        e._error_saved = True
+                        raise
+                    # Continue loop to re-prompt with reminder
+                    continue
+                else:
+                    # No reminder available - terminate with error
+                    save_error_response(
+                        workflow_id=workflow_id,
+                        agent_id=agent_id,
+                        error=e,
+                        output_text=output_text,
+                        raw_results=results,
+                        session_id=new_session_id,
+                        current_state=current_state,
+                        state_dir=state_dir
+                    )
+                    e._error_saved = True
+                    raise
             
             transition = transitions[0]
+            
+            # Validate transition against state policy (if policy exists)
+            # Policy violations can also trigger reminder prompts if allowed_transitions are defined
+            try:
+                validate_transition_policy(transition, policy)
+            except PolicyViolationError as e:
+                if should_use_reminder_prompt(policy):
+                    # Can re-prompt with reminder
+                    reminder_attempt += 1
+                    logger.warning(
+                        f"Policy violation for agent {agent_id} in state {current_state}: {e}. "
+                        f"Re-prompting with reminder (attempt {reminder_attempt})",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent_id,
+                            "current_state": current_state,
+                            "transition_tag": transition.tag,
+                            "transition_target": transition.target,
+                            "reminder_attempt": reminder_attempt
+                        }
+                    )
+                    if reminder_attempt >= MAX_REMINDER_ATTEMPTS:
+                        # Too many reminder attempts - terminate
+                        save_error_response(
+                            workflow_id=workflow_id,
+                            agent_id=agent_id,
+                            error=e,
+                            output_text=output_text,
+                            raw_results=results,
+                            session_id=new_session_id,
+                            current_state=current_state,
+                            state_dir=state_dir
+                        )
+                        e._error_saved = True
+                        raise
+                    # Reset transition and continue loop to re-prompt with reminder
+                    transition = None
+                    continue
+                else:
+                    # No reminder available - terminate with error
+                    logger.warning(
+                        f"Policy violation for agent {agent_id} in state {current_state}: {e}",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent_id,
+                            "current_state": current_state,
+                            "transition_tag": transition.tag,
+                            "transition_target": transition.target
+                        }
+                    )
+                    # Save error information before re-raising
+                    save_error_response(
+                        workflow_id=workflow_id,
+                        agent_id=agent_id,
+                        error=e,
+                        output_text=output_text,
+                        raw_results=results,
+                        session_id=new_session_id,
+                        current_state=current_state,
+                        state_dir=state_dir
+                    )
+                    # Mark that this error was already saved to avoid duplicate saves
+                    e._error_saved = True
+                    raise
+            
+            # Transition is valid - break out of loop
+            break
     
     logger.debug(
         f"Parsed transition for agent {agent_id}: {transition.tag} -> {transition.target}",
@@ -844,35 +995,6 @@ async def step_agent(
             "transition_target": transition.target
         }
     )
-    
-    # Validate transition against state policy (if policy exists)
-    try:
-        validate_transition_policy(transition, policy)
-    except PolicyViolationError as e:
-        logger.warning(
-            f"Policy violation for agent {agent_id} in state {current_state}: {e}",
-            extra={
-                "workflow_id": workflow_id,
-                "agent_id": agent_id,
-                "current_state": current_state,
-                "transition_tag": transition.tag,
-                "transition_target": transition.target
-            }
-        )
-        # Save error information before re-raising
-        save_error_response(
-            workflow_id=workflow_id,
-            agent_id=agent_id,
-            error=e,
-            output_text=output_text,
-            raw_results=results,
-            session_id=new_session_id,
-            current_state=current_state,
-            state_dir=state_dir
-        )
-        # Mark that this error was already saved to avoid duplicate saves
-        e._error_saved = True
-        raise
     
     # Create a deep copy of agent for handler (to avoid mutating original)
     # Deep copy ensures nested structures like stack are also copied

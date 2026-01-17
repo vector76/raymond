@@ -33,6 +33,31 @@ class PolicyViolationError(ValueError):
     pass
 
 
+def should_use_reminder_prompt(policy: Optional[Policy]) -> bool:
+    """Check if reminder prompt should be used for parse failures.
+    
+    Reminder prompts are only used when:
+    - Policy exists
+    - Policy has non-empty allowed_transitions list
+    
+    If no policy or no allowed_transitions, parse failures should
+    terminate the agent with an error.
+    
+    Args:
+        policy: The policy to check (None means no policy)
+        
+    Returns:
+        True if reminder prompt should be used, False if error should be raised
+    """
+    if policy is None:
+        return False
+    
+    if not policy.allowed_transitions:
+        return False
+    
+    return True
+
+
 def parse_frontmatter(content: str) -> tuple[Optional[Policy], str]:
     """Parse YAML frontmatter from markdown content.
     
@@ -268,3 +293,87 @@ def get_implicit_transition(policy: Optional[Policy]) -> Transition:
         attributes=attributes,
         payload=""
     )
+
+
+def generate_reminder_prompt(policy: Policy) -> str:
+    """Generate a reminder prompt from allowed transitions.
+    
+    This function creates a helpful reminder message that lists all
+    allowed transitions for the current state. It formats the transitions
+    in a clear, readable way that can be appended to the original prompt.
+    
+    Args:
+        policy: The policy containing allowed_transitions
+        
+    Returns:
+        A formatted reminder string listing all allowed transitions
+        
+    Raises:
+        ValueError: If policy is None or has no allowed_transitions
+    """
+    if policy is None:
+        raise ValueError("Cannot generate reminder: policy is None")
+    
+    if not policy.allowed_transitions:
+        raise ValueError("Cannot generate reminder: no allowed_transitions in policy")
+    
+    lines = [
+        "",
+        "---",
+        "REMINDER: You must emit exactly one of the following transition tags:",
+        ""
+    ]
+    
+    for i, allowed in enumerate(policy.allowed_transitions, 1):
+        tag = allowed.get("tag", "")
+        target = allowed.get("target")
+        
+        # Build attributes list (excluding tag and target which are not attributes)
+        attrs = []
+        for key, value in allowed.items():
+            if key not in ("tag", "target"):
+                # Use appropriate quotes to avoid XML parsing issues
+                # The parser supports both single and double quotes
+                value_str = str(value)
+                if '"' in value_str:
+                    # Value contains double quote - use single quotes
+                    # Note: If value contains both quote types, this will still work
+                    # as the parser stops at the first quote, but this edge case
+                    # shouldn't occur in practice (filenames don't contain quotes)
+                    attrs.append(f"{key}='{value_str}'")
+                else:
+                    # No double quotes - use double quotes (standard)
+                    # Single quotes in value are fine with double-quoted attribute
+                    attrs.append(f'{key}="{value_str}"')
+        
+        # Build the complete XML tag string
+        if tag == "result":
+            # Result tag: <result>...</result> with variable payload
+            tag_str = f"<{tag}>...</{tag}>"
+            description = "(return control to caller or terminate)"
+        else:
+            # Other tags: need target, may have attributes
+            if not target:
+                # Missing target is unusual but handle gracefully
+                target = "TARGET"
+            
+            if attrs:
+                # Tag with attributes: <tag attr="value">target</tag>
+                attrs_str = " ".join(attrs)
+                tag_str = f"<{tag} {attrs_str}>{target}</{tag}>"
+            else:
+                # Tag without attributes: <tag>target</tag>
+                tag_str = f"<{tag}>{target}</{tag}>"
+            description = ""
+        
+        # Format the line
+        if description:
+            lines.append(f"{i}. {tag_str} {description}")
+        else:
+            lines.append(f"{i}. {tag_str}")
+    
+    lines.append("")
+    lines.append("Please emit exactly one of these tags in your response.")
+    lines.append("---")
+    
+    return "\n".join(lines)

@@ -174,10 +174,23 @@ Multi-tag semantics (multiple transition tags in a single Claude Code output) ar
 
 ## Error Handling (Protocol Level)
 
-- If the output contains **no valid tag**, or **multiple tags**, the orchestrator
-  should re-prompt with a short reminder to emit exactly one valid tag.
-- Persistent protocol failures should mark the workflow as failed after a small
-  number of retries.
+The orchestrator's error handling behavior depends on whether the state has
+defined `allowed_transitions` in its YAML frontmatter:
+
+**If `allowed_transitions` are defined:**
+- If the output contains **no valid tag**, **multiple tags**, or a **policy
+  violation**, the orchestrator generates a reminder prompt listing all
+  allowed transitions and re-prompts the agent.
+- The reminder prompt is automatically generated from the `allowed_transitions`
+  YAML definition, showing the agent exactly which transitions are permitted.
+- After a small number of reminder attempts (default: 3), persistent failures
+  mark the workflow as failed.
+
+**If `allowed_transitions` are NOT defined (no frontmatter or empty list):**
+- Parse failures (no tag, multiple tags) are treated as errors and the agent
+  terminates immediately.
+- Without the YAML definition, the orchestrator cannot generate a meaningful
+  reminder prompt, so it cannot recover from parse failures.
 
 ## Per-State Policy (Allowed Transitions)
 
@@ -237,11 +250,21 @@ Validation rules:
   `allowed_transitions` (tag, target, and all attributes must match).
 - If no matching entry is found, treat as an error and re-prompt (same as
   error and re-prompt (same as “zero/multiple tags”).
-- If `allowed_transitions` is not specified, all transitions are allowed.
+- If `allowed_transitions` is not specified (no frontmatter or empty list), all
+  transitions are allowed, but parse failures (no tag, multiple tags) will
+  terminate the agent immediately since no reminder can be generated.
 
-This policy is also a natural input into a future reminder prompt generator: the
-orchestrator can remind the agent of the exact allowed transitions for the
-current state.
+**Reminder Prompt Generation:**
+
+When `allowed_transitions` are defined, the orchestrator automatically generates
+reminder prompts from the YAML definition. The reminder lists all permitted
+transitions in a clear format, helping the agent understand exactly which tags
+and targets are valid for the current state. This makes it possible to recover
+from parse failures and policy violations by re-prompting with helpful guidance.
+
+**Important:** Without YAML frontmatter defining `allowed_transitions`, parse
+failures cannot be recovered because the orchestrator has no way to know which
+transitions are expected and cannot generate a meaningful reminder prompt.
 
 ## Implicit Transitions (Optimization)
 

@@ -200,8 +200,8 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 5.4: Protocol Reminder
 
-- [ ] **5.4.1** Design reminder prompt format
-- [ ] **5.4.2** Replace parse error exception with re-prompt logic
+- [x] **5.4.1** Design reminder prompt format
+- [x] **5.4.2** Replace parse error exception with re-prompt logic
 
 ### Step 5.5: Debug Mode
 

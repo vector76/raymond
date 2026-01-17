@@ -149,8 +149,13 @@ than trying to summarize arbitrary output. The result payload is used directly
 as-is without any transformation or extraction.
 
 **Robustness rule:** If the output contains no valid protocol tag, or multiple
-tags, the orchestrator re-prompts with a short reminder to output exactly one
-protocol tag.
+tags, the orchestrator's behavior depends on whether `allowed_transitions` are
+defined in YAML frontmatter:
+- **If `allowed_transitions` are defined:** The orchestrator generates a reminder
+  prompt from the YAML definition listing all allowed transitions and re-prompts
+  the agent.
+- **If `allowed_transitions` are NOT defined:** The orchestrator cannot generate
+  a meaningful reminder, so it terminates the agent with an error.
 
 ## Error Handling Strategy
 

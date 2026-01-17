@@ -238,7 +238,7 @@ Add logging to track:
 Add support for lightweight evaluators:
 - Configurable evaluator prompts
 - Override transition based on evaluator result
-- Iteration counting and limits
+- Cost budget tracking and limits (track cumulative cost from Claude Code invocations, terminate when budget exceeded)
 
 ### Step 5.2: Result Extraction
 

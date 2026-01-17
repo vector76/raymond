@@ -278,12 +278,12 @@ produces its own output.
 
 ---
 
-## Test 5: Evaluator Override
+## Test 5: Evaluator Override (Cost Budget)
 
-**Purpose:** Test orchestrator overriding AI's transition based on iteration
+**Purpose:** Test orchestrator overriding AI's transition based on cost budget
 limit.
 
-**Workflow:** A loop that could run forever, but orchestrator limits iterations.
+**Workflow:** A loop that could run forever, but orchestrator limits total cost.
 
 **Files:**
 
@@ -302,14 +302,14 @@ Then request another iteration:
 
 **Test procedure:**
 1. Delete `workflows/test_cases/test_files/improve-output.txt` if it exists
-2. Start workflow: `python main.py start workflows/test_cases/IMPROVE.md`
-   (Note: Iteration limiting is a future feature - this test documents the intended behavior)
-3. Verify workflow runs exactly 3 times despite AI requesting more iterations
-4. Verify `workflows/test_cases/test_files/improve-output.txt` contains "Draft 3" with two added words
-5. Verify state file shows `iteration_count: 3` and workflow terminated
+2. Start workflow with a small budget: `python main.py start workflows/test_cases/IMPROVE.md --budget 0.10`
+   (Note: Cost budget limiting is a future feature - this test documents the intended behavior)
+3. Verify workflow runs until total cost exceeds budget, then terminates despite AI requesting more iterations
+4. Verify `workflows/test_cases/test_files/improve-output.txt` contains multiple drafts (number depends on cost per iteration)
+5. Verify state file shows `total_cost_usd` and `budget_usd` fields, and workflow terminated with budget exceeded
 
-**Success criteria:** Orchestrator tracks iterations in state file, overrides
-AI's transition when limit is reached, terminates workflow cleanly.
+**Success criteria:** Orchestrator tracks cumulative cost across all Claude Code invocations in state file, overrides
+AI's transition when budget is exceeded, terminates workflow cleanly.
 
 ---
 
@@ -382,8 +382,8 @@ python main.py start workflows/test_cases/MAIN.md
 # Test 4: Fork (independent agents)
 python main.py start workflows/test_cases/DISPATCH.md
 
-# Test 5: Evaluator override (future feature)
-python main.py start workflows/test_cases/IMPROVE.md
+# Test 5: Evaluator override (cost budget, future feature)
+python main.py start workflows/test_cases/IMPROVE.md --budget 0.10
 
 # Test 6: Reset (fresh context)
 python main.py start workflows/test_cases/PHASE1.md

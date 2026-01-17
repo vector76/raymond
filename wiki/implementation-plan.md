@@ -257,6 +257,112 @@ Add optional configuration mechanism:
 When the model produces zero or multiple protocol tags, instead of raising an
 exception, re-prompt with a short reminder of the expected protocol.
 
+### Step 5.5: Debug Mode
+
+Add a `--debug` command-line flag that preserves complete workflow execution
+history for analysis. Since state files are overwritten during execution, debug
+mode creates a separate directory structure to retain all information.
+
+**Directory Structure:**
+When `--debug` is enabled, create a debug directory for each workflow run:
+```
+.raymond/debug/{workflow_id}_{timestamp}/
+```
+
+Where `{timestamp}` is in format `YYYYMMDD_HHMMSS` (e.g., `20260115_143022`).
+
+**Files Saved:**
+
+1. **Claude Code JSON Outputs**: One JSON file per agent step/state transition
+   - Filename format: `{agent_id}_{state_name}_{step_number}.json`
+   - Example: `main_START_001.json`, `main_REVIEW_002.json`, `worker_ANALYZE_001.json`
+   - Contains the complete raw JSON response from Claude Code (the `results` list
+     returned by `wrap_claude_code()`)
+   - Step numbers increment per agent (each agent has its own sequence)
+
+2. **State Transition Log**: A single text file `transitions.log` containing:
+   - Timestamp for each transition
+   - Agent ID
+   - Old state → New state
+   - Transition type (goto, reset, function, call, fork, result)
+   - Transition target
+   - Any relevant metadata (session_id changes, stack depth, etc.)
+   - Cost information (if available)
+
+**Implementation Details:**
+
+1. **CLI Integration:**
+   - Add `--debug` flag to both `start` and `run` commands
+   - Pass debug flag through to `run_all_agents()` function
+   - Debug flag should be optional (default: False)
+
+2. **Debug Directory Management:**
+   - Create debug directory at start of workflow execution
+   - Use workflow_id + timestamp to ensure unique directories
+   - Create directory structure immediately when debug mode is enabled
+   - Store debug directory path in a way accessible to orchestrator functions
+
+3. **Saving Claude Code Outputs:**
+   - Hook into `step_agent()` function after `wrap_claude_code()` returns
+   - Save the `results` list (raw JSON objects) to a file
+   - Include metadata: agent_id, current_state, step_number, timestamp
+   - Use JSON formatting with indentation for readability
+   - Track step numbers per agent (maintain a counter per agent_id)
+
+4. **State Transition Logging:**
+   - Hook into transition handlers (after transition is parsed and validated)
+   - Log each transition with timestamp and full context
+   - Append to `transitions.log` file (one file per workflow run)
+   - Include both the transition requested and the actual state change
+   - Log budget overrides if they occur
+
+5. **Error Handling:**
+   - If debug directory creation fails, log warning but don't fail workflow
+   - If file writing fails, log error but continue workflow execution
+   - Debug mode should never cause workflow to fail
+
+**File Format Examples:**
+
+`main_START_001.json`:
+```json
+[
+  {
+    "type": "content",
+    "text": "I'll help you with this task.\n<goto>NEXT.md</goto>"
+  },
+  {
+    "type": "result",
+    "total_cost_usd": 0.05
+  }
+]
+```
+
+`transitions.log`:
+```
+2026-01-15 14:30:22 [main] START.md -> NEXT.md (goto)
+  session_id: session_abc123
+  cost: $0.05
+  total_cost: $0.05
+
+2026-01-15 14:30:45 [main] NEXT.md -> DONE.md (goto)
+  session_id: session_abc123 (resumed)
+  cost: $0.03
+  total_cost: $0.08
+
+2026-01-15 14:31:02 [main] DONE.md -> (result, terminated)
+  session_id: session_abc123
+  cost: $0.02
+  total_cost: $0.10
+  result: "Task completed successfully"
+```
+
+**Deliverable:** 
+- `--debug` CLI flag on `start` and `run` commands
+- Debug directory creation in orchestrator
+- JSON output saving in `step_agent()`
+- State transition logging throughout orchestrator
+- Tests verifying debug files are created correctly
+
 ## Testing Strategy
 
 Each phase includes tests:

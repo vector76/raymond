@@ -97,8 +97,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         print(f"Error: Workflow '{workflow_id}' already exists. Use 'resume' to continue it.", file=sys.stderr)
         return 1
     
+    # Get budget from args or use default
+    budget_usd = args.budget if hasattr(args, 'budget') and args.budget is not None else 1.0
+    
     # Create and write initial state
-    state = create_initial_state(workflow_id, scope_dir, initial_state)
+    state = create_initial_state(workflow_id, scope_dir, initial_state, budget_usd=budget_usd)
     write_state(workflow_id, state, state_dir=state_dir)
     
     print(f"Created workflow '{workflow_id}'")
@@ -260,6 +263,13 @@ def create_parser() -> argparse.ArgumentParser:
         dest="no_run",
         action="store_true",
         help="Create the workflow without running it (default: runs immediately)",
+    )
+    start_parser.add_argument(
+        "--budget",
+        dest="budget",
+        type=float,
+        default=None,
+        help="Cost budget limit in USD (default: 1.00). Workflow terminates when total cost exceeds this limit.",
     )
     start_parser.set_defaults(func=cmd_start)
     

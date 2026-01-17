@@ -163,9 +163,9 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 5.1: Evaluator Integration
 
-- [ ] **5.1.1** Design evaluator override mechanism (cost budget)
-- [ ] **5.1.2** Add cost tracking to workflow state
-- [ ] **5.1.3** Implement budget limit enforcement
+- [x] **5.1.1** Design evaluator override mechanism (cost budget)
+- [x] **5.1.2** Add cost tracking to workflow state
+- [x] **5.1.3** Implement budget limit enforcement
 
 ### Step 5.2: Result Extraction
 
@@ -182,6 +182,19 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 - [ ] **5.4.1** Design reminder prompt format
 - [ ] **5.4.2** Replace parse error exception with re-prompt logic
+
+### Step 5.5: Debug Mode
+
+- [ ] **5.5.1** Write tests: `--debug` flag creates debug directory structure
+- [ ] **5.5.2** Write tests: Claude Code JSON outputs saved per agent step
+- [ ] **5.5.3** Write tests: State transitions logged to transitions.log
+- [ ] **5.5.4** Write tests: Debug mode doesn't fail workflow on file write errors
+- [ ] **5.5.5** Write tests: Debug directory naming includes workflow_id and timestamp
+- [ ] **5.5.6** Add `--debug` flag to `start` and `run` CLI commands
+- [ ] **5.5.7** Implement debug directory creation function
+- [ ] **5.5.8** Implement Claude Code JSON output saving in `step_agent()`
+- [ ] **5.5.9** Implement state transition logging throughout orchestrator
+- [ ] **5.5.10** Add step number tracking per agent for file naming
 
 ---
 

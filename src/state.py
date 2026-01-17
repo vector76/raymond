@@ -157,13 +157,14 @@ def list_workflows(state_dir: Optional[str] = None) -> List[str]:
     return workflows
 
 
-def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str) -> Dict[str, Any]:
+def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str, budget_usd: float = 1.0) -> Dict[str, Any]:
     """Create initial state structure for a new workflow.
     
     Args:
         workflow_id: Unique identifier for the workflow
         scope_dir: Directory containing prompt files for this workflow
         initial_state: Initial prompt filename to start from
+        budget_usd: Cost budget limit in USD (default: 1.0)
         
     Returns:
         Dictionary containing initial workflow state
@@ -171,6 +172,8 @@ def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str) -
     return {
         "workflow_id": workflow_id,
         "scope_dir": scope_dir,
+        "total_cost_usd": 0.0,
+        "budget_usd": budget_usd,
         "agents": [
             {
                 "id": "main",

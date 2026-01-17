@@ -52,14 +52,21 @@ One JSON file is saved for each agent step (each invocation of Claude Code).
 ```
 
 Where:
-- `{agent_id}` is the agent identifier (e.g., `main`, `main_worker`, `main_worker_1`)
+- `{agent_id}` is the agent identifier (e.g., `main`, `main_worker1`, `main_worker1_analyz1`)
+  - Forked agents use compact hierarchical underscore notation: `{parent_id}_{state_abbrev}{counter}`
+  - `state_abbrev` is the first 6 characters of the target state name (lowercase, no .md)
+  - Counters start at 1 and increment for each fork from the same parent
+  - This ensures unique, informative names even after previous workers have terminated
+  - Names use underscores, making them valid identifiers
+  - Examples: `main_worker1`, `main_analyz1`, `main_worker1_proces1`
 - `{state_name}` is the prompt filename without extension (e.g., `START`, `REVIEW`, `ANALYZE`)
 - `{step_number}` is a zero-padded 3-digit sequence number per agent (e.g., `001`, `002`, `003`)
 
 **Examples:**
 - `main_START_001.json` - First step of main agent in START.md
 - `main_REVIEW_002.json` - Second step of main agent in REVIEW.md
-- `main_worker_ANALYZE_001.json` - First step of forked worker agent in ANALYZE.md
+- `main_worker1_ANALYZE_001.json` - First step of forked worker agent (from WORKER.md) in ANALYZE.md
+- `main_worker1_analyz1_PROCESS_001.json` - First step of nested worker agent
 
 **File Contents:**
 The complete raw JSON response from Claude Code (the `results` list returned by `wrap_claude_code()`). This includes all streamed JSON objects, including:
@@ -97,6 +104,7 @@ Each entry includes:
 - Session ID (if changed)
 - Stack depth
 - Cost information (invocation cost and cumulative total)
+- For fork transitions: spawned agent ID
 - Any other relevant metadata
 
 **Example Log:**
@@ -127,11 +135,18 @@ Each entry includes:
   total_cost: $0.11
   stack_depth: 0
 
+2026-01-15T14:31:25.123456 [main] DISPATCH.md -> DISPATCH.md (fork)
+  spawned_agent: main_worker1
+  session_id: session_abc123 (resumed)
+  cost: $0.02
+  total_cost: $0.13
+  stack_depth: 0
+
 2026-01-15T14:31:30.123456 [main] REVIEW.md -> (result, terminated)
   session_id: session_abc123
   result_payload: "Review complete"
   cost: $0.02
-  total_cost: $0.13
+  total_cost: $0.15
   stack_depth: 0
 ```
 

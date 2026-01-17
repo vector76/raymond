@@ -742,6 +742,98 @@ This is the start.""")
             assert call_kwargs.get("model") == "sonnet"
 
     @pytest.mark.asyncio
+    async def test_goto_transition_breaks_loop_to_refresh_state(self, tmp_path):
+        """Test that after a goto transition, orchestrator breaks inner loop to re-read state.
+        
+        This test reproduces a bug where after a goto transition, the orchestrator
+        would continue processing without breaking the inner loop, causing the agent
+        to be invoked again with stale state (old current_state).
+        
+        The bug manifests when:
+        1. Agent is in STATE_A
+        2. Agent transitions via goto to STATE_B
+        3. Orchestrator updates state but doesn't break inner loop
+        4. If there are other agents (workers) or the loop continues, agent might
+           be invoked again with stale STATE_A state
+        
+        Expected behavior: After goto A -> B, the orchestrator should break the
+        inner loop, re-read state, and create fresh tasks. The agent should only
+        be invoked once in state B, not again in state A.
+        """
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-goto-refresh"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "STATE_A.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files with distinct content so we can track which is loaded
+        state_a_file = Path(scope_dir) / "STATE_A.md"
+        state_a_file.write_text("STATE_A_PROMPT")
+        
+        state_b_file = Path(scope_dir) / "STATE_B.md"
+        state_b_file.write_text("STATE_B_PROMPT")
+        
+        # Track which prompts are being sent (which state is active) and call order
+        prompts_sent = []
+        call_order = []
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            # Track which state file content is in the prompt
+            if "STATE_A_PROMPT" in prompt:
+                call_order.append("STATE_A")
+            elif "STATE_B_PROMPT" in prompt:
+                call_order.append("STATE_B")
+            else:
+                call_order.append("UNKNOWN")
+            
+            # First call: STATE_A -> STATE_B (goto)
+            if len(prompts_sent) == 1:
+                if "STATE_A_PROMPT" not in prompt:
+                    raise AssertionError(f"First call should be in STATE_A, but got: {prompt[:100]}")
+                return ([{"type": "content", "text": "Transitioning\n<goto>STATE_B.md</goto>"}], "session_1")
+            # Second call: Should be STATE_B -> result (terminate)
+            elif len(prompts_sent) == 2:
+                if "STATE_B_PROMPT" not in prompt:
+                    raise AssertionError(
+                        f"Second call should be in STATE_B (after goto), but got STATE_A. "
+                        f"This indicates stale state! Prompt: {prompt[:100]}"
+                    )
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+            else:
+                # Should not be called more than twice
+                # The bug would cause a third call with STATE_A_PROMPT (stale state)
+                raise AssertionError(
+                    f"Unexpected invocation #{len(prompts_sent)}. "
+                    f"Call order so far: {call_order}. "
+                    f"Prompt: {prompt[:100]}... "
+                    f"This indicates the agent was invoked with stale state after goto transition."
+                )
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify exactly 2 invocations (STATE_A -> STATE_B, then STATE_B -> result)
+        # The bug would cause 3+ invocations if the agent is invoked again in STATE_A
+        # after the goto transition
+        assert len(prompts_sent) == 2, (
+            f"Expected 2 invocations, got {len(prompts_sent)}. "
+            f"Call order: {call_order}. "
+            f"This indicates the agent was invoked with stale state after goto transition."
+        )
+        
+        # Verify the call order is correct: STATE_A, then STATE_B
+        assert call_order == ["STATE_A", "STATE_B"], (
+            f"Expected call order ['STATE_A', 'STATE_B'], but got {call_order}. "
+            f"If STATE_A appears after STATE_B, that indicates stale state bug."
+        )
+
+    @pytest.mark.asyncio
     async def test_no_model_passed_when_neither_specified(self, tmp_path):
         """Test 5.3.1.11: no model passed when neither frontmatter nor CLI specify."""
         state_dir = tmp_path / ".raymond" / "state"

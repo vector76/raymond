@@ -28,12 +28,14 @@ workflows/test_cases/
   IMPROVE.md            # Test 5: Evaluator override workflow
   PHASE1.md             # Test 6: Reset workflow
   PHASE2.md             # Test 6: Reset workflow
-  test_files/           # All test data files
+  test_files/           # Test input files (tracked in git)
     input1.txt          # Test 1: Classification input
-    story-output.txt    # Test 2: Story output
     research-input.txt  # Test 3: Research topic input
-    research-summary.txt # Test 3: Research summary output
     dispatch-items.txt  # Test 4: Items to dispatch
+    ...
+  test_outputs/         # Test output files (ignored by git)
+    story-output.txt    # Test 2: Story output
+    research-summary.txt # Test 3: Research summary output
     dispatch-log.txt    # Test 4: Dispatch log
     worker-*.txt        # Test 4: Worker outputs (one per item)
     improve-output.txt # Test 5: Improvement iterations
@@ -42,8 +44,9 @@ workflows/test_cases/
 ```
 
 **Important:** All workflow markdown files must have distinct names since they
-coexist in the same directory. Test data files in `test_files/` should also use
-distinct names to avoid collisions between workflows.
+coexist in the same directory. Test data files in `test_files/` (inputs) and
+`test_outputs/` (outputs) should also use distinct names to avoid collisions
+between workflows.
 
 ## Test 1: Pure Function (Pattern 1)
 
@@ -110,7 +113,7 @@ interesting trait to solve the problem. Write 2-3 sentences.
 
 Reference details from both previous steps to demonstrate continuity.
 
-When done, write the complete mini-story to workflows/test_cases/test_files/story-output.txt and respond with:
+When done, write the complete mini-story to workflows/test_cases/test_outputs/story-output.txt and respond with:
 <result>Story complete</result>
 ```
 
@@ -120,7 +123,7 @@ When done, write the complete mini-story to workflows/test_cases/test_files/stor
 3. Verify CONFLICT.md references the character by name (context preserved)
 4. Verify it transitions to RESOLUTION.md
 5. Verify RESOLUTION.md references both character and conflict
-6. Verify workflow terminates with result message and `workflows/test_cases/test_files/story-output.txt` contains the story
+6. Verify workflow terminates with result message and `workflows/test_cases/test_outputs/story-output.txt` contains the story
 
 **Success criteria:** Context flows through all three states, character details
 persist.
@@ -172,12 +175,12 @@ You received research results from your assistant:
 
 {{result}}
 
-Write a one-paragraph summary of the research to workflows/test_cases/test_files/research-summary.txt.
+Write a one-paragraph summary of the research to workflows/test_cases/test_outputs/research-summary.txt.
 
 Mention at least two of the facts from the research in your summary.
 
 Then respond with:
-<result>Summary written to workflows/test_cases/test_files/research-summary.txt</result>
+<result>Summary written to workflows/test_cases/test_outputs/research-summary.txt</result>
 ```
 
 Note: The `{{result}}` placeholder is replaced with the content from the
@@ -208,7 +211,7 @@ child's `<result>` tag. This is how the parent receives the child's return value
 You are a task dispatcher. Read workflows/test_cases/test_files/dispatch-items.txt which contains a list of
 items (one per line).
 
-If the list is empty, write "Dispatched 0 workers" to workflows/test_cases/test_files/dispatch-log.txt
+If the list is empty, write "Dispatched 0 workers" to workflows/test_cases/test_outputs/dispatch-log.txt
 and respond with:
 <goto>DONE.md</goto>
 
@@ -224,7 +227,7 @@ From the current conversation context, keep track of which items from
 workflows/test_cases/test_files/dispatch-items.txt have already had workers spawned.
 
 If all items already have workers, write "Dispatched N workers" to
-workflows/test_cases/test_files/dispatch-log.txt (where N is the total count) and respond with:
+workflows/test_cases/test_outputs/dispatch-log.txt (where N is the total count) and respond with:
 <goto>DONE.md</goto>
 
 Otherwise, choose ONE remaining item that does not yet have a worker and spawn
@@ -241,7 +244,7 @@ Your assigned item is: {{item}}
 
 Write a haiku about this item.
 
-Write your haiku to workflows/test_cases/test_files/worker-{{item}}.txt.
+Write your haiku to workflows/test_cases/test_outputs/worker-{{item}}.txt.
 
 Then respond with:
 <result>Haiku written for {{item}}</result>
@@ -270,7 +273,7 @@ metadata through Claude Code's session state.
 2. Start workflow: `python main.py start workflows/test_cases/DISPATCH.md`
 3. Verify three independent WORKER agents are spawned (all in same state file)
 4. Verify each worker creates its own output file with a haiku
-5. Verify `workflows/test_cases/test_files/dispatch-log.txt` says "Dispatched 3 workers"
+5. Verify `workflows/test_cases/test_outputs/dispatch-log.txt` says "Dispatched 3 workers"
 6. Verify all agents complete independently
 
 **Success criteria:** Multiple independent agents run concurrently, each
@@ -289,10 +292,10 @@ limit.
 
 `workflows/test_cases/IMPROVE.md`:
 ```markdown
-Read workflows/test_cases/test_files/improve-output.txt (create it if it doesn't exist with "Draft 1").
+Read workflows/test_cases/test_outputs/improve-output.txt (create it if it doesn't exist with "Draft 1").
 
 "Improve" the content by incrementing the draft number and adding one word.
-Write the result back to workflows/test_cases/test_files/improve-output.txt.
+Write the result back to workflows/test_cases/test_outputs/improve-output.txt.
 
 Example: "Draft 1" becomes "Draft 2 banana"
 
@@ -301,11 +304,11 @@ Then request another iteration:
 ```
 
 **Test procedure:**
-1. Delete `workflows/test_cases/test_files/improve-output.txt` if it exists
+1. Delete `workflows/test_cases/test_outputs/improve-output.txt` if it exists
 2. Start workflow with a small budget: `python main.py start workflows/test_cases/IMPROVE.md --budget 0.10`
    (Note: Cost budget limiting is a future feature - this test documents the intended behavior)
 3. Verify workflow runs until total cost exceeds budget, then terminates despite AI requesting more iterations
-4. Verify `workflows/test_cases/test_files/improve-output.txt` contains multiple drafts (number depends on cost per iteration)
+4. Verify `workflows/test_cases/test_outputs/improve-output.txt` contains multiple drafts (number depends on cost per iteration)
 5. Verify state file shows `total_cost_usd` and `budget_usd` fields, and workflow terminated with budget exceeded
 
 **Success criteria:** Orchestrator tracks cumulative cost across all Claude Code invocations in state file, overrides
@@ -326,7 +329,7 @@ to phase 2 which reads from the file (proving context was discarded).
 ```markdown
 You are in phase 1. Generate a random 4-digit number and remember it.
 
-Write "Phase 1 generated: [your number]" to workflows/test_cases/test_files/reset-output.txt.
+Write "Phase 1 generated: [your number]" to workflows/test_cases/test_outputs/reset-output.txt.
 
 Also write something that ONLY exists in your context (do not write it to any
 file): "The secret word is: elephant"
@@ -339,9 +342,9 @@ When done, signal a reset to phase 2:
 ```markdown
 You are in phase 2, starting with fresh context.
 
-First, read workflows/test_cases/test_files/reset-output.txt to see what phase 1 generated.
+First, read workflows/test_cases/test_outputs/reset-output.txt to see what phase 1 generated.
 
-Now answer these questions by appending to workflows/test_cases/test_files/reset-output.txt:
+Now answer these questions by appending to workflows/test_cases/test_outputs/reset-output.txt:
 1. What number did phase 1 generate? (read from file)
 2. What was the secret word from phase 1? (you should NOT know this)
 
@@ -353,7 +356,7 @@ Then respond with:
 
 **Test procedure:**
 1. Start workflow: `python main.py start workflows/test_cases/PHASE1.md`
-2. Verify it generates a number and writes to `workflows/test_cases/test_files/reset-output.txt`
+2. Verify it generates a number and writes to `workflows/test_cases/test_outputs/reset-output.txt`
 3. Verify it resets to PHASE2.md (new session ID in state file)
 4. Verify PHASE2.md can read the number from file
 5. Verify PHASE2.md does NOT know the secret word (context was discarded)
@@ -395,23 +398,25 @@ Since all workflow markdown files coexist in `workflows/test_cases/`, each file
 must have a unique name. The examples above use descriptive names that indicate
 their purpose (CLASSIFY.md, START.md, CONFLICT.md, etc.).
 
-Test data files in `test_files/` should also use distinct names to avoid
-collisions between workflows. Examples:
-- `input1.txt`, `input2.txt` (for different workflows)
-- `research-input.txt`, `dispatch-items.txt` (workflow-specific names)
-- `story-output.txt`, `research-summary.txt` (workflow-specific output names)
+Test data files in `test_files/` (inputs) and `test_outputs/` (outputs) should
+also use distinct names to avoid collisions between workflows. Examples:
+- Input files: `input1.txt`, `input2.txt`, `research-input.txt`, `dispatch-items.txt`
+- Output files: `story-output.txt`, `research-summary.txt`, `dispatch-log.txt`, `worker-*.txt`
 
 ## Cleanup
 
-After tests, the test files directory can be cleaned up:
+After tests, the test output directory can be cleaned up (input files in
+`test_files/` are typically preserved for reuse):
 
 ```bash
 # Linux / macOS
-rm -rf workflows/test_cases/test_files/*
+rm -rf workflows/test_cases/test_outputs/*
 
 # Windows (PowerShell)
-Remove-Item workflows/test_cases/test_files/* -Force
+Remove-Item workflows/test_cases/test_outputs/* -Force
 ```
 
 Note: The workflow markdown files in `workflows/test_cases/` should be preserved
-as they are the workflow definitions themselves.
+as they are the workflow definitions themselves. Input files in `test_files/` are
+tracked in git and can be reused across test runs. Output files in `test_outputs/`
+are ignored by git and can be safely deleted.

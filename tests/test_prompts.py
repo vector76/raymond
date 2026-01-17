@@ -15,8 +15,9 @@ class TestLoadPrompt:
         expected_content = "# Start\n\nThis is the start prompt."
         prompt_file.write_text(expected_content)
         
-        content = load_prompt(str(scope_dir), "START.md")
+        content, policy = load_prompt(str(scope_dir), "START.md")
         assert content == expected_content
+        assert policy is None  # No frontmatter
 
     def test_load_prompt_raises_for_missing_file(self, tmp_path):
         """Test that load_prompt() raises for missing file."""

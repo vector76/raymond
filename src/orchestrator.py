@@ -10,6 +10,7 @@ from .cc_wrap import wrap_claude_code
 from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
 from .prompts import load_prompt, render_prompt
 from .parsing import parse_transitions, validate_single_transition, Transition
+from .policy import validate_transition_policy, PolicyViolationError
 
 logger = logging.getLogger(__name__)
 
@@ -552,7 +553,7 @@ async def step_agent(
     
     # Load prompt for current state (may raise PromptFileError)
     try:
-        prompt_template = load_prompt(scope_dir, current_state)
+        prompt_template, policy = load_prompt(scope_dir, current_state)
     except FileNotFoundError as e:
         logger.error(
             f"Prompt file not found for agent {agent_id}: {current_state}",
@@ -564,6 +565,18 @@ async def step_agent(
             }
         )
         raise PromptFileError(f"Prompt file not found: {e}") from e
+    except ValueError as e:
+        # YAML parsing error in frontmatter
+        logger.error(
+            f"Invalid frontmatter in prompt file for agent {agent_id}: {current_state}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "scope_dir": scope_dir
+            }
+        )
+        raise PromptFileError(f"Invalid frontmatter in prompt file: {e}") from e
     
     # Prepare template variables
     variables = {}
@@ -780,6 +793,35 @@ async def step_agent(
             "transition_target": transition.target
         }
     )
+    
+    # Validate transition against state policy (if policy exists)
+    try:
+        validate_transition_policy(transition, policy)
+    except PolicyViolationError as e:
+        logger.warning(
+            f"Policy violation for agent {agent_id} in state {current_state}: {e}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "transition_tag": transition.tag,
+                "transition_target": transition.target
+            }
+        )
+        # Save error information before re-raising
+        save_error_response(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=e,
+            output_text=output_text,
+            raw_results=results,
+            session_id=new_session_id,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        # Mark that this error was already saved to avoid duplicate saves
+        e._error_saved = True
+        raise
     
     # Create a deep copy of agent for handler (to avoid mutating original)
     # Deep copy ensures nested structures like stack are also copied

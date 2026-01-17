@@ -169,9 +169,9 @@ Extends `wrap_claude_code()` from existing `src/cc_wrap.py`.
 
 ### Step 5.3: Workflow Configuration
 
-- [ ] **5.3.1** Design YAML frontmatter schema for per-state policy
-- [ ] **5.3.2** Implement frontmatter parsing in `load_prompt()`
-- [ ] **5.3.3** Implement policy enforcement in orchestrator
+- [x] **5.3.1** Design YAML frontmatter schema for per-state policy
+- [x] **5.3.2** Implement frontmatter parsing in `load_prompt()`
+- [x] **5.3.3** Implement policy enforcement in orchestrator
 
 ### Step 5.4: Protocol Reminder
 

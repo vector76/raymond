@@ -20,6 +20,7 @@ dev = [
 
 [project.scripts]
 raymond = "src.cli:main"
+ray = "src.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

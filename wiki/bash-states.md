@@ -461,6 +461,19 @@ APIs (`asyncio.create_subprocess_exec()`) to run scripts without blocking the
 event loop. This allows multiple agents to make progress concurrently, even if
 one agent is running a long script.
 
+### Cost Tracking
+
+Script states contribute **$0.00** to the workflow's cost tracking. Only markdown
+states (which invoke the LLM) consume the token budget. This means:
+
+- Polling loops with script states have zero token cost regardless of iteration count
+- Long-running build/deploy scripts don't affect the cost budget
+- Debug mode logs show `"cost": "$0.00"` for script state transitions
+
+This is the primary benefit of script states for deterministic operations — they
+eliminate the token cost floor that makes frequent polling or long operations
+impractical with LLM-based states.
+
 ### LLM Context Gap
 
 When a workflow transitions through script states, those steps are **invisible**

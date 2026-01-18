@@ -96,11 +96,11 @@ and are skipped on incompatible platforms.
 - [x] **1.1.6** Write tests: `resolve_state("NEXT")` succeeds when `.sh` and `.bat` both exist (uses platform-appropriate)
 
 **Unix-only tests (`@pytest.mark.unix`):**
-- [ ] **1.1.7** Write tests: `resolve_state("NEXT")` finds `NEXT.sh` when `.md` doesn't exist
-- [ ] **1.1.8** Write tests: `resolve_state("NEXT.sh")` returns `NEXT.sh` (explicit extension)
-- [ ] **1.1.9** Write tests: `resolve_state("NEXT")` raises when only `.bat` exists (no `.md` or `.sh`)
-- [ ] **1.1.10** Write tests: `resolve_state("NEXT")` raises when `.md` and `.sh` both exist (ambiguous)
-- [ ] **1.1.11** Write tests: `resolve_state("NEXT.bat")` raises (wrong platform)
+- [x] **1.1.7** Write tests: `resolve_state("NEXT")` finds `NEXT.sh` when `.md` doesn't exist
+- [x] **1.1.8** Write tests: `resolve_state("NEXT.sh")` returns `NEXT.sh` (explicit extension)
+- [x] **1.1.9** Write tests: `resolve_state("NEXT")` raises when only `.bat` exists (no `.md` or `.sh`)
+- [x] **1.1.10** Write tests: `resolve_state("NEXT")` raises when `.md` and `.sh` both exist (ambiguous)
+- [x] **1.1.11** Write tests: `resolve_state("NEXT.bat")` raises (wrong platform)
 
 **Windows-only tests (`@pytest.mark.windows`):**
 - [x] **1.1.12** Write tests: `resolve_state("NEXT")` finds `NEXT.bat` when `.md` doesn't exist

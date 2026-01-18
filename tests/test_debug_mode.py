@@ -1095,6 +1095,8 @@ class TestScriptExecutionMetadataPhase52:
     @pytest.mark.asyncio
     async def test_transitions_log_includes_script_state(self, tmp_path):
         """Test 5.2.4: transitions.log includes script state transitions."""
+        from src.scripts import is_windows
+
         state_dir = tmp_path / ".raymond" / "state"
         state_dir.mkdir(parents=True)
 
@@ -1102,13 +1104,21 @@ class TestScriptExecutionMetadataPhase52:
         scope_dir = str(tmp_path / "workflows" / "test")
         Path(scope_dir).mkdir(parents=True)
 
+        # Use platform-appropriate script
+        if is_windows():
+            script_name = "START.bat"
+            script_content = "@echo off\necho ^<goto^>NEXT.md^</goto^>\n"
+        else:
+            script_name = "START.sh"
+            script_content = "#!/bin/bash\necho '<goto>NEXT.md</goto>'\n"
+
         # Create initial state
-        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        state = create_initial_state(workflow_id, scope_dir, script_name)
         write_state(workflow_id, state, state_dir=str(state_dir))
 
-        # Create a batch script that outputs a goto transition
-        script_file = Path(scope_dir) / "START.bat"
-        script_file.write_text("@echo off\necho ^<goto^>NEXT.md^</goto^>\n")
+        # Create the script that outputs a goto transition
+        script_file = Path(scope_dir) / script_name
+        script_file.write_text(script_content)
 
         # Create the target markdown file
         next_file = Path(scope_dir) / "NEXT.md"
@@ -1135,13 +1145,15 @@ class TestScriptExecutionMetadataPhase52:
 
             log_content = transitions_log.read_text()
             # Should include the script state
-            assert "START.bat" in log_content or "START" in log_content
+            assert "START" in log_content
             # Should indicate it's a script state
             assert "script" in log_content.lower() or "state_type" in log_content.lower()
 
     @pytest.mark.asyncio
     async def test_transitions_log_shows_script_to_markdown_transition(self, tmp_path):
         """Test 5.2.4: transitions.log shows script -> markdown transitions."""
+        from src.scripts import is_windows
+
         state_dir = tmp_path / ".raymond" / "state"
         state_dir.mkdir(parents=True)
 
@@ -1149,13 +1161,21 @@ class TestScriptExecutionMetadataPhase52:
         scope_dir = str(tmp_path / "workflows" / "test")
         Path(scope_dir).mkdir(parents=True)
 
+        # Use platform-appropriate script
+        if is_windows():
+            script_name = "CHECK.bat"
+            script_content = "@echo off\necho ^<goto^>PROCESS.md^</goto^>\n"
+        else:
+            script_name = "CHECK.sh"
+            script_content = "#!/bin/bash\necho '<goto>PROCESS.md</goto>'\n"
+
         # Create initial state
-        state = create_initial_state(workflow_id, scope_dir, "CHECK.bat")
+        state = create_initial_state(workflow_id, scope_dir, script_name)
         write_state(workflow_id, state, state_dir=str(state_dir))
 
-        # Create a batch script that outputs a goto transition
-        script_file = Path(scope_dir) / "CHECK.bat"
-        script_file.write_text("@echo off\necho ^<goto^>PROCESS.md^</goto^>\n")
+        # Create the script that outputs a goto transition
+        script_file = Path(scope_dir) / script_name
+        script_file.write_text(script_content)
 
         # Create target markdown file
         process_file = Path(scope_dir) / "PROCESS.md"

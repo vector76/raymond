@@ -4,7 +4,7 @@
 
 | Term | Meaning |
 |------|---------|
-| **Prompt folder** | A directory of markdown files that reference each other via transition tags. Represents the static definition of a workflow. |
+| **Prompt folder** | A directory of state files (`.md` prompts or `.sh`/`.bat` scripts) that reference each other via transition tags. Represents the static definition of a workflow. |
 | **Orchestrator** | The running Python program. Single-threaded but async, enabling concurrent Claude Code executions. Each orchestrator instance manages exactly one state file. |
 | **State file** | JSON file persisting all agent state for one orchestrator run. One orchestrator = one state file. It is an error for multiple orchestrators to access the same state file. |
 | **Agent** | A logical thread of execution within the orchestrator. Has a current state (prompt filename) and a return stack. Created initially or via `<fork>`. Terminates when it emits `<result>` with an empty stack. |
@@ -33,9 +33,14 @@ Limitations:
 ## Raymond's State Machine Model
 
 Raymond treats workflows as a state machine where:
-- Each state is a markdown prompt file
-- Transitions are declared within the prompts themselves
+- Each state is a markdown prompt file (`.md`) or a shell script (`.sh`/`.bat`)
+- Transitions are declared within the prompts/scripts themselves
 - The Python orchestrator parses transition tags and routes accordingly
+
+**Markdown vs. Script states:** Markdown states are interpreted by Claude Code
+(LLM execution), while script states execute directly (no LLM). Both emit the
+same transition tags. Scripts are efficient for deterministic operations like
+polling, builds, and data processing. See `wiki/bash-states.md` for details.
 
 **Protocol note:** The authoritative protocol (including the return stack model
 and directory scoping) is defined in `wiki/workflow-protocol.md`.

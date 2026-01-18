@@ -25,6 +25,28 @@ message from the agent.
 protocol tags, that is an error. The orchestrator should re-prompt with a short
 reminder to emit exactly one valid tag.
 
+## Script States
+
+In addition to markdown prompts, Raymond supports **shell script states**
+(`.sh` on Unix, `.bat` on Windows). Script states execute directly without
+invoking an LLM, making them efficient for deterministic operations.
+
+**Key differences from markdown states:**
+
+| Aspect | Markdown States | Script States |
+|--------|-----------------|---------------|
+| Execution | LLM interprets prompt | Shell executes script |
+| Cost | Token cost per run | Zero token cost |
+| Error recovery | Can re-prompt on errors | Fatal on errors |
+| Policy (frontmatter) | Supports `allowed_transitions` | Not supported |
+
+**Same protocol:** Script states emit the same transition tags (`<goto>`,
+`<reset>`, `<result>`, etc.) to stdout. The orchestrator parses them identically.
+
+**State resolution:** When a transition target omits the extension (e.g.,
+`<goto>POLL</goto>`), the orchestrator resolves it to the appropriate file
+type based on platform and what exists. See `wiki/bash-states.md` for details.
+
 ## Workflow Scope (Directory Scoping)
 
 A workflow is started from a specific prompt file path (e.g.

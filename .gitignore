@@ -32,3 +32,4 @@ Thumbs.db
 
 # Test outputs
 workflows/test_cases/test_outputs/
+/.claude

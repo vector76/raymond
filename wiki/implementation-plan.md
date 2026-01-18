@@ -121,10 +121,10 @@ and are skipped on incompatible platforms.
 
 #### Step 1.3: Update Transition Handling
 
-- [ ] **1.3.1** Write tests: `<goto>NEXT</goto>` resolves correctly (no extension)
-- [ ] **1.3.2** Write tests: `<goto>NEXT.md</goto>` still works (backward compatible)
-- [ ] **1.3.3** Write tests: `<reset>POLL.sh</reset>` works with explicit extension
-- [ ] **1.3.4** Update transition handlers to use `resolve_state()`
+- [x] **1.3.1** Write tests: `<goto>NEXT</goto>` resolves correctly (no extension)
+- [x] **1.3.2** Write tests: `<goto>NEXT.md</goto>` still works (backward compatible)
+- [x] **1.3.3** Write tests: `<reset>POLL.sh</reset>` works with explicit extension
+- [x] **1.3.4** Update transition handlers to use `resolve_state()`
 
 ### Phase 2: Script Execution
 

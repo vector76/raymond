@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import logging
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -139,8 +140,7 @@ def save_script_output(
     state_name: str,
     step_number: int,
     stdout: str,
-    stderr: str,
-    exit_code: int  # noqa: ARG001 - reserved for Step 5.2 metadata logging
+    stderr: str
 ) -> None:
     """Save script execution output to debug directory.
 
@@ -153,7 +153,6 @@ def save_script_output(
         step_number: Step number for this agent
         stdout: Script stdout output
         stderr: Script stderr output
-        exit_code: Script exit code (currently unused, reserved for Step 5.2)
     """
     base_filename = f"{agent_id}_{state_name}_{step_number:03d}"
     stdout_filepath = debug_dir / f"{base_filename}.stdout.txt"
@@ -170,6 +169,45 @@ def save_script_output(
             f.write(stderr)
     except OSError as e:
         logger.warning(f"Failed to save script stderr to {stderr_filepath}: {e}")
+
+
+def save_script_output_metadata(
+    debug_dir: Path,
+    agent_id: str,
+    state_name: str,
+    step_number: int,
+    exit_code: int,
+    execution_time_ms: float,
+    env_vars: Dict[str, str]
+) -> None:
+    """Save script execution metadata to debug directory.
+
+    Creates a .meta.json file for each script execution containing
+    execution time, exit code, and environment variables.
+
+    Args:
+        debug_dir: Debug directory path
+        agent_id: Agent identifier
+        state_name: State name (filename without extension)
+        step_number: Step number for this agent
+        exit_code: Script exit code
+        execution_time_ms: Script execution time in milliseconds
+        env_vars: Environment variables passed to the script
+    """
+    base_filename = f"{agent_id}_{state_name}_{step_number:03d}"
+    metadata_filepath = debug_dir / f"{base_filename}.meta.json"
+
+    metadata = {
+        "exit_code": exit_code,
+        "execution_time_ms": execution_time_ms,
+        "env_vars": env_vars
+    }
+
+    try:
+        with open(metadata_filepath, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        logger.warning(f"Failed to save script metadata to {metadata_filepath}: {e}")
 
 
 def log_state_transition(
@@ -846,8 +884,9 @@ async def _step_agent_script(
         }
     )
 
-    # Execute the script
+    # Execute the script and track execution time
     script_result = None
+    start_time = time.perf_counter()
     try:
         script_result = await run_script(script_path, timeout=timeout, env=env)
     except ScriptTimeoutError as e:
@@ -920,6 +959,10 @@ async def _step_agent_script(
         )
         raise error from e
 
+    # Calculate execution time
+    end_time = time.perf_counter()
+    execution_time_ms = (end_time - start_time) * 1000
+
     logger.debug(
         f"Script completed for agent {agent_id}: exit_code={script_result.exit_code}",
         extra={
@@ -928,7 +971,8 @@ async def _step_agent_script(
             "current_state": current_state,
             "exit_code": script_result.exit_code,
             "stdout_length": len(script_result.stdout),
-            "stderr_length": len(script_result.stderr)
+            "stderr_length": len(script_result.stderr),
+            "execution_time_ms": execution_time_ms
         }
     )
 
@@ -951,12 +995,22 @@ async def _step_agent_script(
                 state_name=state_name,
                 step_number=step_number,
                 stdout=script_result.stdout,
-                stderr=script_result.stderr,
-                exit_code=script_result.exit_code
+                stderr=script_result.stderr
             )
-        except OSError as e:
+
+            # Save execution metadata (Step 5.2)
+            save_script_output_metadata(
+                debug_dir=debug_dir,
+                agent_id=agent_id,
+                state_name=state_name,
+                step_number=step_number,
+                exit_code=script_result.exit_code,
+                execution_time_ms=execution_time_ms,
+                env_vars=env
+            )
+        except Exception as e:
             # Debug operations should not fail the workflow
-            logger.warning(f"Failed to save script output for debug: {e}")
+            logger.warning(f"Failed to save script debug files: {e}")
 
     # Check exit code - non-zero is fatal
     if script_result.exit_code != 0:
@@ -1148,6 +1202,8 @@ async def _step_agent_script(
             "stack_depth": stack_depth,
             "state_type": "script",
             "cost": "$0.00",  # Scripts contribute no cost
+            "exit_code": script_result.exit_code,
+            "execution_time_ms": execution_time_ms,
         }
 
         # Add session_id information

@@ -229,11 +229,11 @@ and are skipped on incompatible platforms.
 
 #### Step 5.2: Execution Metadata
 
-- [ ] **5.2.1** Write tests: debug mode logs script execution time
-- [ ] **5.2.2** Write tests: debug mode logs exit code
-- [ ] **5.2.3** Write tests: debug mode logs environment variables
-- [ ] **5.2.4** Write tests: transitions.log includes script state transitions
-- [ ] **5.2.5** Implement execution metadata logging
+- [x] **5.2.1** Write tests: debug mode logs script execution time
+- [x] **5.2.2** Write tests: debug mode logs exit code
+- [x] **5.2.3** Write tests: debug mode logs environment variables
+- [x] **5.2.4** Write tests: transitions.log includes script state transitions
+- [x] **5.2.5** Implement execution metadata logging
 
 ### Phase 6: Sample Workflows and Documentation
 

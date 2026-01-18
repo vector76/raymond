@@ -1,5 +1,15 @@
 # Orchestration Design
 
+## Terminology
+
+| Term | Meaning |
+|------|---------|
+| **Prompt folder** | A directory of markdown files that reference each other via transition tags. Represents the static definition of a workflow. |
+| **Orchestrator** | The running Python program. Single-threaded but async, enabling concurrent Claude Code executions. Each orchestrator instance manages exactly one state file. |
+| **State file** | JSON file persisting all agent state for one orchestrator run. One orchestrator = one state file. It is an error for multiple orchestrators to access the same state file. |
+| **Agent** | A logical thread of execution within the orchestrator. Has a current state (prompt filename) and a return stack. Created initially or via `<fork>`. Terminates when it emits `<result>` with an empty stack. |
+| **Workflow** | An abstract chain or DAG of steps designed by a prompt engineer. May refer to the static definition (prompt folder) or the conceptual flow. Context clarifies meaning. |
+
 ## The Ralph Approach
 
 Ralph is a simple bash loop that runs Claude Code repeatedly with a fixed

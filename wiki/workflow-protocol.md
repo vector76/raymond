@@ -266,6 +266,41 @@ from parse failures and policy violations by re-prompting with helpful guidance.
 failures cannot be recovered because the orchestrator has no way to know which
 transitions are expected and cannot generate a meaningful reminder prompt.
 
+## Model Selection
+
+The YAML frontmatter can also specify which Claude model to use for a state.
+
+**Frontmatter field:**
+
+```yaml
+---
+model: sonnet
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+```
+
+Valid values: `opus`, `sonnet`, `haiku`
+
+**CLI parameter:**
+
+The `--model` flag on `start` and `run` commands provides a default model for
+all states that don't specify one in frontmatter.
+
+```bash
+raymond workflows/example/START.md --model sonnet
+```
+
+**Precedence:**
+
+1. Frontmatter `model` field (highest priority) — overrides CLI default
+2. CLI `--model` parameter — used if no frontmatter model specified
+3. None — Claude Code uses its default when no `--model` flag is passed
+
+This allows workflows to specify expensive models (opus) for complex reasoning
+states while using cheaper models (haiku) for simple evaluations, with a
+sensible default for everything else.
+
 ## Implicit Transitions (Optimization)
 
 When a state's policy specifies **exactly one allowed transition** (and it is not

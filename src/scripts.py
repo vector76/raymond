@@ -11,6 +11,44 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def build_script_env(
+    workflow_id: str,
+    agent_id: str,
+    state_dir: str,
+    state_file: str
+) -> dict[str, str]:
+    """Build environment variables dict for script execution.
+
+    Creates a dictionary of environment variables that provide workflow
+    context to script states. This dict should be passed to run_script()
+    via the env parameter.
+
+    Args:
+        workflow_id: The unique identifier for the workflow.
+        agent_id: The identifier for the current agent.
+        state_dir: The directory containing state files (scope_dir).
+        state_file: The full path to the current state file being executed.
+
+    Returns:
+        Dictionary of environment variable names to values.
+
+    Example:
+        env = build_script_env(
+            workflow_id="wf-123",
+            agent_id="main",
+            state_dir="/workflows/my_wf",
+            state_file="/workflows/my_wf/CHECK.bat"
+        )
+        result = await run_script(script_path, env=env)
+    """
+    return {
+        "RAYMOND_WORKFLOW_ID": workflow_id,
+        "RAYMOND_AGENT_ID": agent_id,
+        "RAYMOND_STATE_DIR": state_dir,
+        "RAYMOND_STATE_FILE": state_file,
+    }
+
+
 def is_windows() -> bool:
     """Check if running on Windows."""
     return sys.platform.startswith('win')

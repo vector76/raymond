@@ -247,9 +247,9 @@ and are skipped on incompatible platforms.
 
 #### Step 6.2: Windows Test Workflows
 
-- [ ] **6.2.1** Create `.bat` equivalents of test workflows
-- [ ] **6.2.2** Test on Windows with batch files
-- [ ] **6.2.3** Verify cross-platform workflow (both `.sh` and `.bat` for same state)
+- [x] **6.2.1** Create `.bat` equivalents of test workflows
+- [x] **6.2.2** Test on Windows with batch files
+- [x] **6.2.3** Verify cross-platform workflow (both `.sh` and `.bat` for same state)
 
 #### Step 6.3: Documentation Updates
 

@@ -101,9 +101,7 @@ response=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
 count=$(echo "$response" | jq 'length')
 
 if [ "$count" -gt 0 ]; then
-    # Extract first issue for processing
-    issue=$(echo "$response" | jq -r '.[0].number')
-    echo "<goto issue=\"$issue\">PROCESS.md</goto>"
+    echo "<goto>PROCESS.md</goto>"
 else
     sleep 60
     echo "<reset>POLL.sh</reset>"
@@ -148,24 +146,48 @@ This was rejected because:
 - It would require workflow authors to know implementation details of target states
 - Changing a state from markdown to script would require updating all callers
 
-### State Resolution Order
+### State Resolution
 
-When resolving a state name (e.g., `POLL` from `<goto>POLL</goto>`), the
-orchestrator checks for files in this order:
+State resolution is **platform-specific**. When resolving an abstract state name
+(e.g., `POLL` from `<goto>POLL</goto>`), the orchestrator checks:
 
+**On Unix (Linux/macOS):**
 1. `POLL.md` — Markdown prompt (LLM execution)
-2. `POLL.sh` — Unix shell script (direct execution on Unix)
-3. `POLL.bat` — Windows batch file (direct execution on Windows)
+2. `POLL.sh` — Shell script (direct execution)
 
-**Platform-specific behavior:**
+**On Windows:**
+1. `POLL.md` — Markdown prompt (LLM execution)
+2. `POLL.bat` — Batch file (direct execution)
 
-- On Unix: `.sh` files are executed with `/bin/bash` (or `$SHELL`)
+There is no cross-platform fallback. If only `.bat` exists on Unix, that's an
+error (and vice versa for `.sh` on Windows).
+
+**Explicit extensions bypass resolution:**
+
+When a transition specifies an extension (e.g., `<goto>POLL.sh</goto>`), no
+resolution occurs — that exact file must exist. Specifying a platform-incompatible
+extension is an error:
+- `<goto>POLL.sh</goto>` on Windows → Error
+- `<goto>POLL.bat</goto>` on Unix → Error
+
+**Cross-platform workflows:**
+
+Workflows can provide both `.sh` and `.bat` for the same state name. Each
+platform uses its native script type:
+
+| Files Present | Unix Resolves To | Windows Resolves To |
+|---------------|------------------|---------------------|
+| `POLL.md` | `POLL.md` | `POLL.md` |
+| `POLL.sh` | `POLL.sh` | Error |
+| `POLL.bat` | Error | `POLL.bat` |
+| `POLL.sh`, `POLL.bat` | `POLL.sh` | `POLL.bat` |
+| `POLL.md`, `POLL.sh` | Error (ambiguous) | `POLL.md` |
+| `POLL.md`, `POLL.bat` | `POLL.md` | Error (ambiguous) |
+
+**Execution:**
+
+- On Unix: `.sh` files are executed with `/bin/bash`
 - On Windows: `.bat` files are executed with `cmd.exe`
-- Cross-platform workflows can provide both `.sh` and `.bat` for the same state
-
-**Ambiguity rule:** If multiple files exist for the same state name (e.g., both
-`POLL.md` and `POLL.sh`), this is an error. Each state must have exactly one
-implementation.
 
 ### Context and Variables
 
@@ -309,6 +331,37 @@ The orchestrator's state resolution logic needs to:
 2. Search for `.md`, `.sh`, `.bat` files in resolution order
 3. Dispatch to appropriate executor based on file type
 4. Parse transition tags from script stdout
+
+### Working Directory
+
+Scripts execute in the **orchestrator's working directory** (where `raymond` was
+launched), not in the scope directory where state files reside. This ensures
+path consistency with Claude Code:
+
+- If Claude Code references `foo/bar/file.txt`, it's relative to the orchestrator
+  directory
+- Shell scripts see the same path `foo/bar/file.txt`
+- The scope directory is only for resolving state file names, not for execution
+
+### Async Execution
+
+Script execution must be non-blocking. The orchestrator uses async subprocess
+APIs (`asyncio.create_subprocess_exec()`) to run scripts without blocking the
+event loop. This allows multiple agents to make progress concurrently, even if
+one agent is running a long script.
+
+### LLM Context Gap
+
+When a workflow transitions through script states, those steps are **invisible**
+to the LLM. If a workflow goes markdown → script → markdown, the second markdown
+invocation's Claude Code session has no visibility into what the script did.
+
+This is intentional:
+
+- Scripts handle deterministic work that doesn't benefit from LLM context
+- The LLM resumes with its previous session state, unaware of intervening scripts
+- If the script produces output the LLM needs, it should write to a file or
+  include it in the transition attributes
 
 ### Security Considerations
 

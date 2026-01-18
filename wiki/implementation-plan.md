@@ -186,14 +186,14 @@ and are skipped on incompatible platforms.
 
 #### Step 4.1: Dispatcher in step_agent
 
-- [ ] **4.1.1** Write tests: `step_agent()` dispatches to LLM for `.md` files
-- [ ] **4.1.2** Write tests: `step_agent()` dispatches to script runner for `.sh` files
-- [ ] **4.1.3** Write tests: `step_agent()` dispatches to script runner for `.bat` files
-- [ ] **4.1.4** Write tests: script result is processed same as LLM result
-- [ ] **4.1.5** Write tests: workflow can start with script as initial state
-- [ ] **4.1.6** Write tests: script states don't modify agent's session_id
-- [ ] **4.1.7** Write tests: script states contribute $0.00 to cost tracking
-- [ ] **4.1.8** Implement dispatcher logic in `step_agent()`
+- [x] **4.1.1** Write tests: `step_agent()` dispatches to LLM for `.md` files
+- [x] **4.1.2** Write tests: `step_agent()` dispatches to script runner for `.sh` files
+- [x] **4.1.3** Write tests: `step_agent()` dispatches to script runner for `.bat` files
+- [x] **4.1.4** Write tests: script result is processed same as LLM result
+- [x] **4.1.5** Write tests: workflow can start with script as initial state
+- [x] **4.1.6** Write tests: script states don't modify agent's session_id
+- [x] **4.1.7** Write tests: script states contribute $0.00 to cost tracking
+- [x] **4.1.8** Implement dispatcher logic in `step_agent()`
 
 #### Step 4.2: Error Handling
 

@@ -168,11 +168,11 @@ and are skipped on incompatible platforms.
 
 #### Step 3.1: Core Environment Variables
 
-- [ ] **3.1.1** Write tests: `RAYMOND_WORKFLOW_ID` is set when running script
-- [ ] **3.1.2** Write tests: `RAYMOND_AGENT_ID` is set when running script
-- [ ] **3.1.3** Write tests: `RAYMOND_STATE_DIR` is set to scope directory
-- [ ] **3.1.4** Write tests: `RAYMOND_STATE_FILE` is set to state file path
-- [ ] **3.1.5** Implement environment variable injection in `run_script()`
+- [x] **3.1.1** Write tests: `RAYMOND_WORKFLOW_ID` is set when running script
+- [x] **3.1.2** Write tests: `RAYMOND_AGENT_ID` is set when running script
+- [x] **3.1.3** Write tests: `RAYMOND_STATE_DIR` is set to scope directory
+- [x] **3.1.4** Write tests: `RAYMOND_STATE_FILE` is set to state file path
+- [x] **3.1.5** Implement environment variable injection in `run_script()`
 
 #### Step 3.2: Result and Fork Variables
 

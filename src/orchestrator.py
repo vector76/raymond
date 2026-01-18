@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from .cc_wrap import wrap_claude_code
 from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
-from .prompts import load_prompt, render_prompt
+from .prompts import load_prompt, render_prompt, resolve_state
 from .parsing import parse_transitions, validate_single_transition, Transition
 from .policy import validate_transition_policy, PolicyViolationError, can_use_implicit_transition, get_implicit_transition, should_use_reminder_prompt, generate_reminder_prompt
 
@@ -262,6 +262,50 @@ def save_error_response(
     )
     
     return error_file
+
+
+def _resolve_transition_targets(transition: Transition, scope_dir: str) -> Transition:
+    """Resolve abstract state names in a transition to concrete filenames.
+    
+    This function resolves all state references in a transition:
+    - The main target (for goto, reset, function, call, fork)
+    - The 'return' attribute (for function, call)
+    - The 'next' attribute (for fork)
+    
+    Args:
+        transition: Original transition with potentially abstract state names
+        scope_dir: Directory containing state files
+        
+    Returns:
+        New Transition with all state references resolved
+        
+    Raises:
+        FileNotFoundError: If any referenced state file doesn't exist
+        ValueError: If any state name is ambiguous (multiple files match)
+    """
+    # Result tags have no state references to resolve
+    if transition.tag == "result":
+        return transition
+    
+    # Resolve the main target
+    resolved_target = resolve_state(scope_dir, transition.target)
+    
+    # Resolve attributes that contain state references
+    resolved_attributes = dict(transition.attributes)
+    
+    if "return" in resolved_attributes:
+        resolved_attributes["return"] = resolve_state(scope_dir, resolved_attributes["return"])
+    
+    if "next" in resolved_attributes:
+        resolved_attributes["next"] = resolve_state(scope_dir, resolved_attributes["next"])
+    
+    # Return new transition with resolved values
+    return Transition(
+        tag=transition.tag,
+        target=resolved_target,
+        attributes=resolved_attributes,
+        payload=transition.payload
+    )
 
 
 async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None) -> None:
@@ -863,6 +907,37 @@ async def step_agent(
             # No tag emitted, but we have an implicit transition available
             # Use the implicit transition from the policy
             transition = get_implicit_transition(policy)
+            
+            # Resolve abstract state names in implicit transition (same as explicit transitions)
+            try:
+                transition = _resolve_transition_targets(transition, scope_dir)
+            except FileNotFoundError as e:
+                save_error_response(
+                    workflow_id=workflow_id,
+                    agent_id=agent_id,
+                    error=e,
+                    output_text=output_text,
+                    raw_results=results,
+                    session_id=new_session_id,
+                    current_state=current_state,
+                    state_dir=state_dir
+                )
+                e._error_saved = True
+                raise
+            except ValueError as e:
+                save_error_response(
+                    workflow_id=workflow_id,
+                    agent_id=agent_id,
+                    error=e,
+                    output_text=output_text,
+                    raw_results=results,
+                    session_id=new_session_id,
+                    current_state=current_state,
+                    state_dir=state_dir
+                )
+                e._error_saved = True
+                raise
+            
             logger.debug(
                 f"Using implicit transition for agent {agent_id}: {transition.tag} -> {transition.target}",
                 extra={
@@ -954,6 +1029,41 @@ async def step_agent(
                     raise
             
             transition = transitions[0]
+            
+            # Resolve abstract state names in transition before policy validation
+            # This ensures policies work correctly with both abstract ("NEXT") and
+            # explicit ("NEXT.md") state references
+            try:
+                transition = _resolve_transition_targets(transition, scope_dir)
+            except FileNotFoundError as e:
+                # Target doesn't exist - will be raised properly in handler
+                # but we can fail fast here with better context
+                save_error_response(
+                    workflow_id=workflow_id,
+                    agent_id=agent_id,
+                    error=e,
+                    output_text=output_text,
+                    raw_results=results,
+                    session_id=new_session_id,
+                    current_state=current_state,
+                    state_dir=state_dir
+                )
+                e._error_saved = True
+                raise
+            except ValueError as e:
+                # Ambiguous state name or other resolution error
+                save_error_response(
+                    workflow_id=workflow_id,
+                    agent_id=agent_id,
+                    error=e,
+                    output_text=output_text,
+                    raw_results=results,
+                    session_id=new_session_id,
+                    current_state=current_state,
+                    state_dir=state_dir
+                )
+                e._error_saved = True
+                raise
             
             # Validate transition against state policy (if policy exists)
             # Policy violations can also trigger reminder prompts if allowed_transitions are defined
@@ -1161,9 +1271,12 @@ def handle_goto_transition(
     Preserves session_id for resume in next step.
     Preserves return stack unchanged.
     
+    Note: The transition target is already resolved by step_agent before this
+    handler is called, so we use transition.target directly.
+    
     Args:
         agent: Agent state dictionary
-        transition: Transition object with target filename
+        transition: Transition object with resolved target filename
         state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
@@ -1187,9 +1300,12 @@ def handle_reset_transition(
     - Sets session_id to None (fresh start)
     - Clears return stack (logs warning if non-empty)
     
+    Note: The transition target is already resolved by step_agent before this
+    handler is called, so we use transition.target directly.
+    
     Args:
         agent: Agent state dictionary
-        transition: Transition object with target filename
+        transition: Transition object with resolved target filename
         state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
@@ -1226,9 +1342,12 @@ def handle_function_transition(
     - Sets session_id to None (fresh context)
     - Updates current_state to function target
     
+    Note: The transition target and attributes are already resolved by step_agent
+    before this handler is called, so we use them directly.
+    
     Args:
         agent: Agent state dictionary
-        transition: Transition object with target filename and return attribute
+        transition: Transition object with resolved target filename and return attribute
         state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
@@ -1241,21 +1360,20 @@ def handle_function_transition(
             f"Example: <function return=\"NEXT.md\">EVAL.md</function>"
         )
     
-    return_state = transition.attributes["return"]
     caller_session_id = agent.get("session_id")
     
-    # Push frame to return stack
+    # Push frame to return stack (attributes already contain resolved return state)
     stack = agent.get("stack", [])
     frame = {
         "session": caller_session_id,
-        "state": return_state
+        "state": transition.attributes["return"]
     }
     agent["stack"] = stack + [frame]  # Push to end (LIFO)
     
     # Set session_id to None (fresh context for stateless function)
     agent["session_id"] = None
     
-    # Update current_state to function target
+    # Update current_state to function target (already resolved)
     agent["current_state"] = transition.target
     
     return agent
@@ -1277,9 +1395,12 @@ def handle_call_transition(
     branching (Claude Code --fork-session flag), which is useful when the callee needs
     to see what the caller was working on.
     
+    Note: The transition target and attributes are already resolved by step_agent
+    before this handler is called, so we use them directly.
+    
     Args:
         agent: Agent state dictionary
-        transition: Transition object with target filename and return attribute
+        transition: Transition object with resolved target filename and return attribute
         state: Full workflow state dictionary (unused, for handler signature consistency)
         
     Returns:
@@ -1292,14 +1413,13 @@ def handle_call_transition(
             f"Example: <call return=\"NEXT.md\">CHILD.md</call>"
         )
     
-    return_state = transition.attributes["return"]
     caller_session_id = agent.get("session_id")
     
-    # Push frame to return stack
+    # Push frame to return stack (attributes already contain resolved return state)
     stack = agent.get("stack", [])
     frame = {
         "session": caller_session_id,
-        "state": return_state
+        "state": transition.attributes["return"]
     }
     agent["stack"] = stack + [frame]  # Push to end (LIFO)
     
@@ -1307,7 +1427,7 @@ def handle_call_transition(
     # This branches context from the caller's session
     agent["fork_session_id"] = caller_session_id
     
-    # Update current_state to callee target
+    # Update current_state to callee target (already resolved)
     agent["current_state"] = transition.target
     
     return agent
@@ -1331,13 +1451,16 @@ def handle_fork_transition(
     names even after previous workers have terminated. Names use a compact
     hierarchical underscore notation with state-based abbreviations:
     {parent_id}_{state_abbrev}{counter} where:
-    - state_abbrev is the first 6 characters of the target state name (lowercase, no .md)
+    - state_abbrev is the first 6 characters of the target state name (lowercase, no extension)
     - counter starts at 1 and increments for each fork from that parent
     Examples: main_worker1, main_worker1_analyz1, main_dispat1
     
+    Note: The transition target and attributes are already resolved by step_agent
+    before this handler is called, so we use them directly.
+    
     Args:
         agent: Agent state dictionary (the parent)
-        transition: Transition object with target filename and next attribute
+        transition: Transition object with resolved target filename and next attribute
         state: Full workflow state dictionary (used to track fork counters)
         
     Returns:
@@ -1350,14 +1473,15 @@ def handle_fork_transition(
             f"Example: <fork next=\"NEXT.md\">WORKER.md</fork>"
         )
     
-    next_state = transition.attributes["next"]
     parent_id = agent.get("id", "main")
     
     # Extract state name from fork target (e.g., "WORKER.md" -> "worker")
-    # Remove .md extension and convert to lowercase
+    # Remove state file extensions (.md, .sh, .bat) and convert to lowercase
     state_name = transition.target
-    if state_name.endswith('.md'):
-        state_name = state_name[:-3]  # Remove .md extension
+    for ext in ('.md', '.sh', '.bat'):
+        if state_name.lower().endswith(ext):
+            state_name = state_name[:-len(ext)]
+            break
     state_name = state_name.lower()
     
     # Truncate to 6 characters to keep names compact while informative
@@ -1372,7 +1496,7 @@ def handle_fork_transition(
     counter = fork_counters[parent_id]
     worker_id = f"{parent_id}_{state_abbrev}{counter}"
     
-    # Create new worker agent
+    # Create new worker agent (target already resolved)
     new_agent = {
         "id": worker_id,
         "current_state": transition.target,
@@ -1387,8 +1511,8 @@ def handle_fork_transition(
     if fork_attributes:
         new_agent["fork_attributes"] = fork_attributes
     
-    # Update parent agent (like goto - preserves session and stack)
-    agent["current_state"] = next_state
+    # Update parent agent with next state (already resolved, like goto - preserves session and stack)
+    agent["current_state"] = transition.attributes["next"]
     # session_id and stack are preserved (unchanged)
     
     return (agent, new_agent)

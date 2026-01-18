@@ -262,6 +262,10 @@ allowed_transitions:
 # Start Prompt
 This state only allows goto and result.""")
         
+        # Create target files so resolution succeeds (policy validation happens after resolution)
+        (Path(scope_dir) / "WORKER.md").write_text("Worker prompt")
+        (Path(scope_dir) / "NEXT.md").write_text("Next prompt")
+        
         # Mock wrap_claude_code to return output with disallowed fork tag
         mock_output = [{"type": "content", "text": "Some output\n<fork next=\"NEXT.md\">WORKER.md</fork>"}]
         
@@ -870,3 +874,409 @@ This is the start.""")
             call_kwargs = mock_wrap.call_args.kwargs
             # Model should be None or not in kwargs
             assert call_kwargs.get("model") is None or "model" not in call_kwargs
+
+
+class TestTransitionStateResolution:
+    """Tests for abstract state name resolution in transitions (Step 1.3)."""
+
+    @pytest.mark.asyncio
+    async def test_goto_abstract_name_resolves_to_md(self, tmp_path):
+        """1.3.1: <goto>NEXT</goto> resolves correctly when NEXT.md exists."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("NEXT_PROMPT")
+        
+        prompts_sent = []
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            if len(prompts_sent) == 1:
+                # First call: emit goto with abstract name (no extension)
+                return ([{"type": "content", "text": "Going next\n<goto>NEXT</goto>"}], "session_1")
+            else:
+                # Second call: should be in NEXT.md (resolved), emit result
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify the orchestrator correctly resolved "NEXT" to "NEXT.md"
+        # The second prompt should contain NEXT_PROMPT
+        assert len(prompts_sent) == 2, f"Expected 2 invocations, got {len(prompts_sent)}"
+        assert "NEXT_PROMPT" in prompts_sent[1], (
+            f"Second invocation should use NEXT.md (resolved from 'NEXT'), "
+            f"but got: {prompts_sent[1][:100]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_goto_explicit_md_extension_backward_compatible(self, tmp_path):
+        """1.3.2: <goto>NEXT.md</goto> still works (backward compatible)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("NEXT_PROMPT")
+        
+        prompts_sent = []
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            if len(prompts_sent) == 1:
+                # First call: emit goto with explicit .md extension
+                return ([{"type": "content", "text": "Going next\n<goto>NEXT.md</goto>"}], "session_1")
+            else:
+                # Second call: should be in NEXT.md, emit result
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify backward compatibility - explicit .md extension still works
+        assert len(prompts_sent) == 2, f"Expected 2 invocations, got {len(prompts_sent)}"
+        assert "NEXT_PROMPT" in prompts_sent[1], (
+            f"Second invocation should use NEXT.md, but got: {prompts_sent[1][:100]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_reset_abstract_name_resolves_to_md(self, tmp_path):
+        """1.3.1 variant: <reset>STATE</reset> resolves correctly when STATE.md exists."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-003"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        reset_file = Path(scope_dir) / "RESET_STATE.md"
+        reset_file.write_text("RESET_STATE_PROMPT")
+        
+        prompts_sent = []
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            if len(prompts_sent) == 1:
+                # First call: emit reset with abstract name
+                return ([{"type": "content", "text": "Resetting\n<reset>RESET_STATE</reset>"}], "session_1")
+            else:
+                # Second call: should be in RESET_STATE.md (resolved), emit result
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify the orchestrator correctly resolved abstract name
+        assert len(prompts_sent) == 2
+        assert "RESET_STATE_PROMPT" in prompts_sent[1]
+
+    @pytest.mark.asyncio
+    async def test_goto_abstract_name_not_found_raises(self, tmp_path):
+        """1.3.1 variant: <goto>NONEXISTENT</goto> raises when file doesn't exist."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-004"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create only START.md, not the target
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            # Emit goto to non-existent state
+            return ([{"type": "content", "text": "Going\n<goto>NONEXISTENT</goto>"}], "session_1")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            with pytest.raises(FileNotFoundError):
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.asyncio
+    async def test_function_return_attribute_resolves(self, tmp_path):
+        """1.3.1 variant: <function return="RETURN">EVAL</function> resolves both targets."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-005"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        eval_file = Path(scope_dir) / "EVAL.md"
+        eval_file.write_text("EVAL_PROMPT")
+        
+        return_file = Path(scope_dir) / "RETURN.md"
+        return_file.write_text("RETURN_PROMPT")
+        
+        prompts_sent = []
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            if len(prompts_sent) == 1:
+                # First call: emit function with abstract names
+                return ([{"type": "content", "text": "Calling\n<function return=\"RETURN\">EVAL</function>"}], "session_1")
+            elif len(prompts_sent) == 2:
+                # Second call: should be in EVAL.md (resolved), emit result
+                return ([{"type": "content", "text": "Evaluated\n<result>eval_result</result>"}], "session_2")
+            else:
+                # Third call: should be in RETURN.md (resolved from return attribute)
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify both target and return were resolved
+        assert len(prompts_sent) == 3
+        assert "EVAL_PROMPT" in prompts_sent[1], "Function target should resolve"
+        assert "RETURN_PROMPT" in prompts_sent[2], "Return attribute should resolve"
+
+    @pytest.mark.asyncio
+    async def test_call_return_attribute_resolves(self, tmp_path):
+        """1.3.1 variant: <call return="RETURN">CHILD</call> resolves both targets."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-006"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        child_file = Path(scope_dir) / "CHILD.md"
+        child_file.write_text("CHILD_PROMPT")
+        
+        return_file = Path(scope_dir) / "RETURN.md"
+        return_file.write_text("RETURN_PROMPT")
+        
+        prompts_sent = []
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            if len(prompts_sent) == 1:
+                # First call: emit call with abstract names
+                return ([{"type": "content", "text": "Calling\n<call return=\"RETURN\">CHILD</call>"}], "session_1")
+            elif len(prompts_sent) == 2:
+                # Second call: should be in CHILD.md (resolved), emit result
+                return ([{"type": "content", "text": "Child done\n<result>child_result</result>"}], "session_2")
+            else:
+                # Third call: should be in RETURN.md (resolved from return attribute)
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify both target and return were resolved
+        assert len(prompts_sent) == 3
+        assert "CHILD_PROMPT" in prompts_sent[1], "Call target should resolve"
+        assert "RETURN_PROMPT" in prompts_sent[2], "Return attribute should resolve"
+
+    @pytest.mark.asyncio
+    async def test_fork_next_attribute_resolves(self, tmp_path):
+        """1.3.1 variant: <fork next="NEXT">WORKER</fork> resolves both targets."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-007"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        worker_file = Path(scope_dir) / "WORKER.md"
+        worker_file.write_text("WORKER_PROMPT")
+        
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("NEXT_PROMPT")
+        
+        prompts_by_content = {}
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            if "START_PROMPT" in prompt:
+                prompts_by_content["START"] = prompt
+                # First call: emit fork with abstract names
+                return ([{"type": "content", "text": "Forking\n<fork next=\"NEXT\">WORKER</fork>"}], "session_1")
+            elif "WORKER_PROMPT" in prompt:
+                prompts_by_content["WORKER"] = prompt
+                # Worker agent terminates
+                return ([{"type": "content", "text": "Worker done\n<result>worker_result</result>"}], "session_w")
+            elif "NEXT_PROMPT" in prompt:
+                prompts_by_content["NEXT"] = prompt
+                # Parent continues at NEXT, terminates
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+            else:
+                raise AssertionError(f"Unexpected prompt: {prompt[:100]}")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify both fork target and next attribute were resolved
+        assert "WORKER" in prompts_by_content, "Fork target WORKER should be invoked"
+        assert "NEXT" in prompts_by_content, "Next attribute NEXT should be invoked"
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_reset_explicit_bat_extension(self, tmp_path):
+        """1.3.3: <reset>POLL.bat</reset> works with explicit .bat extension on Windows."""
+        # This test will be implemented when script execution is added (Phase 2)
+        # For now, test that explicit .bat extension in transition is accepted
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-008"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        # Create a .bat file (for Windows)
+        poll_file = Path(scope_dir) / "POLL.bat"
+        poll_file.write_text("@echo off\necho POLL_BAT")
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            # Emit reset with explicit .bat extension
+            return ([{"type": "content", "text": "Resetting\n<reset>POLL.bat</reset>"}], "session_1")
+        
+        # This will fail initially until script execution is implemented
+        # For now, it should at least resolve the state correctly
+        from src.prompts import resolve_state
+        
+        # Verify that POLL.bat resolves correctly with explicit extension
+        resolved = resolve_state(scope_dir, "POLL.bat")
+        assert resolved == "POLL.bat"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_reset_explicit_sh_extension(self, tmp_path):
+        """1.3.3: <reset>POLL.sh</reset> works with explicit .sh extension on Unix."""
+        # This test will be implemented when script execution is added (Phase 2)
+        # For now, test that explicit .sh extension in transition is accepted
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-resolve-009"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create prompt files
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("START_PROMPT")
+        
+        # Create a .sh file (for Unix)
+        poll_file = Path(scope_dir) / "POLL.sh"
+        poll_file.write_text("#!/bin/bash\necho POLL_SH")
+        
+        from src.prompts import resolve_state
+        
+        # Verify that POLL.sh resolves correctly with explicit extension
+        resolved = resolve_state(scope_dir, "POLL.sh")
+        assert resolved == "POLL.sh"
+
+    @pytest.mark.asyncio
+    async def test_implicit_transition_with_abstract_name(self, tmp_path):
+        """Test that implicit transitions with abstract names resolve correctly."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-implicit-abstract"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create START.md with policy using abstract name (no .md extension)
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT }
+---
+# Start
+Implicit transition to NEXT.""")
+        
+        # Create NEXT.md (file exists with .md extension)
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("NEXT_PROMPT")
+        
+        prompts_sent = []
+        
+        async def mock_wrap_claude_code(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            if len(prompts_sent) == 1:
+                # First call: emit NO tag - should use implicit transition
+                return ([{"type": "content", "text": "Some output without any tag"}], "session_1")
+            else:
+                # Second call: should be in NEXT.md (resolved from abstract 'NEXT'), emit result
+                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+        
+        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+        
+        # Verify implicit transition resolved abstract name to NEXT.md
+        assert len(prompts_sent) == 2, f"Expected 2 invocations, got {len(prompts_sent)}"
+        assert "NEXT_PROMPT" in prompts_sent[1], (
+            f"Second invocation should use NEXT.md (resolved from implicit transition 'NEXT'), "
+            f"but got: {prompts_sent[1][:100]}"
+        )

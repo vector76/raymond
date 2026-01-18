@@ -130,16 +130,16 @@ and are skipped on incompatible platforms.
 
 #### Step 2.1: Script Runner Infrastructure
 
-- [ ] **2.1.1** Write tests: `run_script()` executes `.sh` file and captures stdout
-- [ ] **2.1.2** Write tests: `run_script()` executes `.bat` file and captures stdout
-- [ ] **2.1.3** Write tests: `run_script()` captures stderr separately
-- [ ] **2.1.4** Write tests: `run_script()` returns exit code
-- [ ] **2.1.5** Write tests: `run_script()` respects timeout parameter
-- [ ] **2.1.6** Write tests: `run_script()` raises on timeout
-- [ ] **2.1.7** Write tests: `run_script()` uses correct shell for file type
-- [ ] **2.1.8** Write tests: `run_script()` is async (doesn't block event loop)
-- [ ] **2.1.9** Write tests: `run_script()` runs in orchestrator's working directory (not scope_dir)
-- [ ] **2.1.10** Implement `run_script()` function in new `src/scripts.py` using `asyncio.create_subprocess_exec()`
+- [x] **2.1.1** Write tests: `run_script()` executes `.sh` file and captures stdout
+- [x] **2.1.2** Write tests: `run_script()` executes `.bat` file and captures stdout
+- [x] **2.1.3** Write tests: `run_script()` captures stderr separately
+- [x] **2.1.4** Write tests: `run_script()` returns exit code
+- [x] **2.1.5** Write tests: `run_script()` respects timeout parameter
+- [x] **2.1.6** Write tests: `run_script()` raises on timeout
+- [x] **2.1.7** Write tests: `run_script()` uses correct shell for file type
+- [x] **2.1.8** Write tests: `run_script()` is async (doesn't block event loop)
+- [x] **2.1.9** Write tests: `run_script()` runs in orchestrator's working directory (not scope_dir)
+- [x] **2.1.10** Implement `run_script()` function in new `src/scripts.py` using `asyncio.create_subprocess_exec()`
 
 #### Step 2.2: Platform Detection
 

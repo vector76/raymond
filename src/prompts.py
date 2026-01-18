@@ -1,17 +1,7 @@
-import sys
 from pathlib import Path
 from typing import Any, Dict, Tuple, Optional
 from .policy import Policy, parse_frontmatter
-
-
-def is_windows() -> bool:
-    """Return True if running on Windows."""
-    return sys.platform.startswith('win')
-
-
-def is_unix() -> bool:
-    """Return True if running on Unix (Linux/macOS)."""
-    return not is_windows()
+from .scripts import is_windows, is_unix
 
 # Placeholder format for template variables
 PLACEHOLDER_PREFIX = "{{"

@@ -1,14 +1,65 @@
-"""Tests for script execution infrastructure (Step 2.1).
+"""Tests for script execution infrastructure (Steps 2.1 and 2.2).
 
 This module tests the run_script() function which executes shell scripts
-(.sh on Unix, .bat on Windows) and captures their output.
+(.sh on Unix, .bat on Windows) and captures their output, as well as
+platform detection utilities.
 """
 
 import asyncio
 import os
+import sys
 import pytest
 
-from src.scripts import run_script, ScriptResult, ScriptTimeoutError
+from src.scripts import run_script, ScriptResult, ScriptTimeoutError, is_unix, is_windows
+
+
+# =============================================================================
+# Step 2.2: Platform Detection Tests
+# =============================================================================
+
+
+class TestPlatformDetection:
+    """Tests for platform detection functions (Step 2.2.1)."""
+
+    def test_is_unix_and_is_windows_are_mutually_exclusive(self):
+        """2.2.1: is_unix() and is_windows() are mutually exclusive."""
+        # Exactly one should be true
+        assert is_unix() != is_windows()
+
+    def test_is_windows_matches_sys_platform(self):
+        """2.2.1: is_windows() matches sys.platform detection."""
+        expected = sys.platform.startswith('win')
+        assert is_windows() == expected
+
+    def test_is_unix_matches_sys_platform(self):
+        """2.2.1: is_unix() returns True when not on Windows."""
+        expected = not sys.platform.startswith('win')
+        assert is_unix() == expected
+
+    @pytest.mark.windows
+    def test_is_windows_true_on_windows(self):
+        """2.2.1: is_windows() returns True on Windows."""
+        assert is_windows() is True
+
+    @pytest.mark.windows
+    def test_is_unix_false_on_windows(self):
+        """2.2.1: is_unix() returns False on Windows."""
+        assert is_unix() is False
+
+    @pytest.mark.unix
+    def test_is_unix_true_on_unix(self):
+        """2.2.1: is_unix() returns True on Unix."""
+        assert is_unix() is True
+
+    @pytest.mark.unix
+    def test_is_windows_false_on_unix(self):
+        """2.2.1: is_windows() returns False on Unix."""
+        assert is_windows() is False
+
+
+# =============================================================================
+# Step 2.1: Script Execution Tests
+# =============================================================================
 
 
 class TestRunScriptStdout:

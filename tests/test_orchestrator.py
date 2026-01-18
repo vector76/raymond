@@ -2060,6 +2060,147 @@ class TestScriptErrorHandling:
             f"Script should only be invoked once (no retry), but counter shows: {counter_content}"
         )
 
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_unknown_tag_treated_as_no_tag_bat(self, tmp_path):
+        """Unknown tag names are silently ignored, resulting in 'no transition tag' error (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-013"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits an unknown tag (not goto/reset/function/call/fork/result)
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<invalid^>TARGET.md^</invalid^>\nexit /b 0\n")
+
+        # Should raise ScriptError with "no transition tag" since unknown tags are ignored
+        with pytest.raises(ScriptError, match="no transition tag"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_unknown_tag_treated_as_no_tag_sh(self, tmp_path):
+        """Unknown tag names are silently ignored, resulting in 'no transition tag' error (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-014"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits an unknown tag (not goto/reset/function/call/fork/result)
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<invalid>TARGET.md</invalid>'\nexit 0\n")
+        script_file.chmod(0o755)
+
+        # Should raise ScriptError with "no transition tag" since unknown tags are ignored
+        with pytest.raises(ScriptError, match="no transition tag"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_empty_target_raises_error_bat(self, tmp_path):
+        """Tags with empty targets raise an error (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-015"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits a tag with empty target
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<goto^>^</goto^>\nexit /b 0\n")
+
+        # Should raise an error about empty target
+        with pytest.raises((ScriptError, ValueError), match="[Ee]mpty"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_empty_target_raises_error_sh(self, tmp_path):
+        """Tags with empty targets raise an error (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-016"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits a tag with empty target
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<goto></goto>'\nexit 0\n")
+        script_file.chmod(0o755)
+
+        # Should raise an error about empty target
+        with pytest.raises((ScriptError, ValueError), match="[Ee]mpty"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_malformed_tag_treated_as_no_tag_bat(self, tmp_path):
+        """Malformed tags (not matching XML pattern) are ignored, resulting in 'no transition tag' (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-017"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits malformed tags (missing closing tag, unclosed bracket, etc.)
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<goto TARGET.md\necho ^<goto^>TARGET.md\nexit /b 0\n")
+
+        # Should raise ScriptError with "no transition tag" since malformed tags don't match regex
+        with pytest.raises(ScriptError, match="no transition tag"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_malformed_tag_treated_as_no_tag_sh(self, tmp_path):
+        """Malformed tags (not matching XML pattern) are ignored, resulting in 'no transition tag' (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-018"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits malformed tags (missing closing tag, unclosed bracket, etc.)
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<goto TARGET.md'\necho '<goto>TARGET.md'\nexit 0\n")
+        script_file.chmod(0o755)
+
+        # Should raise ScriptError with "no transition tag" since malformed tags don't match regex
+        with pytest.raises(ScriptError, match="no transition tag"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
 
 class TestScriptTransitionTypes:
     """Tests for all transition types from script states (Step 4.3).
@@ -2699,6 +2840,90 @@ class TestScriptTransitionTypes:
         output_content = output_file.read_text()
         assert "item=myitem" in output_content
         assert "count=42" in output_content
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_fork_attributes_cleared_after_first_step_bat(self, tmp_path):
+        """Fork attributes are cleared after the first step and not available in subsequent states (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-fork-clear-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script that forks
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <fork> with custom attributes
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text('@echo off\necho ^<fork next="DONE.bat" item="myitem"^>WORKER.bat^</fork^>\n')
+
+        # Create worker script that does goto to a second state
+        worker_file = Path(scope_dir) / "WORKER.bat"
+        worker_file.write_text('@echo off\necho ^<goto^>SECOND.bat^</goto^>\n')
+
+        # Create second state that checks if fork attributes are still present
+        # (they should NOT be - should be empty/unset)
+        output_file = tmp_path / "second_output.txt"
+        second_file = Path(scope_dir) / "SECOND.bat"
+        second_file.write_text(f'@echo off\necho item=[%item%] > "{output_file}"\necho ^<result^>Second done^</result^>\n')
+
+        # Create parent continuation script
+        done_file = Path(scope_dir) / "DONE.bat"
+        done_file.write_text("@echo off\necho ^<result^>Parent done^</result^>\n")
+
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify second state did NOT receive fork attributes (they should be cleared)
+        output_content = output_file.read_text()
+        # On Windows, unset env vars show as %varname%, so item=[%item%] means it was unset
+        assert "item=[%item%]" in output_content or "item=[]" in output_content
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_fork_attributes_cleared_after_first_step_sh(self, tmp_path):
+        """Fork attributes are cleared after the first step and not available in subsequent states (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-fork-clear-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script that forks
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <fork> with custom attributes
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text('#!/bin/bash\necho \'<fork next="DONE.sh" item="myitem">WORKER.sh</fork>\'\n')
+        script_file.chmod(0o755)
+
+        # Create worker script that does goto to a second state
+        worker_file = Path(scope_dir) / "WORKER.sh"
+        worker_file.write_text('#!/bin/bash\necho \'<goto>SECOND.sh</goto>\'\n')
+        worker_file.chmod(0o755)
+
+        # Create second state that checks if fork attributes are still present
+        # (they should NOT be - should be empty/unset)
+        output_file = tmp_path / "second_output.txt"
+        second_file = Path(scope_dir) / "SECOND.sh"
+        second_file.write_text(f'#!/bin/bash\necho "item=[$item]" > "{output_file}"\necho \'<result>Second done</result>\'\n')
+        second_file.chmod(0o755)
+
+        # Create parent continuation script
+        done_file = Path(scope_dir) / "DONE.sh"
+        done_file.write_text("#!/bin/bash\necho '<result>Parent done</result>'\n")
+        done_file.chmod(0o755)
+
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify second state did NOT receive fork attributes (they should be cleared)
+        output_content = output_file.read_text()
+        # On Unix, unset env vars are empty, so item=[] means it was unset
+        assert "item=[]" in output_content
 
     @pytest.mark.windows
     @pytest.mark.asyncio

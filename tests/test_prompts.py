@@ -209,14 +209,58 @@ class TestResolveState:
 
     # =========================================================================
     # Unix-only tests (1.1.7 - 1.1.11)
-    # TODO: Implement these tests
     # =========================================================================
 
-    # 1.1.7: resolve_state("NEXT") finds NEXT.sh when .md doesn't exist
-    # 1.1.8: resolve_state("NEXT.sh") returns NEXT.sh (explicit extension)
-    # 1.1.9: resolve_state("NEXT") raises when only .bat exists (no .md or .sh)
-    # 1.1.10: resolve_state("NEXT") raises when .md and .sh both exist (ambiguous)
-    # 1.1.11: resolve_state("NEXT.bat") raises (wrong platform)
+    @pytest.mark.unix
+    def test_resolve_state_finds_sh_when_md_missing(self, tmp_path):
+        """1.1.7: resolve_state("NEXT") finds NEXT.sh when .md doesn't exist."""
+        scope_dir = tmp_path / "workflows"
+        scope_dir.mkdir()
+        (scope_dir / "NEXT.sh").write_text("echo goto")
+
+        result = resolve_state(str(scope_dir), "NEXT")
+        assert result == "NEXT.sh"
+
+    @pytest.mark.unix
+    def test_resolve_state_explicit_sh_extension(self, tmp_path):
+        """1.1.8: resolve_state("NEXT.sh") returns NEXT.sh (explicit extension)."""
+        scope_dir = tmp_path / "workflows"
+        scope_dir.mkdir()
+        (scope_dir / "NEXT.sh").write_text("echo goto")
+
+        result = resolve_state(str(scope_dir), "NEXT.sh")
+        assert result == "NEXT.sh"
+
+    @pytest.mark.unix
+    def test_resolve_state_raises_when_only_bat_exists(self, tmp_path):
+        """1.1.9: resolve_state("NEXT") raises when only .bat exists (no .md or .sh)."""
+        scope_dir = tmp_path / "workflows"
+        scope_dir.mkdir()
+        (scope_dir / "NEXT.bat").write_text("echo goto")
+
+        with pytest.raises(FileNotFoundError):
+            resolve_state(str(scope_dir), "NEXT")
+
+    @pytest.mark.unix
+    def test_resolve_state_raises_when_md_and_sh_both_exist(self, tmp_path):
+        """1.1.10: resolve_state("NEXT") raises when .md and .sh both exist (ambiguous)."""
+        scope_dir = tmp_path / "workflows"
+        scope_dir.mkdir()
+        (scope_dir / "NEXT.md").write_text("# Next state")
+        (scope_dir / "NEXT.sh").write_text("echo goto")
+
+        with pytest.raises(ValueError, match="[Aa]mbiguous"):
+            resolve_state(str(scope_dir), "NEXT")
+
+    @pytest.mark.unix
+    def test_resolve_state_explicit_bat_raises_wrong_platform(self, tmp_path):
+        """1.1.11: resolve_state("NEXT.bat") raises (wrong platform)."""
+        scope_dir = tmp_path / "workflows"
+        scope_dir.mkdir()
+        (scope_dir / "NEXT.bat").write_text("echo goto")
+
+        with pytest.raises(ValueError, match="[Pp]latform|[Ww]indows|[Uu]nix"):
+            resolve_state(str(scope_dir), "NEXT.bat")
 
     # =========================================================================
     # Windows-only tests (1.1.12 - 1.1.16)

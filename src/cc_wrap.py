@@ -123,28 +123,56 @@ async def wrap_claude_code(
 
     async def read_output():
         nonlocal extracted_session_id
-        # Read and parse the streamed JSON output line by line
-        async for line in process.stdout:
-            line = line.decode('utf-8').strip()
-            if not line:
-                continue
+        # Read in chunks to handle arbitrarily long lines
+        # (default asyncio readline has a 64KB limit that can be exceeded by Claude Code)
+        buffer = b""
+        chunk_size = 1024 * 1024  # 1MB chunks
+        
+        while True:
+            chunk = await process.stdout.read(chunk_size)
+            if not chunk:
+                # Process any remaining data in buffer
+                if buffer:
+                    line = buffer.decode('utf-8').strip()
+                    if line:
+                        try:
+                            parsed = json.loads(line)
+                            results.append(parsed)
+                            if isinstance(parsed, dict):
+                                if "session_id" in parsed:
+                                    extracted_session_id = parsed["session_id"]
+                                elif "metadata" in parsed and isinstance(parsed["metadata"], dict):
+                                    if "session_id" in parsed["metadata"]:
+                                        extracted_session_id = parsed["metadata"]["session_id"]
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
+                break
+            
+            buffer += chunk
+            
+            # Process complete lines from buffer
+            while b'\n' in buffer:
+                line_bytes, buffer = buffer.split(b'\n', 1)
+                line = line_bytes.decode('utf-8').strip()
+                if not line:
+                    continue
 
-            try:
-                parsed = json.loads(line)
-                results.append(parsed)
-                
-                # Extract session_id from JSON objects if present
-                # Claude Code may output session_id in various formats
-                if isinstance(parsed, dict):
-                    if "session_id" in parsed:
-                        extracted_session_id = parsed["session_id"]
-                    # Also check for nested session_id (e.g., in metadata)
-                    elif "metadata" in parsed and isinstance(parsed["metadata"], dict):
-                        if "session_id" in parsed["metadata"]:
-                            extracted_session_id = parsed["metadata"]["session_id"]
-            except json.JSONDecodeError as e:
-                # If a line isn't valid JSON, log it but continue
-                logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
+                try:
+                    parsed = json.loads(line)
+                    results.append(parsed)
+                    
+                    # Extract session_id from JSON objects if present
+                    # Claude Code may output session_id in various formats
+                    if isinstance(parsed, dict):
+                        if "session_id" in parsed:
+                            extracted_session_id = parsed["session_id"]
+                        # Also check for nested session_id (e.g., in metadata)
+                        elif "metadata" in parsed and isinstance(parsed["metadata"], dict):
+                            if "session_id" in parsed["metadata"]:
+                                extracted_session_id = parsed["metadata"]["session_id"]
+                except json.JSONDecodeError as e:
+                    # If a line isn't valid JSON, log it but continue
+                    logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
 
     try:
         # Wait for output reading with timeout
@@ -226,10 +254,14 @@ async def wrap_claude_code_stream(
     loop = asyncio.get_running_loop()
     start_time = loop.time()
 
-    # Read and parse the streamed JSON output line by line
+    # Read in chunks to handle arbitrarily long lines
+    # (default asyncio readline has a 64KB limit that can be exceeded by Claude Code)
+    buffer = b""
+    chunk_size = 1024 * 1024  # 1MB chunks
+    
     try:
-        async for line in process.stdout:
-            # Check timeout (skip if no timeout set)
+        while True:
+            # Check timeout before each read (skip if no timeout set)
             if effective_timeout is not None:
                 elapsed = loop.time() - start_time
                 if elapsed > effective_timeout:
@@ -240,16 +272,34 @@ async def wrap_claude_code_stream(
                         f"Claude Code invocation timed out after {effective_timeout} seconds"
                     )
             
-            line = line.decode('utf-8').strip()
-            if not line:
-                continue
+            chunk = await process.stdout.read(chunk_size)
+            if not chunk:
+                # Process any remaining data in buffer
+                if buffer:
+                    line = buffer.decode('utf-8').strip()
+                    if line:
+                        try:
+                            parsed = json.loads(line)
+                            yield parsed
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
+                break
+            
+            buffer += chunk
+            
+            # Process complete lines from buffer
+            while b'\n' in buffer:
+                line_bytes, buffer = buffer.split(b'\n', 1)
+                line = line_bytes.decode('utf-8').strip()
+                if not line:
+                    continue
 
-            try:
-                parsed = json.loads(line)
-                yield parsed
-            except json.JSONDecodeError as e:
-                # If a line isn't valid JSON, log it but continue
-                logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
+                try:
+                    parsed = json.loads(line)
+                    yield parsed
+                except json.JSONDecodeError as e:
+                    # If a line isn't valid JSON, log it but continue
+                    logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
 
         # Wait for process to complete
         returncode = await asyncio.wait_for(process.wait(), timeout=30)

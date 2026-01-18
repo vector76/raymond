@@ -408,3 +408,240 @@ class TestCLIDebugFlag:
         assert hasattr(args, 'debug')
         assert args.debug is True
         assert args.resume == "test-workflow"
+
+
+class TestSaveScriptOutput:
+    """Tests for save_script_output function."""
+
+    def test_save_script_output_creates_file(self, tmp_path):
+        """Test that save_script_output creates the output file."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="CHECK",
+            step_number=1,
+            stdout="output text\n",
+            stderr="error text\n",
+            exit_code=0
+        )
+
+        # Check file was created
+        expected_file = debug_dir / "main_CHECK_001_script.txt"
+        assert expected_file.exists()
+
+        # Check file contents
+        content = expected_file.read_text()
+        assert "Exit Code: 0" in content
+        assert "STDOUT:" in content
+        assert "output text" in content
+        assert "STDERR:" in content
+        assert "error text" in content
+
+    def test_save_script_output_handles_empty_stderr(self, tmp_path):
+        """Test that save_script_output handles empty stderr."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output(
+            debug_dir=debug_dir,
+            agent_id="worker",
+            state_name="SCRIPT",
+            step_number=2,
+            stdout="some output",
+            stderr="",
+            exit_code=0
+        )
+
+        expected_file = debug_dir / "worker_SCRIPT_002_script.txt"
+        assert expected_file.exists()
+
+        content = expected_file.read_text()
+        assert "STDERR:" in content
+
+    def test_save_script_output_logs_warning_on_error(self, tmp_path, caplog):
+        """Test that save_script_output logs warning when file write fails."""
+        from src.orchestrator import save_script_output
+        import logging
+
+        # Use a non-existent directory to trigger error
+        debug_dir = tmp_path / "nonexistent" / "debug"
+
+        with caplog.at_level(logging.WARNING):
+            save_script_output(
+                debug_dir=debug_dir,
+                agent_id="main",
+                state_name="TEST",
+                step_number=1,
+                stdout="output",
+                stderr="",
+                exit_code=0
+            )
+
+        assert "Failed to save script output" in caplog.text
+
+
+class TestSaveScriptErrorResponse:
+    """Tests for save_script_error_response function."""
+
+    def test_save_script_error_response_creates_file(self, tmp_path):
+        """Test that save_script_error_response creates error file."""
+        from src.orchestrator import save_script_error_response
+
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        error = Exception("Test error")
+        error_file = save_script_error_response(
+            workflow_id="test-workflow",
+            agent_id="main",
+            error=error,
+            script_path="/path/to/script.bat",
+            stdout="script output",
+            stderr="script error",
+            exit_code=1,
+            current_state="SCRIPT.bat",
+            state_dir=str(state_dir)
+        )
+
+        assert error_file.exists()
+        assert "_script.txt" in error_file.name
+
+        content = error_file.read_text()
+        assert "SCRIPT ERROR REPORT" in content
+        assert "test-workflow" in content
+        assert "Test error" in content
+        assert "script output" in content
+        assert "script error" in content
+        assert "exit_code: 1" in content
+
+    def test_save_script_error_response_handles_empty_output(self, tmp_path):
+        """Test that save_script_error_response handles empty stdout/stderr."""
+        from src.orchestrator import save_script_error_response
+
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        error = Exception("Script not found")
+        error_file = save_script_error_response(
+            workflow_id="test",
+            agent_id="main",
+            error=error,
+            script_path="/path/to/missing.bat",
+            stdout="",
+            stderr="",
+            exit_code=None,
+            current_state="MISSING.bat",
+            state_dir=str(state_dir)
+        )
+
+        content = error_file.read_text()
+        assert "(empty)" in content
+        assert "exit_code: None" in content
+
+
+class TestTrySaveScriptError:
+    """Tests for _try_save_script_error wrapper function."""
+
+    def test_try_save_script_error_does_not_raise(self, tmp_path, caplog):
+        """Test that _try_save_script_error doesn't raise on failure."""
+        from src.orchestrator import _try_save_script_error
+        from unittest.mock import patch
+        import logging
+
+        # Mock save_script_error_response to raise an error
+        with patch('src.orchestrator.save_script_error_response', side_effect=OSError("Permission denied")):
+            with caplog.at_level(logging.WARNING):
+                # Should not raise
+                _try_save_script_error(
+                    workflow_id="test",
+                    agent_id="main",
+                    error=Exception("test"),
+                    script_path="/path/to/script",
+                    stdout="",
+                    stderr="",
+                    exit_code=None,
+                    current_state="SCRIPT.bat",
+                    state_dir=str(tmp_path)
+                )
+
+        assert "Failed to save script error response" in caplog.text
+
+    def test_try_save_script_error_succeeds_normally(self, tmp_path):
+        """Test that _try_save_script_error saves successfully when no error."""
+        from src.orchestrator import _try_save_script_error
+
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        # Should not raise
+        _try_save_script_error(
+            workflow_id="test",
+            agent_id="main",
+            error=Exception("test error"),
+            script_path="/path/to/script",
+            stdout="output",
+            stderr="error",
+            exit_code=1,
+            current_state="SCRIPT.bat",
+            state_dir=str(state_dir)
+        )
+
+        # Check that error file was created
+        errors_dir = tmp_path / ".raymond" / "errors"
+        assert errors_dir.exists()
+        error_files = list(errors_dir.glob("*_script.txt"))
+        assert len(error_files) == 1
+
+
+class TestExtractStateName:
+    """Tests for _extract_state_name helper function."""
+
+    def test_extract_state_name_md(self):
+        """Test extracting state name from .md file."""
+        from src.orchestrator import _extract_state_name
+
+        assert _extract_state_name("START.md") == "START"
+        assert _extract_state_name("CHECK.md") == "CHECK"
+
+    def test_extract_state_name_bat(self):
+        """Test extracting state name from .bat file."""
+        from src.orchestrator import _extract_state_name
+
+        assert _extract_state_name("SCRIPT.bat") == "SCRIPT"
+        assert _extract_state_name("CHECK.bat") == "CHECK"
+
+    def test_extract_state_name_sh(self):
+        """Test extracting state name from .sh file."""
+        from src.orchestrator import _extract_state_name
+
+        assert _extract_state_name("SCRIPT.sh") == "SCRIPT"
+        assert _extract_state_name("check.sh") == "check"
+
+    def test_extract_state_name_case_insensitive(self):
+        """Test that extension matching is case-insensitive."""
+        from src.orchestrator import _extract_state_name
+
+        assert _extract_state_name("SCRIPT.BAT") == "SCRIPT"
+        assert _extract_state_name("script.SH") == "script"
+        assert _extract_state_name("Test.MD") == "Test"
+
+    def test_extract_state_name_preserves_case(self):
+        """Test that state name case is preserved."""
+        from src.orchestrator import _extract_state_name
+
+        assert _extract_state_name("MyScript.bat") == "MyScript"
+        assert _extract_state_name("CHECK_FILE.sh") == "CHECK_FILE"
+
+    def test_extract_state_name_unknown_extension(self):
+        """Test that unknown extensions are not removed."""
+        from src.orchestrator import _extract_state_name
+
+        assert _extract_state_name("file.txt") == "file.txt"
+        assert _extract_state_name("noextension") == "noextension"

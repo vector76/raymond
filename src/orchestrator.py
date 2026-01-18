@@ -2,15 +2,17 @@ import asyncio
 import copy
 import json
 import logging
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from .cc_wrap import wrap_claude_code
 from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
-from .prompts import load_prompt, render_prompt, resolve_state
+from .prompts import load_prompt, render_prompt, resolve_state, get_state_type
 from .parsing import parse_transitions, validate_single_transition, Transition
 from .policy import validate_transition_policy, PolicyViolationError, can_use_implicit_transition, get_implicit_transition, should_use_reminder_prompt, generate_reminder_prompt
+from .scripts import run_script, build_script_env, ScriptTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,11 @@ class ClaudeCodeError(OrchestratorError):
 
 class PromptFileError(OrchestratorError):
     """Raised when prompt file operations fail."""
+    pass
+
+
+class ScriptError(OrchestratorError):
+    """Raised when script execution fails."""
     pass
 
 
@@ -108,7 +115,7 @@ def save_claude_output(
     results: List[Dict[str, Any]]
 ) -> None:
     """Save Claude Code JSON output to debug directory.
-    
+
     Args:
         debug_dir: Debug directory path
         agent_id: Agent identifier
@@ -118,12 +125,54 @@ def save_claude_output(
     """
     filename = f"{agent_id}_{state_name}_{step_number:03d}.json"
     filepath = debug_dir / filename
-    
+
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
     except OSError as e:
         logger.warning(f"Failed to save Claude output to {filepath}: {e}")
+
+
+def save_script_output(
+    debug_dir: Path,
+    agent_id: str,
+    state_name: str,
+    step_number: int,
+    stdout: str,
+    stderr: str,
+    exit_code: int
+) -> None:
+    """Save script execution output to debug directory.
+
+    Args:
+        debug_dir: Debug directory path
+        agent_id: Agent identifier
+        state_name: State name (filename without extension)
+        step_number: Step number for this agent
+        stdout: Script stdout output
+        stderr: Script stderr output
+        exit_code: Script exit code
+    """
+    filename = f"{agent_id}_{state_name}_{step_number:03d}_script.txt"
+    filepath = debug_dir / filename
+
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"Exit Code: {exit_code}\n")
+            f.write("=" * 40 + "\n")
+            f.write("STDOUT:\n")
+            f.write("=" * 40 + "\n")
+            f.write(stdout)
+            if not stdout.endswith('\n'):
+                f.write('\n')
+            f.write("=" * 40 + "\n")
+            f.write("STDERR:\n")
+            f.write("=" * 40 + "\n")
+            f.write(stderr)
+            if stderr and not stderr.endswith('\n'):
+                f.write('\n')
+    except OSError as e:
+        logger.warning(f"Failed to save script output to {filepath}: {e}")
 
 
 def log_state_transition(
@@ -246,12 +295,11 @@ def save_error_response(
         f.write("\n\n")
         
         # Full traceback if available
-        import traceback
         f.write("TRACEBACK:\n")
         f.write("-" * 80 + "\n")
         f.write(traceback.format_exc())
         f.write("\n")
-    
+
     logger.info(
         f"Saved error response to {error_file}",
         extra={
@@ -260,8 +308,153 @@ def save_error_response(
             "error_file": str(error_file)
         }
     )
-    
+
     return error_file
+
+
+def save_script_error_response(
+    workflow_id: str,
+    agent_id: str,
+    error: Exception,
+    script_path: str,
+    stdout: str,
+    stderr: str,
+    exit_code: Optional[int],
+    current_state: str,
+    state_dir: Optional[str] = None
+) -> Path:
+    """Save failed script execution information to a text file for analysis.
+
+    Args:
+        workflow_id: Workflow identifier
+        agent_id: Agent identifier
+        error: The exception that occurred
+        script_path: Full path to the script file
+        stdout: Script stdout output (may be empty if script didn't run)
+        stderr: Script stderr output (may be empty if script didn't run)
+        exit_code: Script exit code (None if script didn't complete)
+        current_state: Current state/script file
+        state_dir: Optional custom state directory
+
+    Returns:
+        Path to the saved error file
+    """
+    # Create errors directory next to state directory
+    state_path = get_state_dir(state_dir)
+    errors_dir = state_path.parent / "errors"
+    errors_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{workflow_id}_{agent_id}_{timestamp}_script.txt"
+    error_file = errors_dir / filename
+
+    # Prepare error information
+    error_info = {
+        "timestamp": datetime.now().isoformat(),
+        "workflow_id": workflow_id,
+        "agent_id": agent_id,
+        "current_state": current_state,
+        "script_path": script_path,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "exit_code": exit_code,
+    }
+
+    # Write error file
+    with open(error_file, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("SCRIPT ERROR REPORT\n")
+        f.write("=" * 80 + "\n\n")
+
+        # Error metadata
+        f.write("ERROR INFORMATION:\n")
+        f.write("-" * 80 + "\n")
+        for key, value in error_info.items():
+            f.write(f"{key}: {value}\n")
+        f.write("\n")
+
+        # Script stdout
+        f.write("SCRIPT STDOUT:\n")
+        f.write("-" * 80 + "\n")
+        f.write(stdout if stdout else "(empty)\n")
+        if stdout and not stdout.endswith('\n'):
+            f.write('\n')
+        f.write("\n")
+
+        # Script stderr
+        f.write("SCRIPT STDERR:\n")
+        f.write("-" * 80 + "\n")
+        f.write(stderr if stderr else "(empty)\n")
+        if stderr and not stderr.endswith('\n'):
+            f.write('\n')
+        f.write("\n")
+
+        # Full traceback if available
+        f.write("TRACEBACK:\n")
+        f.write("-" * 80 + "\n")
+        f.write(traceback.format_exc())
+        f.write("\n")
+
+    logger.info(
+        f"Saved script error response to {error_file}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "error_file": str(error_file)
+        }
+    )
+
+    return error_file
+
+
+def _try_save_script_error(
+    workflow_id: str,
+    agent_id: str,
+    error: Exception,
+    script_path: str,
+    stdout: str,
+    stderr: str,
+    exit_code: Optional[int],
+    current_state: str,
+    state_dir: Optional[str] = None
+) -> None:
+    """Attempt to save script error response, logging failures without raising.
+
+    This is a wrapper around save_script_error_response that catches exceptions
+    to ensure the original error is always raised, even if error saving fails.
+    """
+    try:
+        save_script_error_response(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+    except Exception as save_error:
+        logger.warning(f"Failed to save script error response: {save_error}")
+
+
+def _extract_state_name(state_filename: str) -> str:
+    """Extract state name from a state filename by removing the extension.
+
+    Handles .md, .sh, and .bat extensions case-insensitively.
+
+    Args:
+        state_filename: State filename (e.g., "CHECK.md", "SCRIPT.bat")
+
+    Returns:
+        State name without extension (e.g., "CHECK", "SCRIPT")
+    """
+    for ext in ('.md', '.sh', '.bat'):
+        if state_filename.lower().endswith(ext):
+            return state_filename[:-len(ext)]
+    return state_filename
 
 
 def _resolve_transition_targets(transition: Transition, scope_dir: str) -> Transition:
@@ -589,6 +782,419 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         write_state(workflow_id, state, state_dir=state_dir)
 
 
+async def _step_agent_script(
+    agent: Dict[str, Any],
+    state: Dict[str, Any],
+    scope_dir: str,
+    workflow_id: str,
+    current_state: str,
+    agent_id: str,
+    session_id: Optional[str],
+    debug_dir: Optional[Path],
+    agent_step_counters: Optional[Dict[str, int]],
+    timeout: Optional[float],
+    state_dir: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Execute a script state and process its output.
+
+    Script states are executed directly without invoking Claude Code.
+    They emit transition tags via stdout which are parsed the same way
+    as LLM output. Script states:
+    - Don't modify the agent's session_id (preserve session across scripts)
+    - Contribute $0.00 to cost tracking
+    - Don't support reminder prompts (fatal errors on failure)
+
+    Args:
+        agent: Agent state dictionary
+        state: Full workflow state dictionary
+        scope_dir: Directory containing state files
+        workflow_id: Workflow identifier
+        current_state: Current state filename (e.g., "CHECK.bat")
+        agent_id: Agent identifier
+        session_id: Current session ID (preserved, not modified)
+        debug_dir: Optional debug directory path
+        agent_step_counters: Optional dict to track step numbers per agent
+        timeout: Optional timeout in seconds for script execution
+        state_dir: Optional custom state directory (for error saving)
+
+    Returns:
+        Updated agent state dictionary, or None if agent terminated
+
+    Raises:
+        ScriptError: If script execution fails (non-zero exit, timeout, no tag)
+    """
+    # Build full path to script file
+    script_path = str(Path(scope_dir) / current_state)
+
+    # Build environment variables for the script
+    pending_result = agent.get("pending_result")
+    fork_attributes = agent.get("fork_attributes", {})
+
+    env = build_script_env(
+        workflow_id=workflow_id,
+        agent_id=agent_id,
+        state_dir=scope_dir,
+        state_file=script_path,
+        result=pending_result,
+        fork_attributes=fork_attributes
+    )
+
+    logger.info(
+        f"Executing script state for agent {agent_id}: {current_state}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "current_state": current_state,
+            "script_path": script_path
+        }
+    )
+
+    # Execute the script
+    script_result = None
+    try:
+        script_result = await run_script(script_path, timeout=timeout, env=env)
+    except ScriptTimeoutError as e:
+        logger.error(
+            f"Script timeout for agent {agent_id}: {current_state}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "timeout": timeout
+            }
+        )
+        error = ScriptError(f"Script timeout: {e}")
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout="",
+            stderr="",
+            exit_code=None,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error from e
+    except FileNotFoundError as e:
+        logger.error(
+            f"Script not found for agent {agent_id}: {current_state}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "script_path": script_path
+            }
+        )
+        error = ScriptError(f"Script not found: {e}")
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout="",
+            stderr="",
+            exit_code=None,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error from e
+    except ValueError as e:
+        # Platform mismatch or unsupported extension
+        logger.error(
+            f"Script execution error for agent {agent_id}: {e}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state
+            }
+        )
+        error = ScriptError(f"Script execution error: {e}")
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout="",
+            stderr="",
+            exit_code=None,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error from e
+
+    logger.debug(
+        f"Script completed for agent {agent_id}: exit_code={script_result.exit_code}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "current_state": current_state,
+            "exit_code": script_result.exit_code,
+            "stdout_length": len(script_result.stdout),
+            "stderr_length": len(script_result.stderr)
+        }
+    )
+
+    # Save script output to debug directory if debug mode is enabled
+    if debug_dir is not None and agent_step_counters is not None:
+        try:
+            # Increment step counter for this agent
+            if agent_id not in agent_step_counters:
+                agent_step_counters[agent_id] = 0
+            agent_step_counters[agent_id] += 1
+            step_number = agent_step_counters[agent_id]
+
+            # Extract state name (filename without extension)
+            state_name = _extract_state_name(current_state)
+
+            # Save the script output
+            save_script_output(
+                debug_dir=debug_dir,
+                agent_id=agent_id,
+                state_name=state_name,
+                step_number=step_number,
+                stdout=script_result.stdout,
+                stderr=script_result.stderr,
+                exit_code=script_result.exit_code
+            )
+        except OSError as e:
+            # Debug operations should not fail the workflow
+            logger.warning(f"Failed to save script output for debug: {e}")
+
+    # Check exit code - non-zero is fatal
+    if script_result.exit_code != 0:
+        error_msg = (
+            f"Script '{current_state}' failed with exit code {script_result.exit_code}. "
+            f"stderr: {script_result.stderr[:500]}"
+        )
+        logger.error(
+            f"Script failed for agent {agent_id}: {error_msg}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "exit_code": script_result.exit_code,
+                "stderr": script_result.stderr
+            }
+        )
+        error = ScriptError(error_msg)
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout=script_result.stdout,
+            stderr=script_result.stderr,
+            exit_code=script_result.exit_code,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error
+
+    # Parse transitions from stdout
+    output_text = script_result.stdout
+    transitions = parse_transitions(output_text)
+
+    # Validate exactly one transition
+    if len(transitions) == 0:
+        error_msg = f"Script '{current_state}' produced no transition tag in stdout"
+        logger.error(
+            f"No transition tag from script for agent {agent_id}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "stdout": output_text[:500]
+            }
+        )
+        error = ScriptError(error_msg)
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout=script_result.stdout,
+            stderr=script_result.stderr,
+            exit_code=script_result.exit_code,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error
+
+    if len(transitions) > 1:
+        error_msg = f"Script '{current_state}' produced {len(transitions)} transition tags (expected 1)"
+        logger.error(
+            f"Multiple transition tags from script for agent {agent_id}",
+            extra={
+                "workflow_id": workflow_id,
+                "agent_id": agent_id,
+                "current_state": current_state,
+                "transition_count": len(transitions)
+            }
+        )
+        error = ScriptError(error_msg)
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout=script_result.stdout,
+            stderr=script_result.stderr,
+            exit_code=script_result.exit_code,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error
+
+    transition = transitions[0]
+
+    # Resolve abstract state names in transition
+    try:
+        transition = _resolve_transition_targets(transition, scope_dir)
+    except FileNotFoundError as e:
+        error = ScriptError(f"Transition target not found: {e}")
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout=script_result.stdout,
+            stderr=script_result.stderr,
+            exit_code=script_result.exit_code,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error from e
+    except ValueError as e:
+        error = ScriptError(f"Transition resolution error: {e}")
+        _try_save_script_error(
+            workflow_id=workflow_id,
+            agent_id=agent_id,
+            error=error,
+            script_path=script_path,
+            stdout=script_result.stdout,
+            stderr=script_result.stderr,
+            exit_code=script_result.exit_code,
+            current_state=current_state,
+            state_dir=state_dir
+        )
+        raise error from e
+
+    logger.debug(
+        f"Parsed transition from script for agent {agent_id}: {transition.tag} -> {transition.target}",
+        extra={
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "transition_tag": transition.tag,
+            "transition_target": transition.target
+        }
+    )
+
+    # Create a deep copy of agent for handler (to avoid mutating original)
+    agent_copy = copy.deepcopy(agent)
+
+    # Script states do NOT update session_id - preserve the existing session
+    # This is different from markdown states which get new session_id from Claude Code
+
+    # Clear pending_result after using it (it was only for this step)
+    if "pending_result" in agent_copy:
+        del agent_copy["pending_result"]
+
+    # Clear fork_session_id (not used by scripts, but clear for consistency)
+    if "fork_session_id" in agent_copy:
+        del agent_copy["fork_session_id"]
+
+    # Clear fork_attributes after using them (they're only for first step)
+    if "fork_attributes" in agent_copy:
+        del agent_copy["fork_attributes"]
+
+    # Dispatch to appropriate handler
+    handler_map = {
+        "goto": handle_goto_transition,
+        "reset": handle_reset_transition,
+        "function": handle_function_transition,
+        "call": handle_call_transition,
+        "fork": handle_fork_transition,
+        "result": handle_result_transition,
+    }
+
+    handler = handler_map.get(transition.tag)
+    if handler is None:
+        raise ScriptError(f"Unknown transition tag from script: {transition.tag}")
+
+    # Call handler
+    handler_result = handler(agent_copy, transition, state)
+
+    # Log state transition for debug mode
+    if debug_dir is not None:
+        old_state = current_state
+        new_state = None
+        transition_target = transition.target
+        stack_depth = len(agent_copy.get("stack", []))
+
+        # Determine new state and whether agent terminated
+        spawned_agent_id = None
+        if handler_result is None:
+            # Agent terminated
+            new_state = None
+        elif isinstance(handler_result, tuple):
+            # Fork handler - parent agent continues
+            updated_agent, new_agent = handler_result
+            new_state = updated_agent.get("current_state")
+            spawned_agent_id = new_agent.get("id")
+        else:
+            # Regular handler
+            new_state = handler_result.get("current_state")
+
+        # Prepare metadata
+        metadata = {
+            "stack_depth": stack_depth,
+            "state_type": "script",
+            "cost": "$0.00",  # Scripts contribute no cost
+        }
+
+        # Add session_id information
+        if session_id:
+            metadata["session_id"] = f"{session_id} (preserved)"
+
+        # Add transition-specific metadata
+        if transition.tag == "function" or transition.tag == "call":
+            if "return" in transition.attributes:
+                metadata["return_state"] = transition.attributes["return"]
+        elif transition.tag == "fork":
+            if spawned_agent_id:
+                metadata["spawned_agent"] = spawned_agent_id
+        elif transition.tag == "result":
+            if transition.payload:
+                metadata["result_payload"] = transition.payload
+
+        # Log the transition
+        try:
+            log_state_transition(
+                debug_dir=debug_dir,
+                timestamp=datetime.now(),
+                agent_id=agent_id,
+                old_state=old_state,
+                new_state=new_state,
+                transition_type=transition.tag,
+                transition_target=transition_target,
+                metadata=metadata
+            )
+        except OSError as e:
+            # Debug operations should not fail the workflow
+            logger.warning(f"Failed to log state transition for debug: {e}")
+
+    # Fork handler returns a tuple (updated_agent, new_agent)
+    # Other handlers return just updated_agent
+    if transition.tag == "fork" and isinstance(handler_result, tuple):
+        updated_agent, new_agent = handler_result
+        # Add new agent to state's agents array
+        state["agents"].append(new_agent)
+        return updated_agent
+    else:
+        return handler_result
+
+
 async def step_agent(
     agent: Dict[str, Any],
     state: Dict[str, Any],
@@ -627,10 +1233,22 @@ async def step_agent(
             "has_session": session_id is not None
         }
     )
-    
+
+    # Determine state type and dispatch accordingly
+    state_type = get_state_type(current_state)
+
+    if state_type == "script":
+        # Script execution path - execute directly without LLM
+        return await _step_agent_script(
+            agent, state, scope_dir, workflow_id, current_state, agent_id, session_id,
+            debug_dir, agent_step_counters, timeout, state_dir
+        )
+
+    # Markdown state - continue with LLM execution path
+
     # Check if we need to fork from a caller's session (for <call> transitions)
     fork_session_id = agent.get("fork_session_id")
-    
+
     # Load prompt for current state (may raise PromptFileError)
     try:
         prompt_template, policy = load_prompt(scope_dir, current_state)
@@ -773,9 +1391,9 @@ async def step_agent(
                     agent_step_counters[agent_id] += 1
                     step_number = agent_step_counters[agent_id]
                     
-                    # Extract state name (filename without .md extension)
-                    state_name = current_state.replace('.md', '')
-                    
+                    # Extract state name (filename without extension)
+                    state_name = _extract_state_name(current_state)
+
                     # Save the JSON output
                     save_claude_output(
                         debug_dir=debug_dir,
@@ -1283,7 +1901,10 @@ def handle_goto_transition(
         Updated agent state dictionary
     """
     agent["current_state"] = transition.target
-    # session_id is already updated in step_agent if new_session_id was returned
+    # session_id handling:
+    # - For markdown states: step_agent updates session_id from Claude Code before calling this handler
+    # - For script states: session_id is preserved (scripts don't create new sessions)
+    # In both cases, this handler doesn't modify session_id - it just preserves whatever was set.
     # Return stack is preserved (unchanged)
     return agent
 

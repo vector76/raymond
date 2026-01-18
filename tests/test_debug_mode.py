@@ -391,30 +391,20 @@ class TestCLIDebugFlag:
         result = cmd_start(args)
         assert result == 0
 
-    def test_run_command_accepts_debug_flag(self, tmp_path):
-        """Test that run command accepts --debug flag."""
-        # This test would need to check the parser, but we'll test the integration
-        # by checking that debug flag is passed through
+    def test_resume_command_accepts_debug_flag(self, tmp_path):
+        """Test that --resume command accepts --debug flag."""
+        # This test checks the parser accepts --debug with --resume
         from src.cli import create_parser
         
         parser = create_parser()
         
-        # Parse start command with --debug
-        args = parser.parse_args(["start", "test.md", "--debug", "--no-run"])
+        # Parse start command with --debug (new syntax: positional file)
+        args = parser.parse_args(["test.md", "--debug", "--no-run"])
         assert hasattr(args, 'debug')
         assert args.debug is True
         
-        # Parse run command with --debug
-        # First create a workflow
-        state_dir = tmp_path / ".raymond" / "state"
-        state_dir.mkdir(parents=True)
-        workflow_id = "test-run-debug"
-        scope_dir = str(tmp_path / "workflows" / "test")
-        Path(scope_dir).mkdir(parents=True)
-        state = create_initial_state(workflow_id, scope_dir, "START.md")
-        write_state(workflow_id, state, state_dir=str(state_dir))
-        
-        # Parse run command
-        args = parser.parse_args(["run", workflow_id, "--debug"])
+        # Parse --resume command with --debug
+        args = parser.parse_args(["--resume", "test-workflow", "--debug"])
         assert hasattr(args, 'debug')
         assert args.debug is True
+        assert args.resume == "test-workflow"

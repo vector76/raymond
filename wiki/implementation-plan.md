@@ -239,11 +239,11 @@ and are skipped on incompatible platforms.
 
 #### Step 6.1: Test Workflows
 
-- [ ] **6.1.1** Create `workflows/test_cases/SCRIPT_GOTO.sh` - simple goto test
-- [ ] **6.1.2** Create `workflows/test_cases/SCRIPT_RESULT.sh` - result with payload
-- [ ] **6.1.3** Create `workflows/test_cases/SCRIPT_RESET.sh` - reset transition
-- [ ] **6.1.4** Create hybrid workflow: script → markdown → script
-- [ ] **6.1.5** Create polling example workflow (script with sleep)
+- [x] **6.1.1** Create `workflows/test_cases/SCRIPT_GOTO.sh` - simple goto test
+- [x] **6.1.2** Create `workflows/test_cases/SCRIPT_RESULT.sh` - result with payload
+- [x] **6.1.3** Create `workflows/test_cases/SCRIPT_RESET.sh` - reset transition
+- [x] **6.1.4** Create hybrid workflow: script → markdown → script
+- [x] **6.1.5** Create polling example workflow (script with sleep)
 
 #### Step 6.2: Windows Test Workflows
 

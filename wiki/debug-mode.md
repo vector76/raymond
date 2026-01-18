@@ -17,11 +17,11 @@ Debug mode solves this by creating a permanent record of every step.
 
 ## Usage
 
-Enable debug mode by adding the `--debug` flag to `start` or `run` commands:
+Enable debug mode by adding the `--debug` flag:
 
 ```bash
-raymond start workflows/test/START.md --debug
-raymond run workflow_2026-01-15_14-30-22 --debug
+raymond workflows/test/START.md --debug
+raymond --resume workflow_2026-01-15_14-30-22 --debug
 ```
 
 ## Directory Structure

@@ -140,11 +140,11 @@ def cmd_start(args: argparse.Namespace) -> int:
     # Check if workflow already exists
     existing = list_workflows(state_dir=state_dir)
     if workflow_id in existing:
-        print(f"Error: Workflow '{workflow_id}' already exists. Use 'resume' to continue it.", file=sys.stderr)
+        print(f"Error: Workflow '{workflow_id}' already exists. Use --resume to continue it.", file=sys.stderr)
         return 1
     
     # Get budget from args or use default
-    budget_usd = args.budget if hasattr(args, 'budget') and args.budget is not None else 1.0
+    budget_usd = args.budget if args.budget is not None else 1.0
     
     # Create and write initial state
     state = create_initial_state(workflow_id, scope_dir, initial_state, budget_usd=budget_usd)
@@ -156,26 +156,30 @@ def cmd_start(args: argparse.Namespace) -> int:
     
     if not args.no_run:
         print("\nStarting orchestrator...")
-        debug = getattr(args, 'debug', False)
-        default_model = getattr(args, 'model', None)
-        timeout = getattr(args, 'timeout', None)
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, default_model, timeout)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, args.debug, args.model, args.timeout)
     
-    print(f"\nRun with: raymond run {workflow_id}")
+    print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """Run/resume a workflow."""
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Resume an existing workflow."""
+    workflow_id = args.resume
+    
     # Validate workflow_id
-    error = validate_workflow_id(args.workflow_id)
+    error = validate_workflow_id(workflow_id)
     if error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    debug = getattr(args, 'debug', False)
-    default_model = getattr(args, 'model', None)
-    timeout = getattr(args, 'timeout', None)
-    return cmd_run_workflow(args.workflow_id, args.state_dir, args.verbose, debug, default_model, timeout)
+    
+    # Check if workflow exists before trying to run
+    try:
+        read_state(workflow_id, state_dir=args.state_dir)
+    except FileNotFoundError:
+        print(f"Error: Workflow '{workflow_id}' not found.", file=sys.stderr)
+        return 1
+    
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, args.debug, args.model, args.timeout)
 
 
 def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None) -> int:
@@ -220,7 +224,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     """Show status of a workflow."""
-    workflow_id = args.workflow_id
+    workflow_id = args.status
     state_dir = args.state_dir
     
     # Validate workflow_id
@@ -272,7 +276,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
     for wf_id in sorted(in_progress):
         print(f"  {wf_id}")
     
-    print(f"\nResume with: raymond run <workflow_id>")
+    print(f"\nResume with: raymond --resume <workflow_id>")
     return 0
 
 
@@ -281,125 +285,107 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="raymond",
         description="Multi-agent orchestrator for Claude Code workflows",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  raymond workflow.md                  Start a new workflow
+  raymond workflow.md --budget 5.0     Start with $5 budget
+  raymond --list                       List all workflows
+  raymond --resume <id>                Resume an existing workflow
+  raymond --status <id>                Show workflow status
+""",
     )
+    
+    # Positional argument for starting workflows (optional)
     parser.add_argument(
+        "initial_file",
+        nargs="?",
+        default=None,
+        metavar="FILE",
+        help="Path to initial prompt file to start a new workflow",
+    )
+    
+    # Management commands (mutually exclusive)
+    mgmt_group = parser.add_argument_group("management commands")
+    mgmt_mutex = mgmt_group.add_mutually_exclusive_group()
+    mgmt_mutex.add_argument(
+        "--list",
+        action="store_true",
+        help="List all workflows",
+    )
+    mgmt_mutex.add_argument(
+        "--status",
+        metavar="ID",
+        help="Show status of a workflow",
+    )
+    mgmt_mutex.add_argument(
+        "--resume",
+        metavar="ID",
+        help="Resume an existing workflow",
+    )
+    mgmt_mutex.add_argument(
+        "--recover",
+        action="store_true",
+        help="List in-progress workflows that can be resumed",
+    )
+    
+    # Start options (only applicable when starting a workflow)
+    start_group = parser.add_argument_group("start options (used when starting a workflow)")
+    start_group.add_argument(
+        "--workflow-id",
+        dest="workflow_id",
+        metavar="ID",
+        default=None,
+        help="Custom workflow identifier (auto-generated if not provided)",
+    )
+    start_group.add_argument(
+        "--no-run",
+        dest="no_run",
+        action="store_true",
+        help="Create workflow without running it",
+    )
+    start_group.add_argument(
+        "--budget",
+        type=positive_float,
+        metavar="USD",
+        default=None,
+        help="Cost budget limit in USD (default: 1.00)",
+    )
+    
+    # Runtime options (applicable to start and resume)
+    runtime_group = parser.add_argument_group("runtime options")
+    runtime_group.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save Claude Code outputs and state transitions to .raymond/debug/",
+    )
+    runtime_group.add_argument(
+        "--model",
+        choices=["opus", "sonnet", "haiku"],
+        default=None,
+        help="Default model for Claude Code (can be overridden by prompt frontmatter)",
+    )
+    runtime_group.add_argument(
+        "--timeout",
+        type=positive_float_or_zero,
+        metavar="SEC",
+        default=None,
+        help="Timeout per Claude Code invocation in seconds (default: 600, 0=none)",
+    )
+    
+    # Global options
+    global_group = parser.add_argument_group("global options")
+    global_group.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging",
     )
-    parser.add_argument(
+    global_group.add_argument(
         "--state-dir",
+        metavar="DIR",
         default=None,
         help="Custom state directory (default: .raymond/state)",
     )
-    
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    
-    # start command
-    start_parser = subparsers.add_parser(
-        "start",
-        help="Start a new workflow",
-    )
-    start_parser.add_argument(
-        "initial_file",
-        help="Path to initial prompt file (e.g., workflows/test/START.md). The containing directory becomes the scope directory.",
-    )
-    start_parser.add_argument(
-        "--workflow-id",
-        dest="workflow_id",
-        default=None,
-        help="Unique identifier for the workflow (auto-generated if not provided)",
-    )
-    start_parser.add_argument(
-        "--no-run",
-        dest="no_run",
-        action="store_true",
-        help="Create the workflow without running it (default: runs immediately)",
-    )
-    start_parser.add_argument(
-        "--budget",
-        dest="budget",
-        type=positive_float,
-        default=None,
-        help="Cost budget limit in USD (default: 1.00). Workflow terminates when total cost exceeds this limit.",
-    )
-    start_parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug mode: save Claude Code outputs and state transitions to .raymond/debug/",
-    )
-    start_parser.add_argument(
-        "--model",
-        choices=["opus", "sonnet", "haiku"],
-        default=None,
-        help="Default model to use for Claude Code invocations (opus, sonnet, or haiku). "
-             "Can be overridden by 'model' field in prompt file frontmatter. "
-             "If not specified, Claude Code uses its default (opus).",
-    )
-    start_parser.add_argument(
-        "--timeout",
-        type=positive_float_or_zero,
-        default=None,
-        help="Timeout in seconds for each Claude Code invocation (default: 600). "
-             "Set to 0 for no timeout.",
-    )
-    start_parser.set_defaults(func=cmd_start)
-    
-    # run command
-    run_parser = subparsers.add_parser(
-        "run",
-        help="Run/resume a workflow",
-    )
-    run_parser.add_argument(
-        "workflow_id",
-        help="Workflow identifier to run",
-    )
-    run_parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug mode: save Claude Code outputs and state transitions to .raymond/debug/",
-    )
-    run_parser.add_argument(
-        "--model",
-        choices=["opus", "sonnet", "haiku"],
-        default=None,
-        help="Default model to use for Claude Code invocations (opus, sonnet, or haiku). "
-             "Can be overridden by 'model' field in prompt file frontmatter. "
-             "If not specified, Claude Code uses its default (opus).",
-    )
-    run_parser.add_argument(
-        "--timeout",
-        type=positive_float_or_zero,
-        default=None,
-        help="Timeout in seconds for each Claude Code invocation (default: 600). "
-             "Set to 0 for no timeout.",
-    )
-    run_parser.set_defaults(func=cmd_run)
-    
-    # list command
-    list_parser = subparsers.add_parser(
-        "list",
-        help="List all workflows",
-    )
-    list_parser.set_defaults(func=cmd_list)
-    
-    # status command
-    status_parser = subparsers.add_parser(
-        "status",
-        help="Show status of a workflow",
-    )
-    status_parser.add_argument(
-        "workflow_id",
-        help="Workflow identifier",
-    )
-    status_parser.set_defaults(func=cmd_status)
-    
-    # recover command
-    recover_parser = subparsers.add_parser(
-        "recover",
-        help="List in-progress workflows that can be resumed",
-    )
-    recover_parser.set_defaults(func=cmd_recover)
     
     return parser
 
@@ -409,11 +395,39 @@ def main() -> int:
     parser = create_parser()
     args = parser.parse_args()
     
-    if args.command is None:
+    # Determine which mode we're in
+    has_file = args.initial_file is not None
+    has_mgmt_cmd = args.list or args.status or args.resume or args.recover
+    has_start_opts = args.workflow_id or args.no_run or args.budget is not None
+    
+    # Validate: can't have both file and management command
+    if has_file and has_mgmt_cmd:
+        print("Error: Cannot specify a file with management commands (--list, --status, --resume, --recover)", file=sys.stderr)
+        return 1
+    
+    # Validate: start options require a file
+    if has_start_opts and not has_file:
+        if has_mgmt_cmd:
+            print("Error: --workflow-id, --no-run, and --budget are only valid when starting a workflow", file=sys.stderr)
+        else:
+            print("Error: --workflow-id, --no-run, and --budget require a FILE argument", file=sys.stderr)
+        return 1
+    
+    # Dispatch to appropriate handler
+    if has_file:
+        return cmd_start(args)
+    elif args.list:
+        return cmd_list(args)
+    elif args.status:
+        return cmd_status(args)
+    elif args.resume:
+        return cmd_resume(args)
+    elif args.recover:
+        return cmd_recover(args)
+    else:
+        # No arguments - show help
         parser.print_help()
         return 0
-    
-    return args.func(args)
 
 
 if __name__ == "__main__":

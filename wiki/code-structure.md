@@ -113,7 +113,7 @@ source .venv/bin/activate  # Linux/Mac
 ```bash
 # Run via installed command (recommended after pip install -e .)
 raymond --help
-raymond start workflows/test_cases/CLASSIFY.md
+raymond workflows/test_cases/CLASSIFY.md
 
 # Or run via root launcher
 python main.py --help

@@ -65,7 +65,7 @@ Respond with a pair of "<result>" XML tags enclosing exactly one word: POSITIVE,
 
 **Test procedure:**
 1. Write "I love this beautiful sunny day!" to `workflows/test_cases/test_files/input1.txt`
-2. Run workflow: `raymond start workflows/test_cases/CLASSIFY.md`
+2. Run workflow: `raymond workflows/test_cases/CLASSIFY.md`
 3. Verify orchestrator captures output containing "POSITIVE" and prints: `Agent main terminated with result: POSITIVE`
 4. Write "This is terrible and I hate it." to `workflows/test_cases/test_files/input1.txt`
 5. Run workflow again
@@ -118,7 +118,7 @@ When done, write the complete mini-story to workflows/test_cases/test_outputs/st
 ```
 
 **Test procedure:**
-1. Start workflow: `raymond start workflows/test_cases/START.md`
+1. Start workflow: `raymond workflows/test_cases/START.md`
 2. Verify it transitions to CONFLICT.md
 3. Verify CONFLICT.md references the character by name (context preserved)
 4. Verify it transitions to RESOLUTION.md
@@ -188,7 +188,7 @@ child's `<result>` tag. This is how the parent receives the child's return value
 
 **Test procedure:**
 1. Write "purple elephants" to `workflows/test_cases/test_files/research-input.txt`
-2. Start workflow: `raymond start workflows/test_cases/MAIN.md`
+2. Start workflow: `raymond workflows/test_cases/MAIN.md`
 3. Verify it calls RESEARCH.md as a child workflow
 4. Verify RESEARCH.md returns facts about purple elephants via `<result>` tag
 5. Verify parent resumes at SUMMARIZE.md with `{{result}}` populated
@@ -270,7 +270,7 @@ metadata through Claude Code's session state.
    rivers
    clouds
    ```
-2. Start workflow: `raymond start workflows/test_cases/DISPATCH.md`
+2. Start workflow: `raymond workflows/test_cases/DISPATCH.md`
 3. Verify three independent WORKER agents are spawned (all in same state file)
 4. Verify each worker creates its own output file with a haiku
 5. Verify `workflows/test_cases/test_outputs/dispatch-log.txt` says "Dispatched 3 workers"
@@ -305,7 +305,7 @@ Then request another iteration:
 
 **Test procedure:**
 1. Delete `workflows/test_cases/test_outputs/improve-output.txt` if it exists
-2. Start workflow with a small budget: `raymond start workflows/test_cases/IMPROVE.md --budget 0.10`
+2. Start workflow with a small budget: `raymond workflows/test_cases/IMPROVE.md --budget 0.10`
    (Note: Cost budget limiting is a future feature - this test documents the intended behavior)
 3. Verify workflow runs until total cost exceeds budget, then terminates despite AI requesting more iterations
 4. Verify `workflows/test_cases/test_outputs/improve-output.txt` contains multiple drafts (number depends on cost per iteration)
@@ -355,7 +355,7 @@ Then respond with:
 ```
 
 **Test procedure:**
-1. Start workflow: `raymond start workflows/test_cases/PHASE1.md`
+1. Start workflow: `raymond workflows/test_cases/PHASE1.md`
 2. Verify it generates a number and writes to `workflows/test_cases/test_outputs/reset-output.txt`
 3. Verify it resets to PHASE2.md (new session ID in state file)
 4. Verify PHASE2.md can read the number from file
@@ -374,22 +374,22 @@ workflow file path:
 
 ```bash
 # Test 1: Pure function
-raymond start workflows/test_cases/CLASSIFY.md
+raymond workflows/test_cases/CLASSIFY.md
 
 # Test 2: Goto/resume
-raymond start workflows/test_cases/START.md
+raymond workflows/test_cases/START.md
 
 # Test 3: Call (child workflow with return)
-raymond start workflows/test_cases/MAIN.md
+raymond workflows/test_cases/MAIN.md
 
 # Test 4: Fork (independent agents)
-raymond start workflows/test_cases/DISPATCH.md
+raymond workflows/test_cases/DISPATCH.md
 
 # Test 5: Evaluator override (cost budget, future feature)
-raymond start workflows/test_cases/IMPROVE.md --budget 0.10
+raymond workflows/test_cases/IMPROVE.md --budget 0.10
 
 # Test 6: Reset (fresh context)
-raymond start workflows/test_cases/PHASE1.md
+raymond workflows/test_cases/PHASE1.md
 ```
 
 ## File Naming

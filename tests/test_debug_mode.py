@@ -427,7 +427,6 @@ class TestSaveScriptOutput:
             step_number=1,
             stdout="output text\n",
             stderr="error text\n",
-            exit_code=0
         )
 
         # Check stdout file was created with correct content
@@ -453,8 +452,7 @@ class TestSaveScriptOutput:
             state_name="SCRIPT",
             step_number=2,
             stdout="some output",
-            stderr="",
-            exit_code=0
+            stderr=""
         )
 
         # Both files should exist
@@ -482,8 +480,7 @@ class TestSaveScriptOutput:
                 state_name="TEST",
                 step_number=1,
                 stdout="output",
-                stderr="",
-                exit_code=0
+                stderr=""
             )
 
         assert "Failed to save script" in caplog.text
@@ -669,8 +666,7 @@ class TestScriptOutputCapturePhase51:
             state_name="CHECK",
             step_number=1,
             stdout="This is stdout content\nLine 2\n",
-            stderr="",
-            exit_code=0
+            stderr=""
         )
 
         # Check stdout file was created and has correct content
@@ -691,8 +687,7 @@ class TestScriptOutputCapturePhase51:
             state_name="PROCESS",
             step_number=3,
             stdout="normal output",
-            stderr="Error: something went wrong\nWarning: check input\n",
-            exit_code=1
+            stderr="Error: something went wrong\nWarning: check input\n"
         )
 
         # Check stderr file was created and has correct content
@@ -721,8 +716,7 @@ class TestScriptOutputCapturePhase51:
                 state_name=state_name,
                 step_number=step_number,
                 stdout="out",
-                stderr="err",
-                exit_code=0
+                stderr="err"
             )
 
             stdout_file = debug_dir / f"{expected_prefix}.stdout.txt"
@@ -743,8 +737,7 @@ class TestScriptOutputCapturePhase51:
             state_name="SCRIPT",
             step_number=5,
             stdout="stdout content here",
-            stderr="stderr content here",
-            exit_code=0
+            stderr="stderr content here"
         )
 
         # Both files should exist as separate files
@@ -772,8 +765,7 @@ class TestScriptOutputCapturePhase51:
             state_name="QUIET",
             step_number=1,
             stdout="",
-            stderr="some error",
-            exit_code=0
+            stderr="some error"
         )
 
         stdout_file = debug_dir / "main_QUIET_001.stdout.txt"
@@ -793,8 +785,7 @@ class TestScriptOutputCapturePhase51:
             state_name="CLEAN",
             step_number=2,
             stdout="output here",
-            stderr="",
-            exit_code=0
+            stderr=""
         )
 
         stderr_file = debug_dir / "main_CLEAN_002.stderr.txt"
@@ -816,8 +807,484 @@ class TestScriptOutputCapturePhase51:
                 state_name="TEST",
                 step_number=1,
                 stdout="output",
-                stderr="error",
-                exit_code=0
+                stderr="error"
             )
 
         assert "Failed to save script" in caplog.text
+
+
+class TestScriptExecutionMetadataPhase52:
+    """Tests for Phase 5.2: Execution metadata logging for script states.
+
+    These tests verify that debug mode logs script execution metadata
+    including execution time, exit code, and environment variables.
+    """
+
+    # =========================================================================
+    # 5.2.1: Debug mode logs script execution time
+    # =========================================================================
+
+    def test_save_script_output_metadata_includes_execution_time(self, tmp_path):
+        """Test 5.2.1: Debug mode logs script execution time."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="CHECK",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=1234.5,
+            env_vars={}
+        )
+
+        # Check metadata file was created
+        metadata_file = debug_dir / "main_CHECK_001.meta.json"
+        assert metadata_file.exists(), "metadata file should be created"
+
+        # Check content includes execution time
+        import json
+        metadata = json.loads(metadata_file.read_text())
+        assert "execution_time_ms" in metadata
+        assert metadata["execution_time_ms"] == 1234.5
+
+    def test_execution_time_is_in_milliseconds(self, tmp_path):
+        """Test 5.2.1: Execution time is recorded in milliseconds."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        # Use a realistic value (500ms)
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="FAST",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=500.0,
+            env_vars={}
+        )
+
+        import json
+        metadata_file = debug_dir / "main_FAST_001.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert metadata["execution_time_ms"] == 500.0
+
+    def test_execution_time_zero_is_valid(self, tmp_path):
+        """Test 5.2.1: Zero execution time is valid."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="INSTANT",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=0.0,
+            env_vars={}
+        )
+
+        import json
+        metadata_file = debug_dir / "main_INSTANT_001.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert metadata["execution_time_ms"] == 0.0
+
+    # =========================================================================
+    # 5.2.2: Debug mode logs exit code
+    # =========================================================================
+
+    def test_save_script_output_metadata_includes_exit_code(self, tmp_path):
+        """Test 5.2.2: Debug mode logs exit code."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="SCRIPT",
+            step_number=2,
+            exit_code=42,
+            execution_time_ms=100.0,
+            env_vars={}
+        )
+
+        import json
+        metadata_file = debug_dir / "main_SCRIPT_002.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert "exit_code" in metadata
+        assert metadata["exit_code"] == 42
+
+    def test_exit_code_zero_is_logged(self, tmp_path):
+        """Test 5.2.2: Exit code 0 is logged correctly."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="SUCCESS",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=100.0,
+            env_vars={}
+        )
+
+        import json
+        metadata_file = debug_dir / "main_SUCCESS_001.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert metadata["exit_code"] == 0
+
+    def test_nonzero_exit_code_is_logged(self, tmp_path):
+        """Test 5.2.2: Non-zero exit codes are logged correctly."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        test_cases = [1, 2, 127, 255]
+        for i, exit_code in enumerate(test_cases, 1):
+            save_script_output_metadata(
+                debug_dir=debug_dir,
+                agent_id="main",
+                state_name=f"ERROR{i}",
+                step_number=i,
+                exit_code=exit_code,
+                execution_time_ms=100.0,
+                env_vars={}
+            )
+
+            import json
+            metadata_file = debug_dir / f"main_ERROR{i}_{i:03d}.meta.json"
+            metadata = json.loads(metadata_file.read_text())
+            assert metadata["exit_code"] == exit_code
+
+    # =========================================================================
+    # 5.2.3: Debug mode logs environment variables
+    # =========================================================================
+
+    def test_save_script_output_metadata_includes_env_vars(self, tmp_path):
+        """Test 5.2.3: Debug mode logs environment variables."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        env_vars = {
+            "RAYMOND_WORKFLOW_ID": "wf-123",
+            "RAYMOND_AGENT_ID": "main",
+            "RAYMOND_STATE_DIR": "/path/to/states",
+            "RAYMOND_STATE_FILE": "/path/to/states/CHECK.bat"
+        }
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="CHECK",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=100.0,
+            env_vars=env_vars
+        )
+
+        import json
+        metadata_file = debug_dir / "main_CHECK_001.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert "env_vars" in metadata
+        assert metadata["env_vars"]["RAYMOND_WORKFLOW_ID"] == "wf-123"
+        assert metadata["env_vars"]["RAYMOND_AGENT_ID"] == "main"
+
+    def test_env_vars_includes_fork_attributes(self, tmp_path):
+        """Test 5.2.3: Environment variables include fork attributes."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        env_vars = {
+            "RAYMOND_WORKFLOW_ID": "wf-123",
+            "RAYMOND_AGENT_ID": "worker_1",
+            "RAYMOND_STATE_DIR": "/path/to/states",
+            "RAYMOND_STATE_FILE": "/path/to/states/WORKER.bat",
+            "item": "task1",
+            "priority": "high"
+        }
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="worker_1",
+            state_name="WORKER",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=100.0,
+            env_vars=env_vars
+        )
+
+        import json
+        metadata_file = debug_dir / "worker_1_WORKER_001.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert metadata["env_vars"]["item"] == "task1"
+        assert metadata["env_vars"]["priority"] == "high"
+
+    def test_env_vars_includes_raymond_result(self, tmp_path):
+        """Test 5.2.3: Environment variables include RAYMOND_RESULT when present."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        env_vars = {
+            "RAYMOND_WORKFLOW_ID": "wf-123",
+            "RAYMOND_AGENT_ID": "main",
+            "RAYMOND_STATE_DIR": "/path/to/states",
+            "RAYMOND_STATE_FILE": "/path/to/states/RESUME.bat",
+            "RAYMOND_RESULT": "child task completed"
+        }
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="RESUME",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=100.0,
+            env_vars=env_vars
+        )
+
+        import json
+        metadata_file = debug_dir / "main_RESUME_001.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert metadata["env_vars"]["RAYMOND_RESULT"] == "child task completed"
+
+    def test_empty_env_vars_is_valid(self, tmp_path):
+        """Test 5.2.3: Empty environment variables dict is valid."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="BARE",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=100.0,
+            env_vars={}
+        )
+
+        import json
+        metadata_file = debug_dir / "main_BARE_001.meta.json"
+        metadata = json.loads(metadata_file.read_text())
+        assert metadata["env_vars"] == {}
+
+    # =========================================================================
+    # 5.2.4: transitions.log includes script state transitions
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    async def test_transitions_log_includes_script_state(self, tmp_path):
+        """Test 5.2.4: transitions.log includes script state transitions."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-debug-script-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create a batch script that outputs a goto transition
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<goto^>NEXT.md^</goto^>\n")
+
+        # Create the target markdown file
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("Next state\n<result>Done</result>")
+
+        # Mock wrap_claude_code for the markdown state
+        mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, "session_123")
+
+            # Run with debug=True
+            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+
+            # Find debug directory
+            debug_base = tmp_path / ".raymond" / "debug"
+            debug_dirs = [d for d in debug_base.iterdir() if d.is_dir()]
+            assert len(debug_dirs) >= 1
+            debug_dir = debug_dirs[0]
+
+            # Check transitions.log exists and contains script transition
+            transitions_log = debug_dir / "transitions.log"
+            assert transitions_log.exists(), "transitions.log should exist"
+
+            log_content = transitions_log.read_text()
+            # Should include the script state
+            assert "START.bat" in log_content or "START" in log_content
+            # Should indicate it's a script state
+            assert "script" in log_content.lower() or "state_type" in log_content.lower()
+
+    @pytest.mark.asyncio
+    async def test_transitions_log_shows_script_to_markdown_transition(self, tmp_path):
+        """Test 5.2.4: transitions.log shows script -> markdown transitions."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-debug-script-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "CHECK.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create a batch script that outputs a goto transition
+        script_file = Path(scope_dir) / "CHECK.bat"
+        script_file.write_text("@echo off\necho ^<goto^>PROCESS.md^</goto^>\n")
+
+        # Create target markdown file
+        process_file = Path(scope_dir) / "PROCESS.md"
+        process_file.write_text("Process\n<result>Done</result>")
+
+        mock_output = [{"type": "content", "text": "Done\n<result>Done</result>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+
+            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+
+            debug_base = tmp_path / ".raymond" / "debug"
+            debug_dirs = [d for d in debug_base.iterdir() if d.is_dir()]
+            debug_dir = debug_dirs[0]
+
+            log_content = (debug_dir / "transitions.log").read_text()
+            # Should show the transition from script to markdown
+            assert "CHECK" in log_content
+            assert "PROCESS" in log_content
+            assert "goto" in log_content.lower()
+
+    def test_log_state_transition_includes_script_metadata(self, tmp_path):
+        """Test 5.2.4: log_state_transition includes script-specific metadata."""
+        from src.orchestrator import log_state_transition
+        from datetime import datetime
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        log_state_transition(
+            debug_dir=debug_dir,
+            timestamp=datetime.now(),
+            agent_id="main",
+            old_state="SCRIPT.bat",
+            new_state="NEXT.md",
+            transition_type="goto",
+            transition_target="NEXT.md",
+            metadata={
+                "state_type": "script",
+                "cost": "$0.00",
+                "exit_code": 0,
+                "execution_time_ms": 150.5
+            }
+        )
+
+        log_content = (debug_dir / "transitions.log").read_text()
+        assert "SCRIPT.bat" in log_content
+        assert "NEXT.md" in log_content
+        assert "goto" in log_content.lower()
+        # Should include metadata
+        assert "state_type" in log_content or "script" in log_content
+        assert "$0.00" in log_content
+
+
+class TestMetadataFileNaming:
+    """Tests for metadata file naming convention."""
+
+    def test_metadata_filename_follows_pattern(self, tmp_path):
+        """Test that metadata filename follows {agent}_{state}_{step}.meta.json pattern."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        test_cases = [
+            ("main", "START", 1, "main_START_001.meta.json"),
+            ("worker_1", "CHECK", 42, "worker_1_CHECK_042.meta.json"),
+            ("main_fork1", "PROCESS", 100, "main_fork1_PROCESS_100.meta.json"),
+        ]
+
+        for agent_id, state_name, step_number, expected_filename in test_cases:
+            save_script_output_metadata(
+                debug_dir=debug_dir,
+                agent_id=agent_id,
+                state_name=state_name,
+                step_number=step_number,
+                exit_code=0,
+                execution_time_ms=100.0,
+                env_vars={}
+            )
+
+            metadata_file = debug_dir / expected_filename
+            assert metadata_file.exists(), f"{expected_filename} should exist"
+
+    def test_metadata_file_is_valid_json(self, tmp_path):
+        """Test that metadata file is valid JSON."""
+        from src.orchestrator import save_script_output_metadata
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output_metadata(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="TEST",
+            step_number=1,
+            exit_code=0,
+            execution_time_ms=100.0,
+            env_vars={"key": "value"}
+        )
+
+        import json
+        metadata_file = debug_dir / "main_TEST_001.meta.json"
+        # Should not raise
+        metadata = json.loads(metadata_file.read_text())
+        assert isinstance(metadata, dict)
+
+
+class TestMetadataErrorHandling:
+    """Tests for error handling in metadata logging."""
+
+    def test_save_script_output_metadata_logs_warning_on_error(self, tmp_path, caplog):
+        """Test that save_script_output_metadata logs warning when write fails."""
+        from src.orchestrator import save_script_output_metadata
+        import logging
+
+        # Use a non-existent directory to trigger error
+        debug_dir = tmp_path / "nonexistent" / "debug"
+
+        with caplog.at_level(logging.WARNING):
+            save_script_output_metadata(
+                debug_dir=debug_dir,
+                agent_id="main",
+                state_name="TEST",
+                step_number=1,
+                exit_code=0,
+                execution_time_ms=100.0,
+                env_vars={}
+            )
+
+        assert "Failed to save" in caplog.text or "metadata" in caplog.text.lower()

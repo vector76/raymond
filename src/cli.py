@@ -147,12 +147,16 @@ def cmd_start(args: argparse.Namespace) -> int:
     budget_usd = args.budget if args.budget is not None else 1.0
     
     # Create and write initial state
-    state = create_initial_state(workflow_id, scope_dir, initial_state, budget_usd=budget_usd)
+    state = create_initial_state(workflow_id, scope_dir, initial_state, budget_usd=budget_usd, initial_input=args.initial_input)
     write_state(workflow_id, state, state_dir=state_dir)
     
     print(f"Created workflow '{workflow_id}'")
     print(f"  Scope directory: {scope_dir}")
     print(f"  Initial state: {initial_state}")
+    if args.initial_input is not None:
+        # Truncate long inputs for display
+        display_input = args.initial_input if len(args.initial_input) <= 50 else args.initial_input[:50] + "..."
+        print(f"  Initial input: {display_input}")
     
     if not args.no_run:
         print("\nStarting orchestrator...")
@@ -290,6 +294,7 @@ def create_parser() -> argparse.ArgumentParser:
 Examples:
   raymond workflow.md                  Start a new workflow
   raymond workflow.md --budget 5.0     Start with $5 budget
+  raymond workflow.md --input "data"   Start with initial input for {{result}}
   raymond --list                       List all workflows
   raymond --resume <id>                Resume an existing workflow
   raymond --status <id>                Show workflow status
@@ -351,6 +356,13 @@ Examples:
         default=None,
         help="Cost budget limit in USD (default: 1.00)",
     )
+    start_group.add_argument(
+        "--input",
+        dest="initial_input",
+        metavar="TEXT",
+        default=None,
+        help="Initial input passed to first state as {{result}} template variable",
+    )
     
     # Runtime options (applicable to start and resume)
     runtime_group = parser.add_argument_group("runtime options")
@@ -398,7 +410,7 @@ def main() -> int:
     # Determine which mode we're in
     has_file = args.initial_file is not None
     has_mgmt_cmd = args.list or args.status or args.resume or args.recover
-    has_start_opts = args.workflow_id or args.no_run or args.budget is not None
+    has_start_opts = args.workflow_id or args.no_run or args.budget is not None or args.initial_input is not None
     
     # Validate: can't have both file and management command
     if has_file and has_mgmt_cmd:
@@ -408,9 +420,9 @@ def main() -> int:
     # Validate: start options require a file
     if has_start_opts and not has_file:
         if has_mgmt_cmd:
-            print("Error: --workflow-id, --no-run, and --budget are only valid when starting a workflow", file=sys.stderr)
+            print("Error: --workflow-id, --no-run, --budget, and --input are only valid when starting a workflow", file=sys.stderr)
         else:
-            print("Error: --workflow-id, --no-run, and --budget require a FILE argument", file=sys.stderr)
+            print("Error: --workflow-id, --no-run, --budget, and --input require a FILE argument", file=sys.stderr)
         return 1
     
     # Dispatch to appropriate handler

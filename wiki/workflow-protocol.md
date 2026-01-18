@@ -47,6 +47,39 @@ invoking an LLM, making them efficient for deterministic operations.
 `<goto>POLL</goto>`), the orchestrator resolves it to the appropriate file
 type based on platform and what exists. See `wiki/bash-states.md` for details.
 
+## Initial Input (`--input`)
+
+When starting a workflow, you can pass an initial input value that will be
+available to the first state's prompt via the `{{result}}` template variable:
+
+```bash
+raymond workflow.md --input "hello, there"
+```
+
+This works exactly like the payload from a `<call>` transition returning a
+`<result>` tag. The first state's prompt can reference `{{result}}` to
+incorporate this input:
+
+```markdown
+Process the following input:
+
+{{result}}
+
+When done, emit <result>done</result>
+```
+
+**Use cases:**
+- Passing external data into a workflow (e.g., user input, file contents)
+- Parameterizing workflows with configuration values
+- Testing workflows with specific inputs
+
+**Behavior:**
+- If `--input` is not provided, `{{result}}` remains unsubstituted in the first
+  state's prompt (same as any unset template variable)
+- The input value is stored as `pending_result` in the initial agent state
+- After the first state runs, `pending_result` is cleared (same as normal
+  `<result>` handling)
+
 ## Workflow Scope (Directory Scoping)
 
 A workflow is started from a specific prompt file path (e.g.

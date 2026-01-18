@@ -384,7 +384,8 @@ class TestCLIDebugFlag:
             budget=None,
             debug=True,
             model=None,
-            timeout=None
+            timeout=None,
+            initial_input=None
         )
         
         # Should not raise

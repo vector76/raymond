@@ -207,15 +207,15 @@ and are skipped on incompatible platforms.
 
 #### Step 4.3: All Transition Types
 
-- [ ] **4.3.1** Write tests: `<goto>` works from script state
-- [ ] **4.3.2** Write tests: `<reset>` works from script state
-- [ ] **4.3.3** Write tests: `<result>` works from script state (with payload)
-- [ ] **4.3.4** Write tests: `<call>` works from script state
-- [ ] **4.3.5** Write tests: `<function>` works from script state
-- [ ] **4.3.6** Write tests: `<fork>` works from script state
-- [ ] **4.3.7** Write tests: can transition from script state to markdown state
-- [ ] **4.3.8** Write tests: can transition from markdown state to script state
-- [ ] **4.3.9** Verify all transition handlers work with script states
+- [x] **4.3.1** Write tests: `<goto>` works from script state
+- [x] **4.3.2** Write tests: `<reset>` works from script state
+- [x] **4.3.3** Write tests: `<result>` works from script state (with payload)
+- [x] **4.3.4** Write tests: `<call>` works from script state
+- [x] **4.3.5** Write tests: `<function>` works from script state
+- [x] **4.3.6** Write tests: `<fork>` works from script state
+- [x] **4.3.7** Write tests: can transition from script state to markdown state
+- [x] **4.3.8** Write tests: can transition from markdown state to script state
+- [x] **4.3.9** Verify all transition handlers work with script states
 
 ### Phase 5: Debug Mode Support
 

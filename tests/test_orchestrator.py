@@ -2059,3 +2059,798 @@ class TestScriptErrorHandling:
         assert counter_content.strip() == "first", (
             f"Script should only be invoked once (no retry), but counter shows: {counter_content}"
         )
+
+
+class TestScriptTransitionTypes:
+    """Tests for all transition types from script states (Step 4.3).
+
+    These tests verify that all transition types work correctly when emitted
+    from script states:
+    - <goto> works from script state
+    - <reset> works from script state
+    - <result> works from script state (with payload)
+    - <call> works from script state
+    - <function> works from script state
+    - <fork> works from script state
+    - Transitions between script and markdown states
+    """
+
+    # --- 4.3.1: <goto> works from script state ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_goto_from_script_state_bat(self, tmp_path):
+        """4.3.1: <goto> works from script state (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <goto>
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<goto^>NEXT.bat^</goto^>\n")
+
+        # Create target script that emits <result>
+        next_file = Path(scope_dir) / "NEXT.bat"
+        next_file.write_text("@echo off\necho ^<result^>Reached via goto^</result^>\n")
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed (state file deleted)
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_goto_from_script_state_sh(self, tmp_path):
+        """4.3.1: <goto> works from script state (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <goto>
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<goto>NEXT.sh</goto>'\n")
+        script_file.chmod(0o755)
+
+        # Create target script that emits <result>
+        next_file = Path(scope_dir) / "NEXT.sh"
+        next_file.write_text("#!/bin/bash\necho '<result>Reached via goto</result>'\n")
+        next_file.chmod(0o755)
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed (state file deleted)
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    # --- 4.3.2: <reset> works from script state ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_reset_from_script_state_bat(self, tmp_path):
+        """4.3.2: <reset> works from script state (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-003"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <reset>
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<reset^>FRESH.bat^</reset^>\n")
+
+        # Create target script that emits <result>
+        next_file = Path(scope_dir) / "FRESH.bat"
+        next_file.write_text("@echo off\necho ^<result^>Reset complete^</result^>\n")
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_reset_from_script_state_sh(self, tmp_path):
+        """4.3.2: <reset> works from script state (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-004"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <reset>
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<reset>FRESH.sh</reset>'\n")
+        script_file.chmod(0o755)
+
+        # Create target script that emits <result>
+        next_file = Path(scope_dir) / "FRESH.sh"
+        next_file.write_text("#!/bin/bash\necho '<result>Reset complete</result>'\n")
+        next_file.chmod(0o755)
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    # --- 4.3.3: <result> works from script state (with payload) ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_result_with_payload_from_script_state_bat(self, tmp_path):
+        """4.3.3: <result> works from script state with payload (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-005"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <result> with multi-line payload
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<result^>Line 1\necho Line 2\necho Payload complete^</result^>\n")
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_result_with_payload_from_script_state_sh(self, tmp_path):
+        """4.3.3: <result> works from script state with payload (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-006"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <result> with multi-line payload
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<result>Line 1\nLine 2\nPayload complete</result>'\n")
+        script_file.chmod(0o755)
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    # --- 4.3.4: <call> works from script state ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_call_from_script_state_bat(self, tmp_path):
+        """4.3.4: <call> works from script state (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-007"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <call> with return attribute
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text('@echo off\necho ^<call return="CONTINUE.bat"^>CHILD.bat^</call^>\n')
+
+        # Create child script that returns
+        child_file = Path(scope_dir) / "CHILD.bat"
+        child_file.write_text("@echo off\necho ^<result^>Child done^</result^>\n")
+
+        # Create return target script
+        continue_file = Path(scope_dir) / "CONTINUE.bat"
+        continue_file.write_text("@echo off\necho ^<result^>Workflow complete^</result^>\n")
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_call_from_script_state_sh(self, tmp_path):
+        """4.3.4: <call> works from script state (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-008"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <call> with return attribute
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text('#!/bin/bash\necho \'<call return="CONTINUE.sh">CHILD.sh</call>\'\n')
+        script_file.chmod(0o755)
+
+        # Create child script that returns
+        child_file = Path(scope_dir) / "CHILD.sh"
+        child_file.write_text("#!/bin/bash\necho '<result>Child done</result>'\n")
+        child_file.chmod(0o755)
+
+        # Create return target script
+        continue_file = Path(scope_dir) / "CONTINUE.sh"
+        continue_file.write_text("#!/bin/bash\necho '<result>Workflow complete</result>'\n")
+        continue_file.chmod(0o755)
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    # --- 4.3.5: <function> works from script state ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_function_from_script_state_bat(self, tmp_path):
+        """4.3.5: <function> works from script state (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-009"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <function> with return attribute
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text('@echo off\necho ^<function return="CONTINUE.bat"^>EVAL.bat^</function^>\n')
+
+        # Create eval script that returns
+        eval_file = Path(scope_dir) / "EVAL.bat"
+        eval_file.write_text("@echo off\necho ^<result^>Evaluated^</result^>\n")
+
+        # Create return target script
+        continue_file = Path(scope_dir) / "CONTINUE.bat"
+        continue_file.write_text("@echo off\necho ^<result^>Workflow complete^</result^>\n")
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_function_from_script_state_sh(self, tmp_path):
+        """4.3.5: <function> works from script state (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-010"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <function> with return attribute
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text('#!/bin/bash\necho \'<function return="CONTINUE.sh">EVAL.sh</function>\'\n')
+        script_file.chmod(0o755)
+
+        # Create eval script that returns
+        eval_file = Path(scope_dir) / "EVAL.sh"
+        eval_file.write_text("#!/bin/bash\necho '<result>Evaluated</result>'\n")
+        eval_file.chmod(0o755)
+
+        # Create return target script
+        continue_file = Path(scope_dir) / "CONTINUE.sh"
+        continue_file.write_text("#!/bin/bash\necho '<result>Workflow complete</result>'\n")
+        continue_file.chmod(0o755)
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    # --- 4.3.6: <fork> works from script state ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_fork_from_script_state_bat(self, tmp_path):
+        """4.3.6: <fork> works from script state (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-011"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <fork> with next and item attributes
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text('@echo off\necho ^<fork next="CONTINUE.bat" item="task1"^>WORKER.bat^</fork^>\n')
+
+        # Create worker script that terminates
+        worker_file = Path(scope_dir) / "WORKER.bat"
+        worker_file.write_text("@echo off\necho ^<result^>Worker done^</result^>\n")
+
+        # Create parent continuation script that terminates
+        continue_file = Path(scope_dir) / "CONTINUE.bat"
+        continue_file.write_text("@echo off\necho ^<result^>Parent done^</result^>\n")
+
+        # Should complete successfully (both agents terminate)
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_fork_from_script_state_sh(self, tmp_path):
+        """4.3.6: <fork> works from script state (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-012"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <fork> with next and item attributes
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text('#!/bin/bash\necho \'<fork next="CONTINUE.sh" item="task1">WORKER.sh</fork>\'\n')
+        script_file.chmod(0o755)
+
+        # Create worker script that terminates
+        worker_file = Path(scope_dir) / "WORKER.sh"
+        worker_file.write_text("#!/bin/bash\necho '<result>Worker done</result>'\n")
+        worker_file.chmod(0o755)
+
+        # Create parent continuation script that terminates
+        continue_file = Path(scope_dir) / "CONTINUE.sh"
+        continue_file.write_text("#!/bin/bash\necho '<result>Parent done</result>'\n")
+        continue_file.chmod(0o755)
+
+        # Should complete successfully (both agents terminate)
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    # --- 4.3.7: transition from script state to markdown state ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_to_markdown_transition_bat(self, tmp_path):
+        """4.3.7: can transition from script state to markdown state (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-013"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that transitions to markdown state
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<goto^>NEXT.md^</goto^>\n")
+
+        # Create markdown target
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("Markdown state prompt")
+
+        # Mock wrap_claude_code for the markdown state
+        mock_output = [{"type": "content", "text": "<result>Done from markdown</result>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+        # Verify Claude Code was called (for the markdown state)
+        assert mock_wrap.called
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_to_markdown_transition_sh(self, tmp_path):
+        """4.3.7: can transition from script state to markdown state (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-014"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that transitions to markdown state
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<goto>NEXT.md</goto>'\n")
+        script_file.chmod(0o755)
+
+        # Create markdown target
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("Markdown state prompt")
+
+        # Mock wrap_claude_code for the markdown state
+        mock_output = [{"type": "content", "text": "<result>Done from markdown</result>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+        # Verify Claude Code was called (for the markdown state)
+        assert mock_wrap.called
+
+    # --- 4.3.8: transition from markdown state to script state ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_markdown_to_script_transition_bat(self, tmp_path):
+        """4.3.8: can transition from markdown state to script state (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-015"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with markdown
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create markdown that transitions to script state
+        md_file = Path(scope_dir) / "START.md"
+        md_file.write_text("Start prompt")
+
+        # Create target script
+        script_file = Path(scope_dir) / "NEXT.bat"
+        script_file.write_text("@echo off\necho ^<result^>Done from script^</result^>\n")
+
+        # Mock wrap_claude_code for the markdown state
+        mock_output = [{"type": "content", "text": "<goto>NEXT.bat</goto>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_markdown_to_script_transition_sh(self, tmp_path):
+        """4.3.8: can transition from markdown state to script state (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-016"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with markdown
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create markdown that transitions to script state
+        md_file = Path(scope_dir) / "START.md"
+        md_file.write_text("Start prompt")
+
+        # Create target script
+        script_file = Path(scope_dir) / "NEXT.sh"
+        script_file.write_text("#!/bin/bash\necho '<result>Done from script</result>'\n")
+        script_file.chmod(0o755)
+
+        # Mock wrap_claude_code for the markdown state
+        mock_output = [{"type": "content", "text": "<goto>NEXT.sh</goto>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    # --- 4.3.9: Additional verification tests ---
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_fork_attributes_available_in_worker_script_bat(self, tmp_path):
+        """4.3.9: Fork attributes are available as env vars in worker script (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-017"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <fork> with custom attributes
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text('@echo off\necho ^<fork next="CONTINUE.bat" item="myitem" count="42"^>WORKER.bat^</fork^>\n')
+
+        # Create worker script that reads env vars and writes to a file
+        output_file = tmp_path / "worker_output.txt"
+        worker_file = Path(scope_dir) / "WORKER.bat"
+        worker_file.write_text(f'@echo off\necho item=%item% count=%count% > "{output_file}"\necho ^<result^>Worker done^</result^>\n')
+
+        # Create parent continuation script
+        continue_file = Path(scope_dir) / "CONTINUE.bat"
+        continue_file.write_text("@echo off\necho ^<result^>Parent done^</result^>\n")
+
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify worker received fork attributes as env vars
+        output_content = output_file.read_text()
+        assert "item=myitem" in output_content
+        assert "count=42" in output_content
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_fork_attributes_available_in_worker_script_sh(self, tmp_path):
+        """4.3.9: Fork attributes are available as env vars in worker script (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-018"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that emits <fork> with custom attributes
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text('#!/bin/bash\necho \'<fork next="CONTINUE.sh" item="myitem" count="42">WORKER.sh</fork>\'\n')
+        script_file.chmod(0o755)
+
+        # Create worker script that reads env vars and writes to a file
+        output_file = tmp_path / "worker_output.txt"
+        worker_file = Path(scope_dir) / "WORKER.sh"
+        worker_file.write_text(f'#!/bin/bash\necho "item=$item count=$count" > "{output_file}"\necho \'<result>Worker done</result>\'\n')
+        worker_file.chmod(0o755)
+
+        # Create parent continuation script
+        continue_file = Path(scope_dir) / "CONTINUE.sh"
+        continue_file.write_text("#!/bin/bash\necho '<result>Parent done</result>'\n")
+        continue_file.chmod(0o755)
+
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify worker received fork attributes as env vars
+        output_content = output_file.read_text()
+        assert "item=myitem" in output_content
+        assert "count=42" in output_content
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_call_result_available_in_return_script_bat(self, tmp_path):
+        """4.3.9: Call result is available as RAYMOND_RESULT in return script (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-019"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that calls another script
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text('@echo off\necho ^<call return="CONTINUE.bat"^>CHILD.bat^</call^>\n')
+
+        # Create child script that returns a result
+        child_file = Path(scope_dir) / "CHILD.bat"
+        child_file.write_text("@echo off\necho ^<result^>child_result_payload^</result^>\n")
+
+        # Create return target script that reads RAYMOND_RESULT
+        output_file = tmp_path / "result_output.txt"
+        continue_file = Path(scope_dir) / "CONTINUE.bat"
+        continue_file.write_text(f'@echo off\necho RAYMOND_RESULT=%RAYMOND_RESULT% > "{output_file}"\necho ^<result^>Done^</result^>\n')
+
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify return script received the result
+        output_content = output_file.read_text()
+        assert "child_result_payload" in output_content
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_call_result_available_in_return_script_sh(self, tmp_path):
+        """4.3.9: Call result is available as RAYMOND_RESULT in return script (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-020"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that calls another script
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text('#!/bin/bash\necho \'<call return="CONTINUE.sh">CHILD.sh</call>\'\n')
+        script_file.chmod(0o755)
+
+        # Create child script that returns a result
+        child_file = Path(scope_dir) / "CHILD.sh"
+        child_file.write_text("#!/bin/bash\necho '<result>child_result_payload</result>'\n")
+        child_file.chmod(0o755)
+
+        # Create return target script that reads RAYMOND_RESULT
+        output_file = tmp_path / "result_output.txt"
+        continue_file = Path(scope_dir) / "CONTINUE.sh"
+        continue_file.write_text(f'#!/bin/bash\necho "RAYMOND_RESULT=$RAYMOND_RESULT" > "{output_file}"\necho \'<result>Done</result>\'\n')
+        continue_file.chmod(0o755)
+
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify return script received the result
+        output_content = output_file.read_text()
+        assert "child_result_payload" in output_content
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_mixed_script_markdown_call_chain_bat(self, tmp_path):
+        """4.3.9: Mixed script/markdown call chain works correctly (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-021"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Script -> Markdown -> Script chain
+        # START.bat -> calls MIDDLE.md -> returns to END.bat
+
+        # Create start script that calls markdown
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text('@echo off\necho ^<call return="END.bat"^>MIDDLE.md^</call^>\n')
+
+        # Create middle markdown state
+        md_file = Path(scope_dir) / "MIDDLE.md"
+        md_file.write_text("Middle markdown state")
+
+        # Create end script
+        end_file = Path(scope_dir) / "END.bat"
+        end_file.write_text("@echo off\necho ^<result^>Chain complete^</result^>\n")
+
+        # Mock wrap_claude_code for the markdown state
+        mock_output = [{"type": "content", "text": "<result>From markdown</result>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_mixed_script_markdown_call_chain_sh(self, tmp_path):
+        """4.3.9: Mixed script/markdown call chain works correctly (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-trans-022"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Script -> Markdown -> Script chain
+        # START.sh -> calls MIDDLE.md -> returns to END.sh
+
+        # Create start script that calls markdown
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text('#!/bin/bash\necho \'<call return="END.sh">MIDDLE.md</call>\'\n')
+        script_file.chmod(0o755)
+
+        # Create middle markdown state
+        md_file = Path(scope_dir) / "MIDDLE.md"
+        md_file.write_text("Middle markdown state")
+
+        # Create end script
+        end_file = Path(scope_dir) / "END.sh"
+        end_file.write_text("#!/bin/bash\necho '<result>Chain complete</result>'\n")
+        end_file.chmod(0o755)
+
+        # Mock wrap_claude_code for the markdown state
+        mock_output = [{"type": "content", "text": "<result>From markdown</result>"}]
+
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"

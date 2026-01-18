@@ -1,7 +1,7 @@
 import sys
 import pytest
 from pathlib import Path
-from src.prompts import load_prompt, render_prompt, resolve_state
+from src.prompts import load_prompt, render_prompt, resolve_state, get_state_type
 
 
 class TestLoadPrompt:
@@ -272,3 +272,82 @@ class TestResolveState:
 
         with pytest.raises(ValueError, match="[Pp]latform|[Ww]indows|[Uu]nix"):
             resolve_state(str(scope_dir), "NEXT.sh")
+
+
+class TestGetStateType:
+    """Tests for get_state_type() function - State Type Detection (Step 1.2)."""
+
+    # =========================================================================
+    # Cross-platform tests (1.2.1, 1.2.4)
+    # =========================================================================
+
+    def test_get_state_type_markdown(self):
+        """1.2.1: get_state_type("NEXT.md") returns "markdown"."""
+        result = get_state_type("NEXT.md")
+        assert result == "markdown"
+
+    def test_get_state_type_markdown_uppercase(self):
+        """1.2.1 variant: get_state_type("START.MD") returns "markdown" (case insensitive)."""
+        result = get_state_type("START.MD")
+        assert result == "markdown"
+
+    def test_get_state_type_unsupported_extension(self):
+        """1.2.4: get_state_type("NEXT.py") raises (unsupported)."""
+        with pytest.raises(ValueError, match="[Uu]nsupported"):
+            get_state_type("NEXT.py")
+
+    def test_get_state_type_no_extension(self):
+        """get_state_type("NEXT") raises when no extension provided."""
+        with pytest.raises(ValueError, match="[Nn]o extension|[Uu]nsupported"):
+            get_state_type("NEXT")
+
+    def test_get_state_type_other_unsupported(self):
+        """get_state_type raises for other unsupported extensions."""
+        with pytest.raises(ValueError, match="[Uu]nsupported"):
+            get_state_type("script.js")
+        with pytest.raises(ValueError, match="[Uu]nsupported"):
+            get_state_type("config.yaml")
+
+    # =========================================================================
+    # Unix-only tests (1.2.2, 1.2.3 Unix part)
+    # =========================================================================
+
+    @pytest.mark.unix
+    def test_get_state_type_sh_on_unix(self):
+        """1.2.2: get_state_type("NEXT.sh") returns "script" on Unix."""
+        result = get_state_type("NEXT.sh")
+        assert result == "script"
+
+    @pytest.mark.unix
+    def test_get_state_type_sh_uppercase_on_unix(self):
+        """1.2.2 variant: get_state_type("SCRIPT.SH") returns "script" on Unix (case insensitive)."""
+        result = get_state_type("SCRIPT.SH")
+        assert result == "script"
+
+    @pytest.mark.unix
+    def test_get_state_type_bat_raises_on_unix(self):
+        """1.2.3: get_state_type("NEXT.bat") raises on Unix."""
+        with pytest.raises(ValueError, match="[Pp]latform|[Ww]indows|[Uu]nix"):
+            get_state_type("NEXT.bat")
+
+    # =========================================================================
+    # Windows-only tests (1.2.2 Windows part, 1.2.3)
+    # =========================================================================
+
+    @pytest.mark.windows
+    def test_get_state_type_bat_on_windows(self):
+        """1.2.3: get_state_type("NEXT.bat") returns "script" on Windows."""
+        result = get_state_type("NEXT.bat")
+        assert result == "script"
+
+    @pytest.mark.windows
+    def test_get_state_type_bat_uppercase_on_windows(self):
+        """1.2.3 variant: get_state_type("SCRIPT.BAT") returns "script" on Windows (case insensitive)."""
+        result = get_state_type("SCRIPT.BAT")
+        assert result == "script"
+
+    @pytest.mark.windows
+    def test_get_state_type_sh_raises_on_windows(self):
+        """1.2.2: get_state_type("NEXT.sh") raises on Windows."""
+        with pytest.raises(ValueError, match="[Pp]latform|[Ww]indows|[Uu]nix"):
+            get_state_type("NEXT.sh")

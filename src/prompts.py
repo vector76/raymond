@@ -171,6 +171,58 @@ def _resolve_explicit_extension(scope_path: Path, state_name: str, extension: st
     return state_name
 
 
+def get_state_type(filename: str) -> str:
+    """Determine the state type from a filename based on its extension.
+    
+    This function determines whether a state file should be executed as a
+    markdown state (sent to Claude Code) or a script state (executed directly).
+    
+    Args:
+        filename: The state filename with extension (e.g., "NEXT.md", "POLL.sh")
+        
+    Returns:
+        "markdown" for .md files
+        "script" for platform-appropriate script files (.sh on Unix, .bat on Windows)
+        
+    Raises:
+        ValueError: If the extension is unsupported or for the wrong platform
+    """
+    extension = Path(filename).suffix.lower()
+    
+    if not extension:
+        raise ValueError(
+            f"Unsupported state file '{filename}': no extension. "
+            "State files must have .md, .sh, or .bat extension."
+        )
+    
+    # Markdown files work on all platforms
+    if extension == '.md':
+        return "markdown"
+    
+    # Script files are platform-specific
+    if extension in SCRIPT_EXTENSIONS_UNIX:
+        if is_windows():
+            raise ValueError(
+                f"Cannot use Unix script '{filename}' on Windows. "
+                "Use a .bat file instead."
+            )
+        return "script"
+    
+    if extension in SCRIPT_EXTENSIONS_WINDOWS:
+        if is_unix():
+            raise ValueError(
+                f"Cannot use Windows script '{filename}' on Unix. "
+                "Use a .sh file instead."
+            )
+        return "script"
+    
+    # Unknown extension
+    raise ValueError(
+        f"Unsupported state file extension '{extension}' in '{filename}'. "
+        "Supported extensions: .md, .sh (Unix), .bat (Windows)."
+    )
+
+
 def _resolve_abstract_name(scope_path: Path, state_name: str) -> str:
     """Resolve an abstract state name (no extension) to a concrete filename.
     

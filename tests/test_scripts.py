@@ -1,8 +1,9 @@
-"""Tests for script execution infrastructure (Steps 2.1, 2.2, 2.3, and 3.1).
+"""Tests for script execution infrastructure (Steps 2.1, 2.2, 2.3, 3.1, and 3.2).
 
 This module tests the run_script() function which executes shell scripts
 (.sh on Unix, .bat on Windows) and captures their output, as well as
-platform detection utilities, output parsing, and environment variable injection.
+platform detection utilities, output parsing, and environment variable injection
+including result and fork attribute variables.
 """
 
 import asyncio
@@ -1173,3 +1174,330 @@ class TestEnvironmentVariablesInScripts:
 
         assert "WF=multi-test-wf" in result.stdout
         assert "AG=multi-test-agent" in result.stdout
+
+
+# =============================================================================
+# Step 3.2: Result and Fork Variables Tests
+# =============================================================================
+
+
+class TestBuildScriptEnvResultVariable:
+    """Tests for RAYMOND_RESULT environment variable (Step 3.2.1).
+    
+    When returning from a <call>, the result payload should be available
+    as RAYMOND_RESULT environment variable.
+    """
+
+    def test_build_script_env_sets_raymond_result_when_provided(self):
+        """3.2.1: RAYMOND_RESULT is set when result parameter is provided."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/RESUME.bat",
+            result="Task completed successfully"
+        )
+
+        assert "RAYMOND_RESULT" in env
+        assert env["RAYMOND_RESULT"] == "Task completed successfully"
+
+    def test_build_script_env_no_raymond_result_when_none(self):
+        """3.2.1: RAYMOND_RESULT is not set when result is None."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/START.bat",
+            result=None
+        )
+
+        assert "RAYMOND_RESULT" not in env
+
+    def test_build_script_env_no_raymond_result_by_default(self):
+        """3.2.1: RAYMOND_RESULT is not set when result not provided."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/START.bat"
+        )
+
+        assert "RAYMOND_RESULT" not in env
+
+    def test_build_script_env_raymond_result_empty_string(self):
+        """3.2.1: RAYMOND_RESULT is set even when result is empty string."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/RESUME.bat",
+            result=""
+        )
+
+        # Empty string is a valid result, distinct from None
+        assert "RAYMOND_RESULT" in env
+        assert env["RAYMOND_RESULT"] == ""
+
+    def test_build_script_env_raymond_result_json_payload(self):
+        """3.2.1: RAYMOND_RESULT works with JSON-like payload."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/RESUME.bat",
+            result='{"status": "ok", "count": 42}'
+        )
+
+        assert env["RAYMOND_RESULT"] == '{"status": "ok", "count": 42}'
+
+
+class TestBuildScriptEnvForkAttributes:
+    """Tests for fork attributes as environment variables (Step 3.2.2-4).
+    
+    Fork attributes from <fork item="X" other="Y"> should become
+    environment variables: item=X, other=Y
+    """
+
+    def test_build_script_env_single_fork_attribute(self):
+        """3.2.2: Fork attribute is set as environment variable."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/WORKER.bat",
+            fork_attributes={"item": "task1"}
+        )
+
+        assert "item" in env
+        assert env["item"] == "task1"
+
+    def test_build_script_env_item_attribute_from_fork(self):
+        """3.2.3: item attribute from <fork item="X"> becomes $item."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/WORKER.bat",
+            fork_attributes={"item": "my-task-value"}
+        )
+
+        # The key "item" in fork_attributes becomes env var "item"
+        assert env["item"] == "my-task-value"
+
+    def test_build_script_env_multiple_fork_attributes(self):
+        """3.2.4: Multiple fork attributes all become environment variables."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/WORKER.bat",
+            fork_attributes={
+                "item": "task1",
+                "priority": "high",
+                "index": "3",
+                "category": "processing"
+            }
+        )
+
+        assert env["item"] == "task1"
+        assert env["priority"] == "high"
+        assert env["index"] == "3"
+        assert env["category"] == "processing"
+
+    def test_build_script_env_no_fork_attributes_by_default(self):
+        """3.2.2: No extra variables when fork_attributes not provided."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/START.bat"
+        )
+
+        # Only the 4 core RAYMOND_ variables should be present
+        expected_keys = {
+            "RAYMOND_WORKFLOW_ID",
+            "RAYMOND_AGENT_ID",
+            "RAYMOND_STATE_DIR",
+            "RAYMOND_STATE_FILE"
+        }
+        assert set(env.keys()) == expected_keys
+
+    def test_build_script_env_empty_fork_attributes(self):
+        """3.2.2: Empty fork_attributes dict adds no variables."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/START.bat",
+            fork_attributes={}
+        )
+
+        # Only the 4 core RAYMOND_ variables
+        expected_keys = {
+            "RAYMOND_WORKFLOW_ID",
+            "RAYMOND_AGENT_ID",
+            "RAYMOND_STATE_DIR",
+            "RAYMOND_STATE_FILE"
+        }
+        assert set(env.keys()) == expected_keys
+
+    def test_build_script_env_fork_attributes_coexist_with_core_vars(self):
+        """3.2.4: Fork attributes don't overwrite core RAYMOND_ variables."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/WORKER.bat",
+            fork_attributes={"item": "value1", "extra": "value2"}
+        )
+
+        # Core vars still present and correct
+        assert env["RAYMOND_WORKFLOW_ID"] == "wf-1"
+        assert env["RAYMOND_AGENT_ID"] == "main"
+        # Fork attributes also present
+        assert env["item"] == "value1"
+        assert env["extra"] == "value2"
+
+    def test_build_script_env_result_and_fork_attributes_together(self):
+        """3.2: Both result and fork_attributes can be set together."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir="/path/to/states",
+            state_file="/path/to/states/RESUME.bat",
+            result="some result",
+            fork_attributes={"item": "task1", "priority": "low"}
+        )
+
+        # All should be present
+        assert env["RAYMOND_WORKFLOW_ID"] == "wf-1"
+        assert env["RAYMOND_RESULT"] == "some result"
+        assert env["item"] == "task1"
+        assert env["priority"] == "low"
+
+
+class TestResultVariableInScripts:
+    """Integration tests verifying RAYMOND_RESULT reaches the script."""
+
+    @pytest.mark.windows
+    async def test_script_receives_raymond_result_bat(self, tmp_path):
+        """3.2.1: Script can access RAYMOND_RESULT (.bat)."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text("@echo off\necho RESULT=%RAYMOND_RESULT%\n")
+
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir=str(tmp_path),
+            state_file=str(script_file),
+            result="child task completed"
+        )
+        result = await run_script(str(script_file), env=env)
+
+        assert "RESULT=child task completed" in result.stdout
+
+    @pytest.mark.unix
+    async def test_script_receives_raymond_result_sh(self, tmp_path):
+        """3.2.1: Script can access RAYMOND_RESULT (.sh)."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text("#!/bin/bash\necho \"RESULT=$RAYMOND_RESULT\"\n")
+        script_file.chmod(0o755)
+
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+            state_dir=str(tmp_path),
+            state_file=str(script_file),
+            result="child task completed"
+        )
+        result = await run_script(str(script_file), env=env)
+
+        assert "RESULT=child task completed" in result.stdout
+
+
+class TestForkAttributesInScripts:
+    """Integration tests verifying fork attributes reach the script."""
+
+    @pytest.mark.windows
+    async def test_script_receives_item_attribute_bat(self, tmp_path):
+        """3.2.3: Script can access item attribute as %item% (.bat)."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text("@echo off\necho ITEM=%item%\n")
+
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir=str(tmp_path),
+            state_file=str(script_file),
+            fork_attributes={"item": "process-this-task"}
+        )
+        result = await run_script(str(script_file), env=env)
+
+        assert "ITEM=process-this-task" in result.stdout
+
+    @pytest.mark.unix
+    async def test_script_receives_item_attribute_sh(self, tmp_path):
+        """3.2.3: Script can access item attribute as $item (.sh)."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text("#!/bin/bash\necho \"ITEM=$item\"\n")
+        script_file.chmod(0o755)
+
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir=str(tmp_path),
+            state_file=str(script_file),
+            fork_attributes={"item": "process-this-task"}
+        )
+        result = await run_script(str(script_file), env=env)
+
+        assert "ITEM=process-this-task" in result.stdout
+
+    @pytest.mark.windows
+    async def test_script_receives_multiple_fork_attributes_bat(self, tmp_path):
+        """3.2.4: Script can access multiple fork attributes (.bat)."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            "@echo off\n"
+            "echo ITEM=%item%\n"
+            "echo PRIO=%priority%\n"
+            "echo IDX=%index%\n"
+        )
+
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir=str(tmp_path),
+            state_file=str(script_file),
+            fork_attributes={"item": "task1", "priority": "high", "index": "5"}
+        )
+        result = await run_script(str(script_file), env=env)
+
+        assert "ITEM=task1" in result.stdout
+        assert "PRIO=high" in result.stdout
+        assert "IDX=5" in result.stdout
+
+    @pytest.mark.unix
+    async def test_script_receives_multiple_fork_attributes_sh(self, tmp_path):
+        """3.2.4: Script can access multiple fork attributes (.sh)."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            "#!/bin/bash\n"
+            "echo \"ITEM=$item\"\n"
+            "echo \"PRIO=$priority\"\n"
+            "echo \"IDX=$index\"\n"
+        )
+        script_file.chmod(0o755)
+
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="worker_1",
+            state_dir=str(tmp_path),
+            state_file=str(script_file),
+            fork_attributes={"item": "task1", "priority": "high", "index": "5"}
+        )
+        result = await run_script(str(script_file), env=env)
+
+        assert "ITEM=task1" in result.stdout
+        assert "PRIO=high" in result.stdout
+        assert "IDX=5" in result.stdout

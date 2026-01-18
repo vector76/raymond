@@ -15,7 +15,9 @@ def build_script_env(
     workflow_id: str,
     agent_id: str,
     state_dir: str,
-    state_file: str
+    state_file: str,
+    result: str | None = None,
+    fork_attributes: dict[str, str] | None = None
 ) -> dict[str, str]:
     """Build environment variables dict for script execution.
 
@@ -28,6 +30,10 @@ def build_script_env(
         agent_id: The identifier for the current agent.
         state_dir: The directory containing state files (scope_dir).
         state_file: The full path to the current state file being executed.
+        result: Optional result payload from a <call> return. If provided,
+            sets RAYMOND_RESULT environment variable.
+        fork_attributes: Optional dict of attributes from a <fork> tag.
+            Each key-value pair becomes an environment variable.
 
     Returns:
         Dictionary of environment variable names to values.
@@ -37,16 +43,28 @@ def build_script_env(
             workflow_id="wf-123",
             agent_id="main",
             state_dir="/workflows/my_wf",
-            state_file="/workflows/my_wf/CHECK.bat"
+            state_file="/workflows/my_wf/CHECK.bat",
+            result="task completed",
+            fork_attributes={"item": "task1", "priority": "high"}
         )
         result = await run_script(script_path, env=env)
     """
-    return {
+    env = {
         "RAYMOND_WORKFLOW_ID": workflow_id,
         "RAYMOND_AGENT_ID": agent_id,
         "RAYMOND_STATE_DIR": state_dir,
         "RAYMOND_STATE_FILE": state_file,
     }
+
+    # Add RAYMOND_RESULT if provided (including empty string)
+    if result is not None:
+        env["RAYMOND_RESULT"] = result
+
+    # Add fork attributes as environment variables
+    if fork_attributes:
+        env.update(fork_attributes)
+
+    return env
 
 
 def is_windows() -> bool:

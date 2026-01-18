@@ -176,11 +176,11 @@ and are skipped on incompatible platforms.
 
 #### Step 3.2: Result and Fork Variables
 
-- [ ] **3.2.1** Write tests: `RAYMOND_RESULT` is set when returning from `<call>`
-- [ ] **3.2.2** Write tests: fork attributes are set as environment variables
-- [ ] **3.2.3** Write tests: `item` attribute from `<fork item="X">` becomes `$item`
-- [ ] **3.2.4** Write tests: multiple fork attributes all become environment variables
-- [ ] **3.2.5** Implement fork attribute injection
+- [x] **3.2.1** Write tests: `RAYMOND_RESULT` is set when returning from `<call>`
+- [x] **3.2.2** Write tests: fork attributes are set as environment variables
+- [x] **3.2.3** Write tests: `item` attribute from `<fork item="X">` becomes `$item`
+- [x] **3.2.4** Write tests: multiple fork attributes all become environment variables
+- [x] **3.2.5** Implement fork attribute injection
 
 ### Phase 4: Integration
 

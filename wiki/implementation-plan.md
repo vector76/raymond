@@ -113,11 +113,11 @@ and are skipped on incompatible platforms.
 
 #### Step 1.2: State Type Detection
 
-- [ ] **1.2.1** Write tests: `get_state_type("NEXT.md")` returns `"markdown"`
-- [ ] **1.2.2** Write tests: `get_state_type("NEXT.sh")` returns `"script"` on Unix, raises on Windows
-- [ ] **1.2.3** Write tests: `get_state_type("NEXT.bat")` returns `"script"` on Windows, raises on Unix
-- [ ] **1.2.4** Write tests: `get_state_type("NEXT.py")` raises (unsupported)
-- [ ] **1.2.5** Implement `get_state_type()` function
+- [x] **1.2.1** Write tests: `get_state_type("NEXT.md")` returns `"markdown"`
+- [x] **1.2.2** Write tests: `get_state_type("NEXT.sh")` returns `"script"` on Unix, raises on Windows
+- [x] **1.2.3** Write tests: `get_state_type("NEXT.bat")` returns `"script"` on Windows, raises on Unix
+- [x] **1.2.4** Write tests: `get_state_type("NEXT.py")` raises (unsupported)
+- [x] **1.2.5** Implement `get_state_type()` function
 
 #### Step 1.3: Update Transition Handling
 

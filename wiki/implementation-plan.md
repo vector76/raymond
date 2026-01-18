@@ -88,12 +88,12 @@ Platform-specific tests use pytest markers (`@pytest.mark.unix`, `@pytest.mark.w
 and are skipped on incompatible platforms.
 
 **Cross-platform tests:**
-- [ ] **1.1.1** Write tests: `resolve_state("NEXT")` finds `NEXT.md` when it exists
-- [ ] **1.1.2** Write tests: `resolve_state("NEXT.md")` returns `NEXT.md` (explicit extension)
-- [ ] **1.1.3** Write tests: `resolve_state("NEXT")` raises when no matching file exists
-- [ ] **1.1.4** Write tests: `resolve_state("NEXT.md")` raises when `NEXT.md` doesn't exist (explicit, no fallback)
-- [ ] **1.1.5** Write tests: resolution respects scope_dir parameter
-- [ ] **1.1.6** Write tests: `resolve_state("NEXT")` succeeds when `.sh` and `.bat` both exist (uses platform-appropriate)
+- [x] **1.1.1** Write tests: `resolve_state("NEXT")` finds `NEXT.md` when it exists
+- [x] **1.1.2** Write tests: `resolve_state("NEXT.md")` returns `NEXT.md` (explicit extension)
+- [x] **1.1.3** Write tests: `resolve_state("NEXT")` raises when no matching file exists
+- [x] **1.1.4** Write tests: `resolve_state("NEXT.md")` raises when `NEXT.md` doesn't exist (explicit, no fallback)
+- [x] **1.1.5** Write tests: resolution respects scope_dir parameter
+- [x] **1.1.6** Write tests: `resolve_state("NEXT")` succeeds when `.sh` and `.bat` both exist (uses platform-appropriate)
 
 **Unix-only tests (`@pytest.mark.unix`):**
 - [ ] **1.1.7** Write tests: `resolve_state("NEXT")` finds `NEXT.sh` when `.md` doesn't exist
@@ -103,13 +103,13 @@ and are skipped on incompatible platforms.
 - [ ] **1.1.11** Write tests: `resolve_state("NEXT.bat")` raises (wrong platform)
 
 **Windows-only tests (`@pytest.mark.windows`):**
-- [ ] **1.1.12** Write tests: `resolve_state("NEXT")` finds `NEXT.bat` when `.md` doesn't exist
-- [ ] **1.1.13** Write tests: `resolve_state("NEXT.bat")` returns `NEXT.bat` (explicit extension)
-- [ ] **1.1.14** Write tests: `resolve_state("NEXT")` raises when only `.sh` exists (no `.md` or `.bat`)
-- [ ] **1.1.15** Write tests: `resolve_state("NEXT")` raises when `.md` and `.bat` both exist (ambiguous)
-- [ ] **1.1.16** Write tests: `resolve_state("NEXT.sh")` raises (wrong platform)
+- [x] **1.1.12** Write tests: `resolve_state("NEXT")` finds `NEXT.bat` when `.md` doesn't exist
+- [x] **1.1.13** Write tests: `resolve_state("NEXT.bat")` returns `NEXT.bat` (explicit extension)
+- [x] **1.1.14** Write tests: `resolve_state("NEXT")` raises when only `.sh` exists (no `.md` or `.bat`)
+- [x] **1.1.15** Write tests: `resolve_state("NEXT")` raises when `.md` and `.bat` both exist (ambiguous)
+- [x] **1.1.16** Write tests: `resolve_state("NEXT.sh")` raises (wrong platform)
 
-- [ ] **1.1.17** Implement `resolve_state()` function in `src/prompts.py`
+- [x] **1.1.17** Implement `resolve_state()` function in `src/prompts.py`
 
 #### Step 1.2: State Type Detection
 

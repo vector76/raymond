@@ -158,11 +158,11 @@ and are skipped on incompatible platforms.
 
 #### Step 2.3: Output Parsing
 
-- [ ] **2.3.1** Write tests: parse transition tag from script stdout
-- [ ] **2.3.2** Write tests: transition tag can appear anywhere in stdout (not just last line)
-- [ ] **2.3.3** Write tests: extract tag attributes from script output
-- [ ] **2.3.4** Write tests: handle `<result>payload</result>` from scripts
-- [ ] **2.3.5** Reuse existing `parse_transitions()` for script output
+- [x] **2.3.1** Write tests: parse transition tag from script stdout
+- [x] **2.3.2** Write tests: transition tag can appear anywhere in stdout (not just last line)
+- [x] **2.3.3** Write tests: extract tag attributes from script output
+- [x] **2.3.4** Write tests: handle `<result>payload</result>` from scripts
+- [x] **2.3.5** Reuse existing `parse_transitions()` for script output
 
 ### Phase 3: Environment Variables
 

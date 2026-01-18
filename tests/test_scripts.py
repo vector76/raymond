@@ -1,8 +1,8 @@
-"""Tests for script execution infrastructure (Steps 2.1 and 2.2).
+"""Tests for script execution infrastructure (Steps 2.1, 2.2, and 2.3).
 
 This module tests the run_script() function which executes shell scripts
 (.sh on Unix, .bat on Windows) and captures their output, as well as
-platform detection utilities.
+platform detection utilities and output parsing.
 """
 
 import asyncio
@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from src.scripts import run_script, ScriptResult, ScriptTimeoutError, is_unix, is_windows
+from src.parsing import parse_transitions
 
 
 # =============================================================================
@@ -440,3 +441,456 @@ class TestScriptTimeoutError:
         """ScriptTimeoutError inherits from Exception."""
         error = ScriptTimeoutError("test.sh", 5.0)
         assert isinstance(error, Exception)
+
+
+# =============================================================================
+# Step 2.3: Output Parsing Tests
+# =============================================================================
+
+
+class TestScriptOutputParsing:
+    """Tests for parsing transition tags from script output (Step 2.3).
+    
+    These tests verify that the existing parse_transitions() function
+    works correctly with stdout captured from script execution.
+    """
+
+    # =========================================================================
+    # 2.3.1: Parse transition tag from script stdout
+    # =========================================================================
+
+    @pytest.mark.unix
+    async def test_parse_goto_from_sh_stdout(self, tmp_path):
+        """2.3.1: Parse <goto> transition from .sh script stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text("#!/bin/bash\necho '<goto>NEXT.md</goto>'\n")
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "NEXT.md"
+
+    @pytest.mark.windows
+    async def test_parse_goto_from_bat_stdout(self, tmp_path):
+        """2.3.1: Parse <goto> transition from .bat script stdout."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text("@echo off\necho ^<goto^>NEXT.md^</goto^>\n")
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "NEXT.md"
+
+    @pytest.mark.unix
+    async def test_parse_reset_from_sh_stdout(self, tmp_path):
+        """2.3.1: Parse <reset> transition from .sh script stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text("#!/bin/bash\necho '<reset>POLL.md</reset>'\n")
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "reset"
+        assert transitions[0].target == "POLL.md"
+
+    @pytest.mark.windows
+    async def test_parse_reset_from_bat_stdout(self, tmp_path):
+        """2.3.1: Parse <reset> transition from .bat script stdout."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text("@echo off\necho ^<reset^>POLL.md^</reset^>\n")
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "reset"
+        assert transitions[0].target == "POLL.md"
+
+    # =========================================================================
+    # 2.3.2: Transition tag can appear anywhere in stdout
+    # =========================================================================
+
+    @pytest.mark.unix
+    async def test_tag_with_preceding_output_sh(self, tmp_path):
+        """2.3.2: Tag works when preceded by other output (.sh)."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            "#!/bin/bash\n"
+            "echo 'Starting process...'\n"
+            "echo 'Processing data...'\n"
+            "echo '<goto>DONE.md</goto>'\n"
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "DONE.md"
+
+    @pytest.mark.windows
+    async def test_tag_with_preceding_output_bat(self, tmp_path):
+        """2.3.2: Tag works when preceded by other output (.bat)."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            "@echo off\n"
+            "echo Starting process...\n"
+            "echo Processing data...\n"
+            "echo ^<goto^>DONE.md^</goto^>\n"
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "DONE.md"
+
+    @pytest.mark.unix
+    async def test_tag_with_following_output_sh(self, tmp_path):
+        """2.3.2: Tag works when followed by other output (.sh)."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            "#!/bin/bash\n"
+            "echo '<goto>NEXT.md</goto>'\n"
+            "echo 'Cleanup complete'\n"
+            "echo 'Exiting...'\n"
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "NEXT.md"
+
+    @pytest.mark.windows
+    async def test_tag_with_following_output_bat(self, tmp_path):
+        """2.3.2: Tag works when followed by other output (.bat)."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            "@echo off\n"
+            "echo ^<goto^>NEXT.md^</goto^>\n"
+            "echo Cleanup complete\n"
+            "echo Exiting...\n"
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "NEXT.md"
+
+    @pytest.mark.unix
+    async def test_tag_in_middle_of_output_sh(self, tmp_path):
+        """2.3.2: Tag works when in the middle of output (.sh)."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            "#!/bin/bash\n"
+            "echo 'Setup phase'\n"
+            "echo '<goto>MIDDLE.md</goto>'\n"
+            "echo 'Teardown phase'\n"
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "MIDDLE.md"
+
+    @pytest.mark.windows
+    async def test_tag_in_middle_of_output_bat(self, tmp_path):
+        """2.3.2: Tag works when in the middle of output (.bat)."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            "@echo off\n"
+            "echo Setup phase\n"
+            "echo ^<goto^>MIDDLE.md^</goto^>\n"
+            "echo Teardown phase\n"
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "MIDDLE.md"
+
+    # =========================================================================
+    # 2.3.3: Extract tag attributes from script output
+    # =========================================================================
+
+    @pytest.mark.unix
+    async def test_parse_call_with_return_attribute_sh(self, tmp_path):
+        """2.3.3: Parse <call> with return attribute from .sh stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            '#!/bin/bash\necho \'<call return="RESUME.md">CHILD.md</call>\'\n'
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "call"
+        assert transitions[0].target == "CHILD.md"
+        assert transitions[0].attributes == {"return": "RESUME.md"}
+
+    @pytest.mark.windows
+    async def test_parse_call_with_return_attribute_bat(self, tmp_path):
+        """2.3.3: Parse <call> with return attribute from .bat stdout."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            '@echo off\necho ^<call return="RESUME.md"^>CHILD.md^</call^>\n'
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "call"
+        assert transitions[0].target == "CHILD.md"
+        assert transitions[0].attributes == {"return": "RESUME.md"}
+
+    @pytest.mark.unix
+    async def test_parse_fork_with_multiple_attributes_sh(self, tmp_path):
+        """2.3.3: Parse <fork> with multiple attributes from .sh stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            '#!/bin/bash\necho \'<fork next="JOIN.md" item="task1">WORKER.md</fork>\'\n'
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "fork"
+        assert transitions[0].target == "WORKER.md"
+        assert transitions[0].attributes == {"next": "JOIN.md", "item": "task1"}
+
+    @pytest.mark.windows
+    async def test_parse_fork_with_multiple_attributes_bat(self, tmp_path):
+        """2.3.3: Parse <fork> with multiple attributes from .bat stdout."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            '@echo off\necho ^<fork next="JOIN.md" item="task1"^>WORKER.md^</fork^>\n'
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "fork"
+        assert transitions[0].target == "WORKER.md"
+        assert transitions[0].attributes == {"next": "JOIN.md", "item": "task1"}
+
+    @pytest.mark.unix
+    async def test_parse_function_with_return_attribute_sh(self, tmp_path):
+        """2.3.3: Parse <function> with return attribute from .sh stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            '#!/bin/bash\necho \'<function return="CALLBACK.md">EVAL.md</function>\'\n'
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "function"
+        assert transitions[0].target == "EVAL.md"
+        assert transitions[0].attributes == {"return": "CALLBACK.md"}
+
+    @pytest.mark.windows
+    async def test_parse_function_with_return_attribute_bat(self, tmp_path):
+        """2.3.3: Parse <function> with return attribute from .bat stdout."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            '@echo off\necho ^<function return="CALLBACK.md"^>EVAL.md^</function^>\n'
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "function"
+        assert transitions[0].target == "EVAL.md"
+        assert transitions[0].attributes == {"return": "CALLBACK.md"}
+
+    # =========================================================================
+    # 2.3.4: Handle <result>payload</result> from scripts
+    # =========================================================================
+
+    @pytest.mark.unix
+    async def test_parse_result_with_payload_sh(self, tmp_path):
+        """2.3.4: Parse <result> with payload from .sh stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            "#!/bin/bash\necho '<result>Task completed successfully</result>'\n"
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "result"
+        assert transitions[0].target == ""
+        assert transitions[0].payload == "Task completed successfully"
+
+    @pytest.mark.windows
+    async def test_parse_result_with_payload_bat(self, tmp_path):
+        """2.3.4: Parse <result> with payload from .bat stdout."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            "@echo off\necho ^<result^>Task completed successfully^</result^>\n"
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "result"
+        assert transitions[0].target == ""
+        assert transitions[0].payload == "Task completed successfully"
+
+    @pytest.mark.unix
+    async def test_parse_result_empty_payload_sh(self, tmp_path):
+        """2.3.4: Parse <result> with empty payload from .sh stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            "#!/bin/bash\necho '<result></result>'\n"
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "result"
+        assert transitions[0].payload == ""
+
+    @pytest.mark.windows
+    async def test_parse_result_empty_payload_bat(self, tmp_path):
+        """2.3.4: Parse <result> with empty payload from .bat stdout."""
+        script_file = tmp_path / "test.bat"
+        script_file.write_text(
+            "@echo off\necho ^<result^>^</result^>\n"
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "result"
+        assert transitions[0].payload == ""
+
+    @pytest.mark.unix
+    async def test_parse_result_json_payload_sh(self, tmp_path):
+        """2.3.4: Parse <result> with JSON-like payload from .sh stdout."""
+        script_file = tmp_path / "test.sh"
+        script_file.write_text(
+            '#!/bin/bash\necho \'<result>{"status": "ok", "count": 42}</result>\'\n'
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "result"
+        assert transitions[0].payload == '{"status": "ok", "count": 42}'
+
+    @pytest.mark.windows
+    async def test_parse_result_json_payload_bat(self, tmp_path):
+        """2.3.4: Parse <result> with JSON-like payload from .bat stdout."""
+        script_file = tmp_path / "test.bat"
+        # JSON in batch - only < and > need escaping with ^
+        script_file.write_text(
+            '@echo off\necho ^<result^>{"status": "ok", "count": 42}^</result^>\n'
+        )
+
+        result = await run_script(str(script_file))
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "result"
+        assert transitions[0].payload == '{"status": "ok", "count": 42}'
+
+    # =========================================================================
+    # 2.3.5: Verify parse_transitions() is reused for script output
+    # =========================================================================
+
+    @pytest.mark.unix
+    async def test_reuses_parse_transitions_sh(self, tmp_path):
+        """2.3.5: Script output parsing uses existing parse_transitions()."""
+        script_file = tmp_path / "test.sh"
+        # Use a complex tag to verify full parsing capability
+        script_file.write_text(
+            '#!/bin/bash\n'
+            'echo "Log: starting"\n'
+            'echo \'<fork next="MERGE.md" item="data1" priority="high">WORKER.md</fork>\'\n'
+            'echo "Log: done"\n'
+        )
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file))
+        
+        # The exact same parse_transitions function works on script output
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "fork"
+        assert transitions[0].target == "WORKER.md"
+        assert transitions[0].attributes["next"] == "MERGE.md"
+        assert transitions[0].attributes["item"] == "data1"
+        assert transitions[0].attributes["priority"] == "high"
+
+    @pytest.mark.windows
+    async def test_reuses_parse_transitions_bat(self, tmp_path):
+        """2.3.5: Script output parsing uses existing parse_transitions()."""
+        script_file = tmp_path / "test.bat"
+        # Use a complex tag to verify full parsing capability
+        script_file.write_text(
+            '@echo off\n'
+            'echo Log: starting\n'
+            'echo ^<fork next="MERGE.md" item="data1" priority="high"^>WORKER.md^</fork^>\n'
+            'echo Log: done\n'
+        )
+
+        result = await run_script(str(script_file))
+        
+        # The exact same parse_transitions function works on script output
+        transitions = parse_transitions(result.stdout)
+
+        assert len(transitions) == 1
+        assert transitions[0].tag == "fork"
+        assert transitions[0].target == "WORKER.md"
+        assert transitions[0].attributes["next"] == "MERGE.md"
+        assert transitions[0].attributes["item"] == "data1"
+        assert transitions[0].attributes["priority"] == "high"
+
+    def test_parse_transitions_works_on_script_result_stdout(self):
+        """2.3.5: parse_transitions() accepts ScriptResult.stdout directly."""
+        # Simulate script output without actually running a script
+        simulated_stdout = "Some logging\n<goto>TARGET.md</goto>\nMore output\n"
+        
+        transitions = parse_transitions(simulated_stdout)
+        
+        assert len(transitions) == 1
+        assert transitions[0].tag == "goto"
+        assert transitions[0].target == "TARGET.md"

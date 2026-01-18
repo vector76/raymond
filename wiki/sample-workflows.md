@@ -28,6 +28,15 @@ workflows/test_cases/
   IMPROVE.md            # Test 5: Evaluator override workflow
   PHASE1.md             # Test 6: Reset workflow
   PHASE2.md             # Test 6: Reset workflow
+  SCRIPT_GOTO.sh/.bat   # Test 7: Script state (goto)
+  SCRIPT_TARGET.md      # Test 7: Script target state
+  SCRIPT_RESULT.sh/.bat # Test 8: Script state (result)
+  SCRIPT_RESET.sh/.bat  # Test 9: Script reset workflow
+  HYBRID_START.sh/.bat  # Test 10: Hybrid workflow (script start)
+  HYBRID_MIDDLE.md      # Test 10: Hybrid workflow (markdown middle)
+  HYBRID_END.sh/.bat    # Test 10: Hybrid workflow (script end)
+  POLL_EXAMPLE.sh/.bat  # Test 11: Polling script
+  POLL_PROCESS.md       # Test 11: Polling target state
   test_files/           # Test input files (tracked in git)
     input1.txt          # Test 1: Classification input
     research-input.txt  # Test 3: Research topic input
@@ -367,6 +376,305 @@ workflow.
 
 ---
 
+## Test 7: Script State with Goto
+
+**Purpose:** Test that shell script states can emit transition tags and
+transition to markdown states.
+
+**Workflow:** A script state that displays environment variables and transitions
+to a markdown state.
+
+**Files:**
+
+`workflows/test_cases/SCRIPT_GOTO.sh` (Unix):
+```bash
+#!/bin/bash
+# Simple goto transition test
+
+echo "Script state executing..."
+echo "Environment variables:"
+echo "  RAYMOND_WORKFLOW_ID=$RAYMOND_WORKFLOW_ID"
+echo "  RAYMOND_AGENT_ID=$RAYMOND_AGENT_ID"
+echo "  RAYMOND_STATE_DIR=$RAYMOND_STATE_DIR"
+
+echo "<goto>SCRIPT_TARGET.md</goto>"
+```
+
+`workflows/test_cases/SCRIPT_GOTO.bat` (Windows):
+```batch
+@echo off
+REM Simple goto transition test
+
+echo Script state executing...
+echo Environment variables:
+echo   RAYMOND_WORKFLOW_ID=%RAYMOND_WORKFLOW_ID%
+echo   RAYMOND_AGENT_ID=%RAYMOND_AGENT_ID%
+echo   RAYMOND_STATE_DIR=%RAYMOND_STATE_DIR%
+
+echo ^<goto^>SCRIPT_TARGET.md^</goto^>
+```
+
+`workflows/test_cases/SCRIPT_TARGET.md`:
+```markdown
+You arrived here from a script state (SCRIPT_GOTO.sh).
+
+Respond with:
+<result>Goto from script succeeded</result>
+```
+
+**Test procedure:**
+1. Run workflow: `raymond workflows/test_cases/SCRIPT_GOTO.sh` (Unix) or
+   `raymond workflows/test_cases/SCRIPT_GOTO.bat` (Windows)
+2. Verify script executes and displays environment variables
+3. Verify transition to SCRIPT_TARGET.md occurs
+4. Verify workflow terminates with result message
+
+**Success criteria:** Script state executes directly (no LLM), emits valid
+transition tag, and orchestrator correctly transitions to markdown state.
+
+---
+
+## Test 8: Script State with Result
+
+**Purpose:** Test that script states can return results with payloads.
+
+**Workflow:** A script that performs work and returns a result.
+
+**Files:**
+
+`workflows/test_cases/SCRIPT_RESULT.sh` (Unix):
+```bash
+#!/bin/bash
+# Result with payload test
+
+echo "Performing some deterministic work..."
+
+timestamp=$(date +%Y-%m-%d\ %H:%M:%S)
+hostname_info=$(hostname)
+
+payload="Script completed at $timestamp on $hostname_info"
+
+echo "Work complete. Returning result."
+echo "<result>$payload</result>"
+```
+
+`workflows/test_cases/SCRIPT_RESULT.bat` (Windows):
+```batch
+@echo off
+REM Result with payload test
+
+echo Performing some deterministic work...
+
+set timestamp=%DATE% %TIME%
+set hostname_info=%COMPUTERNAME%
+
+set payload=Script completed at %timestamp% on %hostname_info%
+
+echo Work complete. Returning result.
+echo ^<result^>%payload%^</result^>
+```
+
+**Test procedure:**
+1. Run workflow: `raymond workflows/test_cases/SCRIPT_RESULT.sh` (or `.bat`)
+2. Verify script executes and performs work
+3. Verify workflow terminates with result containing timestamp and hostname
+
+**Success criteria:** Script can return dynamic data via `<result>` tag.
+
+---
+
+## Test 9: Script State with Reset
+
+**Purpose:** Test that script states can use `<reset>` for loops with fresh
+context.
+
+**Workflow:** A script that maintains a counter file and resets itself until
+the counter reaches a limit.
+
+**Files:**
+
+`workflows/test_cases/SCRIPT_RESET.sh` (Unix):
+```bash
+#!/bin/bash
+# Reset transition test - runs 3 iterations
+
+counter_file="${RAYMOND_STATE_DIR:-/tmp}/reset_counter.txt"
+
+if [ -f "$counter_file" ]; then
+    count=$(cat "$counter_file")
+else
+    count=0
+fi
+
+count=$((count + 1))
+echo $count > "$counter_file"
+
+echo "Reset iteration: $count of 3"
+
+if [ $count -lt 3 ]; then
+    echo "Resetting to run again..."
+    echo "<reset>SCRIPT_RESET.sh</reset>"
+else
+    echo "Counter reached limit. Cleaning up and finishing."
+    rm -f "$counter_file"
+    echo "<result>Completed after 3 iterations (2 resets)</result>"
+fi
+```
+
+**Test procedure:**
+1. Run workflow: `raymond workflows/test_cases/SCRIPT_RESET.sh` (or `.bat`)
+2. Verify script runs 3 times (iterations 1, 2, 3)
+3. Verify counter file is created and incremented
+4. Verify workflow terminates after 3 iterations with result message
+5. Verify counter file is cleaned up
+
+**Success criteria:** Script can reset to itself, maintaining state via files
+while discarding LLM context (which doesn't exist for scripts anyway).
+
+---
+
+## Test 10: Hybrid Workflow (Script → Markdown → Script)
+
+**Purpose:** Test seamless transitions between script and markdown states.
+
+**Workflow:** A three-step workflow: script setup → LLM processing → script
+cleanup.
+
+**Files:**
+
+`workflows/test_cases/HYBRID_START.sh` (Unix):
+```bash
+#!/bin/bash
+# First state in hybrid workflow
+
+echo "=== Hybrid Workflow Started ==="
+echo "This is a script state performing initial setup."
+echo ""
+echo "Gathering system information..."
+echo "  Date: $(date)"
+echo "  User: $(whoami)"
+echo "  PWD:  $(pwd)"
+echo ""
+echo "Setup complete. Transitioning to markdown state for LLM processing."
+
+echo "<goto>HYBRID_MIDDLE.md</goto>"
+```
+
+`workflows/test_cases/HYBRID_MIDDLE.md`:
+```markdown
+You are in the middle of a hybrid workflow that transitions between script
+and markdown states.
+
+The previous state (HYBRID_START.sh) performed deterministic setup operations.
+Now it's your turn to do something that benefits from LLM reasoning.
+
+Your task: Generate a short motivational quote (1-2 sentences) about the
+value of combining automation with intelligence.
+
+After generating the quote, respond with:
+<goto>HYBRID_END</goto>
+```
+
+Note: The transition uses abstract state name `HYBRID_END` (no extension).
+The orchestrator resolves this to `.sh` on Unix or `.bat` on Windows.
+
+`workflows/test_cases/HYBRID_END.sh` (Unix):
+```bash
+#!/bin/bash
+# Final state in hybrid workflow
+
+echo "=== Hybrid Workflow Finalizing ==="
+echo "The LLM has processed its part. Now performing final cleanup."
+echo ""
+echo "Cleanup tasks:"
+echo "  - Verified workflow completion"
+echo "  - No temporary files to remove"
+echo "  - Logging final timestamp: $(date)"
+echo ""
+echo "All done!"
+
+echo "<result>Hybrid workflow completed successfully: script -> markdown -> script</result>"
+```
+
+**Test procedure:**
+1. Run workflow: `raymond workflows/test_cases/HYBRID_START.sh` (or `.bat`)
+2. Verify HYBRID_START script executes and gathers system info
+3. Verify transition to HYBRID_MIDDLE.md (LLM state)
+4. Verify LLM produces observation about hybrid workflows
+5. Verify transition to HYBRID_END (resolved to platform-appropriate script)
+6. Verify final script executes cleanup and returns result
+
+**Success criteria:** Workflow seamlessly transitions between script and
+markdown states. Abstract state names resolve correctly per platform.
+
+---
+
+## Test 11: Polling Script
+
+**Purpose:** Test a script-based polling pattern with sleep.
+
+**Workflow:** A script that polls a condition (simulated by counter), sleeps
+between polls, and transitions to a processing state when ready.
+
+**Files:**
+
+`workflows/test_cases/POLL_EXAMPLE.sh` (Unix):
+```bash
+#!/bin/bash
+# Polling workflow with sleep
+
+poll_counter="${RAYMOND_STATE_DIR:-/tmp}/poll_counter.txt"
+poll_target=3
+
+if [ -f "$poll_counter" ]; then
+    count=$(cat "$poll_counter")
+else
+    count=0
+fi
+
+count=$((count + 1))
+echo $count > "$poll_counter"
+
+echo "=== Poll Iteration $count ==="
+echo "Checking for work... (simulated condition: poll $poll_target times)"
+
+if [ $count -lt $poll_target ]; then
+    echo "No work found. Sleeping for 1 second before next poll..."
+    sleep 1
+    echo "Resuming poll."
+    echo "<reset>POLL_EXAMPLE.sh</reset>"
+else
+    echo "Work found! Cleaning up poll counter and processing."
+    rm -f "$poll_counter"
+    echo "<goto>POLL_PROCESS.md</goto>"
+fi
+```
+
+`workflows/test_cases/POLL_PROCESS.md`:
+```markdown
+The polling script (POLL_EXAMPLE.sh) has detected work to be done.
+
+In a real workflow, this state would contain instructions for the LLM
+to analyze or process the discovered work item. For this test case,
+simply acknowledge that polling succeeded and work was found.
+
+Respond with:
+<result>Polling workflow succeeded - work was found and processed</result>
+```
+
+**Test procedure:**
+1. Run workflow: `raymond workflows/test_cases/POLL_EXAMPLE.sh` (or `.bat`)
+2. Verify script polls 3 times with 1-second delays
+3. Verify each poll resets to itself (fresh context)
+4. Verify on third poll, transitions to POLL_PROCESS.md
+5. Verify LLM processes and workflow completes
+
+**Success criteria:** Script can implement efficient polling without LLM
+overhead. Each poll costs zero tokens. Only the final processing step uses
+the LLM.
+
+---
+
 ## Running the Tests
 
 Each test should be runnable independently using the `start` command with the
@@ -390,6 +698,27 @@ raymond workflows/test_cases/IMPROVE.md --budget 0.10
 
 # Test 6: Reset (fresh context)
 raymond workflows/test_cases/PHASE1.md
+
+# Test 7: Script state with goto (Unix)
+raymond workflows/test_cases/SCRIPT_GOTO.sh
+# Test 7: Script state with goto (Windows)
+raymond workflows/test_cases/SCRIPT_GOTO.bat
+
+# Test 8: Script state with result
+raymond workflows/test_cases/SCRIPT_RESULT.sh   # Unix
+raymond workflows/test_cases/SCRIPT_RESULT.bat  # Windows
+
+# Test 9: Script reset workflow
+raymond workflows/test_cases/SCRIPT_RESET.sh    # Unix
+raymond workflows/test_cases/SCRIPT_RESET.bat   # Windows
+
+# Test 10: Hybrid workflow (script -> markdown -> script)
+raymond workflows/test_cases/HYBRID_START.sh    # Unix
+raymond workflows/test_cases/HYBRID_START.bat   # Windows
+
+# Test 11: Polling script
+raymond workflows/test_cases/POLL_EXAMPLE.sh    # Unix
+raymond workflows/test_cases/POLL_EXAMPLE.bat   # Windows
 ```
 
 ## File Naming

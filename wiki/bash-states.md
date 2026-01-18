@@ -191,22 +191,133 @@ platform uses its native script type:
 
 ### Context and Variables
 
-Shell scripts receive workflow context via environment variables:
+Shell scripts receive workflow context via environment variables. These
+variables are injected by the orchestrator before script execution.
 
-| Variable | Description |
-|----------|-------------|
-| `RAYMOND_WORKFLOW_ID` | Current workflow identifier |
-| `RAYMOND_AGENT_ID` | Current agent identifier |
-| `RAYMOND_STATE_DIR` | Directory containing workflow states |
-| `RAYMOND_STATE_FILE` | Path to the workflow's JSON state file |
-| `RAYMOND_RESULT` | Result from previous `<call>` (if returning from subroutine) |
+#### Core Environment Variables
 
-Template variables from `<fork>` attributes are also passed as environment
-variables:
+| Variable | Description | Example Value |
+|----------|-------------|---------------|
+| `RAYMOND_WORKFLOW_ID` | Unique identifier for the workflow run | `wf-2024-01-15-abc123` |
+| `RAYMOND_AGENT_ID` | Identifier for the current agent | `main`, `main_worker1` |
+| `RAYMOND_STATE_DIR` | Absolute path to the workflow states directory | `/home/user/workflows/test_cases` |
+| `RAYMOND_STATE_FILE` | Absolute path to the current state file | `/home/user/workflows/test_cases/POLL.sh` |
+
+**Example usage (Unix):**
+```bash
+#!/bin/bash
+echo "Workflow: $RAYMOND_WORKFLOW_ID"
+echo "Agent: $RAYMOND_AGENT_ID"
+echo "State dir: $RAYMOND_STATE_DIR"
+echo "Current state: $RAYMOND_STATE_FILE"
+```
+
+**Example usage (Windows):**
+```batch
+@echo off
+echo Workflow: %RAYMOND_WORKFLOW_ID%
+echo Agent: %RAYMOND_AGENT_ID%
+echo State dir: %RAYMOND_STATE_DIR%
+echo Current state: %RAYMOND_STATE_FILE%
+```
+
+#### Result Variable (Call Returns)
+
+| Variable | Description | When Set |
+|----------|-------------|----------|
+| `RAYMOND_RESULT` | Payload from the `<result>` tag of a called subroutine | Only when returning from `<call>` |
+
+When a script state is entered via a `<call>` return (i.e., the caller used
+`<call return="THIS_STATE.sh">SUBROUTINE.md</call>`), the subroutine's result
+payload is available in `RAYMOND_RESULT`.
+
+**Example:**
+```bash
+#!/bin/bash
+# RESUME_AFTER_CALL.sh - Entered after a <call> returns
+
+if [ -n "$RAYMOND_RESULT" ]; then
+    echo "Subroutine returned: $RAYMOND_RESULT"
+else
+    echo "No result (not returning from a call)"
+fi
+
+echo "<goto>NEXT.md</goto>"
+```
+
+#### Fork Attributes
+
+When a script is spawned via `<fork>`, all attributes from the fork tag become
+environment variables. This allows parent states to pass data to worker scripts.
+
+**Fork tag example:**
+```
+<fork next="CONTINUE.md" item="issue-123" priority="high">WORKER.sh</fork>
+```
+
+**Available in WORKER.sh:**
+```bash
+#!/bin/bash
+echo "Processing item: $item"        # "issue-123"
+echo "Priority level: $priority"     # "high"
+
+# Do work based on the item...
+echo "<result>Processed $item</result>"
+```
+
+**Windows equivalent:**
+```batch
+@echo off
+echo Processing item: %item%
+echo Priority level: %priority%
+
+REM Do work based on the item...
+echo ^<result^>Processed %item%^</result^>
+```
+
+**Note:** The `next` attribute is used by the orchestrator for the parent's
+continuation and is NOT passed to the worker script.
+
+#### Variable Naming
+
+Fork attribute names become environment variable names directly:
+- `item="value"` → `$item` (Unix) or `%item%` (Windows)
+- `task_id="123"` → `$task_id` or `%task_id%`
+- `myVar="test"` → `$myVar` or `%myVar%`
+
+Avoid using attribute names that conflict with existing environment variables
+or shell builtins (e.g., `PATH`, `HOME`, `COMSPEC`).
+
+#### Persisting Data Between Script Runs
+
+Scripts that use `<reset>` to loop back to themselves start with fresh context
+each time. To persist data across iterations, write to files:
 
 ```bash
-# If forked with <fork item="issue-123">WORKER.sh</fork>
-echo "Processing: $item"  # "issue-123"
+#!/bin/bash
+# POLL.sh - Polling with persistent counter
+
+counter_file="${RAYMOND_STATE_DIR}/poll_counter.txt"
+
+# Read or initialize counter
+if [ -f "$counter_file" ]; then
+    count=$(cat "$counter_file")
+else
+    count=0
+fi
+
+# Increment and save
+count=$((count + 1))
+echo $count > "$counter_file"
+
+echo "Poll iteration: $count"
+
+if [ $count -lt 5 ]; then
+    echo "<reset>POLL.sh</reset>"
+else
+    rm -f "$counter_file"  # Cleanup
+    echo "<result>Polling complete after $count iterations</result>"
+fi
 ```
 
 ### Return Values and Results

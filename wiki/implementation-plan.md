@@ -253,9 +253,9 @@ and are skipped on incompatible platforms.
 
 #### Step 6.3: Documentation Updates
 
-- [ ] **6.3.1** Update `wiki/sample-workflows.md` with script examples
-- [ ] **6.3.2** Add script state examples to existing documentation
-- [ ] **6.3.3** Document environment variables in detail
+- [x] **6.3.1** Update `wiki/sample-workflows.md` with script examples
+- [x] **6.3.2** Add script state examples to existing documentation
+- [x] **6.3.3** Document environment variables in detail
 
 ---
 

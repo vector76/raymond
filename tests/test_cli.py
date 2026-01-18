@@ -32,7 +32,8 @@ class TestCLIStart:
             budget=None,
             debug=False,
             model=None,
-            timeout=None
+            timeout=None,
+            initial_input=None
         )
         
         # Run start command
@@ -77,7 +78,8 @@ class TestCLIStart:
             budget=None,
             debug=False,
             model=None,
-            timeout=None
+            timeout=None,
+            initial_input=None
         )
         
         # Run start command
@@ -123,7 +125,8 @@ class TestCLIStart:
             budget=None,
             debug=False,
             model=None,
-            timeout=None
+            timeout=None,
+            initial_input=None
         )
         
         # Run start command
@@ -135,7 +138,7 @@ class TestCLIStart:
     def test_start_rejects_missing_file(self, tmp_path):
         """Test that start command rejects non-existent initial file."""
         state_dir = tmp_path / ".raymond" / "state"
-        
+
         # Create args namespace with non-existent file
         args = argparse.Namespace(
             workflow_id=None,
@@ -146,14 +149,83 @@ class TestCLIStart:
             budget=None,
             debug=False,
             model=None,
-            timeout=None
+            timeout=None,
+            initial_input=None
         )
-        
+
         # Run start command
         result = cmd_start(args)
-        
+
         # Should fail
         assert result == 1
+
+    def test_start_with_initial_input(self, tmp_path):
+        """Test that start command passes initial_input as pending_result."""
+        scope_dir = tmp_path / "workflows" / "test"
+        scope_dir.mkdir(parents=True)
+
+        initial_file = scope_dir / "START.md"
+        initial_file.write_text("Process this: {{result}}")
+
+        state_dir = tmp_path / ".raymond" / "state"
+
+        # Create args namespace with initial_input
+        args = argparse.Namespace(
+            workflow_id="input-test",
+            initial_file=str(initial_file),
+            state_dir=str(state_dir),
+            no_run=True,
+            verbose=False,
+            budget=None,
+            debug=False,
+            model=None,
+            timeout=None,
+            initial_input="hello, there"
+        )
+
+        # Run start command
+        result = cmd_start(args)
+
+        # Should succeed
+        assert result == 0
+
+        # Verify state was created with pending_result
+        state = read_state("input-test", state_dir=str(state_dir))
+        assert state["agents"][0]["pending_result"] == "hello, there"
+
+    def test_start_without_initial_input(self, tmp_path):
+        """Test that start command without initial_input has no pending_result."""
+        scope_dir = tmp_path / "workflows" / "test"
+        scope_dir.mkdir(parents=True)
+
+        initial_file = scope_dir / "START.md"
+        initial_file.write_text("No input here")
+
+        state_dir = tmp_path / ".raymond" / "state"
+
+        # Create args namespace without initial_input
+        args = argparse.Namespace(
+            workflow_id="no-input-test",
+            initial_file=str(initial_file),
+            state_dir=str(state_dir),
+            no_run=True,
+            verbose=False,
+            budget=None,
+            debug=False,
+            model=None,
+            timeout=None,
+            initial_input=None
+        )
+
+        # Run start command
+        result = cmd_start(args)
+
+        # Should succeed
+        assert result == 0
+
+        # Verify state was created without pending_result
+        state = read_state("no-input-test", state_dir=str(state_dir))
+        assert "pending_result" not in state["agents"][0]
 
 
 class TestWorkflowIDGeneration:

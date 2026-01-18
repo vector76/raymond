@@ -115,9 +115,9 @@ class TestCreateInitialState:
         workflow_id = "test-003"
         scope_dir = "workflows/test"
         initial_state = "START.md"
-        
+
         state = create_initial_state(workflow_id, scope_dir, initial_state)
-        
+
         assert state["workflow_id"] == workflow_id
         assert state["scope_dir"] == scope_dir
         assert len(state["agents"]) == 1
@@ -125,3 +125,36 @@ class TestCreateInitialState:
         assert state["agents"][0]["current_state"] == initial_state
         assert state["agents"][0]["session_id"] is None
         assert state["agents"][0]["stack"] == []
+
+    def test_create_initial_state_with_initial_input(self):
+        """Test that create_initial_state() sets pending_result when initial_input provided."""
+        workflow_id = "test-input"
+        scope_dir = "workflows/test"
+        initial_state = "START.md"
+        initial_input = "hello, there"
+
+        state = create_initial_state(workflow_id, scope_dir, initial_state, initial_input=initial_input)
+
+        assert state["workflow_id"] == workflow_id
+        assert state["agents"][0]["pending_result"] == "hello, there"
+
+    def test_create_initial_state_without_initial_input(self):
+        """Test that create_initial_state() has no pending_result when initial_input is None."""
+        workflow_id = "test-no-input"
+        scope_dir = "workflows/test"
+        initial_state = "START.md"
+
+        state = create_initial_state(workflow_id, scope_dir, initial_state, initial_input=None)
+
+        assert "pending_result" not in state["agents"][0]
+
+    def test_create_initial_state_with_empty_string_input(self):
+        """Test that create_initial_state() sets pending_result for empty string."""
+        workflow_id = "test-empty"
+        scope_dir = "workflows/test"
+        initial_state = "START.md"
+
+        state = create_initial_state(workflow_id, scope_dir, initial_state, initial_input="")
+
+        # Empty string is a valid input
+        assert state["agents"][0]["pending_result"] == ""

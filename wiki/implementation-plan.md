@@ -221,11 +221,11 @@ and are skipped on incompatible platforms.
 
 #### Step 5.1: Script Output Capture
 
-- [ ] **5.1.1** Write tests: debug mode saves script stdout to file
-- [ ] **5.1.2** Write tests: debug mode saves script stderr to file
-- [ ] **5.1.3** Write tests: output filename follows pattern `{agent}_{state}_{step}.txt`
-- [ ] **5.1.4** Write tests: separate `.stdout.txt` and `.stderr.txt` files
-- [ ] **5.1.5** Implement script output capture in debug mode
+- [x] **5.1.1** Write tests: debug mode saves script stdout to file
+- [x] **5.1.2** Write tests: debug mode saves script stderr to file
+- [x] **5.1.3** Write tests: output filename follows pattern `{agent}_{state}_{step}.txt`
+- [x] **5.1.4** Write tests: separate `.stdout.txt` and `.stderr.txt` files
+- [x] **5.1.5** Implement script output capture in debug mode
 
 #### Step 5.2: Execution Metadata
 

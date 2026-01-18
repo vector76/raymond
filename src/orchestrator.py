@@ -140,9 +140,11 @@ def save_script_output(
     step_number: int,
     stdout: str,
     stderr: str,
-    exit_code: int
+    exit_code: int  # noqa: ARG001 - reserved for Step 5.2 metadata logging
 ) -> None:
     """Save script execution output to debug directory.
+
+    Creates separate .stdout.txt and .stderr.txt files for each script execution.
 
     Args:
         debug_dir: Debug directory path
@@ -151,28 +153,23 @@ def save_script_output(
         step_number: Step number for this agent
         stdout: Script stdout output
         stderr: Script stderr output
-        exit_code: Script exit code
+        exit_code: Script exit code (currently unused, reserved for Step 5.2)
     """
-    filename = f"{agent_id}_{state_name}_{step_number:03d}_script.txt"
-    filepath = debug_dir / filename
+    base_filename = f"{agent_id}_{state_name}_{step_number:03d}"
+    stdout_filepath = debug_dir / f"{base_filename}.stdout.txt"
+    stderr_filepath = debug_dir / f"{base_filename}.stderr.txt"
 
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(f"Exit Code: {exit_code}\n")
-            f.write("=" * 40 + "\n")
-            f.write("STDOUT:\n")
-            f.write("=" * 40 + "\n")
+        with open(stdout_filepath, 'w', encoding='utf-8') as f:
             f.write(stdout)
-            if not stdout.endswith('\n'):
-                f.write('\n')
-            f.write("=" * 40 + "\n")
-            f.write("STDERR:\n")
-            f.write("=" * 40 + "\n")
-            f.write(stderr)
-            if stderr and not stderr.endswith('\n'):
-                f.write('\n')
     except OSError as e:
-        logger.warning(f"Failed to save script output to {filepath}: {e}")
+        logger.warning(f"Failed to save script stdout to {stdout_filepath}: {e}")
+
+    try:
+        with open(stderr_filepath, 'w', encoding='utf-8') as f:
+            f.write(stderr)
+    except OSError as e:
+        logger.warning(f"Failed to save script stderr to {stderr_filepath}: {e}")
 
 
 def log_state_transition(

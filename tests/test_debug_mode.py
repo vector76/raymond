@@ -413,8 +413,8 @@ class TestCLIDebugFlag:
 class TestSaveScriptOutput:
     """Tests for save_script_output function."""
 
-    def test_save_script_output_creates_file(self, tmp_path):
-        """Test that save_script_output creates the output file."""
+    def test_save_script_output_creates_files(self, tmp_path):
+        """Test that save_script_output creates separate stdout and stderr files."""
         from src.orchestrator import save_script_output
 
         debug_dir = tmp_path / "debug"
@@ -430,17 +430,15 @@ class TestSaveScriptOutput:
             exit_code=0
         )
 
-        # Check file was created
-        expected_file = debug_dir / "main_CHECK_001_script.txt"
-        assert expected_file.exists()
+        # Check stdout file was created with correct content
+        stdout_file = debug_dir / "main_CHECK_001.stdout.txt"
+        assert stdout_file.exists()
+        assert stdout_file.read_text() == "output text\n"
 
-        # Check file contents
-        content = expected_file.read_text()
-        assert "Exit Code: 0" in content
-        assert "STDOUT:" in content
-        assert "output text" in content
-        assert "STDERR:" in content
-        assert "error text" in content
+        # Check stderr file was created with correct content
+        stderr_file = debug_dir / "main_CHECK_001.stderr.txt"
+        assert stderr_file.exists()
+        assert stderr_file.read_text() == "error text\n"
 
     def test_save_script_output_handles_empty_stderr(self, tmp_path):
         """Test that save_script_output handles empty stderr."""
@@ -459,11 +457,15 @@ class TestSaveScriptOutput:
             exit_code=0
         )
 
-        expected_file = debug_dir / "worker_SCRIPT_002_script.txt"
-        assert expected_file.exists()
+        # Both files should exist
+        stdout_file = debug_dir / "worker_SCRIPT_002.stdout.txt"
+        stderr_file = debug_dir / "worker_SCRIPT_002.stderr.txt"
+        assert stdout_file.exists()
+        assert stderr_file.exists()
 
-        content = expected_file.read_text()
-        assert "STDERR:" in content
+        # stdout should have content, stderr should be empty
+        assert stdout_file.read_text() == "some output"
+        assert stderr_file.read_text() == ""
 
     def test_save_script_output_logs_warning_on_error(self, tmp_path, caplog):
         """Test that save_script_output logs warning when file write fails."""
@@ -484,7 +486,7 @@ class TestSaveScriptOutput:
                 exit_code=0
             )
 
-        assert "Failed to save script output" in caplog.text
+        assert "Failed to save script" in caplog.text
 
 
 class TestSaveScriptErrorResponse:
@@ -645,3 +647,177 @@ class TestExtractStateName:
 
         assert _extract_state_name("file.txt") == "file.txt"
         assert _extract_state_name("noextension") == "noextension"
+
+
+class TestScriptOutputCapturePhase51:
+    """Tests for Phase 5.1: Script output capture in debug mode.
+
+    These tests verify that debug mode saves script stdout and stderr
+    to separate files with the correct naming pattern.
+    """
+
+    def test_debug_mode_saves_script_stdout_to_file(self, tmp_path):
+        """Test 5.1.1: Debug mode saves script stdout to a file."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="CHECK",
+            step_number=1,
+            stdout="This is stdout content\nLine 2\n",
+            stderr="",
+            exit_code=0
+        )
+
+        # Check stdout file was created and has correct content
+        stdout_file = debug_dir / "main_CHECK_001.stdout.txt"
+        assert stdout_file.exists(), "stdout file should exist"
+        assert stdout_file.read_text() == "This is stdout content\nLine 2\n"
+
+    def test_debug_mode_saves_script_stderr_to_file(self, tmp_path):
+        """Test 5.1.2: Debug mode saves script stderr to a file."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output(
+            debug_dir=debug_dir,
+            agent_id="worker",
+            state_name="PROCESS",
+            step_number=3,
+            stdout="normal output",
+            stderr="Error: something went wrong\nWarning: check input\n",
+            exit_code=1
+        )
+
+        # Check stderr file was created and has correct content
+        stderr_file = debug_dir / "worker_PROCESS_003.stderr.txt"
+        assert stderr_file.exists(), "stderr file should exist"
+        assert stderr_file.read_text() == "Error: something went wrong\nWarning: check input\n"
+
+    def test_output_filename_follows_pattern(self, tmp_path):
+        """Test 5.1.3: Output filename follows pattern {agent}_{state}_{step}.txt."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        # Test with various agent/state/step combinations
+        test_cases = [
+            ("main", "START", 1, "main_START_001"),
+            ("worker", "ANALYZE", 42, "worker_ANALYZE_042"),
+            ("main_fork1", "CHECK", 100, "main_fork1_CHECK_100"),
+        ]
+
+        for agent_id, state_name, step_number, expected_prefix in test_cases:
+            save_script_output(
+                debug_dir=debug_dir,
+                agent_id=agent_id,
+                state_name=state_name,
+                step_number=step_number,
+                stdout="out",
+                stderr="err",
+                exit_code=0
+            )
+
+            stdout_file = debug_dir / f"{expected_prefix}.stdout.txt"
+            stderr_file = debug_dir / f"{expected_prefix}.stderr.txt"
+            assert stdout_file.exists(), f"stdout file {expected_prefix}.stdout.txt should exist"
+            assert stderr_file.exists(), f"stderr file {expected_prefix}.stderr.txt should exist"
+
+    def test_separate_stdout_and_stderr_files(self, tmp_path):
+        """Test 5.1.4: Separate .stdout.txt and .stderr.txt files are created."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="SCRIPT",
+            step_number=5,
+            stdout="stdout content here",
+            stderr="stderr content here",
+            exit_code=0
+        )
+
+        # Both files should exist as separate files
+        stdout_file = debug_dir / "main_SCRIPT_005.stdout.txt"
+        stderr_file = debug_dir / "main_SCRIPT_005.stderr.txt"
+
+        assert stdout_file.exists(), ".stdout.txt file should exist"
+        assert stderr_file.exists(), ".stderr.txt file should exist"
+        assert stdout_file != stderr_file, "stdout and stderr should be separate files"
+
+        # Content should be in the correct files
+        assert stdout_file.read_text() == "stdout content here"
+        assert stderr_file.read_text() == "stderr content here"
+
+    def test_empty_stdout_creates_empty_file(self, tmp_path):
+        """Test that empty stdout creates an empty .stdout.txt file."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="QUIET",
+            step_number=1,
+            stdout="",
+            stderr="some error",
+            exit_code=0
+        )
+
+        stdout_file = debug_dir / "main_QUIET_001.stdout.txt"
+        assert stdout_file.exists()
+        assert stdout_file.read_text() == ""
+
+    def test_empty_stderr_creates_empty_file(self, tmp_path):
+        """Test that empty stderr creates an empty .stderr.txt file."""
+        from src.orchestrator import save_script_output
+
+        debug_dir = tmp_path / "debug"
+        debug_dir.mkdir()
+
+        save_script_output(
+            debug_dir=debug_dir,
+            agent_id="main",
+            state_name="CLEAN",
+            step_number=2,
+            stdout="output here",
+            stderr="",
+            exit_code=0
+        )
+
+        stderr_file = debug_dir / "main_CLEAN_002.stderr.txt"
+        assert stderr_file.exists()
+        assert stderr_file.read_text() == ""
+
+    def test_save_script_output_logs_warning_on_error(self, tmp_path, caplog):
+        """Test that save_script_output logs warning when file write fails."""
+        from src.orchestrator import save_script_output
+        import logging
+
+        # Use a non-existent directory to trigger error
+        debug_dir = tmp_path / "nonexistent" / "debug"
+
+        with caplog.at_level(logging.WARNING):
+            save_script_output(
+                debug_dir=debug_dir,
+                agent_id="main",
+                state_name="TEST",
+                step_number=1,
+                stdout="output",
+                stderr="error",
+                exit_code=0
+            )
+
+        assert "Failed to save script" in caplog.text

@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from src.orchestrator import run_all_agents
+from src.orchestrator import run_all_agents, ScriptError
 from src.state import create_initial_state, write_state
 from src.parsing import Transition
 from src.policy import PolicyViolationError
@@ -1680,3 +1680,382 @@ class TestScriptStateDispatch:
 
         # The workflow completes successfully, indicating cost tracking worked correctly
         # Script states don't call wrap_claude_code so they contribute $0.00
+
+
+class TestScriptErrorHandling:
+    """Tests for script state error handling (Step 4.2).
+
+    These tests verify that script states handle errors correctly:
+    - Exit code 0 with valid tag → normal transition
+    - Exit code 0 with no tag → fatal error
+    - Non-zero exit code → fatal error
+    - Multiple tags → fatal error
+    - Timeout → fatal error
+    - Fatal errors terminate workflow (no retry)
+    """
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_exit_0_valid_tag_normal_transition_bat(self, tmp_path):
+        """4.2.1: Script exit code 0 with valid tag → normal transition (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that exits 0 and emits a valid tag
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<result^>Success^</result^>\nexit /b 0\n")
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed (state file deleted)
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_exit_0_valid_tag_normal_transition_sh(self, tmp_path):
+        """4.2.1: Script exit code 0 with valid tag → normal transition (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-002"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that exits 0 and emits a valid tag
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<result>Success</result>'\nexit 0\n")
+        script_file.chmod(0o755)
+
+        # Should complete successfully
+        await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify workflow completed (state file deleted)
+        state_file = state_dir / f"{workflow_id}.json"
+        assert not state_file.exists(), "State file should be deleted after successful completion"
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_exit_0_no_tag_fatal_error_bat(self, tmp_path):
+        """4.2.2: Script exit code 0 with no tag → fatal error (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-003"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that exits 0 but emits NO tag
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho No transition tag here\nexit /b 0\n")
+
+        # Should raise ScriptError
+        with pytest.raises(ScriptError, match="no transition tag"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_exit_0_no_tag_fatal_error_sh(self, tmp_path):
+        """4.2.2: Script exit code 0 with no tag → fatal error (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-004"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that exits 0 but emits NO tag
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho 'No transition tag here'\nexit 0\n")
+        script_file.chmod(0o755)
+
+        # Should raise ScriptError
+        with pytest.raises(ScriptError, match="no transition tag"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_nonzero_exit_fatal_error_bat(self, tmp_path):
+        """4.2.3: Script exit code non-zero → fatal error (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-005"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that exits with non-zero code
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho Something failed 1>&2\nexit /b 1\n")
+
+        # Should raise ScriptError
+        with pytest.raises(ScriptError, match="exit code 1"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_nonzero_exit_fatal_error_sh(self, tmp_path):
+        """4.2.3: Script exit code non-zero → fatal error (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-006"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that exits with non-zero code
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho 'Something failed' >&2\nexit 1\n")
+        script_file.chmod(0o755)
+
+        # Should raise ScriptError
+        with pytest.raises(ScriptError, match="exit code 1"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_multiple_tags_fatal_error_bat(self, tmp_path):
+        """4.2.4: Script with multiple tags → fatal error (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-007"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create NEXT.md for valid transition target
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("NEXT_PROMPT")
+
+        # Create script that emits multiple tags
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\necho ^<goto^>NEXT.md^</goto^>\necho ^<result^>Done^</result^>\nexit /b 0\n")
+
+        # Should raise ScriptError
+        with pytest.raises(ScriptError, match="2 transition tags"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_multiple_tags_fatal_error_sh(self, tmp_path):
+        """4.2.4: Script with multiple tags → fatal error (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-008"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create NEXT.md for valid transition target
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("NEXT_PROMPT")
+
+        # Create script that emits multiple tags
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\necho '<goto>NEXT.md</goto>'\necho '<result>Done</result>'\nexit 0\n")
+        script_file.chmod(0o755)
+
+        # Should raise ScriptError
+        with pytest.raises(ScriptError, match="2 transition tags"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_timeout_fatal_error_bat(self, tmp_path):
+        """4.2.5: Script timeout → fatal error (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-009"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that sleeps longer than timeout (use ping for delay on Windows)
+        script_file = Path(scope_dir) / "START.bat"
+        script_file.write_text("@echo off\nping -n 10 127.0.0.1 > nul\necho ^<result^>Done^</result^>\n")
+
+        # Should raise ScriptError (from timeout)
+        with pytest.raises(ScriptError, match="timeout"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir), timeout=0.5)
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_timeout_fatal_error_sh(self, tmp_path):
+        """4.2.5: Script timeout → fatal error (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-010"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that sleeps longer than timeout
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text("#!/bin/bash\nsleep 10\necho '<result>Done</result>'\n")
+        script_file.chmod(0o755)
+
+        # Should raise ScriptError (from timeout)
+        with pytest.raises(ScriptError, match="timeout"):
+            await run_all_agents(workflow_id, state_dir=str(state_dir), timeout=0.5)
+
+        # Verify error file was created
+        errors_dir = state_dir.parent / "errors"
+        error_files = list(errors_dir.glob(f"{workflow_id}_main_*_script.txt"))
+        assert len(error_files) > 0, "Script error file should be created"
+
+    @pytest.mark.windows
+    @pytest.mark.asyncio
+    async def test_script_fatal_error_no_retry_bat(self, tmp_path):
+        """4.2.6: Fatal errors terminate workflow (no retry) (.bat)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-011"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.bat")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that fails (exits non-zero)
+        script_file = Path(scope_dir) / "START.bat"
+        # Track invocation count via a temp file
+        counter_file = tmp_path / "invocation_count.txt"
+        script_file.write_text(f"@echo off\n"
+                              f"if exist \"{counter_file}\" (\n"
+                              f"  echo retry >> \"{counter_file}\"\n"
+                              f") else (\n"
+                              f"  echo first > \"{counter_file}\"\n"
+                              f")\n"
+                              f"exit /b 1\n")
+
+        # Should raise ScriptError (fails immediately, no retry)
+        with pytest.raises(ScriptError):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify the script was only called ONCE (no retries for script errors)
+        counter_content = counter_file.read_text()
+        # Should only contain "first\n" - if retried, would have "first\nretry\n" etc.
+        assert counter_content.strip() == "first", (
+            f"Script should only be invoked once (no retry), but counter shows: {counter_content}"
+        )
+
+    @pytest.mark.unix
+    @pytest.mark.asyncio
+    async def test_script_fatal_error_no_retry_sh(self, tmp_path):
+        """4.2.6: Fatal errors terminate workflow (no retry) (.sh)."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-script-err-012"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state with script
+        state = create_initial_state(workflow_id, scope_dir, "START.sh")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create script that fails (exits non-zero)
+        # Track invocation count via a temp file
+        counter_file = tmp_path / "invocation_count.txt"
+        script_file = Path(scope_dir) / "START.sh"
+        script_file.write_text(f"#!/bin/bash\n"
+                              f"if [ -f \"{counter_file}\" ]; then\n"
+                              f"  echo retry >> \"{counter_file}\"\n"
+                              f"else\n"
+                              f"  echo first > \"{counter_file}\"\n"
+                              f"fi\n"
+                              f"exit 1\n")
+        script_file.chmod(0o755)
+
+        # Should raise ScriptError (fails immediately, no retry)
+        with pytest.raises(ScriptError):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify the script was only called ONCE (no retries for script errors)
+        counter_content = counter_file.read_text()
+        # Should only contain "first\n" - if retried, would have "first\nretry\n" etc.
+        assert counter_content.strip() == "first", (
+            f"Script should only be invoked once (no retry), but counter shows: {counter_content}"
+        )

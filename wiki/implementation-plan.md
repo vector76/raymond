@@ -197,13 +197,13 @@ and are skipped on incompatible platforms.
 
 #### Step 4.2: Error Handling
 
-- [ ] **4.2.1** Write tests: script exit code 0 with valid tag → normal transition
-- [ ] **4.2.2** Write tests: script exit code 0 with no tag → fatal error
-- [ ] **4.2.3** Write tests: script exit code non-zero → fatal error
-- [ ] **4.2.4** Write tests: script with multiple tags → fatal error
-- [ ] **4.2.5** Write tests: script timeout → fatal error
-- [ ] **4.2.6** Write tests: fatal errors terminate workflow (no retry)
-- [ ] **4.2.7** Implement error handling for script states
+- [x] **4.2.1** Write tests: script exit code 0 with valid tag → normal transition
+- [x] **4.2.2** Write tests: script exit code 0 with no tag → fatal error
+- [x] **4.2.3** Write tests: script exit code non-zero → fatal error
+- [x] **4.2.4** Write tests: script with multiple tags → fatal error
+- [x] **4.2.5** Write tests: script timeout → fatal error
+- [x] **4.2.6** Write tests: fatal errors terminate workflow (no retry)
+- [x] **4.2.7** Implement error handling for script states
 
 #### Step 4.3: All Transition Types
 

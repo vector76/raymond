@@ -144,17 +144,17 @@ and are skipped on incompatible platforms.
 #### Step 2.2: Platform Detection
 
 **Cross-platform tests:**
-- [ ] **2.2.1** Write tests: `is_unix()` and `is_windows()` detect platform correctly
+- [x] **2.2.1** Write tests: `is_unix()` and `is_windows()` detect platform correctly
 
 **Unix-only tests (`@pytest.mark.unix`):**
-- [ ] **2.2.2** Write tests: `.sh` execution works
-- [ ] **2.2.3** Write tests: attempting to run `.bat` raises clear error
+- [x] **2.2.2** Write tests: `.sh` execution works
+- [x] **2.2.3** Write tests: attempting to run `.bat` raises clear error
 
 **Windows-only tests (`@pytest.mark.windows`):**
-- [ ] **2.2.4** Write tests: `.bat` execution works
-- [ ] **2.2.5** Write tests: attempting to run `.sh` raises clear error
+- [x] **2.2.4** Write tests: `.bat` execution works
+- [x] **2.2.5** Write tests: attempting to run `.sh` raises clear error
 
-- [ ] **2.2.6** Implement platform-aware script execution
+- [x] **2.2.6** Implement platform-aware script execution
 
 #### Step 2.3: Output Parsing
 

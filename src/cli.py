@@ -160,7 +160,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     
     if not args.no_run:
         print("\nStarting orchestrator...")
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, args.debug, args.model, args.timeout)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, args.debug, args.model, args.timeout, args.dangerously_skip_permissions)
     
     print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
@@ -183,15 +183,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print(f"Error: Workflow '{workflow_id}' not found.", file=sys.stderr)
         return 1
     
-    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, args.debug, args.model, args.timeout)
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, args.debug, args.model, args.timeout, args.dangerously_skip_permissions)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
     
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout))
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions))
         print(f"\nWorkflow '{workflow_id}' completed.")
         return 0
     except FileNotFoundError as e:
@@ -383,6 +383,13 @@ Examples:
         metavar="SEC",
         default=None,
         help="Timeout per Claude Code invocation in seconds (default: 600, 0=none)",
+    )
+    runtime_group.add_argument(
+        "--dangerously-skip-permissions",
+        dest="dangerously_skip_permissions",
+        action="store_true",
+        help="Pass --dangerously-skip-permissions to Claude instead of --permission-mode acceptEdits. "
+             "WARNING: This allows Claude to execute any action without prompting for permission.",
     )
     
     # Global options

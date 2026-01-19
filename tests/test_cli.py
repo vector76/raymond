@@ -33,7 +33,8 @@ class TestCLIStart:
             debug=False,
             model=None,
             timeout=None,
-            initial_input=None
+            initial_input=None,
+            dangerously_skip_permissions=False
         )
         
         # Run start command
@@ -79,7 +80,8 @@ class TestCLIStart:
             debug=False,
             model=None,
             timeout=None,
-            initial_input=None
+            initial_input=None,
+            dangerously_skip_permissions=False
         )
         
         # Run start command
@@ -126,7 +128,8 @@ class TestCLIStart:
             debug=False,
             model=None,
             timeout=None,
-            initial_input=None
+            initial_input=None,
+            dangerously_skip_permissions=False
         )
         
         # Run start command
@@ -150,7 +153,8 @@ class TestCLIStart:
             debug=False,
             model=None,
             timeout=None,
-            initial_input=None
+            initial_input=None,
+            dangerously_skip_permissions=False
         )
 
         # Run start command
@@ -180,7 +184,8 @@ class TestCLIStart:
             debug=False,
             model=None,
             timeout=None,
-            initial_input="hello, there"
+            initial_input="hello, there",
+            dangerously_skip_permissions=False
         )
 
         # Run start command
@@ -214,7 +219,8 @@ class TestCLIStart:
             debug=False,
             model=None,
             timeout=None,
-            initial_input=None
+            initial_input=None,
+            dangerously_skip_permissions=False
         )
 
         # Run start command

@@ -19,6 +19,7 @@ def _build_claude_command(
     prompt: str,
     model: Optional[str] = None,
     session_id: Optional[str] = None,
+    dangerously_skip_permissions: bool = False,
     **kwargs
 ) -> List[str]:
     """Build the claude CLI command with all arguments.
@@ -27,6 +28,9 @@ def _build_claude_command(
         prompt: The prompt to send to claude
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session
+        dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
+            instead of --permission-mode acceptEdits. WARNING: This allows Claude
+            to execute any action without prompting for permission.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
@@ -40,8 +44,13 @@ def _build_claude_command(
         "-p",  # headless/print mode
         "--output-format", "stream-json",
         "--verbose",
-        "--permission-mode", "acceptEdits"
     ]
+    
+    # Add permission mode: either --dangerously-skip-permissions or --permission-mode acceptEdits
+    if dangerously_skip_permissions:
+        cmd.append("--dangerously-skip-permissions")
+    else:
+        cmd.extend(["--permission-mode", "acceptEdits"])
 
     if model:
         cmd.extend(["--model", model])
@@ -76,6 +85,7 @@ async def wrap_claude_code(
     model: Optional[str] = None, 
     session_id: Optional[str] = None,
     timeout: Optional[float] = None,
+    dangerously_skip_permissions: bool = False,
     **kwargs
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
@@ -87,6 +97,9 @@ async def wrap_claude_code(
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
         timeout: Optional timeout in seconds (default: 600). Set to 0 for no timeout.
+        dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
+            instead of --permission-mode acceptEdits. WARNING: This allows Claude
+            to execute any action without prompting for permission.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
@@ -99,7 +112,7 @@ async def wrap_claude_code(
         RuntimeError: If the command fails with non-zero exit code
     """
     # Build the command
-    cmd = _build_claude_command(prompt, model, session_id, **kwargs)
+    cmd = _build_claude_command(prompt, model, session_id, dangerously_skip_permissions, **kwargs)
     
     # Use default timeout if not specified
     # timeout=0 means no timeout (None for asyncio.wait_for)
@@ -209,6 +222,7 @@ async def wrap_claude_code_stream(
     model: Optional[str] = None,
     session_id: Optional[str] = None,
     timeout: Optional[float] = None,
+    dangerously_skip_permissions: bool = False,
     **kwargs
 ) -> AsyncIterator[Dict[str, Any]]:
     """
@@ -220,6 +234,9 @@ async def wrap_claude_code_stream(
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
         timeout: Optional timeout in seconds (default: 600). Set to 0 for no timeout.
+        dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
+            instead of --permission-mode acceptEdits. WARNING: This allows Claude
+            to execute any action without prompting for permission.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
@@ -232,7 +249,7 @@ async def wrap_claude_code_stream(
         RuntimeError: If the command fails with non-zero exit code
     """
     # Build the command
-    cmd = _build_claude_command(prompt, model, session_id, **kwargs)
+    cmd = _build_claude_command(prompt, model, session_id, dangerously_skip_permissions, **kwargs)
     
     # Use default timeout if not specified
     # timeout=0 means no timeout (None)

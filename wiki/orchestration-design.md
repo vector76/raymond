@@ -109,6 +109,20 @@ This provides a safety mechanism to prevent runaway costs from infinite loops or
 expensive operations. The cost is extracted from Claude Code's JSON response (`total_cost_usd`
 field) and accumulated in the workflow state file.
 
+**Permission Mode:** By default, Raymond invokes Claude with `--permission-mode acceptEdits`,
+which allows Claude to edit files without prompting but still requires permission for certain
+dangerous operations. For fully autonomous workflows that need to run without any permission
+prompts, you can use the `--dangerously-skip-permissions` flag:
+
+```bash
+raymond workflow.md --dangerously-skip-permissions
+```
+
+⚠️ **WARNING:** This flag passes `--dangerously-skip-permissions` to Claude, which allows it
+to execute any action without prompting for permission. Only use this for trusted workflows
+in controlled environments. This flag is intended for batch processing and CI/CD scenarios
+where human interaction is not possible.
+
 ## Context Management: The Call Stack Parallel
 
 Traditional programs use a call stack for function calls:

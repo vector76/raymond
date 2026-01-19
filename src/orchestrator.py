@@ -536,7 +536,7 @@ def _resolve_transition_targets(transition: Transition, scope_dir: str) -> Trans
     )
 
 
-async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None) -> None:
+async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> None:
     """Run all agents in a workflow until they all terminate.
     
     This is the main orchestrator loop that:
@@ -552,6 +552,9 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         debug: If True, enable debug mode (save outputs and log transitions)
         default_model: Optional model to use if not specified in frontmatter
         timeout: Optional timeout in seconds for Claude Code invocations (default: 600)
+        dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
+            to Claude instead of --permission-mode acceptEdits. WARNING: This allows
+            Claude to execute any action without prompting for permission.
     """
     logger.info(f"Starting orchestrator for workflow: {workflow_id}")
     
@@ -601,7 +604,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             agent_id = agent["id"]
             if agent_id not in running_tasks:
                 task = asyncio.create_task(step_agent(
-                    agent, state, state_dir, debug_dir, agent_step_counters, default_model, timeout
+                    agent, state, state_dir, debug_dir, agent_step_counters, default_model, timeout, dangerously_skip_permissions
                 ))
                 running_tasks[agent_id] = task
         
@@ -1255,7 +1258,8 @@ async def step_agent(
     debug_dir: Optional[Path] = None,
     agent_step_counters: Optional[Dict[str, int]] = None,
     default_model: Optional[str] = None,
-    timeout: Optional[float] = None
+    timeout: Optional[float] = None,
+    dangerously_skip_permissions: bool = False
 ) -> Optional[Dict[str, Any]]:
     """Step a single agent: load prompt, invoke Claude Code, parse output, dispatch.
     
@@ -1267,6 +1271,8 @@ async def step_agent(
         agent_step_counters: Optional dict to track step numbers per agent
         default_model: Optional model to use if not specified in frontmatter
         timeout: Optional timeout in seconds for Claude Code invocations (default: 600)
+        dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
+            to Claude instead of --permission-mode acceptEdits.
         
     Returns:
         Updated agent state dictionary, or None if agent terminated
@@ -1414,6 +1420,7 @@ async def step_agent(
                     model=model_to_use,
                     session_id=fork_session_id,
                     timeout=timeout,
+                    dangerously_skip_permissions=dangerously_skip_permissions,
                     fork=True
                 )
             else:
@@ -1422,7 +1429,8 @@ async def step_agent(
                     prompt, 
                     model=model_to_use,
                     session_id=new_session_id,
-                    timeout=timeout
+                    timeout=timeout,
+                    dangerously_skip_permissions=dangerously_skip_permissions
                 )
             
             logger.debug(

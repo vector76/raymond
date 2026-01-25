@@ -14,6 +14,7 @@ from .prompts import load_prompt, render_prompt, resolve_state, get_state_type
 from .parsing import parse_transitions, validate_single_transition, Transition
 from .policy import validate_transition_policy, PolicyViolationError, can_use_implicit_transition, get_implicit_transition, should_use_reminder_prompt, generate_reminder_prompt
 from .scripts import run_script, build_script_env, ScriptTimeoutError
+from .console import init_reporter, get_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +586,7 @@ def _resolve_transition_targets(transition: Transition, scope_dir: str) -> Trans
     )
 
 
-async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> None:
+async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False) -> None:
     """Run all agents in a workflow until they all terminate.
     
     This is the main orchestrator loop that:
@@ -604,7 +605,12 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
             to Claude instead of --permission-mode acceptEdits. WARNING: This allows
             Claude to execute any action without prompting for permission.
+        quiet: If True, suppress progress messages and tool invocations in console output
     """
+    # Initialize console reporter
+    init_reporter(quiet=quiet)
+    reporter = get_reporter()
+    
     logger.info(f"Starting orchestrator for workflow: {workflow_id}")
     
     # Create debug directory if debug mode is enabled
@@ -616,12 +622,18 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         else:
             logger.warning("Debug mode requested but directory creation failed, continuing without debug")
     
+    # Read state to get scope_dir for console output
+    state = read_state(workflow_id, state_dir=state_dir)
+    scope_dir = state.get("scope_dir", "unknown")
+    
+    # Display workflow startup information
+    try:
+        reporter.workflow_started(workflow_id, scope_dir, debug_dir)
+    except Exception as e:
+        logger.warning(f"Failed to display workflow startup: {e}")
+    
     # Track step numbers per agent for debug file naming
     agent_step_counters: Dict[str, int] = {}
-    
-    # Read state once at startup - in-memory state is authoritative during execution
-    # State file is only for crash recovery (written after each step for persistence)
-    state = read_state(workflow_id, state_dir=state_dir)
     
     # Track running tasks by agent ID - ensures exactly one task per agent
     # This makes stale tasks impossible by construction
@@ -631,6 +643,12 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         # Exit if no agents remain
         if not state.get("agents", []):
             logger.info(f"Workflow {workflow_id} completed: no agents remaining")
+            # Display workflow completion
+            total_cost = state.get("total_cost_usd", 0.0)
+            try:
+                reporter.workflow_completed(total_cost)
+            except Exception as e:
+                logger.warning(f"Failed to display workflow completion: {e}")
             # Clean up state file - workflow completed successfully
             state.pop("_agent_termination_results", None)
             delete_state(workflow_id, state_dir=state_dir)
@@ -653,7 +671,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             agent_id = agent["id"]
             if agent_id not in running_tasks:
                 task = asyncio.create_task(step_agent(
-                    agent, state, state_dir, debug_dir, agent_step_counters, default_model, timeout, dangerously_skip_permissions
+                    agent, state, state_dir, debug_dir, agent_step_counters, default_model, timeout, dangerously_skip_permissions, quiet
                 ))
                 running_tasks[agent_id] = task
         
@@ -732,7 +750,11 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                     termination_results = state.get("_agent_termination_results", {})
                     termination_result = termination_results.pop(agent_id, "")
                     
-                    print(f"Agent {agent_id} terminated with result: {termination_result}")
+                    # Display agent termination
+                    try:
+                        reporter.agent_terminated(agent_id, termination_result)
+                    except Exception as e:
+                        logger.warning(f"Failed to display agent termination: {e}")
                     logger.info(
                         f"Agent {agent_id} terminated",
                         extra={
@@ -762,6 +784,13 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                 # Increment retry counter
                 retry_count = current_agent.get("retry_count", 0) + 1
                 current_agent["retry_count"] = retry_count
+                
+                # Display error message
+                error_msg = f"{str(e)} - retrying ({retry_count}/{MAX_RETRIES})"
+                try:
+                    reporter.error(agent_id, error_msg)
+                except Exception as e2:
+                    logger.warning(f"Failed to display error message: {e2}")
                 
                 logger.warning(
                     f"Agent {agent_id} error (attempt {retry_count}/{MAX_RETRIES}): {e}",
@@ -880,7 +909,8 @@ async def _step_agent_script(
     debug_dir: Optional[Path],
     agent_step_counters: Optional[Dict[str, int]],
     timeout: Optional[float],
-    state_dir: Optional[str] = None
+    state_dir: Optional[str] = None,
+    reporter = None
 ) -> Optional[Dict[str, Any]]:
     """Execute a script state and process its output.
 
@@ -926,6 +956,13 @@ async def _step_agent_script(
         fork_attributes=fork_attributes
     )
 
+    # Display script start
+    if reporter:
+        try:
+            reporter.script_started(agent_id, current_state)
+        except Exception as e:
+            logger.warning(f"Failed to display script start: {e}")
+    
     logger.info(
         f"Executing script state for agent {agent_id}: {current_state}",
         extra={
@@ -1014,6 +1051,13 @@ async def _step_agent_script(
     # Calculate execution time
     end_time = time.perf_counter()
     execution_time_ms = (end_time - start_time) * 1000
+    
+    # Display script completion
+    if reporter:
+        try:
+            reporter.script_completed(agent_id, script_result.exit_code, execution_time_ms)
+        except Exception as e:
+            logger.warning(f"Failed to display script completion: {e}")
 
     logger.debug(
         f"Script completed for agent {agent_id}: exit_code={script_result.exit_code}",
@@ -1227,6 +1271,12 @@ async def _step_agent_script(
 
     # Call handler
     handler_result = handler(agent_copy, transition, state)
+    
+    # Determine spawned_agent_id for fork transitions (needed for both debug logging and console output)
+    spawned_agent_id = None
+    if transition.tag == "fork" and isinstance(handler_result, tuple):
+        updated_agent, new_agent = handler_result
+        spawned_agent_id = new_agent.get("id")
 
     # Log state transition for debug mode
     if debug_dir is not None:
@@ -1236,7 +1286,6 @@ async def _step_agent_script(
         stack_depth = len(agent_copy.get("stack", []))
 
         # Determine new state and whether agent terminated
-        spawned_agent_id = None
         if handler_result is None:
             # Agent terminated
             new_state = None
@@ -1244,7 +1293,6 @@ async def _step_agent_script(
             # Fork handler - parent agent continues
             updated_agent, new_agent = handler_result
             new_state = updated_agent.get("current_state")
-            spawned_agent_id = new_agent.get("id")
         else:
             # Regular handler
             new_state = handler_result.get("current_state")
@@ -1288,6 +1336,13 @@ async def _step_agent_script(
         except OSError as e:
             # Debug operations should not fail the workflow
             logger.warning(f"Failed to log state transition for debug: {e}")
+    
+    # Display transition for script execution
+    if reporter:
+        try:
+            reporter.transition(agent_id, transition.target, transition.tag, spawned_agent_id)
+        except Exception as e:
+            logger.warning(f"Failed to display transition: {e}")
 
     # Fork handler returns a tuple (updated_agent, new_agent)
     # Other handlers return just updated_agent
@@ -1308,7 +1363,8 @@ async def step_agent(
     agent_step_counters: Optional[Dict[str, int]] = None,
     default_model: Optional[str] = None,
     timeout: Optional[float] = None,
-    dangerously_skip_permissions: bool = False
+    dangerously_skip_permissions: bool = False,
+    quiet: bool = False
 ) -> Optional[Dict[str, Any]]:
     """Step a single agent: load prompt, invoke Claude Code, parse output, dispatch.
     
@@ -1342,6 +1398,9 @@ async def step_agent(
         }
     )
 
+    # Get console reporter
+    reporter = get_reporter()
+    
     # Determine state type and dispatch accordingly
     state_type = get_state_type(current_state)
 
@@ -1349,8 +1408,14 @@ async def step_agent(
         # Script execution path - execute directly without LLM
         return await _step_agent_script(
             agent, state, scope_dir, workflow_id, current_state, agent_id, session_id,
-            debug_dir, agent_step_counters, timeout, state_dir
+            debug_dir, agent_step_counters, timeout, state_dir, reporter
         )
+    
+    # Markdown state - display state header
+    try:
+        reporter.state_started(agent_id, current_state)
+    except Exception as e:
+        logger.warning(f"Failed to display state header: {e}")
 
     # Markdown state - continue with LLM execution path
 
@@ -1418,6 +1483,13 @@ async def step_agent(
     reminder_attempt = 0
     
     while transition is None:
+        # Show state header again on retry (per design doc)
+        if reminder_attempt > 0:
+            try:
+                reporter.state_started(agent_id, current_state)
+            except Exception as e:
+                logger.warning(f"Failed to display state header on retry: {e}")
+        
         # Build prompt (base + reminder if this is a retry)
         prompt = base_prompt
         if reminder_attempt > 0:
@@ -1530,6 +1602,56 @@ async def step_agent(
                     elif "metadata" in json_obj and isinstance(json_obj["metadata"], dict):
                         if "session_id" in json_obj["metadata"]:
                             new_session_id = json_obj["metadata"]["session_id"]
+                
+                # Process stream for console output
+                # Wrap in try/except to prevent console output failures from crashing workflow
+                try:
+                    if isinstance(json_obj, dict):
+                        # Assistant messages (text and tool invocations)
+                        if json_obj.get("type") == "assistant" and "message" in json_obj:
+                            message = json_obj.get("message", {})
+                            content = message.get("content", [])
+                            if isinstance(content, list):
+                                for item in content:
+                                    if isinstance(item, dict):
+                                        if item.get("type") == "text":
+                                            # Display first line or ~80 chars of text as progress
+                                            text = item.get("text", "")
+                                            if text:
+                                                first_line = text.split('\n')[0]
+                                                display_text = first_line[:80] + ("..." if len(first_line) > 80 else "")
+                                                reporter.progress_message(agent_id, display_text)
+                                        elif item.get("type") == "tool_use":
+                                            # Display tool invocation
+                                            tool_name = item.get("name", "unknown")
+                                            tool_input = item.get("input", {})
+                                            detail = None
+                                            
+                                            # Show relevant detail for common tools
+                                            if tool_name in ("Read", "Write", "Edit") and "file_path" in tool_input:
+                                                detail = Path(tool_input["file_path"]).name  # filename only
+                                            elif tool_name == "Bash" and "command" in tool_input:
+                                                cmd = tool_input["command"]
+                                                detail = cmd[:40] + ("..." if len(cmd) > 40 else "")
+                                            
+                                            reporter.tool_invocation(agent_id, tool_name, detail)
+                        
+                        # Tool errors (from user messages)
+                        elif json_obj.get("type") == "user":
+                            message = json_obj.get("message", {})
+                            content = message.get("content", [])
+                            if isinstance(content, list):
+                                for item in content:
+                                    if isinstance(item, dict) and item.get("type") == "tool_result" and item.get("is_error"):
+                                        error_msg = item.get("content", "Tool error")
+                                        # Extract error message (may be wrapped in <tool_use_error> tags)
+                                        if "<tool_use_error>" in error_msg:
+                                            error_msg = error_msg.split("<tool_use_error>")[1].split("</tool_use_error>")[0]
+                                        # tool_error will automatically use the last tool invocation
+                                        reporter.tool_error(agent_id, error_msg)
+                except Exception as e:
+                    # Console output failures should not crash the workflow
+                    logger.warning(f"Failed to process console output: {e}")
             
             logger.debug(
                 f"Claude Code invocation completed for agent {agent_id}",
@@ -1632,28 +1754,41 @@ async def step_agent(
         
         # Extract cost from Claude Code response and accumulate in state
         invocation_cost = extract_cost_from_results(results)
+        total_cost = state.get("total_cost_usd", 0.0)
         if invocation_cost > 0:
             # Initialize cost tracking if not present (for backward compatibility)
             if "total_cost_usd" not in state:
                 state["total_cost_usd"] = 0.0
             state["total_cost_usd"] += invocation_cost
+            total_cost = state["total_cost_usd"]
             
             logger.info(
                 f"Cost for agent {agent_id} invocation: ${invocation_cost:.4f}, "
-                f"Total cost: ${state['total_cost_usd']:.4f}",
+                f"Total cost: ${total_cost:.4f}",
                 extra={
                     "workflow_id": workflow_id,
                     "agent_id": agent_id,
                     "invocation_cost": invocation_cost,
-                    "total_cost": state["total_cost_usd"]
+                    "total_cost": total_cost
                 }
             )
         
+        # Display state completion with cost
+        try:
+            reporter.state_completed(agent_id, invocation_cost, total_cost)
+        except Exception as e:
+            # Console output failures should not crash the workflow
+            logger.warning(f"Failed to display state completion: {e}")
+        
         # Check budget limit
         budget_usd = state.get("budget_usd", 10.0)  # Default budget if not set
-        total_cost = state.get("total_cost_usd", 0.0)
         
         if total_cost > budget_usd:
+            # Display budget exceeded message
+            try:
+                reporter.error(agent_id, f"BUDGET EXCEEDED (${total_cost:.4f} > ${budget_usd:.4f})")
+            except Exception as e:
+                logger.warning(f"Failed to display budget exceeded message: {e}")
             logger.warning(
                 f"Budget exceeded: ${total_cost:.4f} > ${budget_usd:.4f}. "
                 f"Terminating workflow.",
@@ -1746,6 +1881,11 @@ async def step_agent(
                     )
                     error._error_saved = True
                     raise error
+                # Display error message
+                try:
+                    reporter.error(agent_id, f"No transition tag - retrying ({reminder_attempt}/{MAX_REMINDER_ATTEMPTS})")
+                except Exception as e:
+                    logger.warning(f"Failed to display error message: {e}")
                 # Continue loop to re-prompt with reminder
                 continue
             else:
@@ -1787,6 +1927,11 @@ async def step_agent(
                         )
                         e._error_saved = True
                         raise
+                    # Display error message
+                    try:
+                        reporter.error(agent_id, f"{str(e)} - retrying ({reminder_attempt}/{MAX_REMINDER_ATTEMPTS})")
+                    except Exception as e2:
+                        logger.warning(f"Failed to display error message: {e2}")
                     # Continue loop to re-prompt with reminder
                     continue
                 else:
@@ -1849,6 +1994,11 @@ async def step_agent(
                 if should_use_reminder_prompt(policy):
                     # Can re-prompt with reminder
                     reminder_attempt += 1
+                    # Display error message
+                    try:
+                        reporter.error(agent_id, f"Policy violation: {str(e)} - retrying ({reminder_attempt}/{MAX_REMINDER_ATTEMPTS})")
+                    except Exception as e2:
+                        logger.warning(f"Failed to display error message: {e2}")
                     logger.warning(
                         f"Policy violation for agent {agent_id} in state {current_state}: {e}. "
                         f"Re-prompting with reminder (attempt {reminder_attempt})",
@@ -1956,6 +2106,12 @@ async def step_agent(
     # Handlers are sync functions - no await needed
     handler_result = handler(agent_copy, transition, state)
     
+    # Determine spawned_agent_id for fork transitions (needed for both debug logging and console output)
+    spawned_agent_id = None
+    if transition.tag == "fork" and isinstance(handler_result, tuple):
+        updated_agent, new_agent = handler_result
+        spawned_agent_id = new_agent.get("id")
+    
     # Log state transition for debug mode
     if debug_dir is not None:
         old_state = current_state
@@ -1964,7 +2120,6 @@ async def step_agent(
         stack_depth = len(agent_copy.get("stack", []))
         
         # Determine new state and whether agent terminated
-        spawned_agent_id = None
         if handler_result is None:
             # Agent terminated
             new_state = None
@@ -1972,7 +2127,6 @@ async def step_agent(
             # Fork handler - parent agent continues
             updated_agent, new_agent = handler_result
             new_state = updated_agent.get("current_state")
-            spawned_agent_id = new_agent.get("id")
         else:
             # Regular handler
             new_state = handler_result.get("current_state")
@@ -2024,6 +2178,13 @@ async def step_agent(
         except OSError as e:
             # Debug operations should not fail the workflow
             logger.warning(f"Failed to log state transition for debug: {e}")
+    
+    # Display transition
+    try:
+        reporter.transition(agent_id, transition.target, transition.tag, spawned_agent_id)
+    except Exception as e:
+        # Console output failures should not crash the workflow
+        logger.warning(f"Failed to display transition: {e}")
     
     # Fork handler returns a tuple (updated_agent, new_agent)
     # Other handlers return just updated_agent

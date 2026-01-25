@@ -102,13 +102,32 @@ def validate_workflow_id(workflow_id: str) -> Optional[str]:
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """Configure logging for the CLI."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    """Configure logging for the CLI.
+    
+    By default, logging does not output to console (only to files/debug output).
+    In verbose mode, DEBUG-level logs are shown on console.
+    """
+    # Remove any existing handlers to avoid duplicates
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    
+    if verbose:
+        # Verbose mode: show DEBUG-level logs on console
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"
+            )
+        )
+        root_logger.addHandler(console_handler)
+        root_logger.setLevel(logging.DEBUG)
+    else:
+        # Default mode: no console output from logging
+        # Logging calls still work for file/debug output, but won't appear on console
+        root_logger.setLevel(logging.DEBUG)  # Still capture all levels for file handlers
+        # No console handler added, so nothing appears on console
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -162,7 +181,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not args.no_run:
         print("\nStarting orchestrator...")
         debug = not args.no_debug
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet)
     
     print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
@@ -186,16 +205,16 @@ def cmd_resume(args: argparse.Namespace) -> int:
         return 1
     
     debug = not args.no_debug
-    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions)
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
     
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions))
-        print(f"\nWorkflow '{workflow_id}' completed.")
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions, quiet=quiet))
+        # Note: workflow completion message is displayed by console reporter
         return 0
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -394,6 +413,12 @@ Examples:
         action="store_true",
         help="Pass --dangerously-skip-permissions to Claude instead of --permission-mode acceptEdits. "
              "WARNING: This allows Claude to execute any action without prompting for permission.",
+    )
+    runtime_group.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress progress messages and tool invocations in console output. "
+             "Still shows state transitions, errors, costs, and results.",
     )
     
     # Global options

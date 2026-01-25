@@ -369,7 +369,7 @@ def generate_reminder_prompt(policy: Policy) -> str:
     lines = [
         "",
         "---",
-        "REMINDER: You must emit exactly one of the following transition tags:",
+        "REMINDER: Emit exactly one of these tags (target names are literal, not placeholders):",
         ""
     ]
     
@@ -399,7 +399,7 @@ def generate_reminder_prompt(policy: Policy) -> str:
         if tag == "result":
             # Result tag: <result>...</result> with variable payload
             tag_str = f"<{tag}>...</{tag}>"
-            description = "(return control to caller or terminate)"
+            description = ""
         else:
             # Other tags: need target, may have attributes
             if not target:
@@ -422,7 +422,7 @@ def generate_reminder_prompt(policy: Policy) -> str:
             lines.append(f"{i}. {tag_str}")
     
     lines.append("")
-    lines.append("Please emit exactly one of these tags in your response.")
+    lines.append("Emit exactly one of the above tags.")
     lines.append("---")
     
     return "\n".join(lines)

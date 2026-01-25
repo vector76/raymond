@@ -32,12 +32,14 @@ class TestClaudeCodeErrorHandling:
             }]
         }
         
-        # Mock wrap_claude_code to raise RuntimeError (simulating non-zero exit)
-        with patch('src.orchestrator.wrap_claude_code', new_callable=AsyncMock) as mock_wrap:
-            mock_wrap.side_effect = RuntimeError(
+        # Mock wrap_claude_code_stream to raise RuntimeError (simulating non-zero exit)
+        async def mock_stream_error(*args, **kwargs):
+            raise RuntimeError(
                 "Claude command failed with return code 1\nStderr: Error message"
             )
-            
+            yield  # Make it a generator (never reached)
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_error):
             # step_agent should raise ClaudeCodeError (wrapped from RuntimeError)
             with pytest.raises(ClaudeCodeError) as exc_info:
                 await step_agent(state["agents"][0], state, state_dir=state_dir)

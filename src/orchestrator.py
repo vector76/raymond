@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-from .cc_wrap import wrap_claude_code
+from .cc_wrap import wrap_claude_code, wrap_claude_code_stream, ClaudeCodeTimeoutError
 from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
 from .prompts import load_prompt, render_prompt, resolve_state, get_state_type
 from .parsing import parse_transitions, validate_single_transition, Transition
@@ -115,7 +115,10 @@ def save_claude_output(
     step_number: int,
     results: List[Dict[str, Any]]
 ) -> None:
-    """Save Claude Code JSON output to debug directory.
+    """Save Claude Code JSON output to debug directory (non-streaming version).
+
+    NOTE: For production use, prefer the streaming functions below which write
+    progressively as data arrives, preventing data loss on crashes/timeouts.
 
     Args:
         debug_dir: Debug directory path
@@ -132,6 +135,52 @@ def save_claude_output(
             json.dump(results, f, indent=2, ensure_ascii=False)
     except OSError as e:
         logger.warning(f"Failed to save Claude output to {filepath}: {e}")
+
+
+def get_claude_output_filepath(
+    debug_dir: Path,
+    agent_id: str,
+    state_name: str,
+    step_number: int
+) -> Path:
+    """Get the filepath for a Claude Code JSONL output file.
+
+    Args:
+        debug_dir: Debug directory path
+        agent_id: Agent identifier
+        state_name: State name (filename without extension)
+        step_number: Step number for this agent
+
+    Returns:
+        Path to the JSONL file
+    """
+    filename = f"{agent_id}_{state_name}_{step_number:03d}.jsonl"
+    return debug_dir / filename
+
+
+def append_claude_output_line(
+    filepath: Path,
+    json_object: Dict[str, Any]
+) -> None:
+    """Append a single JSON object to a JSONL debug file.
+
+    This function is used for progressive/streaming writes where each JSON
+    object from Claude Code is written immediately as it arrives. This ensures
+    debug data is preserved even if the process crashes or times out.
+
+    Args:
+        filepath: Path to the JSONL file (will be created if doesn't exist)
+        json_object: Single JSON object to append
+
+    Note:
+        Each object is written on its own line with no trailing comma.
+        The file uses JSONL (JSON Lines) format, not a JSON array.
+    """
+    try:
+        with open(filepath, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(json_object, ensure_ascii=False) + '\n')
+    except OSError as e:
+        logger.warning(f"Failed to append Claude output to {filepath}: {e}")
 
 
 def save_script_output(
@@ -1412,26 +1461,75 @@ async def step_agent(
             }
         )
         
+        # Prepare debug file path for progressive writes if debug mode is enabled
+        debug_filepath = None
+        if debug_dir is not None and agent_step_counters is not None:
+            try:
+                # Increment step counter for this agent
+                if agent_id not in agent_step_counters:
+                    agent_step_counters[agent_id] = 0
+                agent_step_counters[agent_id] += 1
+                step_number = agent_step_counters[agent_id]
+                
+                # Extract state name (filename without extension)
+                state_name = _extract_state_name(current_state)
+
+                # Get filepath for JSONL output (progressive writes)
+                debug_filepath = get_claude_output_filepath(
+                    debug_dir=debug_dir,
+                    agent_id=agent_id,
+                    state_name=state_name,
+                    step_number=step_number
+                )
+            except OSError as e:
+                # Debug operations should not fail the workflow
+                logger.warning(f"Failed to prepare debug filepath: {e}")
+        
         try:
+            # Use streaming to get progressive output with idle timeout
+            # This allows debug writes as data arrives and properly handles
+            # long-running Claude Code executions
+            results = []
+            
+            # Determine which session to use
             if fork_session_id is not None and reminder_attempt == 0:
                 # Only use fork_session_id on first attempt
-                results, new_session_id = await wrap_claude_code(
-                    prompt, 
-                    model=model_to_use,
-                    session_id=fork_session_id,
-                    timeout=timeout,
-                    dangerously_skip_permissions=dangerously_skip_permissions,
-                    fork=True
-                )
+                use_session_id = fork_session_id
+                use_fork = True
             else:
                 # Use regular session_id (or new_session_id from previous attempt)
-                results, new_session_id = await wrap_claude_code(
-                    prompt, 
-                    model=model_to_use,
-                    session_id=new_session_id,
-                    timeout=timeout,
-                    dangerously_skip_permissions=dangerously_skip_permissions
-                )
+                use_session_id = new_session_id
+                use_fork = False
+            
+            # Stream JSON objects from Claude Code
+            async for json_obj in wrap_claude_code_stream(
+                prompt,
+                model=model_to_use,
+                session_id=use_session_id,
+                timeout=timeout,
+                dangerously_skip_permissions=dangerously_skip_permissions,
+                fork=use_fork
+            ):
+                # Append to results list (needed for text/cost extraction later)
+                results.append(json_obj)
+                
+                # Progressive write to debug file
+                # Wrapped in try/except because debug operations should not fail the workflow
+                if debug_filepath is not None:
+                    try:
+                        append_claude_output_line(debug_filepath, json_obj)
+                    except OSError as e:
+                        logger.warning(f"Failed to append Claude output for debug: {e}")
+                
+                # Extract session_id from JSON objects if present
+                # Claude Code may output session_id in various formats
+                if isinstance(json_obj, dict):
+                    if "session_id" in json_obj:
+                        new_session_id = json_obj["session_id"]
+                    # Also check for nested session_id (e.g., in metadata)
+                    elif "metadata" in json_obj and isinstance(json_obj["metadata"], dict):
+                        if "session_id" in json_obj["metadata"]:
+                            new_session_id = json_obj["metadata"]["session_id"]
             
             logger.debug(
                 f"Claude Code invocation completed for agent {agent_id}",
@@ -1442,30 +1540,29 @@ async def step_agent(
                     "result_count": len(results)
                 }
             )
-            
-            # Save Claude Code output to debug directory if debug mode is enabled
-            if debug_dir is not None and agent_step_counters is not None:
-                try:
-                    # Increment step counter for this agent
-                    if agent_id not in agent_step_counters:
-                        agent_step_counters[agent_id] = 0
-                    agent_step_counters[agent_id] += 1
-                    step_number = agent_step_counters[agent_id]
-                    
-                    # Extract state name (filename without extension)
-                    state_name = _extract_state_name(current_state)
-
-                    # Save the JSON output
-                    save_claude_output(
-                        debug_dir=debug_dir,
-                        agent_id=agent_id,
-                        state_name=state_name,
-                        step_number=step_number,
-                        results=results
-                    )
-                except OSError as e:
-                    # Debug operations should not fail the workflow
-                    logger.warning(f"Failed to save Claude output for debug: {e}")
+        except ClaudeCodeTimeoutError as e:
+            # Handle idle timeout specifically
+            logger.error(
+                f"Claude Code idle timeout for agent {agent_id}",
+                extra={
+                    "workflow_id": workflow_id,
+                    "agent_id": agent_id,
+                    "current_state": current_state,
+                    "error_message": str(e)
+                }
+            )
+            # Save error information (debug file may have partial data)
+            save_error_response(
+                workflow_id=workflow_id,
+                agent_id=agent_id,
+                error=e,
+                output_text="Claude Code idle timeout - partial output may be in debug file",
+                raw_results=[],  # Partial results already in debug file
+                session_id=new_session_id or session_id or fork_session_id,
+                current_state=current_state,
+                state_dir=state_dir
+            )
+            raise ClaudeCodeError(f"Claude Code idle timeout: {e}") from e
         except RuntimeError as e:
             # Wrap RuntimeError from cc_wrap as ClaudeCodeError
             if "Claude command failed" in str(e):

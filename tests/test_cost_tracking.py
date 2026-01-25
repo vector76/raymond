@@ -7,6 +7,14 @@ from src.orchestrator import run_all_agents, extract_cost_from_results
 from src.state import create_initial_state, write_state, read_state
 
 
+def create_mock_stream(json_objects):
+    """Create a mock async generator that yields JSON objects."""
+    async def mock_generator(*args, **kwargs):
+        for obj in json_objects:
+            yield obj
+    return mock_generator
+
+
 class TestCostExtraction:
     """Tests for extracting cost from Claude Code responses (5.1.1)."""
 
@@ -113,27 +121,32 @@ class TestCostTrackingInState:
         loop_file = Path(scope_dir) / "LOOP.md"
         loop_file.write_text("Loop prompt")
         
-        # Mock wrap_claude_code to return cost information
-        mock_output_1 = [
-            {"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"},
-            {"type": "result", "total_cost_usd": 0.05}
-        ]
-        mock_output_2 = [
-            {"type": "content", "text": "More output\n<goto>LOOP.md</goto>"},
-            {"type": "result", "total_cost_usd": 0.03}
-        ]
-        mock_output_3 = [
-            {"type": "content", "text": "Done\n<result>Complete</result>"},
-            {"type": "result", "total_cost_usd": 0.02}
+        # Mock streaming outputs with cost information
+        mock_outputs = [
+            [
+                {"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"},
+                {"type": "result", "total_cost_usd": 0.05}
+            ],
+            [
+                {"type": "content", "text": "More output\n<goto>LOOP.md</goto>"},
+                {"type": "result", "total_cost_usd": 0.03}
+            ],
+            [
+                {"type": "content", "text": "Done\n<result>Complete</result>"},
+                {"type": "result", "total_cost_usd": 0.02}
+            ],
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.side_effect = [
-                (mock_output_1, None),
-                (mock_output_2, None),
-                (mock_output_3, None)
-            ]
-            
+        call_count = [0]
+        def mock_stream_factory(*args, **kwargs):
+            output = mock_outputs[call_count[0] % len(mock_outputs)]
+            call_count[0] += 1
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Run workflow but check state after first invocation
             # We'll use a custom approach: patch write_state to capture state
             captured_states = []
@@ -197,15 +210,13 @@ class TestBudgetEnforcement:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt\n<goto>START.md</goto>")  # Loop
         
-        # Mock wrap_claude_code to return cost that exceeds budget
+        # Mock streaming output with cost that exceeds budget
         mock_output = [
             {"type": "content", "text": "Some output\n<goto>START.md</goto>"},
             {"type": "result", "total_cost_usd": 0.15}  # Exceeds 0.10 budget
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Verify workflow terminated (state file should be deleted or agents empty)
@@ -238,23 +249,29 @@ class TestBudgetEnforcement:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        # Mock wrap_claude_code to return cost that exceeds budget
+        # Mock streaming output with cost that exceeds budget
         # AI requests <goto>NEXT.md but budget is exceeded, so should terminate
         mock_output = [
             {"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"},
             {"type": "result", "total_cost_usd": 0.15}  # Exceeds 0.10 budget
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        call_count = [0]
+        def mock_stream_factory(*args, **kwargs):
+            call_count[0] += 1
+            async def gen():
+                for obj in mock_output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Verify that NEXT.md was not reached (transition was overridden)
             # The workflow should have terminated instead of going to NEXT.md
-            # We can verify this by checking that wrap_claude_code was only called once
+            # We can verify this by checking that the stream was only called once
             # (not called again for NEXT.md)
-            assert mock_wrap.call_count == 1
+            assert call_count[0] == 1
 
     @pytest.mark.asyncio
     async def test_budget_not_exceeded_workflow_continues(self, tmp_path):
@@ -276,23 +293,29 @@ class TestBudgetEnforcement:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        # Mock wrap_claude_code to return cost within budget
-        mock_output_1 = [
-            {"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"},
-            {"type": "result", "total_cost_usd": 0.05}
-        ]
-        mock_output_2 = [
-            {"type": "content", "text": "Done\n<result>Complete</result>"},
-            {"type": "result", "total_cost_usd": 0.03}
+        # Mock streaming outputs with cost within budget
+        mock_outputs = [
+            [
+                {"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"},
+                {"type": "result", "total_cost_usd": 0.05}
+            ],
+            [
+                {"type": "content", "text": "Done\n<result>Complete</result>"},
+                {"type": "result", "total_cost_usd": 0.03}
+            ],
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.side_effect = [
-                (mock_output_1, None),
-                (mock_output_2, None)
-            ]
-            
+        call_count = [0]
+        def mock_stream_factory(*args, **kwargs):
+            output = mock_outputs[call_count[0] % len(mock_outputs)]
+            call_count[0] += 1
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Verify workflow continued normally (both calls made)
-            assert mock_wrap.call_count == 2
+            assert call_count[0] == 2

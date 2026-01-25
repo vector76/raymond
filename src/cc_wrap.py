@@ -91,12 +91,22 @@ async def wrap_claude_code(
     """
     Wraps claude code invocation in headless mode with stream-json output.
     This is an async function that can be run concurrently with other instances.
+    
+    NOTE: For production use, prefer wrap_claude_code_stream() which:
+    - Enables progressive output processing (debug files, console output)
+    - Uses idle timeout (resets on each data received) instead of total timeout
+    - Allows detection of "stuck" executions while supporting long-running tasks
+    
+    This non-streaming version is retained for simpler test cases and backwards
+    compatibility, but uses a TOTAL timeout rather than idle timeout.
 
     Args:
         prompt: The prompt to send to claude
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
-        timeout: Optional timeout in seconds (default: 600). Set to 0 for no timeout.
+        timeout: Optional total timeout in seconds (default: 600). Set to 0 for no timeout.
+            WARNING: This is a TOTAL timeout, not an idle timeout. For long-running
+            tasks that may exceed this duration, use wrap_claude_code_stream() instead.
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
             instead of --permission-mode acceptEdits. WARNING: This allows Claude
             to execute any action without prompting for permission.
@@ -108,7 +118,7 @@ async def wrap_claude_code(
         Tuple of (list of parsed JSON objects from the stream, extracted session_id or None)
         
     Raises:
-        ClaudeCodeTimeoutError: If the command times out
+        ClaudeCodeTimeoutError: If the total timeout is exceeded
         RuntimeError: If the command fails with non-zero exit code
     """
     # Build the command
@@ -228,12 +238,20 @@ async def wrap_claude_code_stream(
     """
     Wraps claude code invocation and yields JSON objects as they arrive.
     This is an async generator that can be run concurrently with other instances.
+    
+    This is the PREFERRED way to invoke Claude Code as it:
+    - Enables progressive output processing (debug files, console output)
+    - Uses idle timeout (resets on each data received) instead of total timeout
+    - Allows detection of "stuck" executions while supporting long-running tasks
 
     Args:
         prompt: The prompt to send to claude
         model: The model to use (e.g., "haiku", "sonnet", "opus")
         session_id: Optional session ID to resume an existing session (passes --resume flag)
-        timeout: Optional timeout in seconds (default: 600). Set to 0 for no timeout.
+        timeout: Optional idle timeout in seconds (default: 600). This is the maximum
+            time to wait between receiving data chunks. Set to 0 for no timeout.
+            Note: This is an IDLE timeout, not a total timeout. Long-running Claude
+            Code executions will not timeout as long as they continue producing output.
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
             instead of --permission-mode acceptEdits. WARNING: This allows Claude
             to execute any action without prompting for permission.
@@ -245,7 +263,7 @@ async def wrap_claude_code_stream(
         Parsed JSON objects from the stream as they arrive
         
     Raises:
-        ClaudeCodeTimeoutError: If the command times out
+        ClaudeCodeTimeoutError: If idle timeout is exceeded (no data received for timeout seconds)
         RuntimeError: If the command fails with non-zero exit code
     """
     # Build the command
@@ -255,11 +273,11 @@ async def wrap_claude_code_stream(
     # timeout=0 means no timeout (None)
     # timeout=None means use default
     if timeout == 0:
-        effective_timeout = None
+        idle_timeout = None
     elif timeout is not None:
-        effective_timeout = timeout
+        idle_timeout = timeout
     else:
-        effective_timeout = DEFAULT_TIMEOUT
+        idle_timeout = DEFAULT_TIMEOUT
 
     # Run the command asynchronously and capture stdout
     process = await asyncio.create_subprocess_exec(
@@ -269,7 +287,7 @@ async def wrap_claude_code_stream(
     )
 
     loop = asyncio.get_running_loop()
-    start_time = loop.time()
+    last_data_time = loop.time()  # Track time of last data received for idle timeout
 
     # Read in chunks to handle arbitrarily long lines
     # (default asyncio readline has a 64KB limit that can be exceeded by Claude Code)
@@ -278,20 +296,41 @@ async def wrap_claude_code_stream(
     
     try:
         while True:
-            # Check timeout before each read (skip if no timeout set)
-            if effective_timeout is not None:
-                elapsed = loop.time() - start_time
-                if elapsed > effective_timeout:
-                    logger.error(f"Claude Code timed out after {effective_timeout}s, killing process")
+            # Calculate remaining idle time for this read
+            if idle_timeout is not None:
+                elapsed_idle = loop.time() - last_data_time
+                remaining_idle = idle_timeout - elapsed_idle
+                
+                if remaining_idle <= 0:
+                    logger.error(
+                        f"Claude Code idle timeout: no data received for {idle_timeout}s, killing process"
+                    )
                     process.kill()
                     await process.wait()
                     raise ClaudeCodeTimeoutError(
-                        f"Claude Code invocation timed out after {effective_timeout} seconds"
+                        f"Claude Code idle timeout: no data received for {idle_timeout} seconds"
                     )
+                
+                # Use remaining idle time as read timeout, capped at a reasonable max
+                # to allow periodic idle timeout checks
+                read_timeout = min(remaining_idle, 60.0)
+            else:
+                read_timeout = None  # No timeout
             
-            chunk = await process.stdout.read(chunk_size)
+            try:
+                if read_timeout is not None:
+                    chunk = await asyncio.wait_for(
+                        process.stdout.read(chunk_size),
+                        timeout=read_timeout
+                    )
+                else:
+                    chunk = await process.stdout.read(chunk_size)
+            except asyncio.TimeoutError:
+                # Read timed out - loop will check idle timeout on next iteration
+                continue
+            
             if not chunk:
-                # Process any remaining data in buffer
+                # EOF - process any remaining data in buffer
                 if buffer:
                     line = buffer.decode('utf-8').strip()
                     if line:
@@ -299,9 +338,11 @@ async def wrap_claude_code_stream(
                             parsed = json.loads(line)
                             yield parsed
                         except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
+                            logger.warning(f"Failed to parse final JSON line: {line}", exc_info=e)
                 break
             
+            # Data received - reset idle timer
+            last_data_time = loop.time()
             buffer += chunk
             
             # Process complete lines from buffer

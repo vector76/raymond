@@ -30,6 +30,11 @@ class ClaudeCodeError(OrchestratorError):
     pass
 
 
+class ClaudeCodeLimitError(ClaudeCodeError):
+    """Raised when Claude Code hits its usage limit. This is a non-retryable error."""
+    pass
+
+
 class PromptFileError(OrchestratorError):
     """Raised when prompt file operations fail."""
     pass
@@ -767,6 +772,46 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                         a for a in state["agents"]
                         if a["id"] != agent_id
                     ]
+            except ClaudeCodeLimitError as e:
+                # Handle limit errors (non-retryable) - fail immediately
+                agent_idx = next(
+                    (i for i, a in enumerate(state["agents"]) if a["id"] == agent_id),
+                    None
+                )
+                if agent_idx is None:
+                    logger.warning(
+                        f"Agent {agent_id} not found in state during error handling",
+                        extra={"workflow_id": workflow_id, "agent_id": agent_id}
+                    )
+                    continue
+                current_agent = state["agents"][agent_idx]
+                
+                # Display error message (no retry for limit errors)
+                error_msg = f"{str(e)} (limit reached - stopping)"
+                try:
+                    reporter.error(agent_id, error_msg)
+                except Exception as e2:
+                    logger.warning(f"Failed to display error message: {e2}")
+                
+                logger.error(
+                    f"Agent {agent_id} hit Claude Code limit: {e}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    }
+                )
+                
+                # Mark agent as failed immediately (no retries for limit errors)
+                current_agent["status"] = "failed"
+                current_agent["error"] = str(e)
+                # Remove failed agent from active agents
+                state["agents"] = [
+                    a for a in state["agents"]
+                    if a["id"] != agent_id
+                ]
+                    
             except (ClaudeCodeError, PromptFileError) as e:
                 # Handle recoverable errors with retry logic
                 agent_idx = next(
@@ -1585,15 +1630,7 @@ async def step_agent(
                 # Append to results list (needed for text/cost extraction later)
                 results.append(json_obj)
                 
-                # Progressive write to debug file
-                # Wrapped in try/except because debug operations should not fail the workflow
-                if debug_filepath is not None:
-                    try:
-                        append_claude_output_line(debug_filepath, json_obj)
-                    except OSError as e:
-                        logger.warning(f"Failed to append Claude output for debug: {e}")
-                
-                # Extract session_id from JSON objects if present
+                # Extract session_id from JSON objects if present (do this early)
                 # Claude Code may output session_id in various formats
                 if isinstance(json_obj, dict):
                     if "session_id" in json_obj:
@@ -1602,6 +1639,44 @@ async def step_agent(
                     elif "metadata" in json_obj and isinstance(json_obj["metadata"], dict):
                         if "session_id" in json_obj["metadata"]:
                             new_session_id = json_obj["metadata"]["session_id"]
+                
+                # Check for limit error (non-retryable)
+                # Claude Code returns type="result" with is_error=true when hitting usage limits
+                if isinstance(json_obj, dict):
+                    if (json_obj.get("type") == "result" and 
+                        json_obj.get("is_error") is True and 
+                        isinstance(json_obj.get("result"), str) and
+                        "hit your limit" in json_obj.get("result", "").lower()):
+                        limit_message = json_obj.get("result", "Claude Code usage limit reached")
+                        logger.error(
+                            f"Claude Code limit reached for agent {agent_id}: {limit_message}",
+                            extra={
+                                "workflow_id": workflow_id,
+                                "agent_id": agent_id,
+                                "current_state": current_state,
+                                "limit_message": limit_message
+                            }
+                        )
+                        # Save error information
+                        save_error_response(
+                            workflow_id=workflow_id,
+                            agent_id=agent_id,
+                            error=ClaudeCodeLimitError(limit_message),
+                            output_text=limit_message,
+                            raw_results=results,
+                            session_id=new_session_id or session_id or fork_session_id,
+                            current_state=current_state,
+                            state_dir=state_dir
+                        )
+                        raise ClaudeCodeLimitError(limit_message)
+                
+                # Progressive write to debug file
+                # Wrapped in try/except because debug operations should not fail the workflow
+                if debug_filepath is not None:
+                    try:
+                        append_claude_output_line(debug_filepath, json_obj)
+                    except OSError as e:
+                        logger.warning(f"Failed to append Claude output for debug: {e}")
                 
                 # Process stream for console output
                 # Wrap in try/except to prevent console output failures from crashing workflow

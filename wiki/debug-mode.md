@@ -51,13 +51,20 @@ This ensures each run gets a unique directory, even if the same workflow is run 
 
 ## Files Saved
 
-### 1. Claude Code JSON Outputs
+### 1. Claude Code JSONL Outputs
 
-One JSON file is saved for each agent step (each invocation of Claude Code).
+One JSONL (JSON Lines) file is saved for each agent step (each invocation of Claude Code).
+
+**Why JSONL?**
+Debug files use JSONL format (one JSON object per line) instead of a JSON array because:
+- **Progressive writes**: Each JSON object is written immediately as it arrives from Claude Code
+- **Crash resilience**: If Claude Code times out or crashes, all received data is preserved
+- **Streaming support**: Enables real-time console output of Claude Code steps
+- **Idle timeout support**: The streaming approach allows detecting "stuck" executions
 
 **Filename Format:**
 ```
-{agent_id}_{state_name}_{step_number}.json
+{agent_id}_{state_name}_{step_number}.jsonl
 ```
 
 Where:
@@ -72,31 +79,36 @@ Where:
 - `{step_number}` is a zero-padded 3-digit sequence number per agent (e.g., `001`, `002`, `003`)
 
 **Examples:**
-- `main_START_001.json` - First step of main agent in START.md
-- `main_REVIEW_002.json` - Second step of main agent in REVIEW.md
-- `main_worker1_ANALYZE_001.json` - First step of forked worker agent (from WORKER.md) in ANALYZE.md
-- `main_worker1_analyz1_PROCESS_001.json` - First step of nested worker agent
+- `main_START_001.jsonl` - First step of main agent in START.md
+- `main_REVIEW_002.jsonl` - Second step of main agent in REVIEW.md
+- `main_worker1_ANALYZE_001.jsonl` - First step of forked worker agent (from WORKER.md) in ANALYZE.md
+- `main_worker1_analyz1_PROCESS_001.jsonl` - First step of nested worker agent
 
 **File Contents:**
-The complete raw JSON response from Claude Code (the `results` list returned by `wrap_claude_code()`). This includes all streamed JSON objects, including:
+Each line contains a single JSON object from Claude Code's stream-json output. Objects are written progressively as they arrive, including:
 - Message content
 - Session IDs
 - Cost information (`total_cost_usd`)
 - Any other metadata returned by Claude Code
 
 **Example File:**
-```json
-[
-  {
-    "type": "content",
-    "text": "I'll analyze this code.\n<goto>REVIEW.md</goto>"
-  },
-  {
-    "type": "result",
-    "total_cost_usd": 0.05,
-    "session_id": "session_abc123"
-  }
-]
+```jsonl
+{"type": "content", "text": "I'll analyze this code."}
+{"type": "content", "text": "\n<goto>REVIEW.md</goto>"}
+{"type": "result", "total_cost_usd": 0.05, "session_id": "session_abc123"}
+```
+
+**Reading JSONL Files:**
+```python
+import json
+
+def read_jsonl(filepath):
+    results = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                results.append(json.loads(line))
+    return results
 ```
 
 ### 2. State Transition Log
@@ -219,20 +231,39 @@ def create_debug_directory(workflow_id: str, state_dir: Optional[str] = None) ->
 
 Call this at the start of `run_all_agents()` when `debug=True` (the default).
 
-### 3. Saving Claude Code Outputs
+### 3. Saving Claude Code Outputs (Progressive/Streaming)
 
-In `step_agent()`, after `wrap_claude_code()` returns, save the results:
+Debug files are written progressively as JSON objects stream from Claude Code. This approach:
+- Preserves data even if Claude Code times out or crashes
+- Enables real-time console output
+- Supports idle timeout detection
+
+In `step_agent()`, before invoking Claude Code, prepare the debug filepath:
 
 ```python
-# After wrap_claude_code() call
-if debug_dir is not None:
-    save_claude_output(
-        debug_dir=debug_dir,
-        agent_id=agent_id,
-        state_name=current_state.replace('.md', ''),
-        step_number=get_next_step_number(agent_id),  # Track per agent
-        results=results
-    )
+# Get filepath for progressive writes
+debug_filepath = get_claude_output_filepath(
+    debug_dir=debug_dir,
+    agent_id=agent_id,
+    state_name=state_name,
+    step_number=step_number
+)
+```
+
+Then stream from Claude Code and write each object as it arrives:
+
+```python
+# Stream JSON objects from Claude Code
+async for json_obj in wrap_claude_code_stream(prompt, ...):
+    results.append(json_obj)
+    
+    # Progressive write to debug file
+    if debug_filepath is not None:
+        append_claude_output_line(debug_filepath, json_obj)
+    
+    # Extract session_id if present
+    if "session_id" in json_obj:
+        new_session_id = json_obj["session_id"]
 ```
 
 Implement step number tracking (per agent):
@@ -248,33 +279,21 @@ agent_step_counters[agent_id] += 1
 step_number = agent_step_counters[agent_id]
 ```
 
-Save function:
+Helper functions:
 
 ```python
-def save_claude_output(
-    debug_dir: Path,
-    agent_id: str,
-    state_name: str,
-    step_number: int,
-    results: List[Dict[str, Any]]
-) -> None:
-    """Save Claude Code JSON output to debug directory.
-    
-    Args:
-        debug_dir: Debug directory path
-        agent_id: Agent identifier
-        state_name: State name (filename without .md)
-        step_number: Step number for this agent
-        results: Raw JSON results from Claude Code
-    """
-    filename = f"{agent_id}_{state_name}_{step_number:03d}.json"
-    filepath = debug_dir / filename
-    
+def get_claude_output_filepath(debug_dir, agent_id, state_name, step_number) -> Path:
+    """Get the filepath for a Claude Code JSONL output file."""
+    filename = f"{agent_id}_{state_name}_{step_number:03d}.jsonl"
+    return debug_dir / filename
+
+def append_claude_output_line(filepath: Path, json_object: Dict[str, Any]) -> None:
+    """Append a single JSON object to a JSONL debug file."""
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
+        with open(filepath, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(json_object, ensure_ascii=False) + '\n')
     except OSError as e:
-        logger.warning(f"Failed to save Claude output to {filepath}: {e}")
+        logger.warning(f"Failed to append Claude output to {filepath}: {e}")
 ```
 
 ### 4. State Transition Logging

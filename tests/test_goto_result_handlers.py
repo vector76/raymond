@@ -91,21 +91,27 @@ class TestOrchestratorSessionId:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
         
-        # Mock wrap_claude_code to return a session_id
-        mock_output = [{"type": "content", "text": "Output\n<goto>NEXT.md</goto>"}]
+        # Mock outputs for streaming
         new_session_id = "session_new_123"
+        mock_outputs = [
+            [{"type": "content", "text": "Output\n<goto>NEXT.md</goto>", "session_id": new_session_id}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": new_session_id}],
+        ]
         
         # Create NEXT.md so the workflow can continue
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns goto with session_id, second returns result to terminate
-            mock_wrap.side_effect = [
-                (mock_output, new_session_id),
-                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], new_session_id)
-            ]
-            
+        call_count = [0]
+        def mock_stream_factory(*args, **kwargs):
+            output = mock_outputs[call_count[0] % len(mock_outputs)]
+            call_count[0] += 1
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             from src.orchestrator import run_all_agents
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         

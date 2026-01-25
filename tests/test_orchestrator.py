@@ -7,6 +7,45 @@ from src.parsing import Transition
 from src.policy import PolicyViolationError
 
 
+def create_mock_stream(json_objects, session_id=None):
+    """Create a mock async generator that yields JSON objects.
+    
+    This simulates wrap_claude_code_stream() for testing.
+    The session_id is automatically added to the last object if provided.
+    """
+    async def mock_generator(*args, **kwargs):
+        for i, obj in enumerate(json_objects):
+            # Add session_id to the last object if provided
+            if session_id and i == len(json_objects) - 1:
+                obj = dict(obj)
+                obj["session_id"] = session_id
+            yield obj
+    return mock_generator
+
+
+def create_mock_stream_sequence(outputs_list):
+    """Create a factory that returns different mock streams for sequential calls.
+    
+    Args:
+        outputs_list: List of lists, where each inner list is the JSON objects
+                     to yield for that call.
+    
+    Returns:
+        A side_effect function and a call counter list [count].
+    """
+    call_count = [0]
+    
+    def mock_stream_factory(*args, **kwargs):
+        output = outputs_list[call_count[0] % len(outputs_list)]
+        call_count[0] += 1
+        async def gen():
+            for obj in output:
+                yield obj
+        return gen()
+    
+    return mock_stream_factory, call_count
+
+
 class TestBasicOrchestratorLoop:
     """Tests for basic orchestrator loop (Step 2.1)."""
 
@@ -28,25 +67,23 @@ class TestBasicOrchestratorLoop:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
         
-        # Mock wrap_claude_code to return output with a transition tag
-        mock_output = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
-        
         # Create NEXT.md file to avoid FileNotFoundError on next iteration
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns goto, second call returns result to terminate
-            mock_wrap.side_effect = [
-                (mock_output, None),
-                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
-            ]
-            
+        # Mock streaming outputs
+        mock_outputs = [
+            [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, call_count = create_mock_stream_sequence(mock_outputs)
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Should read state file and process until completion
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
-            # Verify wrap_claude_code was called (which means state was read)
-            assert mock_wrap.called
+            # Verify wrap_claude_code_stream was called (which means state was read)
+            assert call_count[0] > 0
 
     @pytest.mark.asyncio
     async def test_orchestrator_exits_when_agents_array_empty(self, tmp_path):
@@ -88,24 +125,22 @@ class TestBasicOrchestratorLoop:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
         
-        # Mock wrap_claude_code to return output with a transition tag
-        mock_output = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
-        
         # Create NEXT.md file to avoid FileNotFoundError on next iteration
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns goto, second call returns result to terminate
-            mock_wrap.side_effect = [
-                (mock_output, None),
-                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
-            ]
-            
+        # Mock streaming outputs
+        mock_outputs = [
+            [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, call_count = create_mock_stream_sequence(mock_outputs)
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
-            # Verify wrap_claude_code was called
-            assert mock_wrap.called
+            # Verify wrap_claude_code_stream was called
+            assert call_count[0] > 0
 
     @pytest.mark.asyncio
     async def test_orchestrator_parses_output_and_dispatches_to_handler(self, tmp_path):
@@ -125,20 +160,18 @@ class TestBasicOrchestratorLoop:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
         
-        # Mock wrap_claude_code to return output with a tag
-        mock_output = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
-        
         # Create NEXT.md file to avoid FileNotFoundError on next iteration
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns goto, second call returns result to terminate
-            mock_wrap.side_effect = [
-                (mock_output, None),
-                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
-            ]
-            
+        # Mock streaming outputs
+        mock_outputs = [
+            [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, _ = create_mock_stream_sequence(mock_outputs)
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Mock parse_transitions
             with patch('src.orchestrator.parse_transitions') as mock_parse:
                 # First call returns goto, second returns result
@@ -170,13 +203,11 @@ class TestBasicOrchestratorLoop:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
         
-        # Mock wrap_claude_code to return output with no tags
-        mock_output = [{"type": "content", "text": "Some output with no tags"}]
+        # Mock streaming output with no tags
         mock_session_id = "test-session-123"
+        mock_output = [{"type": "content", "text": "Some output with no tags", "session_id": mock_session_id}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, mock_session_id)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output, mock_session_id)):
             # Mock parse_transitions to return empty list
             with patch('src.orchestrator.parse_transitions') as mock_parse:
                 mock_parse.return_value = []
@@ -217,12 +248,10 @@ class TestBasicOrchestratorLoop:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
         
-        # Mock wrap_claude_code
+        # Mock streaming output
         mock_output = [{"type": "content", "text": "Some output"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Mock parse_transitions to return multiple tags
             with patch('src.orchestrator.parse_transitions') as mock_parse:
                 mock_parse.return_value = [
@@ -266,12 +295,10 @@ This state only allows goto and result.""")
         (Path(scope_dir) / "WORKER.md").write_text("Worker prompt")
         (Path(scope_dir) / "NEXT.md").write_text("Next prompt")
         
-        # Mock wrap_claude_code to return output with disallowed fork tag
+        # Mock streaming output with disallowed fork tag
         mock_output = [{"type": "content", "text": "Some output\n<fork next=\"NEXT.md\">WORKER.md</fork>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Should raise PolicyViolationError
             with pytest.raises(PolicyViolationError, match="Tag 'fork' is not allowed"):
                 await run_all_agents(workflow_id, state_dir=str(state_dir))
@@ -308,12 +335,10 @@ This state only allows goto to NEXT.md.""")
         other_file = Path(scope_dir) / "OTHER.md"
         other_file.write_text("Other prompt")
         
-        # Mock wrap_claude_code to return output with disallowed target
+        # Mock streaming output with disallowed target
         mock_output = [{"type": "content", "text": "Some output\n<goto>OTHER.md</goto>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Should raise PolicyViolationError
             with pytest.raises(PolicyViolationError, match="is not allowed"):
                 await run_all_agents(workflow_id, state_dir=str(state_dir))
@@ -346,21 +371,19 @@ This state allows goto to NEXT.md.""")
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        # Mock wrap_claude_code to return output with allowed transition
-        mock_output = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
+        # Mock streaming outputs
+        mock_outputs = [
+            [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, call_count = create_mock_stream_sequence(mock_outputs)
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns goto, second call returns result to terminate
-            mock_wrap.side_effect = [
-                (mock_output, None),
-                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
-            ]
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Should complete successfully without policy violation
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
-            # Verify wrap_claude_code was called
-            assert mock_wrap.called
+            # Verify wrap_claude_code_stream was called
+            assert call_count[0] > 0
 
     @pytest.mark.asyncio
     async def test_no_policy_allows_all_transitions(self, tmp_path):
@@ -384,21 +407,19 @@ This state allows goto to NEXT.md.""")
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt")
         
-        # Mock wrap_claude_code to return output with any transition
-        mock_output = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
+        # Mock streaming outputs
+        mock_outputs = [
+            [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, call_count = create_mock_stream_sequence(mock_outputs)
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns goto, second call returns result to terminate
-            mock_wrap.side_effect = [
-                (mock_output, None),
-                ([{"type": "content", "text": "Done\n<result>Complete</result>"}], None)
-            ]
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Should complete successfully (no policy = no restrictions)
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
-            # Verify wrap_claude_code was called
-            assert mock_wrap.called
+            # Verify wrap_claude_code_stream was called
+            assert call_count[0] > 0
 
 
 class TestImplicitTransitions:
@@ -436,22 +457,19 @@ allowed_transitions:
 # Next Prompt
 This is the next state.""")
         
-        # Mock wrap_claude_code to return output WITHOUT tag (should use implicit)
-        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
-        mock_output_result = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        # Mock streaming outputs - first no tag (should use implicit), second returns result
+        mock_outputs = [
+            [{"type": "content", "text": "Some output without any tag"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, call_count = create_mock_stream_sequence(mock_outputs)
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns no tag (should use implicit goto), second returns result
-            mock_wrap.side_effect = [
-                (mock_output_no_tag, None),
-                (mock_output_result, None)
-            ]
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Should complete successfully using implicit transition
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
-            # Verify wrap_claude_code was called twice
-            assert mock_wrap.call_count == 2
+            # Verify wrap_claude_code_stream was called twice
+            assert call_count[0] == 2
 
     @pytest.mark.asyncio
     async def test_implicit_transition_tag_matching_policy_accepted(self, tmp_path):
@@ -485,22 +503,19 @@ allowed_transitions:
 # Next Prompt
 This is the next state.""")
         
-        # Mock wrap_claude_code to return output WITH matching tag
-        mock_output_with_tag = [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}]
-        mock_output_result = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        # Mock streaming outputs - first with matching tag, second returns result
+        mock_outputs = [
+            [{"type": "content", "text": "Some output\n<goto>NEXT.md</goto>"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, call_count = create_mock_stream_sequence(mock_outputs)
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns matching tag (should be accepted), second returns result
-            mock_wrap.side_effect = [
-                (mock_output_with_tag, None),
-                (mock_output_result, None)
-            ]
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Should complete successfully
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
-            # Verify wrap_claude_code was called twice
-            assert mock_wrap.call_count == 2
+            # Verify wrap_claude_code_stream was called twice
+            assert call_count[0] == 2
 
     @pytest.mark.asyncio
     async def test_implicit_transition_tag_not_matching_policy_raises(self, tmp_path):
@@ -529,12 +544,10 @@ This state automatically transitions to NEXT.md.""")
         other_file = Path(scope_dir) / "OTHER.md"
         other_file.write_text("Other prompt")
         
-        # Mock wrap_claude_code to return output with WRONG tag
-        mock_output_wrong_tag = [{"type": "content", "text": "Some output\n<goto>OTHER.md</goto>"}]
+        # Mock streaming output with WRONG tag
+        mock_output = [{"type": "content", "text": "Some output\n<goto>OTHER.md</goto>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output_wrong_tag, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Should raise PolicyViolationError
             with pytest.raises(PolicyViolationError, match="is not allowed"):
                 await run_all_agents(workflow_id, state_dir=str(state_dir))
@@ -562,12 +575,10 @@ allowed_transitions:
 # Start Prompt
 This state must explicitly emit result tag.""")
         
-        # Mock wrap_claude_code to return output WITHOUT tag
-        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
+        # Mock streaming output WITHOUT tag
+        mock_output = [{"type": "content", "text": "Some output without any tag"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output_no_tag, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Should raise ValueError (no transition found, and result can't be implicit)
             with pytest.raises(ValueError, match="Expected exactly one transition"):
                 await run_all_agents(workflow_id, state_dir=str(state_dir))
@@ -596,12 +607,10 @@ allowed_transitions:
 # Start Prompt
 This state requires explicit tag.""")
         
-        # Mock wrap_claude_code to return output WITHOUT tag
-        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
+        # Mock streaming output WITHOUT tag
+        mock_output = [{"type": "content", "text": "Some output without any tag"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output_no_tag, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Should raise ValueError (no transition found, multiple allowed so can't be implicit)
             with pytest.raises(ValueError, match="Expected exactly one transition"):
                 await run_all_agents(workflow_id, state_dir=str(state_dir))
@@ -646,25 +655,20 @@ allowed_transitions:
 ---
 # Return Prompt""")
         
-        # Mock wrap_claude_code to return output WITHOUT tag (should use implicit call)
-        mock_output_no_tag = [{"type": "content", "text": "Some output without any tag"}]
-        mock_output_result = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        # Mock streaming outputs - first no tag (implicit call), child returns result, return returns result
+        mock_outputs = [
+            [{"type": "content", "text": "Some output without any tag"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+            [{"type": "content", "text": "Done\n<result>Complete</result>"}],
+        ]
+        mock_stream_factory, call_count = create_mock_stream_sequence(mock_outputs)
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            # First call returns no tag (should use implicit call), 
-            # second call (child) returns result,
-            # third call (return) returns result
-            mock_wrap.side_effect = [
-                (mock_output_no_tag, None),
-                (mock_output_result, None),
-                (mock_output_result, None)
-            ]
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Should complete successfully using implicit transition
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
-            # Verify wrap_claude_code was called three times
-            assert mock_wrap.call_count == 3
+            # Verify wrap_claude_code_stream was called three times
+            assert call_count[0] == 3
 
 
 class TestModelSelection:
@@ -696,17 +700,21 @@ This is the start.""")
         
         mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        captured_kwargs = [None]
+        def capture_stream(*args, **kwargs):
+            captured_kwargs[0] = kwargs
+            async def gen():
+                for obj in mock_output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=capture_stream):
             # Run with CLI default model "sonnet", but frontmatter specifies "haiku"
             await run_all_agents(workflow_id, state_dir=str(state_dir), default_model="sonnet")
             
-            # Verify wrap_claude_code was called with haiku (from frontmatter), not sonnet (from CLI)
-            assert mock_wrap.called
-            # Check keyword arguments (call_args is a tuple of (args, kwargs))
-            call_kwargs = mock_wrap.call_args.kwargs
-            assert call_kwargs.get("model") == "haiku"
+            # Verify wrap_claude_code_stream was called with haiku (from frontmatter), not sonnet (from CLI)
+            assert captured_kwargs[0] is not None
+            assert captured_kwargs[0].get("model") == "haiku"
 
     @pytest.mark.asyncio
     async def test_cli_model_used_when_no_frontmatter_model(self, tmp_path):
@@ -733,17 +741,21 @@ This is the start.""")
         
         mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        captured_kwargs = [None]
+        def capture_stream(*args, **kwargs):
+            captured_kwargs[0] = kwargs
+            async def gen():
+                for obj in mock_output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=capture_stream):
             # Run with CLI default model "sonnet"
             await run_all_agents(workflow_id, state_dir=str(state_dir), default_model="sonnet")
             
-            # Verify wrap_claude_code was called with sonnet (from CLI)
-            assert mock_wrap.called
-            # Check keyword arguments
-            call_kwargs = mock_wrap.call_args.kwargs
-            assert call_kwargs.get("model") == "sonnet"
+            # Verify wrap_claude_code_stream was called with sonnet (from CLI)
+            assert captured_kwargs[0] is not None
+            assert captured_kwargs[0].get("model") == "sonnet"
 
     @pytest.mark.asyncio
     async def test_goto_transition_uses_updated_state(self, tmp_path):
@@ -786,7 +798,7 @@ This is the start.""")
         prompts_sent = []
         call_order = []
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             prompts_sent.append(prompt)
             # Track which state file content is in the prompt
             if "STATE_A_PROMPT" in prompt:
@@ -800,7 +812,7 @@ This is the start.""")
             if len(prompts_sent) == 1:
                 if "STATE_A_PROMPT" not in prompt:
                     raise AssertionError(f"First call should be in STATE_A, but got: {prompt[:100]}")
-                return ([{"type": "content", "text": "Transitioning\n<goto>STATE_B.md</goto>"}], "session_1")
+                output = [{"type": "content", "text": "Transitioning\n<goto>STATE_B.md</goto>", "session_id": "session_1"}]
             # Second call: Should be STATE_B -> result (terminate)
             elif len(prompts_sent) == 2:
                 if "STATE_B_PROMPT" not in prompt:
@@ -808,18 +820,22 @@ This is the start.""")
                         f"Second call should be in STATE_B (after goto), but got STATE_A. "
                         f"This indicates stale state! Prompt: {prompt[:100]}"
                     )
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
             else:
                 # Should not be called more than twice
-                # The bug would cause a third call with STATE_A_PROMPT (stale state)
                 raise AssertionError(
                     f"Unexpected invocation #{len(prompts_sent)}. "
                     f"Call order so far: {call_order}. "
                     f"Prompt: {prompt[:100]}... "
                     f"This indicates the agent was invoked with stale state after goto transition."
                 )
+            
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify exactly 2 invocations (STATE_A -> STATE_B, then STATE_B -> result)
@@ -862,18 +878,22 @@ This is the start.""")
         
         mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        captured_kwargs = [None]
+        def capture_stream(*args, **kwargs):
+            captured_kwargs[0] = kwargs
+            async def gen():
+                for obj in mock_output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=capture_stream):
             # Run with no CLI default model (None)
             await run_all_agents(workflow_id, state_dir=str(state_dir), default_model=None)
             
-            # Verify wrap_claude_code was called with model=None (or not passed)
-            assert mock_wrap.called
-            # Check keyword arguments
-            call_kwargs = mock_wrap.call_args.kwargs
+            # Verify wrap_claude_code_stream was called with model=None (or not passed)
+            assert captured_kwargs[0] is not None
             # Model should be None or not in kwargs
-            assert call_kwargs.get("model") is None or "model" not in call_kwargs
+            assert captured_kwargs[0].get("model") is None or "model" not in captured_kwargs[0]
 
 
 class TestTransitionStateResolution:
@@ -902,20 +922,21 @@ class TestTransitionStateResolution:
         
         prompts_sent = []
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             prompts_sent.append(prompt)
             if len(prompts_sent) == 1:
-                # First call: emit goto with abstract name (no extension)
-                return ([{"type": "content", "text": "Going next\n<goto>NEXT</goto>"}], "session_1")
+                output = [{"type": "content", "text": "Going next\n<goto>NEXT</goto>", "session_id": "session_1"}]
             else:
-                # Second call: should be in NEXT.md (resolved), emit result
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify the orchestrator correctly resolved "NEXT" to "NEXT.md"
-        # The second prompt should contain NEXT_PROMPT
         assert len(prompts_sent) == 2, f"Expected 2 invocations, got {len(prompts_sent)}"
         assert "NEXT_PROMPT" in prompts_sent[1], (
             f"Second invocation should use NEXT.md (resolved from 'NEXT'), "
@@ -945,16 +966,18 @@ class TestTransitionStateResolution:
         
         prompts_sent = []
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             prompts_sent.append(prompt)
             if len(prompts_sent) == 1:
-                # First call: emit goto with explicit .md extension
-                return ([{"type": "content", "text": "Going next\n<goto>NEXT.md</goto>"}], "session_1")
+                output = [{"type": "content", "text": "Going next\n<goto>NEXT.md</goto>", "session_id": "session_1"}]
             else:
-                # Second call: should be in NEXT.md, emit result
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify backward compatibility - explicit .md extension still works
@@ -986,16 +1009,18 @@ class TestTransitionStateResolution:
         
         prompts_sent = []
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             prompts_sent.append(prompt)
             if len(prompts_sent) == 1:
-                # First call: emit reset with abstract name
-                return ([{"type": "content", "text": "Resetting\n<reset>RESET_STATE</reset>"}], "session_1")
+                output = [{"type": "content", "text": "Resetting\n<reset>RESET_STATE</reset>", "session_id": "session_1"}]
             else:
-                # Second call: should be in RESET_STATE.md (resolved), emit result
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify the orchestrator correctly resolved abstract name
@@ -1020,11 +1045,9 @@ class TestTransitionStateResolution:
         start_file = Path(scope_dir) / "START.md"
         start_file.write_text("START_PROMPT")
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
-            # Emit goto to non-existent state
-            return ([{"type": "content", "text": "Going\n<goto>NONEXISTENT</goto>"}], "session_1")
+        mock_output = [{"type": "content", "text": "Going\n<goto>NONEXISTENT</goto>", "session_id": "session_1"}]
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output, "session_1")):
             with pytest.raises(FileNotFoundError):
                 await run_all_agents(workflow_id, state_dir=str(state_dir))
 
@@ -1054,19 +1077,20 @@ class TestTransitionStateResolution:
         
         prompts_sent = []
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             prompts_sent.append(prompt)
             if len(prompts_sent) == 1:
-                # First call: emit function with abstract names
-                return ([{"type": "content", "text": "Calling\n<function return=\"RETURN\">EVAL</function>"}], "session_1")
+                output = [{"type": "content", "text": "Calling\n<function return=\"RETURN\">EVAL</function>", "session_id": "session_1"}]
             elif len(prompts_sent) == 2:
-                # Second call: should be in EVAL.md (resolved), emit result
-                return ([{"type": "content", "text": "Evaluated\n<result>eval_result</result>"}], "session_2")
+                output = [{"type": "content", "text": "Evaluated\n<result>eval_result</result>", "session_id": "session_2"}]
             else:
-                # Third call: should be in RETURN.md (resolved from return attribute)
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify both target and return were resolved
@@ -1100,19 +1124,20 @@ class TestTransitionStateResolution:
         
         prompts_sent = []
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             prompts_sent.append(prompt)
             if len(prompts_sent) == 1:
-                # First call: emit call with abstract names
-                return ([{"type": "content", "text": "Calling\n<call return=\"RETURN\">CHILD</call>"}], "session_1")
+                output = [{"type": "content", "text": "Calling\n<call return=\"RETURN\">CHILD</call>", "session_id": "session_1"}]
             elif len(prompts_sent) == 2:
-                # Second call: should be in CHILD.md (resolved), emit result
-                return ([{"type": "content", "text": "Child done\n<result>child_result</result>"}], "session_2")
+                output = [{"type": "content", "text": "Child done\n<result>child_result</result>", "session_id": "session_2"}]
             else:
-                # Third call: should be in RETURN.md (resolved from return attribute)
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify both target and return were resolved
@@ -1146,23 +1171,24 @@ class TestTransitionStateResolution:
         
         prompts_by_content = {}
         
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             if "START_PROMPT" in prompt:
                 prompts_by_content["START"] = prompt
-                # First call: emit fork with abstract names
-                return ([{"type": "content", "text": "Forking\n<fork next=\"NEXT\">WORKER</fork>"}], "session_1")
+                output = [{"type": "content", "text": "Forking\n<fork next=\"NEXT\">WORKER</fork>", "session_id": "session_1"}]
             elif "WORKER_PROMPT" in prompt:
                 prompts_by_content["WORKER"] = prompt
-                # Worker agent terminates
-                return ([{"type": "content", "text": "Worker done\n<result>worker_result</result>"}], "session_w")
+                output = [{"type": "content", "text": "Worker done\n<result>worker_result</result>", "session_id": "session_w"}]
             elif "NEXT_PROMPT" in prompt:
                 prompts_by_content["NEXT"] = prompt
-                # Parent continues at NEXT, terminates
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
             else:
                 raise AssertionError(f"Unexpected prompt: {prompt[:100]}")
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
         
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
         
         # Verify both fork target and next attribute were resolved
@@ -1262,16 +1288,18 @@ Implicit transition to NEXT.""")
 
         prompts_sent = []
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             prompts_sent.append(prompt)
             if len(prompts_sent) == 1:
-                # First call: emit NO tag - should use implicit transition
-                return ([{"type": "content", "text": "Some output without any tag"}], "session_1")
+                output = [{"type": "content", "text": "Some output without any tag", "session_id": "session_1"}]
             else:
-                # Second call: should be in NEXT.md (resolved from abstract 'NEXT'), emit result
-                return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify implicit transition resolved abstract name to NEXT.md
@@ -1307,17 +1335,20 @@ class TestScriptStateDispatch:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("# Start\nThis is a markdown state.")
 
-        llm_called = False
+        llm_called = [False]
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
-            nonlocal llm_called
-            llm_called = True
-            return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+        def mock_wrap_stream(prompt, **kwargs):
+            llm_called[0] = True
+            output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
-        assert llm_called, "wrap_claude_code should be called for .md files"
+        assert llm_called[0], "wrap_claude_code_stream should be called for .md files"
 
     @pytest.mark.windows
     @pytest.mark.asyncio
@@ -1338,17 +1369,18 @@ class TestScriptStateDispatch:
         script_file = Path(scope_dir) / "START.bat"
         script_file.write_text("@echo off\necho ^<result^>Script executed^</result^>\n")
 
-        llm_called = False
+        llm_called = [False]
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
-            nonlocal llm_called
-            llm_called = True
-            return ([{"type": "content", "text": "LLM output"}], "session_1")
+        def mock_wrap_stream(prompt, **kwargs):
+            llm_called[0] = True
+            async def gen():
+                yield {"type": "content", "text": "LLM output", "session_id": "session_1"}
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
-        assert not llm_called, "wrap_claude_code should NOT be called for .bat files"
+        assert not llm_called[0], "wrap_claude_code_stream should NOT be called for .bat files"
 
     @pytest.mark.unix
     @pytest.mark.asyncio
@@ -1370,17 +1402,18 @@ class TestScriptStateDispatch:
         script_file.write_text("#!/bin/bash\necho '<result>Script executed</result>'\n")
         script_file.chmod(0o755)
 
-        llm_called = False
+        llm_called = [False]
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
-            nonlocal llm_called
-            llm_called = True
-            return ([{"type": "content", "text": "LLM output"}], "session_1")
+        def mock_wrap_stream(prompt, **kwargs):
+            llm_called[0] = True
+            async def gen():
+                yield {"type": "content", "text": "LLM output", "session_id": "session_1"}
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
-        assert not llm_called, "wrap_claude_code should NOT be called for .sh files"
+        assert not llm_called[0], "wrap_claude_code_stream should NOT be called for .sh files"
 
     @pytest.mark.windows
     @pytest.mark.asyncio
@@ -1407,11 +1440,15 @@ class TestScriptStateDispatch:
 
         llm_prompts = []
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             llm_prompts.append(prompt)
-            return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+            output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify the transition was processed: script -> NEXT.md -> result
@@ -1444,11 +1481,15 @@ class TestScriptStateDispatch:
 
         llm_prompts = []
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             llm_prompts.append(prompt)
-            return ([{"type": "content", "text": "Done\n<result>Complete</result>"}], "session_1")
+            output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify the transition was processed: script -> NEXT.md -> result
@@ -1537,14 +1578,18 @@ class TestScriptStateDispatch:
 
         session_ids_received = []
 
-        async def mock_wrap_claude_code(prompt, session_id=None, **kwargs):
+        def mock_wrap_stream(prompt, session_id=None, **kwargs):
             session_ids_received.append(session_id)
             if "FIRST_PROMPT" in prompt:
-                return ([{"type": "content", "text": "<goto>SCRIPT.bat</goto>"}], "session-abc")
+                output = [{"type": "content", "text": "<goto>SCRIPT.bat</goto>", "session_id": "session-abc"}]
             else:
-                return ([{"type": "content", "text": "<result>Done</result>"}], "session-abc")
+                output = [{"type": "content", "text": "<result>Done</result>", "session_id": "session-abc"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # First call should have no session (new workflow)
@@ -1585,14 +1630,18 @@ class TestScriptStateDispatch:
 
         session_ids_received = []
 
-        async def mock_wrap_claude_code(prompt, session_id=None, **kwargs):
+        def mock_wrap_stream(prompt, session_id=None, **kwargs):
             session_ids_received.append(session_id)
             if "FIRST_PROMPT" in prompt:
-                return ([{"type": "content", "text": "<goto>SCRIPT.sh</goto>"}], "session-abc")
+                output = [{"type": "content", "text": "<goto>SCRIPT.sh</goto>", "session_id": "session-abc"}]
             else:
-                return ([{"type": "content", "text": "<result>Done</result>"}], "session-abc")
+                output = [{"type": "content", "text": "<result>Done</result>", "session_id": "session-abc"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # First call should have no session (new workflow)
@@ -1628,13 +1677,17 @@ class TestScriptStateDispatch:
         last_file = Path(scope_dir) / "LAST.md"
         last_file.write_text("LAST_PROMPT")
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             if "FIRST_PROMPT" in prompt:
-                return ([{"type": "content", "text": "<goto>SCRIPT.bat</goto>", "total_cost_usd": 0.05}], "s1")
+                output = [{"type": "content", "text": "<goto>SCRIPT.bat</goto>", "total_cost_usd": 0.05, "session_id": "s1"}]
             else:
-                return ([{"type": "content", "text": "<result>Done</result>", "total_cost_usd": 0.03}], "s1")
+                output = [{"type": "content", "text": "<result>Done</result>", "total_cost_usd": 0.03, "session_id": "s1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Total cost should be 0.05 + 0.03 = 0.08, NOT including any cost from the script
@@ -1669,17 +1722,21 @@ class TestScriptStateDispatch:
         last_file = Path(scope_dir) / "LAST.md"
         last_file.write_text("LAST_PROMPT")
 
-        async def mock_wrap_claude_code(prompt, **kwargs):
+        def mock_wrap_stream(prompt, **kwargs):
             if "FIRST_PROMPT" in prompt:
-                return ([{"type": "content", "text": "<goto>SCRIPT.sh</goto>", "total_cost_usd": 0.05}], "s1")
+                output = [{"type": "content", "text": "<goto>SCRIPT.sh</goto>", "total_cost_usd": 0.05, "session_id": "s1"}]
             else:
-                return ([{"type": "content", "text": "<result>Done</result>", "total_cost_usd": 0.03}], "s1")
+                output = [{"type": "content", "text": "<result>Done</result>", "total_cost_usd": 0.03, "session_id": "s1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
 
-        with patch('src.orchestrator.wrap_claude_code', side_effect=mock_wrap_claude_code):
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # The workflow completes successfully, indicating cost tracking worked correctly
-        # Script states don't call wrap_claude_code so they contribute $0.00
+        # Script states don't call wrap_claude_code_stream so they contribute $0.00
 
 
 class TestScriptErrorHandling:
@@ -2643,11 +2700,18 @@ class TestScriptTransitionTypes:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Markdown state prompt")
 
-        # Mock wrap_claude_code for the markdown state
+        # Mock wrap_claude_code_stream for the markdown state
         mock_output = [{"type": "content", "text": "<result>Done from markdown</result>"}]
+        call_count = [0]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
+        def mock_wrap_stream(*args, **kwargs):
+            call_count[0] += 1
+            async def gen():
+                for obj in mock_output:
+                    yield obj
+            return gen()
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify workflow completed
@@ -2655,7 +2719,7 @@ class TestScriptTransitionTypes:
         assert not state_file.exists(), "State file should be deleted after successful completion"
 
         # Verify Claude Code was called (for the markdown state)
-        assert mock_wrap.called
+        assert call_count[0] > 0
 
     @pytest.mark.unix
     @pytest.mark.asyncio
@@ -2681,11 +2745,18 @@ class TestScriptTransitionTypes:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Markdown state prompt")
 
-        # Mock wrap_claude_code for the markdown state
+        # Mock wrap_claude_code_stream for the markdown state
         mock_output = [{"type": "content", "text": "<result>Done from markdown</result>"}]
+        call_count = [0]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
+        def mock_wrap_stream(*args, **kwargs):
+            call_count[0] += 1
+            async def gen():
+                for obj in mock_output:
+                    yield obj
+            return gen()
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify workflow completed
@@ -2693,7 +2764,7 @@ class TestScriptTransitionTypes:
         assert not state_file.exists(), "State file should be deleted after successful completion"
 
         # Verify Claude Code was called (for the markdown state)
-        assert mock_wrap.called
+        assert call_count[0] > 0
 
     # --- 4.3.8: transition from markdown state to script state ---
 
@@ -2720,11 +2791,10 @@ class TestScriptTransitionTypes:
         script_file = Path(scope_dir) / "NEXT.bat"
         script_file.write_text("@echo off\necho ^<result^>Done from script^</result^>\n")
 
-        # Mock wrap_claude_code for the markdown state
+        # Mock wrap_claude_code_stream for the markdown state
         mock_output = [{"type": "content", "text": "<goto>NEXT.bat</goto>"}]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify workflow completed
@@ -2755,11 +2825,10 @@ class TestScriptTransitionTypes:
         script_file.write_text("#!/bin/bash\necho '<result>Done from script</result>'\n")
         script_file.chmod(0o755)
 
-        # Mock wrap_claude_code for the markdown state
+        # Mock wrap_claude_code_stream for the markdown state
         mock_output = [{"type": "content", "text": "<goto>NEXT.sh</goto>"}]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify workflow completed
@@ -3026,11 +3095,10 @@ class TestScriptTransitionTypes:
         end_file = Path(scope_dir) / "END.bat"
         end_file.write_text("@echo off\necho ^<result^>Chain complete^</result^>\n")
 
-        # Mock wrap_claude_code for the markdown state
+        # Mock wrap_claude_code_stream for the markdown state
         mock_output = [{"type": "content", "text": "<result>From markdown</result>"}]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify workflow completed
@@ -3069,11 +3137,10 @@ class TestScriptTransitionTypes:
         end_file.write_text("#!/bin/bash\necho '<result>Chain complete</result>'\n")
         end_file.chmod(0o755)
 
-        # Mock wrap_claude_code for the markdown state
+        # Mock wrap_claude_code_stream for the markdown state
         mock_output = [{"type": "content", "text": "<result>From markdown</result>"}]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
         # Verify workflow completed

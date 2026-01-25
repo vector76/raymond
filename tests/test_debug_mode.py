@@ -11,6 +11,32 @@ from src.cli import cmd_start, cmd_run_workflow
 import argparse
 
 
+def create_mock_stream(json_objects, session_id=None):
+    """Create a mock async generator that yields JSON objects.
+    
+    This simulates wrap_claude_code_stream() for testing.
+    The session_id is automatically added to the last object if provided.
+    """
+    async def mock_generator(*args, **kwargs):
+        for i, obj in enumerate(json_objects):
+            # Add session_id to the last object if provided
+            if session_id and i == len(json_objects) - 1:
+                obj = dict(obj)
+                obj["session_id"] = session_id
+            yield obj
+    return mock_generator
+
+
+def read_jsonl_file(filepath):
+    """Read a JSONL file and return list of JSON objects."""
+    results = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                results.append(json.loads(line))
+    return results
+
+
 class TestDebugDirectoryCreation:
     """Tests for debug directory creation (5.5.1, 5.5.5)."""
 
@@ -32,12 +58,10 @@ class TestDebugDirectoryCreation:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt\n<result>Done</result>")
         
-        # Mock wrap_claude_code to return result immediately
+        # Mock wrap_claude_code_stream to yield result
         mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Run with default debug=True (no explicit parameter)
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
@@ -99,11 +123,11 @@ class TestDebugDirectoryCreation:
 
 
 class TestClaudeCodeOutputSaving:
-    """Tests for saving Claude Code JSON outputs (5.5.2, 5.5.10)."""
+    """Tests for saving Claude Code JSONL outputs (5.5.2, 5.5.10)."""
 
     @pytest.mark.asyncio
     async def test_claude_code_outputs_saved_per_agent_step(self, tmp_path):
-        """Test 5.5.2: Claude Code JSON outputs saved per agent step."""
+        """Test 5.5.2: Claude Code JSONL outputs saved per agent step."""
         state_dir = tmp_path / ".raymond" / "state"
         state_dir.mkdir(parents=True)
         
@@ -121,7 +145,7 @@ class TestClaudeCodeOutputSaving:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt\n<result>Done</result>")
         
-        # Mock Claude Code outputs
+        # Mock Claude Code outputs (streaming)
         mock_output_1 = [
             {"type": "content", "text": "Step 1\n<goto>NEXT.md</goto>"},
             {"type": "result", "total_cost_usd": 0.05, "session_id": "session_123"}
@@ -131,12 +155,18 @@ class TestClaudeCodeOutputSaving:
             {"type": "result", "total_cost_usd": 0.03, "session_id": "session_123"}
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.side_effect = [
-                (mock_output_1, "session_123"),
-                (mock_output_2, "session_123")
-            ]
-            
+        # Create mock streams that yield objects and alternate between the two outputs
+        call_count = [0]
+        def mock_stream_factory(*args, **kwargs):
+            outputs = [mock_output_1, mock_output_2]
+            output = outputs[call_count[0] % len(outputs)]
+            call_count[0] += 1
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Run with default debug=True
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
@@ -146,21 +176,20 @@ class TestClaudeCodeOutputSaving:
             assert len(debug_dirs) >= 1
             debug_dir = debug_dirs[0]
             
-            # Should have JSON files for each step
-            json_files = list(debug_dir.glob("*.json"))
-            assert len(json_files) >= 2  # At least 2 steps
+            # Should have JSONL files for each step
+            jsonl_files = list(debug_dir.glob("*.jsonl"))
+            assert len(jsonl_files) >= 2  # At least 2 steps
             
-            # Check first file format: {agent_id}_{state_name}_{step_number}.json
-            json_files_sorted = sorted(json_files, key=lambda p: p.name)
-            first_file = json_files_sorted[0]
+            # Check first file format: {agent_id}_{state_name}_{step_number}.jsonl
+            jsonl_files_sorted = sorted(jsonl_files, key=lambda p: p.name)
+            first_file = jsonl_files_sorted[0]
             
             # Parse filename
             parts = first_file.stem.split("_")
             assert len(parts) >= 3  # agent_id, state_name, step_number
             
-            # Verify file contains the JSON output
-            with open(first_file, 'r', encoding='utf-8') as f:
-                saved_data = json.load(f)
+            # Verify file contains the JSONL output
+            saved_data = read_jsonl_file(first_file)
             assert isinstance(saved_data, list)
             assert len(saved_data) > 0
 
@@ -186,17 +215,23 @@ class TestClaudeCodeOutputSaving:
         step3_file = Path(scope_dir) / "STEP3.md"
         step3_file.write_text("Step 3\n<result>Done</result>")
         
-        # Mock Claude Code outputs for 3 steps
+        # Mock Claude Code outputs for 3 steps (streaming)
         mock_outputs = [
-            ([{"type": "content", "text": f"Step {i}\n<goto>STEP{i+1}.md</goto>"}], "session_123")
-            for i in range(1, 3)
-        ] + [
-            ([{"type": "content", "text": "Step 3\n<result>Done</result>"}], "session_123")
+            [{"type": "content", "text": "Step 1\n<goto>STEP2.md</goto>", "session_id": "session_123"}],
+            [{"type": "content", "text": "Step 2\n<goto>STEP3.md</goto>", "session_id": "session_123"}],
+            [{"type": "content", "text": "Step 3\n<result>Done</result>", "session_id": "session_123"}],
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.side_effect = mock_outputs
-            
+        call_count = [0]
+        def mock_stream_factory(*args, **kwargs):
+            output = mock_outputs[call_count[0] % len(mock_outputs)]
+            call_count[0] += 1
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Run with default debug=True
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
@@ -206,13 +241,13 @@ class TestClaudeCodeOutputSaving:
             assert len(debug_dirs) >= 1
             debug_dir = debug_dirs[0]
             
-            # Should have 3 JSON files for main agent
-            main_json_files = sorted([f for f in debug_dir.glob("main_*.json")], key=lambda p: p.name)
-            assert len(main_json_files) == 3
+            # Should have 3 JSONL files for main agent
+            main_jsonl_files = sorted([f for f in debug_dir.glob("main_*.jsonl")], key=lambda p: p.name)
+            assert len(main_jsonl_files) == 3
             
             # Check step numbers increment: 001, 002, 003
-            for i, json_file in enumerate(main_json_files, 1):
-                assert f"_{i:03d}.json" in json_file.name or f"_{i:03d}" in json_file.stem
+            for i, jsonl_file in enumerate(main_jsonl_files, 1):
+                assert f"_{i:03d}.jsonl" in jsonl_file.name or f"_{i:03d}" in jsonl_file.stem
 
 
 class TestStateTransitionLogging:
@@ -238,20 +273,26 @@ class TestStateTransitionLogging:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next prompt\n<result>Done</result>")
         
-        # Mock Claude Code outputs
+        # Mock Claude Code outputs (streaming)
         mock_output_1 = [
             {"type": "content", "text": "Step 1\n<goto>NEXT.md</goto>"},
             {"type": "result", "total_cost_usd": 0.05, "session_id": "session_123"}
         ]
         mock_output_2 = [
-            {"type": "content", "text": "Step 2\n<result>Done</result>"}]
+            {"type": "content", "text": "Step 2\n<result>Done</result>", "session_id": "session_123"}
+        ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.side_effect = [
-                (mock_output_1, "session_123"),
-                (mock_output_2, "session_123")
-            ]
-            
+        call_count = [0]
+        def mock_stream_factory(*args, **kwargs):
+            outputs = [mock_output_1, mock_output_2]
+            output = outputs[call_count[0] % len(outputs)]
+            call_count[0] += 1
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+        
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Run with default debug=True
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
@@ -293,15 +334,13 @@ class TestStateTransitionLogging:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt\n<result>Done</result>")
         
-        # Mock Claude Code output with cost
+        # Mock Claude Code output with cost (streaming)
         mock_output = [
             {"type": "content", "text": "Done\n<result>Complete</result>"},
             {"type": "result", "total_cost_usd": 0.05, "session_id": "session_abc123"}
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, "session_abc123")
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output, "session_abc123")):
             # Run with default debug=True
             await run_all_agents(workflow_id, state_dir=str(state_dir))
             
@@ -341,16 +380,14 @@ class TestDebugModeErrorHandling:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt\n<result>Done</result>")
         
-        # Mock Claude Code output
+        # Mock Claude Code output (streaming)
         mock_output = [
             {"type": "content", "text": "Done\n<result>Complete</result>"}
         ]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Mock the debug functions to raise errors when writing files
-            with patch('src.orchestrator.save_claude_output', side_effect=OSError("Permission denied")):
+            with patch('src.orchestrator.append_claude_output_line', side_effect=OSError("Permission denied")):
                 with patch('src.orchestrator.log_state_transition', side_effect=OSError("Permission denied")):
                     # Should not raise exception, workflow should complete
                     await run_all_agents(workflow_id, state_dir=str(state_dir))
@@ -433,12 +470,10 @@ class TestCLIDebugFlag:
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt\n<result>Done</result>")
         
-        # Mock wrap_claude_code to return result immediately
+        # Mock wrap_claude_code_stream to yield result (streaming)
         mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
         
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-            
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             # Run with debug=False (--no-debug)
             await run_all_agents(workflow_id, state_dir=str(state_dir), debug=False)
             
@@ -1163,12 +1198,10 @@ class TestScriptExecutionMetadataPhase52:
         next_file = Path(scope_dir) / "NEXT.md"
         next_file.write_text("Next state\n<result>Done</result>")
 
-        # Mock wrap_claude_code for the markdown state
-        mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        # Mock wrap_claude_code_stream for the markdown state (streaming)
+        mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_123"}]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, "session_123")
-
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output, "session_123")):
             # Run with default debug=True
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
@@ -1220,11 +1253,10 @@ class TestScriptExecutionMetadataPhase52:
         process_file = Path(scope_dir) / "PROCESS.md"
         process_file.write_text("Process\n<result>Done</result>")
 
+        # Mock wrap_claude_code_stream (streaming)
         mock_output = [{"type": "content", "text": "Done\n<result>Done</result>"}]
 
-        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
-            mock_wrap.return_value = (mock_output, None)
-
+        with patch('src.orchestrator.wrap_claude_code_stream', create_mock_stream(mock_output)):
             await run_all_agents(workflow_id, state_dir=str(state_dir))
 
             debug_base = tmp_path / ".raymond" / "debug"

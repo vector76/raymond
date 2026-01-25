@@ -144,7 +144,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 1
     
     # Get budget from args or use default
-    budget_usd = args.budget if args.budget is not None else 1.0
+    budget_usd = args.budget if args.budget is not None else 10.0
     
     # Create and write initial state
     state = create_initial_state(workflow_id, scope_dir, initial_state, budget_usd=budget_usd, initial_input=args.initial_input)
@@ -160,7 +160,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     
     if not args.no_run:
         print("\nStarting orchestrator...")
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, args.debug, args.model, args.timeout, args.dangerously_skip_permissions)
+        debug = not args.no_debug
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions)
     
     print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
@@ -183,10 +184,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print(f"Error: Workflow '{workflow_id}' not found.", file=sys.stderr)
         return 1
     
-    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, args.debug, args.model, args.timeout, args.dangerously_skip_permissions)
+    debug = not args.no_debug
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
     
@@ -354,7 +356,7 @@ Examples:
         type=positive_float,
         metavar="USD",
         default=None,
-        help="Cost budget limit in USD (default: 1.00)",
+        help="Cost budget limit in USD (default: 10.00)",
     )
     start_group.add_argument(
         "--input",
@@ -367,9 +369,10 @@ Examples:
     # Runtime options (applicable to start and resume)
     runtime_group = parser.add_argument_group("runtime options")
     runtime_group.add_argument(
-        "--debug",
+        "--no-debug",
+        dest="no_debug",
         action="store_true",
-        help="Save Claude Code outputs and state transitions to .raymond/debug/",
+        help="Disable debug mode (debug mode is enabled by default)",
     )
     runtime_group.add_argument(
         "--model",

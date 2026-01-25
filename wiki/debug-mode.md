@@ -17,16 +17,25 @@ Debug mode solves this by creating a permanent record of every step.
 
 ## Usage
 
-Enable debug mode by adding the `--debug` flag:
+Debug mode is **enabled by default**. Debug information is automatically saved to `.raymond/debug/` for all workflow runs.
+
+To disable debug mode, use the `--no-debug` flag:
 
 ```bash
-raymond workflows/test/START.md --debug
-raymond --resume workflow_2026-01-15_14-30-22 --debug
+raymond workflows/test/START.md --no-debug
+raymond --resume workflow_2026-01-15_14-30-22 --no-debug
+```
+
+By default (without `--no-debug`):
+
+```bash
+raymond workflows/test/START.md
+raymond --resume workflow_2026-01-15_14-30-22
 ```
 
 ## Directory Structure
 
-When debug mode is enabled, a debug directory is created for each workflow run:
+When debug mode is enabled (the default), a debug directory is created for each workflow run:
 
 ```
 .raymond/debug/{workflow_id}_{timestamp}/
@@ -154,23 +163,24 @@ Each entry includes:
 
 ### 1. CLI Integration
 
-Add `--debug` flag to argument parser for both `start` and `run` commands:
+Debug mode is enabled by default. Add `--no-debug` flag to argument parser for both `start` and `run` commands:
 
 ```python
 parser.add_argument(
-    "--debug",
+    "--no-debug",
+    dest="no_debug",
     action="store_true",
-    help="Enable debug mode: save Claude Code outputs and state transitions to .raymond/debug/"
+    help="Disable debug mode (debug mode is enabled by default)"
 )
 ```
 
-Pass the debug flag through to `run_all_agents()`:
+The debug flag is passed through to `run_all_agents()` with a default of `True`:
 
 ```python
 async def run_all_agents(
     workflow_id: str, 
     state_dir: str = None,
-    debug: bool = False
+    debug: bool = True
 ) -> None:
 ```
 
@@ -207,7 +217,7 @@ def create_debug_directory(workflow_id: str, state_dir: Optional[str] = None) ->
         return None
 ```
 
-Call this at the start of `run_all_agents()` when `debug=True`.
+Call this at the start of `run_all_agents()` when `debug=True` (the default).
 
 ### 3. Saving Claude Code Outputs
 

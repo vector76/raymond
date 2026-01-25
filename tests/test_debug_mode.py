@@ -16,7 +16,7 @@ class TestDebugDirectoryCreation:
 
     @pytest.mark.asyncio
     async def test_debug_flag_creates_debug_directory(self, tmp_path):
-        """Test 5.5.1: --debug flag creates debug directory structure."""
+        """Test 5.5.1: Debug mode is enabled by default and creates debug directory structure."""
         state_dir = tmp_path / ".raymond" / "state"
         state_dir.mkdir(parents=True)
         
@@ -38,8 +38,8 @@ class TestDebugDirectoryCreation:
         with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             mock_wrap.return_value = (mock_output, None)
             
-            # Run with debug=True
-            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+            # Run with default debug=True (no explicit parameter)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Check that debug directory was created
             debug_base = tmp_path / ".raymond" / "debug"
@@ -137,8 +137,8 @@ class TestClaudeCodeOutputSaving:
                 (mock_output_2, "session_123")
             ]
             
-            # Run with debug=True
-            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+            # Run with default debug=True
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Find debug directory
             debug_base = tmp_path / ".raymond" / "debug"
@@ -197,8 +197,8 @@ class TestClaudeCodeOutputSaving:
         with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             mock_wrap.side_effect = mock_outputs
             
-            # Run with debug=True
-            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+            # Run with default debug=True
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Find debug directory
             debug_base = tmp_path / ".raymond" / "debug"
@@ -252,8 +252,8 @@ class TestStateTransitionLogging:
                 (mock_output_2, "session_123")
             ]
             
-            # Run with debug=True
-            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+            # Run with default debug=True
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Find debug directory
             debug_base = tmp_path / ".raymond" / "debug"
@@ -302,8 +302,8 @@ class TestStateTransitionLogging:
         with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             mock_wrap.return_value = (mock_output, "session_abc123")
             
-            # Run with debug=True
-            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+            # Run with default debug=True
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
             
             # Find debug directory
             debug_base = tmp_path / ".raymond" / "debug"
@@ -353,7 +353,7 @@ class TestDebugModeErrorHandling:
             with patch('src.orchestrator.save_claude_output', side_effect=OSError("Permission denied")):
                 with patch('src.orchestrator.log_state_transition', side_effect=OSError("Permission denied")):
                     # Should not raise exception, workflow should complete
-                    await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+                    await run_all_agents(workflow_id, state_dir=str(state_dir))
                     
                     # Workflow should have completed successfully despite debug write failures
                     # State file should be deleted (workflow completed)
@@ -362,10 +362,10 @@ class TestDebugModeErrorHandling:
 
 
 class TestCLIDebugFlag:
-    """Tests for CLI --debug flag integration (5.5.6)."""
+    """Tests for CLI --no-debug flag integration (5.5.6)."""
 
-    def test_start_command_accepts_debug_flag(self, tmp_path):
-        """Test that start command accepts --debug flag."""
+    def test_debug_mode_enabled_by_default(self, tmp_path):
+        """Test that debug mode is enabled by default."""
         scope_dir = tmp_path / "workflows" / "test"
         scope_dir.mkdir(parents=True)
         
@@ -374,7 +374,7 @@ class TestCLIDebugFlag:
         
         state_dir = tmp_path / ".raymond" / "state"
         
-        # Create args namespace with debug flag
+        # Create args namespace without --no-debug (default behavior)
         args = argparse.Namespace(
             workflow_id="test-debug-cli",
             initial_file=str(initial_file),
@@ -382,7 +382,7 @@ class TestCLIDebugFlag:
             no_run=True,
             verbose=False,
             budget=None,
-            debug=True,
+            no_debug=False,
             model=None,
             timeout=None,
             initial_input=None
@@ -392,23 +392,61 @@ class TestCLIDebugFlag:
         result = cmd_start(args)
         assert result == 0
 
-    def test_resume_command_accepts_debug_flag(self, tmp_path):
-        """Test that --resume command accepts --debug flag."""
-        # This test checks the parser accepts --debug with --resume
+    def test_start_command_accepts_no_debug_flag(self, tmp_path):
+        """Test that start command accepts --no-debug flag."""
         from src.cli import create_parser
         
         parser = create_parser()
         
-        # Parse start command with --debug (new syntax: positional file)
-        args = parser.parse_args(["test.md", "--debug", "--no-run"])
-        assert hasattr(args, 'debug')
-        assert args.debug is True
+        # Parse start command with --no-debug
+        args = parser.parse_args(["test.md", "--no-debug", "--no-run"])
+        assert hasattr(args, 'no_debug')
+        assert args.no_debug is True
+
+    def test_resume_command_accepts_no_debug_flag(self, tmp_path):
+        """Test that --resume command accepts --no-debug flag."""
+        from src.cli import create_parser
         
-        # Parse --resume command with --debug
-        args = parser.parse_args(["--resume", "test-workflow", "--debug"])
-        assert hasattr(args, 'debug')
-        assert args.debug is True
+        parser = create_parser()
+        
+        # Parse --resume command with --no-debug
+        args = parser.parse_args(["--resume", "test-workflow", "--no-debug"])
+        assert hasattr(args, 'no_debug')
+        assert args.no_debug is True
         assert args.resume == "test-workflow"
+
+    @pytest.mark.asyncio
+    async def test_no_debug_flag_disables_debug_mode(self, tmp_path):
+        """Test that --no-debug flag disables debug mode."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        
+        workflow_id = "test-no-debug-001"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+        
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        
+        # Create a prompt file
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("Test prompt\n<result>Done</result>")
+        
+        # Mock wrap_claude_code to return result immediately
+        mock_output = [{"type": "content", "text": "Done\n<result>Complete</result>"}]
+        
+        with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
+            mock_wrap.return_value = (mock_output, None)
+            
+            # Run with debug=False (--no-debug)
+            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=False)
+            
+            # Check that debug directory was NOT created
+            debug_base = tmp_path / ".raymond" / "debug"
+            if debug_base.exists():
+                debug_dirs = [d for d in debug_base.iterdir() if d.is_dir()]
+                assert len(debug_dirs) == 0, "Debug directory should not be created when --no-debug is used"
 
 
 class TestSaveScriptOutput:
@@ -1131,8 +1169,8 @@ class TestScriptExecutionMetadataPhase52:
         with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             mock_wrap.return_value = (mock_output, "session_123")
 
-            # Run with debug=True
-            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+            # Run with default debug=True
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
 
             # Find debug directory
             debug_base = tmp_path / ".raymond" / "debug"
@@ -1187,7 +1225,7 @@ class TestScriptExecutionMetadataPhase52:
         with patch('src.orchestrator.wrap_claude_code') as mock_wrap:
             mock_wrap.return_value = (mock_output, None)
 
-            await run_all_agents(workflow_id, state_dir=str(state_dir), debug=True)
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
 
             debug_base = tmp_path / ".raymond" / "debug"
             debug_dirs = [d for d in debug_base.iterdir() if d.is_dir()]

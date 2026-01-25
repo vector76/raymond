@@ -96,13 +96,13 @@ Otherwise, fix the issues and respond with <goto>REVIEW.md</goto>
 ```
 
 A lightweight evaluator (pattern match or small model) can also inspect output
-to determine branches. This enables conditions like "max $1.00 cost budget" at the
+to determine branches. This enables conditions like "max $10.00 cost budget" at the
 Python level - if the AI outputs `<goto>REVIEW.md</goto>` but the orchestrator
 detects we've exceeded the cost budget, it can override and terminate the workflow
 instead.
 
 **Cost Budget Limits:** The orchestrator tracks the cumulative cost of all Claude Code
-invocations across a workflow. By default, workflows have a $1.00 budget limit (configurable
+invocations across a workflow. By default, workflows have a $10.00 budget limit (configurable
 via the `--budget` CLI flag when starting a workflow). When the total cost exceeds the budget,
 the orchestrator overrides any transition the AI requests and terminates the workflow cleanly.
 This provides a safety mechanism to prevent runaway costs from infinite loops or unexpectedly

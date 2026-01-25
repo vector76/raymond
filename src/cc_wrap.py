@@ -293,6 +293,7 @@ async def wrap_claude_code_stream(
     # (default asyncio readline has a 64KB limit that can be exceeded by Claude Code)
     buffer = b""
     chunk_size = 1024 * 1024  # 1MB chunks
+    returncode = None
     
     try:
         while True:
@@ -359,16 +360,47 @@ async def wrap_claude_code_stream(
                     # If a line isn't valid JSON, log it but continue
                     logger.warning(f"Failed to parse JSON line: {line}", exc_info=e)
 
-        # Wait for process to complete
+        # Wait for process to complete (only reached if loop exits normally)
         returncode = await asyncio.wait_for(process.wait(), timeout=30)
+    except GeneratorExit:
+        # Generator is being closed (e.g., due to exception in caller)
+        # Ensure process is cleaned up before re-raising
+        if process.returncode is None:
+            logger.debug("Cleaning up Claude Code process due to generator close")
+            try:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            except Exception as e:
+                logger.debug(f"Error during process cleanup on generator close: {e}")
+        raise
     except asyncio.TimeoutError:
         logger.error(f"Claude Code cleanup timed out, killing process")
         process.kill()
         await process.wait()
         raise ClaudeCodeTimeoutError("Claude Code process cleanup timed out")
-
-    # Check for errors
-    if returncode != 0:
+    finally:
+        # Ensure process is cleaned up even if exception occurs during iteration
+        # This handles cases where the generator is interrupted (e.g., limit errors)
+        if process.returncode is None:
+            try:
+                # Try to terminate gracefully first
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    # Force kill if terminate didn't work
+                    process.kill()
+                    await process.wait()
+            except Exception as e:
+                # Log but don't raise - we're in cleanup
+                logger.debug(f"Error during process cleanup: {e}")
+    
+    # Check for errors (only if we got a returncode from normal completion)
+    if returncode is not None and returncode != 0:
         stderr_output = await process.stderr.read()
         stderr_text = stderr_output.decode('utf-8') if stderr_output else ""
         raise RuntimeError(

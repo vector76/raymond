@@ -1309,6 +1309,69 @@ Implicit transition to NEXT.""")
             f"but got: {prompts_sent[1][:100]}"
         )
 
+    @pytest.mark.asyncio
+    async def test_explicit_transition_with_abstract_policy_target(self, tmp_path):
+        """Test that explicit transitions pass policy validation with abstract policy targets.
+
+        This is a regression test for a bug where:
+        1. Policy specified abstract target: { tag: goto, target: NEXT }
+        2. LLM emitted: <goto>NEXT</goto>
+        3. Target was resolved to NEXT.md before policy validation
+        4. Policy validation failed because "NEXT.md" != "NEXT"
+
+        The fix makes policy validation understand that abstract policy targets
+        (like "NEXT") should match resolved transition targets (like "NEXT.md").
+        """
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-explicit-abstract-policy"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create START.md with policy using abstract name (no .md extension)
+        start_file = Path(scope_dir) / "START.md"
+        start_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT }
+---
+# Start
+Go to NEXT state.""")
+
+        # Create NEXT.md (file exists with .md extension)
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("NEXT_PROMPT")
+
+        prompts_sent = []
+
+        def mock_wrap_stream(prompt, **kwargs):
+            prompts_sent.append(prompt)
+            if len(prompts_sent) == 1:
+                # LLM explicitly emits <goto>NEXT</goto> (abstract name, matching policy)
+                output = [{"type": "content", "text": "Going to next\n<goto>NEXT</goto>", "session_id": "session_1"}]
+            else:
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+
+        # This should NOT raise PolicyViolationError
+        # The abstract policy target "NEXT" should match the resolved target "NEXT.md"
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify the transition worked correctly
+        assert len(prompts_sent) == 2, f"Expected 2 invocations, got {len(prompts_sent)}"
+        assert "NEXT_PROMPT" in prompts_sent[1], (
+            f"Second invocation should use NEXT.md (resolved from explicit 'NEXT'), "
+            f"but got: {prompts_sent[1][:100]}"
+        )
+
 
 class TestScriptStateDispatch:
     """Tests for script state dispatch in step_agent() (Step 4.1).

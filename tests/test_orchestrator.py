@@ -417,9 +417,104 @@ This state allows goto to NEXT.md.""")
         with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_factory):
             # Should complete successfully (no policy = no restrictions)
             await run_all_agents(workflow_id, state_dir=str(state_dir))
-            
+
             # Verify wrap_claude_code_stream was called
             assert call_count[0] > 0
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_target_with_policy_triggers_reminder(self, tmp_path):
+        """Test that non-existent target triggers reminder when policy has allowed_transitions.
+
+        This is a regression test for a bug where emitting a transition to a non-existent
+        target would crash immediately instead of triggering the reminder prompt mechanism.
+        If the policy has allowed_transitions, the LLM should get a chance to retry.
+        """
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-policy-nonexistent"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create prompt file with policy that only allows goto to NEXT
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("""---
+allowed_transitions:
+  - { tag: goto, target: NEXT }
+---
+# Start Prompt
+This state only allows goto to NEXT.""")
+
+        # Create NEXT.md (the valid target)
+        next_file = Path(scope_dir) / "NEXT.md"
+        next_file.write_text("Next prompt")
+
+        call_count = [0]
+
+        def mock_wrap_stream(prompt, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call: emit invalid target (non-existent state "5")
+                output = [{"type": "content", "text": "Going to 5\n<goto>5</goto>", "session_id": "session_1"}]
+            elif call_count[0] == 2:
+                # Second call (after reminder): emit valid target
+                output = [{"type": "content", "text": "Going to NEXT\n<goto>NEXT</goto>", "session_id": "session_1"}]
+            else:
+                # Third call from NEXT.md: result
+                output = [{"type": "content", "text": "Done\n<result>Complete</result>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
+            # Should complete successfully after retry
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        # Verify LLM was called 3 times: invalid target, valid retry, result from NEXT
+        assert call_count[0] == 3, (
+            f"Expected 3 calls (invalid target, retry with valid target, result), "
+            f"got {call_count[0]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_target_without_policy_crashes(self, tmp_path):
+        """Test that non-existent target without policy crashes immediately.
+
+        When there's no policy (no allowed_transitions), a non-existent target
+        should raise FileNotFoundError without retry.
+        """
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-no-policy-nonexistent"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        # Create initial state
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        # Create prompt file WITHOUT policy
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("# Start Prompt\nNo policy restrictions.")
+
+        def mock_wrap_stream(prompt, **kwargs):
+            # Emit invalid target (non-existent state)
+            output = [{"type": "content", "text": "Going to NONEXISTENT\n<goto>NONEXISTENT</goto>", "session_id": "session_1"}]
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
+            # Should raise FileNotFoundError immediately (no retry)
+            with pytest.raises(FileNotFoundError, match="State 'NONEXISTENT' not found"):
+                await run_all_agents(workflow_id, state_dir=str(state_dir))
 
 
 class TestImplicitTransitions:

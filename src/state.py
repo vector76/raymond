@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+from .config import find_raymond_dir
+
 
 class StateFileError(Exception):
     """Raised when state file operations fail."""
@@ -14,15 +16,23 @@ class StateFileError(Exception):
 def get_state_dir(state_dir: Optional[str] = None) -> Path:
     """Get the state directory path.
     
+    Uses project-based .raymond directory location (searches upward until .git found).
+    If state_dir is provided, uses that instead (primarily for testing).
+    
     Args:
-        state_dir: Optional custom state directory. If None, uses default.
+        state_dir: Optional custom state directory. If None, uses project-based default.
         
     Returns:
         Path object for the state directory
     """
     if state_dir is None:
-        # Default: .raymond/state in current working directory
-        return Path(".raymond") / "state"
+        # Default: .raymond/state at project root (searches upward until .git found)
+        cwd = Path.cwd()
+        raymond_dir = find_raymond_dir(cwd, create_if_missing=True)
+        if raymond_dir is None:
+            # Fallback to CWD if search fails (shouldn't happen with create_if_missing=True)
+            raymond_dir = Path(".raymond")
+        return raymond_dir / "state"
     return Path(state_dir)
 
 

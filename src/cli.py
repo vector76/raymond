@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .config import load_config, merge_config_and_args, init_config, ConfigError
 from .orchestrator import run_all_agents
 from .state import (
     create_initial_state,
@@ -408,6 +409,11 @@ Examples:
         default=None,
         help="Custom state directory (default: .raymond/state)",
     )
+    global_group.add_argument(
+        "--init-config",
+        action="store_true",
+        help="Generate a new .raymond/config.toml file with all options commented out",
+    )
     
     return parser
 
@@ -417,7 +423,12 @@ def main() -> int:
     parser = create_parser()
     args = parser.parse_args()
     
-    # Determine which mode we're in
+    # Handle --init-config command (early exit, doesn't need config loading)
+    if args.init_config:
+        return init_config()
+    
+    # Determine which mode we're in BEFORE config merge
+    # (so we check CLI-provided values, not config-merged values)
     has_file = args.initial_file is not None
     has_mgmt_cmd = args.list or args.status or args.resume or args.recover
     has_start_opts = args.workflow_id or args.no_run or args.budget is not None or args.initial_input is not None
@@ -433,6 +444,14 @@ def main() -> int:
             print("Error: --workflow-id, --no-run, --budget, and --input are only valid when starting a workflow", file=sys.stderr)
         else:
             print("Error: --workflow-id, --no-run, --budget, and --input require a FILE argument", file=sys.stderr)
+        return 1
+    
+    # Load and merge configuration file (if present)
+    try:
+        config = load_config()
+        args = merge_config_and_args(config, args)
+    except ConfigError as e:
+        print(f"Error: {e}", file=sys.stderr)
         return 1
     
     # Dispatch to appropriate handler

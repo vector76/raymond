@@ -99,18 +99,7 @@ The `.raymond` directory location follows the same search policy as the config f
 - If `.raymond` directory doesn't exist yet, it will be created at the project root when needed (for state files, debug files, or config generation)
 - For normal operation, if `.raymond` directory doesn't exist, defaults are used (no config file found)
 
-**Current Behavior (to be updated):**
-Currently, the `.raymond` directory is created relative to the current working directory (`Path(".raymond") / "state"` in `src/state.py`). This means:
-- If you run `raymond` from `/project/subdir/`, the `.raymond` directory is created at `/project/subdir/.raymond/`
-- This is CWD-based, not project-based
-
-**New Behavior:**
-The `.raymond` directory location will be updated to use the same upward search policy:
-- Search upward from CWD until `.git` directory is found (or filesystem root)
-- Create `.raymond` directory at the project root (where `.git` is found)
-- If no `.git` directory is found, use current working directory
-- This makes it project-based rather than CWD-based
-- All `.raymond` contents (config, state, debug) will be in the same project-based location
+**Implementation Note:** This behavior is implemented in `src/config.py` and `src/state.py`.
 
 **⚠️ Breaking Change Note:**
 This change to `.raymond` directory location is a **breaking change** for existing workflows:
@@ -408,12 +397,15 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
   - Missing `[raymond]` section returns empty dict (uses defaults)
 - Test case where `.raymond` exists but is a file (not directory) - should continue searching
 
-## Migration Path
+## Implementation Status
 
-1. Implement config file loading (optional, non-breaking for config feature)
-2. Update `.raymond` directory location to be project-based (⚠️ **breaking change** for existing workflows)
-3. Document in README/wiki
-4. Users can adopt config files gradually
-5. **Breaking change**: Existing workflows with CWD-based `.raymond` directories will need migration
-   - Manually move `.raymond` directories to project root
-   - Or provide migration tool/script to automate the move
+**Implemented in:**
+- `src/config.py` - Configuration loading, validation, and merging
+- `src/state.py` - Updated to use project-based `.raymond` directory location
+- `src/cli.py` - `--init-config` command and config integration
+- `tests/test_config.py` - Comprehensive test coverage
+
+**Migration Notes:**
+- Existing workflows with CWD-based `.raymond` directories will not be found in the new project-based location
+- Users may need to manually move `.raymond` directories to project root
+- Users can adopt config files gradually using `raymond --init-config`

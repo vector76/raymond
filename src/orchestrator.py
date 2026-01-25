@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import traceback
+from contextlib import aclosing
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -1619,114 +1620,116 @@ async def step_agent(
                 use_fork = False
             
             # Stream JSON objects from Claude Code
-            async for json_obj in wrap_claude_code_stream(
+            # Use aclosing to ensure generator cleanup even if exception is raised
+            async with aclosing(wrap_claude_code_stream(
                 prompt,
                 model=model_to_use,
                 session_id=use_session_id,
                 timeout=timeout,
                 dangerously_skip_permissions=dangerously_skip_permissions,
                 fork=use_fork
-            ):
-                # Append to results list (needed for text/cost extraction later)
-                results.append(json_obj)
-                
-                # Extract session_id from JSON objects if present (do this early)
-                # Claude Code may output session_id in various formats
-                if isinstance(json_obj, dict):
-                    if "session_id" in json_obj:
-                        new_session_id = json_obj["session_id"]
-                    # Also check for nested session_id (e.g., in metadata)
-                    elif "metadata" in json_obj and isinstance(json_obj["metadata"], dict):
-                        if "session_id" in json_obj["metadata"]:
-                            new_session_id = json_obj["metadata"]["session_id"]
-                
-                # Check for limit error (non-retryable)
-                # Claude Code returns type="result" with is_error=true when hitting usage limits
-                if isinstance(json_obj, dict):
-                    if (json_obj.get("type") == "result" and 
-                        json_obj.get("is_error") is True and 
-                        isinstance(json_obj.get("result"), str) and
-                        "hit your limit" in json_obj.get("result", "").lower()):
-                        limit_message = json_obj.get("result", "Claude Code usage limit reached")
-                        logger.error(
-                            f"Claude Code limit reached for agent {agent_id}: {limit_message}",
-                            extra={
-                                "workflow_id": workflow_id,
-                                "agent_id": agent_id,
-                                "current_state": current_state,
-                                "limit_message": limit_message
-                            }
-                        )
-                        # Save error information
-                        save_error_response(
-                            workflow_id=workflow_id,
-                            agent_id=agent_id,
-                            error=ClaudeCodeLimitError(limit_message),
-                            output_text=limit_message,
-                            raw_results=results,
-                            session_id=new_session_id or session_id or fork_session_id,
-                            current_state=current_state,
-                            state_dir=state_dir
-                        )
-                        raise ClaudeCodeLimitError(limit_message)
-                
-                # Progressive write to debug file
-                # Wrapped in try/except because debug operations should not fail the workflow
-                if debug_filepath is not None:
-                    try:
-                        append_claude_output_line(debug_filepath, json_obj)
-                    except OSError as e:
-                        logger.warning(f"Failed to append Claude output for debug: {e}")
-                
-                # Process stream for console output
-                # Wrap in try/except to prevent console output failures from crashing workflow
-                try:
+            )) as stream:
+                async for json_obj in stream:
+                    # Append to results list (needed for text/cost extraction later)
+                    results.append(json_obj)
+                    
+                    # Extract session_id from JSON objects if present (do this early)
+                    # Claude Code may output session_id in various formats
                     if isinstance(json_obj, dict):
-                        # Assistant messages (text and tool invocations)
-                        if json_obj.get("type") == "assistant" and "message" in json_obj:
-                            message = json_obj.get("message", {})
-                            content = message.get("content", [])
-                            if isinstance(content, list):
-                                for item in content:
-                                    if isinstance(item, dict):
-                                        if item.get("type") == "text":
-                                            # Display first line or ~80 chars of text as progress
-                                            text = item.get("text", "")
-                                            if text:
-                                                first_line = text.split('\n')[0]
-                                                display_text = first_line[:80] + ("..." if len(first_line) > 80 else "")
-                                                reporter.progress_message(agent_id, display_text)
-                                        elif item.get("type") == "tool_use":
-                                            # Display tool invocation
-                                            tool_name = item.get("name", "unknown")
-                                            tool_input = item.get("input", {})
-                                            detail = None
-                                            
-                                            # Show relevant detail for common tools
-                                            if tool_name in ("Read", "Write", "Edit") and "file_path" in tool_input:
-                                                detail = Path(tool_input["file_path"]).name  # filename only
-                                            elif tool_name == "Bash" and "command" in tool_input:
-                                                cmd = tool_input["command"]
-                                                detail = cmd[:40] + ("..." if len(cmd) > 40 else "")
-                                            
-                                            reporter.tool_invocation(agent_id, tool_name, detail)
-                        
-                        # Tool errors (from user messages)
-                        elif json_obj.get("type") == "user":
-                            message = json_obj.get("message", {})
-                            content = message.get("content", [])
-                            if isinstance(content, list):
-                                for item in content:
-                                    if isinstance(item, dict) and item.get("type") == "tool_result" and item.get("is_error"):
-                                        error_msg = item.get("content", "Tool error")
-                                        # Extract error message (may be wrapped in <tool_use_error> tags)
-                                        if "<tool_use_error>" in error_msg:
-                                            error_msg = error_msg.split("<tool_use_error>")[1].split("</tool_use_error>")[0]
-                                        # tool_error will automatically use the last tool invocation
-                                        reporter.tool_error(agent_id, error_msg)
-                except Exception as e:
-                    # Console output failures should not crash the workflow
-                    logger.warning(f"Failed to process console output: {e}")
+                        if "session_id" in json_obj:
+                            new_session_id = json_obj["session_id"]
+                        # Also check for nested session_id (e.g., in metadata)
+                        elif "metadata" in json_obj and isinstance(json_obj["metadata"], dict):
+                            if "session_id" in json_obj["metadata"]:
+                                new_session_id = json_obj["metadata"]["session_id"]
+                    
+                    # Check for limit error (non-retryable)
+                    # Claude Code returns type="result" with is_error=true when hitting usage limits
+                    if isinstance(json_obj, dict):
+                        if (json_obj.get("type") == "result" and 
+                            json_obj.get("is_error") is True and 
+                            isinstance(json_obj.get("result"), str) and
+                            "hit your limit" in json_obj.get("result", "").lower()):
+                            limit_message = json_obj.get("result", "Claude Code usage limit reached")
+                            logger.error(
+                                f"Claude Code limit reached for agent {agent_id}: {limit_message}",
+                                extra={
+                                    "workflow_id": workflow_id,
+                                    "agent_id": agent_id,
+                                    "current_state": current_state,
+                                    "limit_message": limit_message
+                                }
+                            )
+                            # Save error information
+                            save_error_response(
+                                workflow_id=workflow_id,
+                                agent_id=agent_id,
+                                error=ClaudeCodeLimitError(limit_message),
+                                output_text=limit_message,
+                                raw_results=results,
+                                session_id=new_session_id or session_id or fork_session_id,
+                                current_state=current_state,
+                                state_dir=state_dir
+                            )
+                            raise ClaudeCodeLimitError(limit_message)
+                    
+                    # Progressive write to debug file
+                    # Wrapped in try/except because debug operations should not fail the workflow
+                    if debug_filepath is not None:
+                        try:
+                            append_claude_output_line(debug_filepath, json_obj)
+                        except OSError as e:
+                            logger.warning(f"Failed to append Claude output for debug: {e}")
+                    
+                    # Process stream for console output
+                    # Wrap in try/except to prevent console output failures from crashing workflow
+                    try:
+                        if isinstance(json_obj, dict):
+                            # Assistant messages (text and tool invocations)
+                            if json_obj.get("type") == "assistant" and "message" in json_obj:
+                                message = json_obj.get("message", {})
+                                content = message.get("content", [])
+                                if isinstance(content, list):
+                                    for item in content:
+                                        if isinstance(item, dict):
+                                            if item.get("type") == "text":
+                                                # Display first line or ~80 chars of text as progress
+                                                text = item.get("text", "")
+                                                if text:
+                                                    first_line = text.split('\n')[0]
+                                                    display_text = first_line[:80] + ("..." if len(first_line) > 80 else "")
+                                                    reporter.progress_message(agent_id, display_text)
+                                            elif item.get("type") == "tool_use":
+                                                # Display tool invocation
+                                                tool_name = item.get("name", "unknown")
+                                                tool_input = item.get("input", {})
+                                                detail = None
+                                                
+                                                # Show relevant detail for common tools
+                                                if tool_name in ("Read", "Write", "Edit") and "file_path" in tool_input:
+                                                    detail = Path(tool_input["file_path"]).name  # filename only
+                                                elif tool_name == "Bash" and "command" in tool_input:
+                                                    cmd = tool_input["command"]
+                                                    detail = cmd[:40] + ("..." if len(cmd) > 40 else "")
+                                                
+                                                reporter.tool_invocation(agent_id, tool_name, detail)
+                            
+                            # Tool errors (from user messages)
+                            elif json_obj.get("type") == "user":
+                                message = json_obj.get("message", {})
+                                content = message.get("content", [])
+                                if isinstance(content, list):
+                                    for item in content:
+                                        if isinstance(item, dict) and item.get("type") == "tool_result" and item.get("is_error"):
+                                            error_msg = item.get("content", "Tool error")
+                                            # Extract error message (may be wrapped in <tool_use_error> tags)
+                                            if "<tool_use_error>" in error_msg:
+                                                error_msg = error_msg.split("<tool_use_error>")[1].split("</tool_use_error>")[0]
+                                            # tool_error will automatically use the last tool invocation
+                                            reporter.tool_error(agent_id, error_msg)
+                    except Exception as e:
+                        # Console output failures should not crash the workflow
+                        logger.warning(f"Failed to process console output: {e}")
             
             logger.debug(
                 f"Claude Code invocation completed for agent {agent_id}",

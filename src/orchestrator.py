@@ -1956,35 +1956,59 @@ async def step_agent(
             # explicit ("NEXT.md") state references
             try:
                 transition = _resolve_transition_targets(transition, scope_dir)
-            except FileNotFoundError as e:
-                # Target doesn't exist - will be raised properly in handler
-                # but we can fail fast here with better context
-                save_error_response(
-                    workflow_id=workflow_id,
-                    agent_id=agent_id,
-                    error=e,
-                    output_text=output_text,
-                    raw_results=results,
-                    session_id=new_session_id,
-                    current_state=current_state,
-                    state_dir=state_dir
-                )
-                e._error_saved = True
-                raise
-            except ValueError as e:
-                # Ambiguous state name or other resolution error
-                save_error_response(
-                    workflow_id=workflow_id,
-                    agent_id=agent_id,
-                    error=e,
-                    output_text=output_text,
-                    raw_results=results,
-                    session_id=new_session_id,
-                    current_state=current_state,
-                    state_dir=state_dir
-                )
-                e._error_saved = True
-                raise
+            except (FileNotFoundError, ValueError) as e:
+                # Target doesn't exist or is ambiguous
+                # If policy has allowed_transitions, give the LLM a chance to retry
+                if should_use_reminder_prompt(policy):
+                    reminder_attempt += 1
+                    error_type = "Target resolution error"
+                    try:
+                        reporter.error(agent_id, f"{error_type}: {str(e)} - retrying ({reminder_attempt}/{MAX_REMINDER_ATTEMPTS})")
+                    except Exception as e2:
+                        logger.warning(f"Failed to display error message: {e2}")
+                    logger.warning(
+                        f"{error_type} for agent {agent_id} in state {current_state}: {e}. "
+                        f"Re-prompting with reminder (attempt {reminder_attempt})",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent_id,
+                            "current_state": current_state,
+                            "transition_tag": transition.tag,
+                            "transition_target": transition.target,
+                            "reminder_attempt": reminder_attempt
+                        }
+                    )
+                    if reminder_attempt >= MAX_REMINDER_ATTEMPTS:
+                        # Too many reminder attempts - terminate
+                        save_error_response(
+                            workflow_id=workflow_id,
+                            agent_id=agent_id,
+                            error=e,
+                            output_text=output_text,
+                            raw_results=results,
+                            session_id=new_session_id,
+                            current_state=current_state,
+                            state_dir=state_dir
+                        )
+                        e._error_saved = True
+                        raise
+                    # Reset transition and continue loop to re-prompt with reminder
+                    transition = None
+                    continue
+                else:
+                    # No reminder available - terminate with error
+                    save_error_response(
+                        workflow_id=workflow_id,
+                        agent_id=agent_id,
+                        error=e,
+                        output_text=output_text,
+                        raw_results=results,
+                        session_id=new_session_id,
+                        current_state=current_state,
+                        state_dir=state_dir
+                    )
+                    e._error_saved = True
+                    raise
             
             # Validate transition against state policy (if policy exists)
             # Policy violations can also trigger reminder prompts if allowed_transitions are defined

@@ -6,11 +6,16 @@ for per-state transition restrictions.
 import re
 import logging
 import yaml
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from .parsing import Transition
 
 logger = logging.getLogger(__name__)
+
+
+# Supported extensions for state files
+STATE_EXTENSIONS = {'.md', '.sh', '.bat'}
 
 
 @dataclass
@@ -31,6 +36,46 @@ class Policy:
 class PolicyViolationError(ValueError):
     """Raised when a transition violates the state's policy."""
     pass
+
+
+def _targets_match(policy_target: str, transition_target: str) -> bool:
+    """Check if a transition target matches a policy target.
+
+    Handles abstract state names in policies. If the policy target has no
+    extension, it matches any resolved form of that state name.
+
+    Examples:
+        - policy "COUNT" matches transition "COUNT.sh", "COUNT.bat", "COUNT.md"
+        - policy "COUNT.md" matches only transition "COUNT.md"
+        - policy "COUNT.sh" matches only transition "COUNT.sh"
+
+    Args:
+        policy_target: Target specified in policy (may be abstract or explicit)
+        transition_target: Resolved target from transition (always has extension)
+
+    Returns:
+        True if the targets match, False otherwise
+    """
+    # Exact match always works
+    if policy_target == transition_target:
+        return True
+
+    # Check if policy target is abstract (no extension)
+    policy_path = Path(policy_target)
+    policy_ext = policy_path.suffix.lower()
+
+    if policy_ext:
+        # Policy has explicit extension - only exact match allowed (already checked above)
+        return False
+
+    # Policy target is abstract - check if transition matches it
+    # The transition target should be the policy target with a valid extension
+    transition_path = Path(transition_target)
+    transition_stem = transition_path.stem
+    transition_ext = transition_path.suffix.lower()
+
+    # Match if stems are equal and transition has a valid state extension
+    return transition_stem == policy_target and transition_ext in STATE_EXTENSIONS
 
 
 def should_use_reminder_prompt(policy: Optional[Policy]) -> bool:
@@ -174,19 +219,23 @@ def validate_transition_policy(transition: Transition, policy: Optional[Policy])
             return  # Match found
         
         # Check target matches (if specified in policy)
+        # Use _targets_match to allow abstract policy targets (e.g., "COUNT")
+        # to match resolved transition targets (e.g., "COUNT.sh")
         if "target" in allowed:
-            if allowed["target"] != transition.target:
+            if not _targets_match(allowed["target"], transition.target):
                 continue
-        
+
         # Check all other attributes match
-        # For call/function: check return attribute
+        # For call/function: check return attribute (also a state reference)
         if "return" in allowed:
-            if transition.attributes.get("return") != allowed["return"]:
+            transition_return = transition.attributes.get("return", "")
+            if not _targets_match(allowed["return"], transition_return):
                 continue
-        
-        # For fork: check next attribute
+
+        # For fork: check next attribute (also a state reference)
         if "next" in allowed:
-            if transition.attributes.get("next") != allowed["next"]:
+            transition_next = transition.attributes.get("next", "")
+            if not _targets_match(allowed["next"], transition_next):
                 continue
         
         # All checks passed - this is a valid transition

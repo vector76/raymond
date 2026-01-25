@@ -479,6 +479,130 @@ class TestValidateTransitionPolicy:
         )
 
 
+class TestAbstractTargetMatching:
+    """Tests for abstract target matching in policy validation.
+
+    Abstract targets (without extension) in policies should match
+    resolved targets with any valid state extension (.md, .sh, .bat).
+    """
+
+    def test_abstract_policy_target_matches_md_extension(self):
+        """Test that abstract policy target matches .md resolved target."""
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "COUNT"}  # Abstract, no extension
+            ]
+        )
+        transition = Transition(tag="goto", target="COUNT.md", attributes={}, payload="")
+
+        # Should not raise - COUNT matches COUNT.md
+        validate_transition_policy(transition, policy)
+
+    def test_abstract_policy_target_matches_sh_extension(self):
+        """Test that abstract policy target matches .sh resolved target."""
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "COUNT"}  # Abstract, no extension
+            ]
+        )
+        transition = Transition(tag="goto", target="COUNT.sh", attributes={}, payload="")
+
+        # Should not raise - COUNT matches COUNT.sh
+        validate_transition_policy(transition, policy)
+
+    def test_abstract_policy_target_matches_bat_extension(self):
+        """Test that abstract policy target matches .bat resolved target."""
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "COUNT"}  # Abstract, no extension
+            ]
+        )
+        transition = Transition(tag="goto", target="COUNT.bat", attributes={}, payload="")
+
+        # Should not raise - COUNT matches COUNT.bat
+        validate_transition_policy(transition, policy)
+
+    def test_explicit_policy_target_requires_exact_match(self):
+        """Test that explicit policy target requires exact match."""
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "COUNT.md"}  # Explicit .md extension
+            ]
+        )
+        transition = Transition(tag="goto", target="COUNT.sh", attributes={}, payload="")
+
+        # Should raise - COUNT.md does not match COUNT.sh
+        with pytest.raises(PolicyViolationError):
+            validate_transition_policy(transition, policy)
+
+    def test_abstract_policy_target_does_not_match_different_stem(self):
+        """Test that abstract target doesn't match targets with different stem."""
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "goto", "target": "COUNT"}  # Abstract
+            ]
+        )
+        transition = Transition(tag="goto", target="OTHER.md", attributes={}, payload="")
+
+        # Should raise - COUNT does not match OTHER.md
+        with pytest.raises(PolicyViolationError):
+            validate_transition_policy(transition, policy)
+
+    def test_abstract_return_attribute_matches_resolved(self):
+        """Test that abstract return attribute matches resolved target."""
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "call", "target": "RESEARCH", "return": "SUMMARIZE"}
+            ]
+        )
+        transition = Transition(
+            tag="call",
+            target="RESEARCH.md",
+            attributes={"return": "SUMMARIZE.sh"},
+            payload=""
+        )
+
+        # Should not raise - abstract targets match resolved
+        validate_transition_policy(transition, policy)
+
+    def test_abstract_next_attribute_matches_resolved(self):
+        """Test that abstract next attribute matches resolved target."""
+        policy = Policy(
+            allowed_transitions=[
+                {"tag": "fork", "target": "WORKER", "next": "CONTINUE"}
+            ]
+        )
+        transition = Transition(
+            tag="fork",
+            target="WORKER.bat",
+            attributes={"next": "CONTINUE.md"},
+            payload=""
+        )
+
+        # Should not raise - abstract targets match resolved
+        validate_transition_policy(transition, policy)
+
+    def test_abstract_target_does_not_match_invalid_extension(self):
+        """Test that abstract target doesn't match unsupported extensions."""
+        from src.policy import _targets_match
+
+        # .py is not a valid state extension
+        assert _targets_match("COUNT", "COUNT.py") is False
+        # .txt is not a valid state extension
+        assert _targets_match("COUNT", "COUNT.txt") is False
+
+    def test_targets_match_exact_with_extension(self):
+        """Test exact matching when policy has extension."""
+        from src.policy import _targets_match
+
+        # Exact match
+        assert _targets_match("COUNT.md", "COUNT.md") is True
+        # Different extension - no match
+        assert _targets_match("COUNT.md", "COUNT.sh") is False
+        # Different stem - no match
+        assert _targets_match("COUNT.md", "OTHER.md") is False
+
+
 class TestImplicitTransitions:
     """Tests for implicit transition optimization feature."""
 

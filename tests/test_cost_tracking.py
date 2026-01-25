@@ -89,7 +89,7 @@ class TestCostTrackingInState:
         # Read back and verify
         read_state_dict = read_state(workflow_id, state_dir=str(state_dir))
         assert "budget_usd" in read_state_dict
-        assert read_state_dict["budget_usd"] == 1.0  # Default budget
+        assert read_state_dict["budget_usd"] == 10.0  # Default budget
 
     @pytest.mark.asyncio
     async def test_cost_accumulates_across_invocations(self, tmp_path):

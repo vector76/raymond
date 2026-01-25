@@ -157,14 +157,14 @@ def list_workflows(state_dir: Optional[str] = None) -> List[str]:
     return workflows
 
 
-def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str, budget_usd: float = 1.0, initial_input: Optional[str] = None) -> Dict[str, Any]:
+def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str, budget_usd: float = 10.0, initial_input: Optional[str] = None) -> Dict[str, Any]:
     """Create initial state structure for a new workflow.
 
     Args:
         workflow_id: Unique identifier for the workflow
         scope_dir: Directory containing prompt files for this workflow
         initial_state: Initial prompt filename to start from
-        budget_usd: Cost budget limit in USD (default: 1.0)
+        budget_usd: Cost budget limit in USD (default: 10.0)
         initial_input: Optional initial input passed to first state as {{result}}
 
     Returns:

@@ -536,7 +536,7 @@ def _resolve_transition_targets(transition: Transition, scope_dir: str) -> Trans
     )
 
 
-async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = False, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> None:
+async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False) -> None:
     """Run all agents in a workflow until they all terminate.
     
     This is the main orchestrator loop that:
@@ -549,7 +549,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
     Args:
         workflow_id: Unique identifier for the workflow
         state_dir: Optional custom state directory. If None, uses default.
-        debug: If True, enable debug mode (save outputs and log transitions)
+        debug: If True, enable debug mode (save outputs and log transitions). Defaults to True.
         default_model: Optional model to use if not specified in frontmatter
         timeout: Optional timeout in seconds for Claude Code invocations (default: 600)
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
@@ -1553,7 +1553,7 @@ async def step_agent(
             )
         
         # Check budget limit
-        budget_usd = state.get("budget_usd", 1.0)  # Default budget if not set
+        budget_usd = state.get("budget_usd", 10.0)  # Default budget if not set
         total_cost = state.get("total_cost_usd", 0.0)
         
         if total_cost > budget_usd:

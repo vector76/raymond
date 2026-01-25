@@ -194,9 +194,9 @@ invocations.
 ## Cost Budget Limits
 
 **Assumption:** Cost budget limits are specified in the state file when the
-workflow is started, e.g., `{"budget_usd": 1.00}`. The orchestrator tracks
+workflow is started, e.g., `{"budget_usd": 10.00}`. The orchestrator tracks
 `total_cost_usd` in the state file (accumulated from all Claude Code invocations)
-and overrides transitions when the budget is exceeded. Default budget is $1.00
+and overrides transitions when the budget is exceeded. Default budget is $10.00
 if not specified.
 
 **Rationale:** Keeps limits external to the prompt files (which don't change

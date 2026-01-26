@@ -418,3 +418,59 @@ class TestTimeoutPauseBehavior:
             # Verify state file is deleted (agent was removed, not paused)
             state_file = Path(state_dir) / f"{workflow_id}.json"
             assert not state_file.exists(), "State file should be deleted after agent failure"
+
+
+class TestZombieTaskCleanup:
+    """Tests for zombie task cleanup on error exit.
+
+    Note: The cleanup function (_cleanup_running_tasks) is defined as an inner
+    function in run_all_agents, making it difficult to mock directly. These tests
+    verify the behavior indirectly by checking that workflows complete without
+    hanging (which would indicate zombie tasks).
+    """
+
+    @pytest.mark.asyncio
+    async def test_workflow_completes_without_zombie_tasks(self, tmp_path):
+        """Test that a simple workflow completes cleanly without leaving zombie tasks."""
+        from src.orchestrator import run_all_agents
+        from src.state import write_state
+
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        state_dir = str(tmp_path / ".raymond" / "state")
+        Path(state_dir).mkdir(parents=True)
+
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("Test prompt")
+
+        workflow_id = "test-cleanup-workflow"
+        state = {
+            "workflow_id": workflow_id,
+            "scope_dir": scope_dir,
+            "agents": [{
+                "id": "main",
+                "current_state": "START.md",
+                "session_id": None,
+                "stack": []
+            }]
+        }
+
+        write_state(workflow_id, state, state_dir=state_dir)
+
+        # Mock stream that returns a valid result (agent terminates)
+        async def mock_stream_success(*args, **kwargs):
+            yield {
+                "type": "result",
+                "subtype": "success",
+                "result": "<result>Done</result>",
+                "session_id": "test-session"
+            }
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_success):
+            # run_all_agents should complete successfully without hanging
+            await run_all_agents(workflow_id, state_dir=state_dir, quiet=True)
+
+            # Verify workflow completed
+            state_file = Path(state_dir) / f"{workflow_id}.json"
+            assert not state_file.exists(), "State file should be deleted after completion"

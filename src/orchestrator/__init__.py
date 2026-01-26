@@ -3,8 +3,9 @@
 This module provides the orchestration layer for running agent workflows,
 including state execution, transition handling, and error management.
 
-Phase 1 of refactoring: This file re-exports from orchestrator_old.py
-to maintain backward compatibility while the package structure is created.
+Phase 3 of refactoring: Transition handlers have been extracted to transitions.py.
+This file re-exports from both orchestrator_old.py and the new modules
+to maintain backward compatibility.
 
 IMPORTANT: Dependencies that tests patch must be imported FIRST, before
 importing from orchestrator_old. This allows orchestrator_old to import
@@ -24,6 +25,17 @@ from src.console import init_reporter, get_reporter
 
 # Re-export StateFileError with proper name
 StateFileError = StateFileErrorFromState
+
+# Import transition handlers from the new transitions module
+from src.orchestrator.transitions import (
+    handle_goto_transition,
+    handle_reset_transition,
+    handle_function_transition,
+    handle_call_transition,
+    handle_fork_transition,
+    handle_result_transition,
+    apply_transition,
+)
 
 # Now import from orchestrator_old (which imports dependencies from this module)
 from src.orchestrator_old import (
@@ -57,13 +69,6 @@ from src.orchestrator_old import (
     run_all_agents,
     step_agent,
     _step_agent_script,
-    # Transition handlers
-    handle_goto_transition,
-    handle_reset_transition,
-    handle_function_transition,
-    handle_call_transition,
-    handle_fork_transition,
-    handle_result_transition,
     # Internal helper (used by step_agent)
     _resolve_transition_targets,
 )
@@ -107,6 +112,7 @@ __all__ = [
     "handle_call_transition",
     "handle_fork_transition",
     "handle_result_transition",
+    "apply_transition",
     # Internal helper
     "_resolve_transition_targets",
     # Dependencies (for patching in tests)

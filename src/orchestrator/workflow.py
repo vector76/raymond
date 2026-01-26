@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
-def create_debug_directory(workflow_id: str, state_dir: str = None) -> Optional[Path]:
+def _create_debug_directory(workflow_id: str, state_dir: str = None) -> Optional[Path]:
     """Create a debug directory for the workflow.
 
     Creates a timestamped directory under the workflow's scope_dir/.raymond/debug/
@@ -62,9 +62,9 @@ def create_debug_directory(workflow_id: str, state_dir: str = None) -> Optional[
     Returns:
         Path to the debug directory, or None if creation failed
     """
-    # This delegates to the existing create_debug_directory implementation
-    # which is re-exported from orchestrator_old.py via __init__.py
-    return orchestrator.create_debug_directory(workflow_id, state_dir=state_dir)
+    # Import here to avoid circular imports during module loading
+    from src.orchestrator.debug_utils import create_debug_directory
+    return create_debug_directory(workflow_id, state_dir=state_dir)
 
 
 async def _step_agent(
@@ -223,7 +223,7 @@ async def run_all_agents(
     # Create debug directory if debug mode is enabled
     debug_dir = None
     if debug:
-        debug_dir = create_debug_directory(workflow_id, state_dir=state_dir)
+        debug_dir = _create_debug_directory(workflow_id, state_dir=state_dir)
         if debug_dir:
             logger.info(f"Debug mode enabled: {debug_dir}")
         else:

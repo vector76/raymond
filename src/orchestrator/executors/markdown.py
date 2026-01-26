@@ -1,8 +1,7 @@
 """Markdown state executor for Claude Code invocations.
 
 This module contains the MarkdownExecutor class that handles .md states by
-invoking Claude Code. It extracts the logic from the original step_agent()
-function in orchestrator_old.py.
+invoking Claude Code.
 
 MarkdownExecutor is responsible for:
 - Loading and rendering prompt templates

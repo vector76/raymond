@@ -28,7 +28,16 @@ class ConsoleReporter:
     RESET_COLOR = '\033[0m'
     ERROR_COLOR = '\033[31m'  # Red for errors
     WARNING_COLOR = '\033[33m'  # Yellow for warnings
-    
+
+    # Width constants for dynamic truncation
+    MIN_CONTENT_WIDTH = 40   # Minimum characters for truncated content
+    MAX_CONTENT_WIDTH = 160  # Maximum characters for truncated content
+
+    # Prefix lengths for width calculation
+    PREFIX_TREE_BRANCH = 5   # "  ├─ "
+    PREFIX_TOOL_ERROR_BASE = 4  # "  ! "
+    PREFIX_RESULT = 15       # '  ⇒ Result: "' plus closing quote
+
     def __init__(self, quiet: bool = False):
         """Initialize console reporter.
         
@@ -142,13 +151,29 @@ class ConsoleReporter:
         """Truncate message to fit terminal width."""
         if max_width is None:
             max_width = self._terminal_width
-        
+
         if len(message) <= max_width:
             return message
-        
+
         # Leave room for ellipsis
         return message[:max_width - 3] + "..."
-    
+
+    def _available_width(self, prefix_length: int) -> int:
+        """Calculate available width for message content.
+
+        Re-detects terminal width on each call to handle terminal resize.
+        Clamps result between MIN_CONTENT_WIDTH and MAX_CONTENT_WIDTH.
+
+        Args:
+            prefix_length: Length of the prefix before the content
+
+        Returns:
+            Available character width for content
+        """
+        terminal_width = shutil.get_terminal_size().columns
+        available = terminal_width - prefix_length - 2  # 2 = safety margin
+        return max(self.MIN_CONTENT_WIDTH, min(available, self.MAX_CONTENT_WIDTH))
+
     def _print(self, message: str) -> None:
         """Print message to stdout."""
         print(message, flush=True)
@@ -190,11 +215,7 @@ class ConsoleReporter:
         self._print(f"[{timestamp}] Workflow: {workflow_id}")
         self._print(f"[{timestamp}] Scope: {scope_dir}")
         if debug_dir:
-            # Truncate long debug paths for display
-            debug_str = str(debug_dir)
-            if len(debug_str) > 60:
-                debug_str = "..." + debug_str[-57:]
-            self._print(f"[{timestamp}] Debug: {debug_str}")
+            self._print(f"[{timestamp}] Debug: {debug_dir}")
         self._print("")  # Empty line after startup
     
     def workflow_completed(self, total_cost: float) -> None:
@@ -235,7 +256,7 @@ class ConsoleReporter:
         # Ensure context header is displayed if needed
         self._ensure_context(agent_id)
         
-        truncated = self._truncate_message(message, max_width=80)
+        truncated = self._truncate_message(message, max_width=self._available_width(self.PREFIX_TREE_BRANCH))
         self._print(f"  {self.TREE_BRANCH} {truncated}")
     
     def tool_invocation(self, agent_id: str, tool_name: str, detail: Optional[str] = None) -> None:
@@ -276,10 +297,18 @@ class ConsoleReporter:
             last_tool_info = self._last_tool.get(agent_id)
             if last_tool_info:
                 tool_name = last_tool_info[0]
-        
+
+        # Calculate prefix length for dynamic truncation
+        # With tool name: "  ! [ToolName] error: " = 14 + len(tool_name)
+        # Without tool name: "  ! Tool error: " = 16
+        if tool_name:
+            prefix_len = 14 + len(tool_name)
+        else:
+            prefix_len = 16
+
         # Truncate long error messages
-        truncated_error = self._truncate_message(error_message, max_width=60)
-        
+        truncated_error = self._truncate_message(error_message, max_width=self._available_width(prefix_len))
+
         if tool_name:
             error_str = f"! [{tool_name}] error: {truncated_error}"
         else:
@@ -344,7 +373,7 @@ class ConsoleReporter:
             result = result.split("<result>")[1].split("</result>")[0]
         
         # Truncate long results
-        truncated_result = self._truncate_message(result, max_width=60)
+        truncated_result = self._truncate_message(result, max_width=self._available_width(self.PREFIX_RESULT))
         self._print(f"  {self.RESULT_ARROW} Result: \"{truncated_result}\"")
         
         # Clean up state tracking for terminated agent

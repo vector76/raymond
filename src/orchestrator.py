@@ -662,7 +662,28 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
     # Track running tasks by agent ID - ensures exactly one task per agent
     # This makes stale tasks impossible by construction
     running_tasks: Dict[str, asyncio.Task] = {}
-    
+
+    async def _cleanup_running_tasks():
+        """Cancel all running tasks to prevent zombie tasks on error exit.
+
+        IMPORTANT: This function must be called before any 'raise' statement
+        in the main loop to ensure running tasks are properly cancelled.
+        """
+        if not running_tasks:
+            return
+        task_count = len(running_tasks)
+        logger.debug(f"Cleaning up {task_count} running task(s) before exit")
+        for task in list(running_tasks.values()):
+            if not task.done():
+                task.cancel()
+        try:
+            # Wait for all tasks to finish cancellation
+            await asyncio.gather(*running_tasks.values(), return_exceptions=True)
+        except asyncio.CancelledError:
+            # If gather itself is cancelled, tasks are already being cancelled
+            pass
+        running_tasks.clear()
+
     while True:
         agents = state.get("agents", [])
 
@@ -734,10 +755,15 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             break
         
         # Wait for any task to complete
-        done, _ = await asyncio.wait(
-            running_tasks.values(),
-            return_when=asyncio.FIRST_COMPLETED
-        )
+        try:
+            done, _ = await asyncio.wait(
+                running_tasks.values(),
+                return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # Orchestrator is being cancelled (e.g., Ctrl+C) - clean up running tasks
+            await _cleanup_running_tasks()
+            raise
         
         # Process completed tasks
         for task in done:
@@ -1002,6 +1028,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                     },
                     exc_info=True
                 )
+                await _cleanup_running_tasks()
                 raise
             except Exception as e:
                 # Unexpected errors - save error info and re-raise
@@ -1018,8 +1045,9 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                         },
                         exc_info=True
                     )
+                    await _cleanup_running_tasks()
                     raise
-                
+
                 # Error wasn't saved yet - try to extract error context if available
                 error_output_text = ""
                 error_raw_results = []
@@ -1052,9 +1080,10 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                 except Exception as save_error:
                     # Don't fail if we can't save the error
                     logger.warning(f"Failed to save error response: {save_error}")
-                
+
+                await _cleanup_running_tasks()
                 raise
-        
+
         # Write updated state for crash recovery
         write_state(workflow_id, state, state_dir=state_dir)
 

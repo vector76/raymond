@@ -243,3 +243,168 @@ class TestClaudeCodeLimitErrorHandling:
             error_file = error_files[0]
             error_content = error_file.read_text()
             assert "hit your limit" in error_content.lower(), "Error file should contain limit message"
+
+
+class TestTimeoutPauseBehavior:
+    """Tests for timeout pause/resume behavior."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_after_max_retries_pauses_agent(self, tmp_path):
+        """Test that agent is paused (not removed) after max timeout retries."""
+        from src.orchestrator import run_all_agents, MAX_RETRIES
+        from src.state import write_state, read_state
+        from src.cc_wrap import ClaudeCodeTimeoutError
+
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        state_dir = str(tmp_path / ".raymond" / "state")
+        Path(state_dir).mkdir(parents=True)
+
+        # Create a prompt file
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("Test prompt")
+
+        workflow_id = "test-timeout-workflow"
+        state = {
+            "workflow_id": workflow_id,
+            "scope_dir": scope_dir,
+            "agents": [{
+                "id": "main",
+                "current_state": "START.md",
+                "session_id": None,
+                "stack": []
+            }]
+        }
+
+        # Write initial state
+        write_state(workflow_id, state, state_dir=state_dir)
+
+        # Track how many times the stream is called
+        call_count = {"count": 0}
+
+        # Mock wrap_claude_code_stream to always timeout
+        async def mock_stream_timeout(*args, **kwargs):
+            call_count["count"] += 1
+            raise ClaudeCodeTimeoutError("Idle timeout")
+            yield  # Make it a generator (never reached)
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_timeout):
+            # run_all_agents should handle timeout and pause agent after max retries
+            await run_all_agents(workflow_id, state_dir=state_dir, quiet=True)
+
+            # Verify that wrap_claude_code_stream was called MAX_RETRIES times
+            assert call_count["count"] == MAX_RETRIES, f"Expected {MAX_RETRIES} calls, but got {call_count['count']}"
+
+            # Verify state file still exists (not deleted)
+            state_file = Path(state_dir) / f"{workflow_id}.json"
+            assert state_file.exists(), "State file should exist for paused workflow"
+
+            # Verify agent is paused (not removed)
+            final_state = read_state(workflow_id, state_dir=state_dir)
+            assert len(final_state["agents"]) == 1, "Agent should still be in state"
+            assert final_state["agents"][0]["status"] == "paused", "Agent should have status 'paused'"
+            assert "error" in final_state["agents"][0], "Agent should have error message"
+
+    @pytest.mark.asyncio
+    async def test_resume_resets_paused_agent(self, tmp_path):
+        """Test that paused agent is reset and runs after resume."""
+        from src.orchestrator import run_all_agents
+        from src.state import write_state, read_state
+
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        state_dir = str(tmp_path / ".raymond" / "state")
+        Path(state_dir).mkdir(parents=True)
+
+        # Create a prompt file that will complete (via result transition)
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("Test prompt")
+
+        workflow_id = "test-resume-workflow"
+        # Create a state with a paused agent
+        state = {
+            "workflow_id": workflow_id,
+            "scope_dir": scope_dir,
+            "agents": [{
+                "id": "main",
+                "current_state": "START.md",
+                "session_id": "previous-session-123",  # Preserved from before pause
+                "stack": [],
+                "status": "paused",
+                "retry_count": 3,
+                "error": "Claude Code idle timeout"
+            }]
+        }
+
+        # Write initial state (simulating a paused workflow)
+        write_state(workflow_id, state, state_dir=state_dir)
+
+        # Mock wrap_claude_code_stream to succeed with a result transition
+        async def mock_stream_success(*args, **kwargs):
+            yield {
+                "type": "result",
+                "subtype": "success",
+                "result": "<result>Done</result>",
+                "session_id": "new-session-456"
+            }
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_success):
+            # Resume the workflow
+            await run_all_agents(workflow_id, state_dir=state_dir, quiet=True)
+
+            # Verify state file is deleted (workflow completed)
+            state_file = Path(state_dir) / f"{workflow_id}.json"
+            assert not state_file.exists(), "State file should be deleted after completion"
+
+    @pytest.mark.asyncio
+    async def test_non_timeout_error_still_fails(self, tmp_path):
+        """Test that non-timeout errors still fail/remove agent after max retries."""
+        from src.orchestrator import run_all_agents, MAX_RETRIES
+        from src.state import write_state
+
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        state_dir = str(tmp_path / ".raymond" / "state")
+        Path(state_dir).mkdir(parents=True)
+
+        # Create a prompt file
+        prompt_file = Path(scope_dir) / "START.md"
+        prompt_file.write_text("Test prompt")
+
+        workflow_id = "test-nontimeout-workflow"
+        state = {
+            "workflow_id": workflow_id,
+            "scope_dir": scope_dir,
+            "agents": [{
+                "id": "main",
+                "current_state": "START.md",
+                "session_id": None,
+                "stack": []
+            }]
+        }
+
+        # Write initial state
+        write_state(workflow_id, state, state_dir=state_dir)
+
+        # Track how many times the stream is called
+        call_count = {"count": 0}
+
+        # Mock wrap_claude_code_stream to fail with a non-timeout error
+        async def mock_stream_error(*args, **kwargs):
+            call_count["count"] += 1
+            raise RuntimeError("Claude command failed with return code 1")
+            yield  # Make it a generator (never reached)
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_error):
+            # run_all_agents should handle error and remove agent after max retries
+            await run_all_agents(workflow_id, state_dir=state_dir, quiet=True)
+
+            # Verify that wrap_claude_code_stream was called MAX_RETRIES times
+            assert call_count["count"] == MAX_RETRIES, f"Expected {MAX_RETRIES} calls, but got {call_count['count']}"
+
+            # Verify state file is deleted (agent was removed, not paused)
+            state_file = Path(state_dir) / f"{workflow_id}.json"
+            assert not state_file.exists(), "State file should be deleted after agent failure"

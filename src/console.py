@@ -365,7 +365,31 @@ class ConsoleReporter:
         if self._supports_color:
             error_str = f"{self.ERROR_COLOR}{error_str}{self.RESET_COLOR}"
         self._print(f"  {error_str}")
-    
+
+    def agent_paused(self, agent_id: str, reason: str) -> None:
+        """Display agent paused notification.
+
+        Args:
+            agent_id: Agent identifier
+            reason: Reason for pausing (e.g., "timeout")
+        """
+        self._ensure_context(agent_id)
+        pause_str = f"|| Paused: {reason}"
+        if self._supports_color:
+            pause_str = f"{self.WARNING_COLOR}{pause_str}{self.RESET_COLOR}"
+        self._print(f"  {pause_str}")
+
+    def workflow_paused(self, workflow_id: str, total_cost: float, paused_count: int) -> None:
+        """Display workflow paused message.
+
+        Args:
+            workflow_id: Workflow identifier for resume command
+            total_cost: Total cost accumulated across all agents
+            paused_count: Number of paused agents
+        """
+        self._print(f"\nWorkflow paused ({paused_count} agent(s) timed out). Cost: ${total_cost:.4f}")
+        self._print(f"Resume with: raymond --resume {workflow_id}")
+
     def agent_spawned(self, parent_id: str, child_id: str, target_state: str) -> None:
         """Display agent spawn notification (optional, for future use).
         

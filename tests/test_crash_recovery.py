@@ -141,8 +141,59 @@ class TestRecoverWorkflows:
     def test_recover_workflows_handles_nonexistent_state_dir(self, tmp_path):
         """Test that recover_workflows handles nonexistent state directory."""
         state_dir = str(tmp_path / "nonexistent" / "state")
-        
+
         # Directory doesn't exist
         in_progress = recover_workflows(state_dir=state_dir)
-        
+
         assert in_progress == []
+
+    def test_recover_workflows_finds_paused_workflows(self, tmp_path):
+        """Test that recover_workflows finds workflows with paused agents.
+
+        Paused workflows should be recoverable, as they have agents
+        that can be resumed after timeout.
+        """
+        state_dir = str(tmp_path / "state")
+        Path(state_dir).mkdir(parents=True)
+
+        # Create a workflow with a paused agent
+        workflow_id = "paused_workflow"
+        state = {
+            "workflow_id": workflow_id,
+            "scope_dir": str(tmp_path / "workflows" / "test"),
+            "agents": [
+                {
+                    "id": "main",
+                    "current_state": "START.md",
+                    "session_id": "session_123",
+                    "stack": [],
+                    "status": "paused",
+                    "retry_count": 3,
+                    "error": "Claude Code idle timeout"
+                }
+            ]
+        }
+        write_state(workflow_id, state, state_dir=state_dir)
+
+        # Create a workflow with active agents (not paused)
+        workflow2_id = "active_workflow"
+        state2 = {
+            "workflow_id": workflow2_id,
+            "scope_dir": str(tmp_path / "workflows" / "test2"),
+            "agents": [
+                {
+                    "id": "main",
+                    "current_state": "STEP1.md",
+                    "session_id": None,
+                    "stack": []
+                }
+            ]
+        }
+        write_state(workflow2_id, state2, state_dir=state_dir)
+
+        # Recover workflows should find both (paused and active)
+        in_progress = recover_workflows(state_dir=state_dir)
+
+        assert workflow_id in in_progress, "Paused workflow should be recoverable"
+        assert workflow2_id in in_progress, "Active workflow should be recoverable"
+        assert len(in_progress) == 2

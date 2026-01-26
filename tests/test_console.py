@@ -171,10 +171,31 @@ class TestConsoleReporter:
         """Test workflow_completed displays total cost."""
         reporter = ConsoleReporter(quiet=False)
         reporter.workflow_completed(0.1430)
-        
+
         captured = capsys.readouterr()
         assert "Workflow completed" in captured.out
         assert "$0.1430" in captured.out
+
+    def test_agent_paused_displays_notification(self, capsys):
+        """Test agent_paused displays pause notification."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.state_started("main", "START.md")  # Set up context
+        reporter.agent_paused("main", "timeout")
+
+        captured = capsys.readouterr()
+        assert "Paused" in captured.out
+        assert "timeout" in captured.out
+
+    def test_workflow_paused_displays_message_with_workflow_id(self, capsys):
+        """Test workflow_paused displays pause message with workflow ID."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.workflow_paused("test-workflow-123", 0.0567, 2)
+
+        captured = capsys.readouterr()
+        assert "Workflow paused" in captured.out
+        assert "2 agent(s) timed out" in captured.out
+        assert "$0.0567" in captured.out
+        assert "raymond --resume test-workflow-123" in captured.out
 
     def test_script_started_displays_message(self, capsys):
         """Test script_started displays execution message."""

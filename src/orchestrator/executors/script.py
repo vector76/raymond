@@ -94,19 +94,12 @@ class ScriptExecutor:
             fork_attributes=fork_attributes
         )
 
-        # Emit StateStarted event
+        # Emit StateStarted event (ConsoleObserver handles display)
         context.bus.emit(StateStarted(
             agent_id=agent_id,
             state_name=current_state,
             state_type="script",
         ))
-
-        # Display script start via reporter
-        if context.reporter:
-            try:
-                context.reporter.script_started(agent_id, current_state)
-            except Exception as e:
-                logger.warning(f"Failed to display script start: {e}")
 
         logger.info(
             f"Executing script state for agent {agent_id}: {current_state}",
@@ -177,15 +170,6 @@ class ScriptExecutor:
         # Calculate execution time
         end_time = time.perf_counter()
         execution_time_ms = (end_time - start_time) * 1000
-
-        # Display script completion
-        if context.reporter:
-            try:
-                context.reporter.script_completed(
-                    agent_id, script_result.exit_code, execution_time_ms
-                )
-            except Exception as e:
-                logger.warning(f"Failed to display script completion: {e}")
 
         logger.debug(
             f"Script completed for agent {agent_id}: exit_code={script_result.exit_code}",

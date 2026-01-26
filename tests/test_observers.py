@@ -1011,3 +1011,179 @@ class TestObserverIntegration:
 
         debug_observer.close()
         console_observer.close()
+
+
+class TestNoDuplicateConsoleOutput:
+    """Regression tests for duplicate console output bug.
+
+    These tests verify that console output methods are called exactly once
+    per event, preventing the duplicate message bug where each message
+    was displayed twice (once via direct reporter call, once via event).
+
+    The fix removes direct reporter calls from executors - all console
+    output now flows through the event bus to ConsoleObserver.
+    """
+
+    def test_state_started_called_once_per_event(self):
+        """StateStarted event should trigger reporter.state_started() exactly once.
+
+        Regression test: Previously, executors would both emit StateStarted event
+        AND call reporter.state_started() directly, causing duplicate output.
+        """
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        # Emit a single StateStarted event
+        bus.emit(StateStarted(
+            agent_id="main",
+            state_name="START.md",
+            state_type="markdown"
+        ))
+
+        # Should be called exactly once, not twice
+        assert reporter.state_started.call_count == 1
+        reporter.state_started.assert_called_once_with(
+            agent_id="main",
+            state="START.md"
+        )
+
+        observer.close()
+
+    def test_script_started_called_once_per_event(self):
+        """StateStarted (script) event should trigger reporter.script_started() exactly once.
+
+        Regression test: Previously, ScriptExecutor would both emit StateStarted event
+        AND call reporter.script_started() directly, causing duplicate output.
+        """
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        # Emit a single StateStarted event with script type
+        bus.emit(StateStarted(
+            agent_id="main",
+            state_name="CHECK.sh",
+            state_type="script"
+        ))
+
+        # Should be called exactly once, not twice
+        assert reporter.script_started.call_count == 1
+        reporter.script_started.assert_called_once_with(
+            agent_id="main",
+            state="CHECK.sh"
+        )
+
+        observer.close()
+
+    def test_progress_message_called_once_per_event(self):
+        """ProgressMessage event should trigger reporter.progress_message() exactly once.
+
+        Regression test: Previously, _process_stream_for_console would both call
+        reporter.progress_message() AND emit ProgressMessage event, causing duplicate output.
+        """
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        # Emit a single ProgressMessage event
+        bus.emit(ProgressMessage(
+            agent_id="main",
+            message="Processing data..."
+        ))
+
+        # Should be called exactly once, not twice
+        assert reporter.progress_message.call_count == 1
+        reporter.progress_message.assert_called_once_with(
+            agent_id="main",
+            message="Processing data..."
+        )
+
+        observer.close()
+
+    def test_tool_invocation_called_once_per_event(self):
+        """ToolInvocation event should trigger reporter.tool_invocation() exactly once.
+
+        Regression test: Previously, _process_stream_for_console would both call
+        reporter.tool_invocation() AND emit ToolInvocation event, causing duplicate output.
+        """
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        # Emit a single ToolInvocation event
+        bus.emit(ToolInvocation(
+            agent_id="main",
+            tool_name="Read",
+            detail="file.txt"
+        ))
+
+        # Should be called exactly once, not twice
+        assert reporter.tool_invocation.call_count == 1
+        reporter.tool_invocation.assert_called_once_with(
+            agent_id="main",
+            tool_name="Read",
+            detail="file.txt"
+        )
+
+        observer.close()
+
+    def test_state_completed_called_once_per_event(self):
+        """StateCompleted event should trigger reporter.state_completed() exactly once.
+
+        Regression test: Verifies state_completed is only called via event,
+        not directly from executor.
+        """
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        # Emit a single StateCompleted event
+        bus.emit(StateCompleted(
+            agent_id="main",
+            state_name="START.md",
+            cost_usd=0.05,
+            total_cost_usd=0.10,
+            session_id="sess-123",
+            duration_ms=1500
+        ))
+
+        # Should be called exactly once
+        assert reporter.state_completed.call_count == 1
+        reporter.state_completed.assert_called_once_with(
+            agent_id="main",
+            cost=0.05,
+            total_cost=0.10
+        )
+
+        observer.close()
+
+    def test_multiple_events_no_duplication(self):
+        """Multiple sequential events should each trigger their reporter method exactly once.
+
+        This simulates a typical workflow where multiple events are emitted
+        in sequence, verifying no duplication occurs.
+        """
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        # Simulate a typical workflow sequence
+        bus.emit(StateStarted(agent_id="main", state_name="START.md", state_type="markdown"))
+        bus.emit(ProgressMessage(agent_id="main", message="Reading files..."))
+        bus.emit(ToolInvocation(agent_id="main", tool_name="Read", detail="config.json"))
+        bus.emit(ProgressMessage(agent_id="main", message="Processing..."))
+        bus.emit(ToolInvocation(agent_id="main", tool_name="Write", detail="output.txt"))
+        bus.emit(StateCompleted(
+            agent_id="main", state_name="START.md",
+            cost_usd=0.05, total_cost_usd=0.05,
+            session_id="sess-123", duration_ms=2000
+        ))
+
+        # Each method should be called exactly the expected number of times
+        assert reporter.state_started.call_count == 1
+        assert reporter.progress_message.call_count == 2
+        assert reporter.tool_invocation.call_count == 2
+        assert reporter.state_completed.call_count == 1
+
+        observer.close()

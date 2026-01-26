@@ -184,20 +184,20 @@ class TestClaudeCodeLimitErrorHandling:
 
     @pytest.mark.asyncio
     async def test_claude_code_limit_error_no_retry(self, tmp_path):
-        """Test that limit errors are not retried in run_all_agents."""
+        """Test that limit errors pause agent (no retry) and allow resume."""
         from src.orchestrator import run_all_agents
-        from src.state import write_state
-        
+        from src.state import write_state, read_state
+
         scope_dir = str(tmp_path / "workflows" / "test")
         Path(scope_dir).mkdir(parents=True)
-        
+
         state_dir = str(tmp_path / ".raymond" / "state")
         Path(state_dir).mkdir(parents=True)
-        
+
         # Create a prompt file
         prompt_file = Path(scope_dir) / "START.md"
         prompt_file.write_text("Test prompt")
-        
+
         workflow_id = "test-limit-workflow"
         state = {
             "workflow_id": workflow_id,
@@ -209,13 +209,13 @@ class TestClaudeCodeLimitErrorHandling:
                 "stack": []
             }]
         }
-        
+
         # Write initial state
         write_state(workflow_id, state, state_dir=state_dir)
-        
+
         # Track how many times the stream is called (should only be called once, not retried)
         call_count = {"count": 0}
-        
+
         # Mock wrap_claude_code_stream to return limit error JSON
         async def mock_stream_limit_error(*args, **kwargs):
             call_count["count"] += 1
@@ -226,19 +226,29 @@ class TestClaudeCodeLimitErrorHandling:
                 "result": "You've hit your limit · resets 3am (America/Chicago)",
                 "session_id": "test-session"
             }
-        
+
         with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_limit_error):
             # run_all_agents should handle limit error without retrying
             await run_all_agents(workflow_id, state_dir=state_dir, quiet=True)
-            
+
             # Verify that wrap_claude_code_stream was only called once (no retries)
             assert call_count["count"] == 1, f"Expected 1 call (no retries), but got {call_count['count']} calls"
-            
+
+            # Verify state file still exists (workflow is paused, not completed)
+            state_file = Path(state_dir) / f"{workflow_id}.json"
+            assert state_file.exists(), "State file should exist for paused workflow"
+
+            # Verify agent is paused (not removed)
+            final_state = read_state(workflow_id, state_dir=state_dir)
+            assert len(final_state["agents"]) == 1, "Agent should still be in state"
+            assert final_state["agents"][0]["status"] == "paused", "Agent should have status 'paused'"
+            assert "error" in final_state["agents"][0], "Agent should have error message"
+
             # Verify error file was created
             errors_dir = Path(state_dir).parent / "errors"
             error_files = list(errors_dir.glob(f"{workflow_id}_main_*.txt"))
             assert len(error_files) > 0, "Error file should be created for limit error"
-            
+
             # Verify error file contains limit message
             error_file = error_files[0]
             error_content = error_file.read_text()

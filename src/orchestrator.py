@@ -687,7 +687,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             # All agents are paused - exit loop but keep state file for resume
             total_cost = state.get("total_cost_usd", 0.0)
             logger.info(
-                f"Workflow {workflow_id} paused: all {len(paused_agents)} agent(s) timed out",
+                f"Workflow {workflow_id} paused: all {len(paused_agents)} agent(s) paused",
                 extra={
                     "workflow_id": workflow_id,
                     "paused_agent_count": len(paused_agents),
@@ -818,7 +818,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                         if a["id"] != agent_id
                     ]
             except ClaudeCodeLimitError as e:
-                # Handle limit errors (non-retryable) - fail immediately
+                # Handle limit errors with pause/resume behavior (no retries)
                 agent_idx = next(
                     (i for i, a in enumerate(state["agents"]) if a["id"] == agent_id),
                     None
@@ -830,16 +830,16 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                     )
                     continue
                 current_agent = state["agents"][agent_idx]
-                
-                # Display error message (no retry for limit errors)
-                error_msg = f"{str(e)} (limit reached - stopping)"
+
+                # Display error message
+                error_msg = f"{str(e)} (pausing - resume when limit resets)"
                 try:
                     reporter.error(agent_id, error_msg)
                 except Exception as e2:
                     logger.warning(f"Failed to display error message: {e2}")
-                
-                logger.error(
-                    f"Agent {agent_id} hit Claude Code limit: {e}",
+
+                logger.warning(
+                    f"Agent {agent_id} hit Claude Code limit. Pausing for later resume.",
                     extra={
                         "workflow_id": workflow_id,
                         "agent_id": agent_id,
@@ -847,15 +847,17 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                         "error_message": str(e)
                     }
                 )
-                
-                # Mark agent as failed immediately (no retries for limit errors)
-                current_agent["status"] = "failed"
+
+                # Pause agent (no retries, but allow resume later)
+                current_agent["status"] = "paused"
                 current_agent["error"] = str(e)
-                # Remove failed agent from active agents
-                state["agents"] = [
-                    a for a in state["agents"]
-                    if a["id"] != agent_id
-                ]
+                # Keep agent in state (don't remove) - allows resume
+                state["agents"][agent_idx] = current_agent
+                # Display pause notification
+                try:
+                    reporter.agent_paused(agent_id, "usage limit")
+                except Exception as e2:
+                    logger.warning(f"Failed to display pause notification: {e2}")
 
             except ClaudeCodeTimeoutWrappedError as e:
                 # Handle timeout errors with pause/resume behavior

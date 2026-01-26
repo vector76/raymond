@@ -193,7 +193,7 @@ class TestConsoleReporter:
 
         captured = capsys.readouterr()
         assert "Workflow paused" in captured.out
-        assert "2 agent(s) timed out" in captured.out
+        assert "2 agent(s) paused" in captured.out
         assert "$0.0567" in captured.out
         assert "raymond --resume test-workflow-123" in captured.out
 

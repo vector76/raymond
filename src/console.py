@@ -387,7 +387,7 @@ class ConsoleReporter:
             total_cost: Total cost accumulated across all agents
             paused_count: Number of paused agents
         """
-        self._print(f"\nWorkflow paused ({paused_count} agent(s) timed out). Cost: ${total_cost:.4f}")
+        self._print(f"\nWorkflow paused ({paused_count} agent(s) paused). Cost: ${total_cost:.4f}")
         self._print(f"Resume with: raymond --resume {workflow_id}")
 
     def agent_spawned(self, parent_id: str, child_id: str, target_state: str) -> None:

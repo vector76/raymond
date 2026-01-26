@@ -3,8 +3,8 @@
 This module provides the orchestration layer for running agent workflows,
 including state execution, transition handling, and error management.
 
-Phase 6 of refactoring: The workflow loop now uses the new executor-based
-architecture with EventBus for events and Observers for debug/console output.
+Phase 7 of refactoring: Cleanup - removed orchestrator_old.py and consolidated
+all code into the modular architecture.
 
 IMPORTANT: Dependencies that tests patch must be imported FIRST, before
 importing from other modules. This allows modules to import these from
@@ -46,17 +46,11 @@ from src.orchestrator.errors import (
     RecoveryStrategy,
 )
 
-# Import the main workflow function from the workflow module (Phase 6)
+# Import the main workflow function from the workflow module
 from src.orchestrator.workflow import run_all_agents, MAX_RETRIES
 
-# Import from orchestrator_old for backwards compatibility
-# These are debug utilities that are still used
-from src.orchestrator_old import (
-    # Constants
-    MAX_REMINDER_ATTEMPTS,
-    # Cost extraction
-    extract_cost_from_results,
-    # Debug utilities
+# Import debug utilities from the debug_utils module
+from src.orchestrator.debug_utils import (
     create_debug_directory,
     save_claude_output,
     get_claude_output_filepath,
@@ -67,11 +61,24 @@ from src.orchestrator_old import (
     save_error_response,
     save_script_error_response,
     _try_save_script_error,
+)
+
+# Import utility functions from executors
+from src.orchestrator.executors.utils import (
     _extract_state_name,
-    # Internal helpers (for backwards compatibility with tests)
+    _resolve_transition_targets,
+)
+
+# Import cost extraction from markdown executor
+from src.orchestrator.executors.markdown import (
+    extract_cost_from_results,
+    MAX_REMINDER_ATTEMPTS,
+)
+
+# Import backward-compatible step_agent functions
+from src.orchestrator.compat import (
     step_agent,
     _step_agent_script,
-    _resolve_transition_targets,
 )
 
 __all__ = [

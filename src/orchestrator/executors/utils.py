@@ -25,6 +25,10 @@ def extract_state_name(state_filename: str) -> str:
     return state_filename
 
 
+# Alias for backward compatibility with tests that use the underscore-prefixed name
+_extract_state_name = extract_state_name
+
+
 def resolve_transition_targets(transition: Transition, scope_dir: str) -> Transition:
     """Resolve abstract state names in a transition to concrete filenames.
 
@@ -71,3 +75,7 @@ def resolve_transition_targets(transition: Transition, scope_dir: str) -> Transi
         attributes=resolved_attributes,
         payload=transition.payload
     )
+
+
+# Alias for backward compatibility with tests that use the underscore-prefixed name
+_resolve_transition_targets = resolve_transition_targets

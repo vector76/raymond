@@ -1,8 +1,7 @@
 """Script state executor for shell/batch script execution.
 
 This module contains the ScriptExecutor class that handles .sh and .bat states
-by running them as subprocesses. It extracts the logic from the original
-_step_agent_script() function in orchestrator_old.py.
+by running them as subprocesses.
 
 ScriptExecutor is responsible for:
 - Building environment variables for the script

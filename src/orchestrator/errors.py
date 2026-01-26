@@ -10,6 +10,13 @@ StateFileError is re-exported from the state module for convenience.
 from src.state import StateFileError
 
 
+class RecoveryStrategy:
+    """Recovery strategies for handling errors."""
+    RETRY = "retry"
+    SKIP = "skip"
+    ABORT = "abort"
+
+
 class OrchestratorError(Exception):
     """Base exception for orchestrator errors.
 
@@ -70,6 +77,7 @@ class ScriptError(OrchestratorError):
 
 # Re-export for convenience
 __all__ = [
+    'RecoveryStrategy',
     'OrchestratorError',
     'ClaudeCodeError',
     'ClaudeCodeLimitError',

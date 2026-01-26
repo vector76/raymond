@@ -589,6 +589,18 @@ class MarkdownExecutor:
         # No tag and no implicit transition
         if len(transitions) == 0:
             if orchestrator.should_use_reminder_prompt(policy):
+                # Check if max retries exceeded
+                if reminder_attempt + 1 >= MAX_REMINDER_ATTEMPTS:
+                    error = ValueError(
+                        f"Expected exactly one transition, found 0 after {MAX_REMINDER_ATTEMPTS} reminder attempts"
+                    )
+                    self._save_error_response(
+                        workflow_id, agent_id, error, output_text, results,
+                        session_id, current_state, context.state_dir
+                    )
+                    error._error_saved = True
+                    raise error
+
                 if context.reporter:
                     try:
                         context.reporter.error(
@@ -622,6 +634,15 @@ class MarkdownExecutor:
             orchestrator.validate_single_transition(transitions)
         except ValueError as e:
             if orchestrator.should_use_reminder_prompt(policy):
+                # Check if max retries exceeded
+                if reminder_attempt + 1 >= MAX_REMINDER_ATTEMPTS:
+                    self._save_error_response(
+                        workflow_id, agent_id, e, output_text, results,
+                        session_id, current_state, context.state_dir
+                    )
+                    e._error_saved = True
+                    raise
+
                 if context.reporter:
                     try:
                         context.reporter.error(
@@ -656,6 +677,15 @@ class MarkdownExecutor:
             transition = resolve_transition_targets(transition, scope_dir)
         except (FileNotFoundError, ValueError) as e:
             if orchestrator.should_use_reminder_prompt(policy):
+                # Check if max retries exceeded
+                if reminder_attempt + 1 >= MAX_REMINDER_ATTEMPTS:
+                    self._save_error_response(
+                        workflow_id, agent_id, e, output_text, results,
+                        session_id, current_state, context.state_dir
+                    )
+                    e._error_saved = True
+                    raise
+
                 if context.reporter:
                     try:
                         context.reporter.error(
@@ -701,6 +731,15 @@ class MarkdownExecutor:
             orchestrator.validate_transition_policy(transition, policy)
         except orchestrator.PolicyViolationError as e:
             if orchestrator.should_use_reminder_prompt(policy):
+                # Check if max retries exceeded
+                if reminder_attempt + 1 >= MAX_REMINDER_ATTEMPTS:
+                    self._save_error_response(
+                        workflow_id, agent_id, e, output_text, results,
+                        session_id, current_state, context.state_dir
+                    )
+                    e._error_saved = True
+                    raise
+
                 if context.reporter:
                     try:
                         context.reporter.error(

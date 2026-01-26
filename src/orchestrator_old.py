@@ -38,36 +38,17 @@ ScriptTimeoutError = orchestrator.ScriptTimeoutError
 logger = logging.getLogger(__name__)
 
 
-# Custom exception classes for error handling
-class OrchestratorError(Exception):
-    """Base exception for orchestrator errors."""
-    pass
-
-
-class ClaudeCodeError(OrchestratorError):
-    """Raised when Claude Code execution fails."""
-    pass
-
-
-class ClaudeCodeLimitError(ClaudeCodeError):
-    """Raised when Claude Code hits its usage limit. This is a non-retryable error."""
-    pass
-
-
-class ClaudeCodeTimeoutWrappedError(ClaudeCodeError):
-    """Raised when Claude Code times out. Allows pause/resume behavior."""
-    pass
-
-
-class PromptFileError(OrchestratorError):
-    """Raised when prompt file operations fail."""
-    pass
-
-
-class ScriptError(OrchestratorError):
-    """Raised when script execution fails."""
-    pass
-
+# Import error classes from the errors module (Phase 6)
+# This ensures orchestrator_old.py uses the same error classes as the new code
+from src.orchestrator.errors import (
+    OrchestratorError,
+    ClaudeCodeError,
+    ClaudeCodeLimitError,
+    ClaudeCodeTimeoutWrappedError,
+    PromptFileError,
+    ScriptError,
+    RecoveryStrategy,
+)
 
 # Import StateFileError from state module (aliased to avoid conflict)
 StateFileError = StateFileErrorFromState
@@ -95,14 +76,6 @@ def extract_cost_from_results(results: List[Dict[str, Any]]) -> float:
                 if isinstance(cost, (int, float)):
                     return float(cost)
     return 0.0
-
-
-# Recovery strategies
-class RecoveryStrategy:
-    """Recovery strategies for handling errors."""
-    RETRY = "retry"
-    SKIP = "skip"
-    ABORT = "abort"
 
 
 # Default retry configuration

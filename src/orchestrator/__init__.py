@@ -3,18 +3,16 @@
 This module provides the orchestration layer for running agent workflows,
 including state execution, transition handling, and error management.
 
-Phase 3 of refactoring: Transition handlers have been extracted to transitions.py.
-This file re-exports from both orchestrator_old.py and the new modules
-to maintain backward compatibility.
+Phase 6 of refactoring: The workflow loop now uses the new executor-based
+architecture with EventBus for events and Observers for debug/console output.
 
 IMPORTANT: Dependencies that tests patch must be imported FIRST, before
-importing from orchestrator_old. This allows orchestrator_old to import
-these from src.orchestrator, making patches work correctly.
+importing from other modules. This allows modules to import these from
+src.orchestrator, making patches work correctly.
 """
 
 # First, import dependencies that tests may patch.
-# These must be imported BEFORE orchestrator_old to avoid circular import issues.
-# orchestrator_old.py imports these from src.orchestrator (this module).
+# These must be imported BEFORE other orchestrator modules to avoid circular import issues.
 from src.cc_wrap import wrap_claude_code, wrap_claude_code_stream, ClaudeCodeTimeoutError
 from src.state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
 from src.parsing import parse_transitions, validate_single_transition, Transition
@@ -26,7 +24,7 @@ from src.console import init_reporter, get_reporter
 # Re-export StateFileError with proper name
 StateFileError = StateFileErrorFromState
 
-# Import transition handlers from the new transitions module
+# Import transition handlers from the transitions module
 from src.orchestrator.transitions import (
     handle_goto_transition,
     handle_reset_transition,
@@ -37,19 +35,24 @@ from src.orchestrator.transitions import (
     apply_transition,
 )
 
-# Now import from orchestrator_old (which imports dependencies from this module)
-from src.orchestrator_old import (
-    # Exception classes
+# Import error classes from the errors module
+from src.orchestrator.errors import (
     OrchestratorError,
     ClaudeCodeError,
     ClaudeCodeLimitError,
     ClaudeCodeTimeoutWrappedError,
     PromptFileError,
     ScriptError,
-    # Recovery strategy
     RecoveryStrategy,
+)
+
+# Import the main workflow function from the workflow module (Phase 6)
+from src.orchestrator.workflow import run_all_agents, MAX_RETRIES
+
+# Import from orchestrator_old for backwards compatibility
+# These are debug utilities that are still used
+from src.orchestrator_old import (
     # Constants
-    MAX_RETRIES,
     MAX_REMINDER_ATTEMPTS,
     # Cost extraction
     extract_cost_from_results,
@@ -65,11 +68,9 @@ from src.orchestrator_old import (
     save_script_error_response,
     _try_save_script_error,
     _extract_state_name,
-    # Main functions
-    run_all_agents,
+    # Internal helpers (for backwards compatibility with tests)
     step_agent,
     _step_agent_script,
-    # Internal helper (used by step_agent)
     _resolve_transition_targets,
 )
 

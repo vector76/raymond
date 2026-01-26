@@ -554,3 +554,143 @@ class TestConsoleReporter:
         # Verify no header was printed before "After termination" message
         # (since state was cleaned up, _ensure_context returns early)
         assert "Result:" in captured.out
+
+
+class TestDynamicWidth:
+    """Tests for dynamic terminal width handling."""
+
+    def test_available_width_returns_correct_width(self):
+        """Test _available_width calculates correct available width."""
+        reporter = ConsoleReporter(quiet=False)
+        # With a typical terminal width of 80, prefix of 5 and safety margin of 2
+        # available = 80 - 5 - 2 = 73, but clamped to max 160
+        with patch('shutil.get_terminal_size') as mock_size:
+            mock_size.return_value = MagicMock(columns=80)
+            width = reporter._available_width(5)
+            assert width == 73  # 80 - 5 - 2
+
+    def test_available_width_respects_minimum(self):
+        """Test _available_width clamps to MIN_CONTENT_WIDTH on narrow terminals."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch('shutil.get_terminal_size') as mock_size:
+            # Very narrow terminal: 30 columns
+            mock_size.return_value = MagicMock(columns=30)
+            width = reporter._available_width(5)
+            # 30 - 5 - 2 = 23, but should be clamped to minimum of 40
+            assert width == 40
+
+    def test_available_width_respects_maximum(self):
+        """Test _available_width clamps to MAX_CONTENT_WIDTH on wide terminals."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch('shutil.get_terminal_size') as mock_size:
+            # Very wide terminal: 300 columns
+            mock_size.return_value = MagicMock(columns=300)
+            width = reporter._available_width(5)
+            # 300 - 5 - 2 = 293, but should be clamped to maximum of 160
+            assert width == 160
+
+    def test_available_width_at_minimum_boundary(self):
+        """Test _available_width at exact minimum boundary."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch('shutil.get_terminal_size') as mock_size:
+            # Terminal width that produces exactly MIN_CONTENT_WIDTH
+            # 40 + 5 + 2 = 47 columns needed for prefix 5
+            mock_size.return_value = MagicMock(columns=47)
+            width = reporter._available_width(5)
+            assert width == 40
+
+    def test_available_width_at_maximum_boundary(self):
+        """Test _available_width at exact maximum boundary."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch('shutil.get_terminal_size') as mock_size:
+            # Terminal width that produces exactly MAX_CONTENT_WIDTH
+            # 160 + 5 + 2 = 167 columns needed for prefix 5
+            mock_size.return_value = MagicMock(columns=167)
+            width = reporter._available_width(5)
+            assert width == 160
+
+    def test_progress_message_uses_dynamic_width(self, capsys):
+        """Test progress_message uses dynamic terminal width for truncation."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch('shutil.get_terminal_size') as mock_size:
+            # Set a narrow terminal width
+            mock_size.return_value = MagicMock(columns=60)
+            # With prefix of 5 and safety margin of 2, available is 53
+            # But clamped to minimum of 40
+            long_message = "A" * 100
+            reporter.progress_message("main", long_message)
+
+            captured = capsys.readouterr()
+            # Message should be truncated (will have ... suffix)
+            assert "..." in captured.out
+
+    def test_tool_error_uses_dynamic_width(self, capsys):
+        """Test tool_error uses dynamic terminal width for truncation."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch('shutil.get_terminal_size') as mock_size:
+            mock_size.return_value = MagicMock(columns=80)
+            long_error = "E" * 200
+            reporter.tool_error("main", long_error, "Write")
+
+            captured = capsys.readouterr()
+            # Message should be truncated (will have ... suffix)
+            assert "..." in captured.out
+            assert "[Write]" in captured.out
+
+    def test_agent_terminated_uses_dynamic_width(self, capsys):
+        """Test agent_terminated uses dynamic terminal width for truncation."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch('shutil.get_terminal_size') as mock_size:
+            mock_size.return_value = MagicMock(columns=80)
+            long_result = "R" * 200
+            reporter.agent_terminated("main", long_result)
+
+            captured = capsys.readouterr()
+            # Result should be truncated (will have ... suffix)
+            assert "..." in captured.out
+            assert "Result:" in captured.out
+
+    def test_debug_path_not_truncated(self, capsys):
+        """Test long debug paths are not truncated in workflow_started."""
+        reporter = ConsoleReporter(quiet=False)
+        # Create a very long debug path (over 100 characters)
+        long_path = Path("/very/long/path" + "/subdir" * 15 + "/debug")
+        reporter.workflow_started("test-workflow", "/path/to/workflow", long_path)
+
+        captured = capsys.readouterr()
+        assert "Debug:" in captured.out
+        # The full path should appear (not truncated with ...)
+        # Check that the path contains the full "subdir" pattern repeated
+        assert "/subdir" in captured.out
+        # Should not have truncation ellipsis at the start
+        assert "..." not in captured.out.split("Debug:")[1].strip()
+
+    def test_no_hardcoded_width_values(self):
+        """Test that hardcoded width values are removed from truncation calls."""
+        import inspect
+        from src.console import ConsoleReporter
+
+        # Get source code of the relevant methods
+        progress_source = inspect.getsource(ConsoleReporter.progress_message)
+        tool_error_source = inspect.getsource(ConsoleReporter.tool_error)
+        agent_terminated_source = inspect.getsource(ConsoleReporter.agent_terminated)
+
+        # Check that hardcoded max_width values are not present
+        assert "max_width=80" not in progress_source, "progress_message still has hardcoded max_width=80"
+        assert "max_width=60" not in tool_error_source, "tool_error still has hardcoded max_width=60"
+        assert "max_width=60" not in agent_terminated_source, "agent_terminated still has hardcoded max_width=60"
+
+    def test_prefix_constants_defined(self):
+        """Test that prefix constants are defined on ConsoleReporter."""
+        assert hasattr(ConsoleReporter, 'MIN_CONTENT_WIDTH')
+        assert hasattr(ConsoleReporter, 'MAX_CONTENT_WIDTH')
+        assert hasattr(ConsoleReporter, 'PREFIX_TREE_BRANCH')
+        assert hasattr(ConsoleReporter, 'PREFIX_TOOL_ERROR_BASE')
+        assert hasattr(ConsoleReporter, 'PREFIX_RESULT')
+
+        # Verify values
+        assert ConsoleReporter.MIN_CONTENT_WIDTH == 40
+        assert ConsoleReporter.MAX_CONTENT_WIDTH == 160
+        assert ConsoleReporter.PREFIX_TREE_BRANCH == 5
+        assert ConsoleReporter.PREFIX_TOOL_ERROR_BASE == 4
+        assert ConsoleReporter.PREFIX_RESULT == 15

@@ -36,6 +36,11 @@ class ClaudeCodeLimitError(ClaudeCodeError):
     pass
 
 
+class ClaudeCodeTimeoutWrappedError(ClaudeCodeError):
+    """Raised when Claude Code times out. Allows pause/resume behavior."""
+    pass
+
+
 class PromptFileError(OrchestratorError):
     """Raised when prompt file operations fail."""
     pass
@@ -630,6 +635,19 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
     
     # Read state to get scope_dir for console output
     state = read_state(workflow_id, state_dir=state_dir)
+
+    # Reset paused agents on resume (allows them to run again)
+    for agent in state.get("agents", []):
+        if agent.get("status") == "paused":
+            agent.pop("status", None)
+            agent.pop("retry_count", None)
+            agent.pop("error", None)
+            # Keep session_id for Claude Code --resume
+            logger.info(
+                f"Reset paused agent {agent['id']} for resume",
+                extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
+            )
+
     scope_dir = state.get("scope_dir", "unknown")
     
     # Display workflow startup information
@@ -646,8 +664,10 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
     running_tasks: Dict[str, asyncio.Task] = {}
     
     while True:
+        agents = state.get("agents", [])
+
         # Exit if no agents remain
-        if not state.get("agents", []):
+        if not agents:
             logger.info(f"Workflow {workflow_id} completed: no agents remaining")
             # Display workflow completion
             total_cost = state.get("total_cost_usd", 0.0)
@@ -660,27 +680,51 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             delete_state(workflow_id, state_dir=state_dir)
             logger.debug(f"Deleted state file for completed workflow: {workflow_id}")
             break
-        
+
+        # Check if all remaining agents are paused
+        paused_agents = [a for a in agents if a.get("status") == "paused"]
+        if len(paused_agents) == len(agents):
+            # All agents are paused - exit loop but keep state file for resume
+            total_cost = state.get("total_cost_usd", 0.0)
+            logger.info(
+                f"Workflow {workflow_id} paused: all {len(paused_agents)} agent(s) timed out",
+                extra={
+                    "workflow_id": workflow_id,
+                    "paused_agent_count": len(paused_agents),
+                    "total_cost": total_cost
+                }
+            )
+            try:
+                reporter.workflow_paused(workflow_id, total_cost, len(paused_agents))
+            except Exception as e:
+                logger.warning(f"Failed to display workflow paused message: {e}")
+            # Save state file for resume (don't delete)
+            write_state(workflow_id, state, state_dir=state_dir)
+            break
+
         logger.debug(
-            f"Workflow {workflow_id}: {len(state['agents'])} agent(s) active, "
+            f"Workflow {workflow_id}: {len(agents)} agent(s) active, "
             f"{len(running_tasks)} task(s) running",
             extra={
                 "workflow_id": workflow_id,
-                "agent_count": len(state["agents"]),
+                "agent_count": len(agents),
                 "running_task_count": len(running_tasks)
             }
         )
-        
+
         # Create tasks only for agents that don't already have a running task
+        # Skip paused agents - they are waiting for resume
         # This ensures exactly one task per agent at any time
-        for agent in state["agents"]:
+        for agent in agents:
             agent_id = agent["id"]
+            if agent.get("status") == "paused":
+                continue  # Skip paused agents
             if agent_id not in running_tasks:
                 task = asyncio.create_task(step_agent(
                     agent, state, state_dir, debug_dir, agent_step_counters, default_model, timeout, dangerously_skip_permissions, quiet
                 ))
                 running_tasks[agent_id] = task
-        
+
         # If no tasks are running, we're stuck (shouldn't happen normally)
         if not running_tasks:
             logger.warning(
@@ -812,7 +856,76 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                     a for a in state["agents"]
                     if a["id"] != agent_id
                 ]
-                    
+
+            except ClaudeCodeTimeoutWrappedError as e:
+                # Handle timeout errors with pause/resume behavior
+                agent_idx = next(
+                    (i for i, a in enumerate(state["agents"]) if a["id"] == agent_id),
+                    None
+                )
+                if agent_idx is None:
+                    logger.warning(
+                        f"Agent {agent_id} not found in state during error handling",
+                        extra={"workflow_id": workflow_id, "agent_id": agent_id}
+                    )
+                    continue
+                current_agent = state["agents"][agent_idx]
+
+                # Increment retry counter
+                retry_count = current_agent.get("retry_count", 0) + 1
+                current_agent["retry_count"] = retry_count
+
+                logger.warning(
+                    f"Agent {agent_id} timeout (attempt {retry_count}/{MAX_RETRIES}): {e}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "error_type": type(e).__name__,
+                        "retry_count": retry_count,
+                        "max_retries": MAX_RETRIES,
+                        "error_message": str(e)
+                    }
+                )
+
+                if retry_count >= MAX_RETRIES:
+                    # Max retries exceeded - pause agent instead of removing
+                    logger.warning(
+                        f"Agent {agent_id} timed out after {MAX_RETRIES} retries. "
+                        f"Pausing agent for later resume.",
+                        extra={
+                            "workflow_id": workflow_id,
+                            "agent_id": agent_id,
+                            "error_type": type(e).__name__,
+                            "retry_count": retry_count,
+                            "error_message": str(e)
+                        }
+                    )
+                    # Display error message (pausing, not retrying)
+                    error_msg = f"{str(e)} (pausing after {MAX_RETRIES} attempts)"
+                    try:
+                        reporter.error(agent_id, error_msg)
+                    except Exception as e2:
+                        logger.warning(f"Failed to display error message: {e2}")
+                    current_agent["status"] = "paused"
+                    current_agent["error"] = str(e)
+                    # Keep agent in state (don't remove) - allows resume
+                    state["agents"][agent_idx] = current_agent
+                    # Display pause notification
+                    try:
+                        reporter.agent_paused(agent_id, "timeout")
+                    except Exception as e2:
+                        logger.warning(f"Failed to display pause notification: {e2}")
+                else:
+                    # Display error message (will retry)
+                    error_msg = f"{str(e)} - retrying ({retry_count}/{MAX_RETRIES})"
+                    try:
+                        reporter.error(agent_id, error_msg)
+                    except Exception as e2:
+                        logger.warning(f"Failed to display error message: {e2}")
+                    # Keep agent in state for retry (don't advance state)
+                    # A new task will be created in the next loop iteration
+                    state["agents"][agent_idx] = current_agent
+
             except (ClaudeCodeError, PromptFileError) as e:
                 # Handle recoverable errors with retry logic
                 agent_idx = next(
@@ -1762,7 +1875,7 @@ async def step_agent(
                 current_state=current_state,
                 state_dir=state_dir
             )
-            raise ClaudeCodeError(f"Claude Code idle timeout: {e}") from e
+            raise ClaudeCodeTimeoutWrappedError(str(e)) from e
         except RuntimeError as e:
             # Wrap RuntimeError from cc_wrap as ClaudeCodeError
             if "Claude command failed" in str(e):

@@ -9,13 +9,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-from .cc_wrap import wrap_claude_code, wrap_claude_code_stream, ClaudeCodeTimeoutError
-from .state import read_state, write_state, delete_state, StateFileError as StateFileErrorFromState, get_state_dir
-from .prompts import load_prompt, render_prompt, resolve_state, get_state_type
-from .parsing import parse_transitions, validate_single_transition, Transition
-from .policy import validate_transition_policy, PolicyViolationError, can_use_implicit_transition, get_implicit_transition, should_use_reminder_prompt, generate_reminder_prompt
-from .scripts import run_script, build_script_env, ScriptTimeoutError
-from .console import init_reporter, get_reporter
+# Import src.orchestrator as a module to support test patching.
+# Tests patch src.orchestrator.wrap_claude_code_stream etc.
+# By accessing functions via the module (e.g., orchestrator.wrap_claude_code_stream()),
+# patches to the module's namespace are seen by this code.
+# Using "from X import Y" would create a local binding that patches don't affect.
+import src.orchestrator as orchestrator
+
+# Re-export commonly used items at module level for convenience
+# (These are for other code that imports from orchestrator_old, not for internal use)
+ClaudeCodeTimeoutError = orchestrator.ClaudeCodeTimeoutError
+StateFileErrorFromState = orchestrator.StateFileError
+Transition = orchestrator.Transition
+PolicyViolationError = orchestrator.PolicyViolationError
+ScriptTimeoutError = orchestrator.ScriptTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +110,7 @@ def create_debug_directory(workflow_id: str, state_dir: Optional[str] = None) ->
         Path to debug directory, or None if creation fails
     """
     # Determine base directory (same parent as state_dir)
-    state_path = get_state_dir(state_dir)
+    state_path = orchestrator.get_state_dir(state_dir)
     base_dir = state_path.parent  # .raymond/
     
     # Generate timestamp
@@ -341,7 +348,7 @@ def save_error_response(
         Path to the saved error file
     """
     # Create errors directory next to state directory
-    state_path = get_state_dir(state_dir)
+    state_path = orchestrator.get_state_dir(state_dir)
     errors_dir = state_path.parent / "errors"
     errors_dir.mkdir(parents=True, exist_ok=True)
     
@@ -436,7 +443,7 @@ def save_script_error_response(
         Path to the saved error file
     """
     # Create errors directory next to state directory
-    state_path = get_state_dir(state_dir)
+    state_path = orchestrator.get_state_dir(state_dir)
     errors_dir = state_path.parent / "errors"
     errors_dir.mkdir(parents=True, exist_ok=True)
 
@@ -521,7 +528,7 @@ def _try_save_script_error(
     to ensure the original error is always raised, even if error saving fails.
     """
     try:
-        save_script_error_response(
+        orchestrator.save_script_error_response(
             workflow_id=workflow_id,
             agent_id=agent_id,
             error=error,
@@ -577,16 +584,16 @@ def _resolve_transition_targets(transition: Transition, scope_dir: str) -> Trans
         return transition
     
     # Resolve the main target
-    resolved_target = resolve_state(scope_dir, transition.target)
+    resolved_target = orchestrator.resolve_state(scope_dir, transition.target)
     
     # Resolve attributes that contain state references
     resolved_attributes = dict(transition.attributes)
     
     if "return" in resolved_attributes:
-        resolved_attributes["return"] = resolve_state(scope_dir, resolved_attributes["return"])
+        resolved_attributes["return"] = orchestrator.resolve_state(scope_dir, resolved_attributes["return"])
     
     if "next" in resolved_attributes:
-        resolved_attributes["next"] = resolve_state(scope_dir, resolved_attributes["next"])
+        resolved_attributes["next"] = orchestrator.resolve_state(scope_dir, resolved_attributes["next"])
     
     # Return new transition with resolved values
     return Transition(
@@ -619,8 +626,8 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
         quiet: If True, suppress progress messages and tool invocations in console output
     """
     # Initialize console reporter
-    init_reporter(quiet=quiet)
-    reporter = get_reporter()
+    orchestrator.init_reporter(quiet=quiet)
+    reporter = orchestrator.get_reporter()
     
     logger.info(f"Starting orchestrator for workflow: {workflow_id}")
     
@@ -634,7 +641,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             logger.warning("Debug mode requested but directory creation failed, continuing without debug")
     
     # Read state to get scope_dir for console output
-    state = read_state(workflow_id, state_dir=state_dir)
+    state = orchestrator.read_state(workflow_id, state_dir=state_dir)
 
     # Reset paused agents on resume (allows them to run again)
     for agent in state.get("agents", []):
@@ -698,7 +705,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                 logger.warning(f"Failed to display workflow completion: {e}")
             # Clean up state file - workflow completed successfully
             state.pop("_agent_termination_results", None)
-            delete_state(workflow_id, state_dir=state_dir)
+            orchestrator.delete_state(workflow_id, state_dir=state_dir)
             logger.debug(f"Deleted state file for completed workflow: {workflow_id}")
             break
 
@@ -720,7 +727,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
             except Exception as e:
                 logger.warning(f"Failed to display workflow paused message: {e}")
             # Save state file for resume (don't delete)
-            write_state(workflow_id, state, state_dir=state_dir)
+            orchestrator.write_state(workflow_id, state, state_dir=state_dir)
             break
 
         logger.debug(
@@ -1085,7 +1092,7 @@ async def run_all_agents(workflow_id: str, state_dir: str = None, debug: bool = 
                 raise
 
         # Write updated state for crash recovery
-        write_state(workflow_id, state, state_dir=state_dir)
+        orchestrator.write_state(workflow_id, state, state_dir=state_dir)
 
 
 async def _step_agent_script(
@@ -1137,7 +1144,7 @@ async def _step_agent_script(
     pending_result = agent.get("pending_result")
     fork_attributes = agent.get("fork_attributes", {})
 
-    env = build_script_env(
+    env = orchestrator.build_script_env(
         workflow_id=workflow_id,
         agent_id=agent_id,
         state_dir=scope_dir,
@@ -1167,7 +1174,7 @@ async def _step_agent_script(
     script_result = None
     start_time = time.perf_counter()
     try:
-        script_result = await run_script(script_path, timeout=timeout, env=env)
+        script_result = await orchestrator.run_script(script_path, timeout=timeout, env=env)
     except ScriptTimeoutError as e:
         logger.error(
             f"Script timeout for agent {agent_id}: {current_state}",
@@ -1330,7 +1337,7 @@ async def _step_agent_script(
 
     # Parse transitions from stdout
     output_text = script_result.stdout
-    transitions = parse_transitions(output_text)
+    transitions = orchestrator.parse_transitions(output_text)
 
     # Validate exactly one transition
     if len(transitions) == 0:
@@ -1589,10 +1596,10 @@ async def step_agent(
     )
 
     # Get console reporter
-    reporter = get_reporter()
+    reporter = orchestrator.get_reporter()
     
     # Determine state type and dispatch accordingly
-    state_type = get_state_type(current_state)
+    state_type = orchestrator.get_state_type(current_state)
 
     if state_type == "script":
         # Script execution path - execute directly without LLM
@@ -1614,7 +1621,7 @@ async def step_agent(
 
     # Load prompt for current state (may raise PromptFileError)
     try:
-        prompt_template, policy = load_prompt(scope_dir, current_state)
+        prompt_template, policy = orchestrator.load_prompt(scope_dir, current_state)
     except FileNotFoundError as e:
         logger.error(
             f"Prompt file not found for agent {agent_id}: {current_state}",
@@ -1652,7 +1659,7 @@ async def step_agent(
     variables.update(fork_attributes)
     
     # Render template with variables
-    base_prompt = render_prompt(prompt_template, variables)
+    base_prompt = orchestrator.render_prompt(prompt_template, variables)
     
     # Determine which model to use based on precedence:
     # 1. Frontmatter model (highest priority)
@@ -1685,7 +1692,7 @@ async def step_agent(
         if reminder_attempt > 0:
             # Append reminder prompt
             try:
-                reminder = generate_reminder_prompt(policy)
+                reminder = orchestrator.generate_reminder_prompt(policy)
                 prompt = base_prompt + reminder
                 logger.info(
                     f"Re-prompting agent {agent_id} with reminder (attempt {reminder_attempt})",
@@ -1765,7 +1772,7 @@ async def step_agent(
             
             # Stream JSON objects from Claude Code
             # Use aclosing to ensure generator cleanup even if exception is raised
-            async with aclosing(wrap_claude_code_stream(
+            async with aclosing(orchestrator.wrap_claude_code_stream(
                 prompt,
                 model=model_to_use,
                 session_id=use_session_id,
@@ -2033,13 +2040,13 @@ async def step_agent(
             break
         
         # Parse transitions from output
-        transitions = parse_transitions(output_text)
+        transitions = orchestrator.parse_transitions(output_text)
         
         # Check if we can use implicit transition optimization
-        if len(transitions) == 0 and can_use_implicit_transition(policy):
+        if len(transitions) == 0 and orchestrator.can_use_implicit_transition(policy):
             # No tag emitted, but we have an implicit transition available
             # Use the implicit transition from the policy
-            transition = get_implicit_transition(policy)
+            transition = orchestrator.get_implicit_transition(policy)
             
             # Resolve abstract state names in implicit transition (same as explicit transitions)
             try:
@@ -2083,7 +2090,7 @@ async def step_agent(
             break
         elif len(transitions) == 0:
             # No tag emitted and no implicit transition available
-            if should_use_reminder_prompt(policy):
+            if orchestrator.should_use_reminder_prompt(policy):
                 # Can re-prompt with reminder
                 reminder_attempt += 1
                 if reminder_attempt >= MAX_REMINDER_ATTEMPTS:
@@ -2130,9 +2137,9 @@ async def step_agent(
         else:
             # Tag(s) were emitted - validate exactly one
             try:
-                validate_single_transition(transitions)
+                orchestrator.validate_single_transition(transitions)
             except ValueError as e:
-                if should_use_reminder_prompt(policy):
+                if orchestrator.should_use_reminder_prompt(policy):
                     # Can re-prompt with reminder
                     reminder_attempt += 1
                     if reminder_attempt >= MAX_REMINDER_ATTEMPTS:
@@ -2181,7 +2188,7 @@ async def step_agent(
             except (FileNotFoundError, ValueError) as e:
                 # Target doesn't exist or is ambiguous
                 # If policy has allowed_transitions, give the LLM a chance to retry
-                if should_use_reminder_prompt(policy):
+                if orchestrator.should_use_reminder_prompt(policy):
                     reminder_attempt += 1
                     error_type = "Target resolution error"
                     try:
@@ -2235,9 +2242,9 @@ async def step_agent(
             # Validate transition against state policy (if policy exists)
             # Policy violations can also trigger reminder prompts if allowed_transitions are defined
             try:
-                validate_transition_policy(transition, policy)
+                orchestrator.validate_transition_policy(transition, policy)
             except PolicyViolationError as e:
-                if should_use_reminder_prompt(policy):
+                if orchestrator.should_use_reminder_prompt(policy):
                     # Can re-prompt with reminder
                     reminder_attempt += 1
                     # Display error message

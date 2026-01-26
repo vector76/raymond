@@ -113,19 +113,12 @@ class MarkdownExecutor:
         agent_id = agent.get("id", "unknown")
         session_id = agent.get("session_id")
 
-        # Emit StateStarted event
+        # Emit StateStarted event (ConsoleObserver handles display)
         context.bus.emit(StateStarted(
             agent_id=agent_id,
             state_name=current_state,
             state_type="markdown",
         ))
-
-        # Display state header via reporter
-        if context.reporter:
-            try:
-                context.reporter.state_started(agent_id, current_state)
-            except Exception as e:
-                logger.warning(f"Failed to display state header: {e}")
 
         logger.debug(
             f"Stepping agent {agent_id} in state {current_state}",
@@ -196,14 +189,6 @@ class MarkdownExecutor:
         start_time = time.perf_counter()
 
         while transition is None:
-            # Show state header again on retry
-            if reminder_attempt > 0:
-                if context.reporter:
-                    try:
-                        context.reporter.state_started(agent_id, current_state)
-                    except Exception as e:
-                        logger.warning(f"Failed to display state header on retry: {e}")
-
             # Build prompt (base + reminder if this is a retry)
             prompt = base_prompt
             if reminder_attempt > 0:
@@ -412,13 +397,6 @@ class MarkdownExecutor:
                         "total_cost": total_cost
                     }
                 )
-
-            # Display state completion
-            if context.reporter:
-                try:
-                    context.reporter.state_completed(agent_id, invocation_cost, total_cost)
-                except Exception as e:
-                    logger.warning(f"Failed to display state completion: {e}")
 
             # Check budget limit
             budget_usd = state.get("budget_usd", 10.0)
@@ -810,11 +788,8 @@ class MarkdownExecutor:
         """Process stream object for console output.
 
         Extracts tool invocations and progress messages from stream
-        and displays them via reporter.
+        and emits events that observers (like ConsoleObserver) can handle.
         """
-        if context.reporter is None:
-            return
-
         try:
             if not isinstance(json_obj, dict):
                 return
@@ -831,8 +806,7 @@ class MarkdownExecutor:
                                 if text:
                                     first_line = text.split('\n')[0]
                                     display_text = first_line[:80] + ("..." if len(first_line) > 80 else "")
-                                    context.reporter.progress_message(agent_id, display_text)
-
+                                    # Emit event (ConsoleObserver handles display)
                                     context.bus.emit(ProgressMessage(
                                         agent_id=agent_id,
                                         message=display_text,
@@ -849,16 +823,15 @@ class MarkdownExecutor:
                                     cmd = tool_input["command"]
                                     detail = cmd[:40] + ("..." if len(cmd) > 40 else "")
 
-                                context.reporter.tool_invocation(agent_id, tool_name, detail)
-
+                                # Emit event (ConsoleObserver handles display)
                                 context.bus.emit(ToolInvocation(
                                     agent_id=agent_id,
                                     tool_name=tool_name,
                                     detail=detail,
                                 ))
 
-            # Tool errors
-            elif json_obj.get("type") == "user":
+            # Tool errors (no event for this, only direct reporter call)
+            elif json_obj.get("type") == "user" and context.reporter is not None:
                 message = json_obj.get("message", {})
                 content = message.get("content", [])
                 if isinstance(content, list):

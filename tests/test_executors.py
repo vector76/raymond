@@ -627,15 +627,13 @@ class TestMarkdownExecutor:
         assert len(stream_events) == 2  # Two objects yielded
 
     @pytest.mark.asyncio
-    async def test_calls_reporter_state_started(self, setup_workflow):
-        """Test reporter.state_started is called."""
+    async def test_emits_state_started_event_for_markdown(self, setup_workflow):
+        """Test StateStarted event is emitted with correct state_type."""
         bus = MockEventBus()
-        reporter = MockReporter()
         context = ExecutionContext(
             bus=bus,
             workflow_id=setup_workflow["workflow_id"],
             scope_dir=setup_workflow["scope_dir"],
-            reporter=reporter,
         )
 
         mock_outputs = [
@@ -650,7 +648,12 @@ class TestMarkdownExecutor:
         with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream):
             await executor.execute(agent, setup_workflow, context)
 
-        assert ("state_started", "main", "START.md") in reporter.calls
+        # Verify StateStarted event was emitted with correct state_type
+        state_started_events = bus.get_events_of_type(StateStarted)
+        assert len(state_started_events) == 1
+        assert state_started_events[0].agent_id == "main"
+        assert state_started_events[0].state_name == "START.md"
+        assert state_started_events[0].state_type == "markdown"
 
     @pytest.mark.asyncio
     async def test_handles_result_transition(self, setup_workflow):
@@ -936,15 +939,13 @@ class TestScriptExecutor:
         assert output_events[0].exit_code == 0
 
     @pytest.mark.asyncio
-    async def test_calls_reporter_script_started(self, setup_script_workflow):
-        """Test reporter.script_started is called."""
+    async def test_emits_state_started_event_for_script(self, setup_script_workflow):
+        """Test StateStarted event is emitted with correct state_type for scripts."""
         bus = MockEventBus()
-        reporter = MockReporter()
         context = ExecutionContext(
             bus=bus,
             workflow_id=setup_script_workflow["workflow_id"],
             scope_dir=setup_script_workflow["scope_dir"],
-            reporter=reporter,
         )
 
         mock_result = MagicMock()
@@ -958,7 +959,12 @@ class TestScriptExecutor:
         with patch('src.orchestrator.run_script', new_callable=AsyncMock, return_value=mock_result):
             await executor.execute(agent, setup_script_workflow, context)
 
-        assert ("script_started", "main", "CHECK.sh") in reporter.calls
+        # Verify StateStarted event was emitted with correct state_type
+        state_started_events = bus.get_events_of_type(StateStarted)
+        assert len(state_started_events) == 1
+        assert state_started_events[0].agent_id == "main"
+        assert state_started_events[0].state_name == "CHECK.sh"
+        assert state_started_events[0].state_type == "script"
 
     @pytest.mark.asyncio
     async def test_handles_result_transition(self, setup_script_workflow):

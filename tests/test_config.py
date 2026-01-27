@@ -442,16 +442,16 @@ class TestMergeConfigAndArgs:
         assert result.verbose is True  # From config
 
     def test_width_merges_correctly(self):
-        """Test that width config value merges correctly with CLI args."""
+        """Test that width config value merges correctly."""
         import argparse
 
-        # CLI not specified, use config
+        # Width from config is applied when not present in args
         config = {"width": 120}
-        args = argparse.Namespace(width=None)
+        args = argparse.Namespace()  # No width attribute
         result = merge_config_and_args(config, args)
         assert result.width == 120
 
-        # CLI specified, overrides config
+        # If width already set on args (e.g., from other source), it's preserved
         config = {"width": 120}
         args = argparse.Namespace(width=150)
         result = merge_config_and_args(config, args)

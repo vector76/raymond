@@ -192,7 +192,8 @@ async def run_all_agents(
     default_model: Optional[str] = None,
     timeout: Optional[float] = None,
     dangerously_skip_permissions: bool = False,
-    quiet: bool = False
+    quiet: bool = False,
+    width: Optional[int] = None
 ) -> None:
     """Run all agents in a workflow until they all terminate.
 
@@ -213,9 +214,11 @@ async def run_all_agents(
             to Claude instead of --permission-mode acceptEdits. WARNING: This allows
             Claude to execute any action without prompting for permission.
         quiet: If True, suppress progress messages and tool invocations in console output
+        width: Override terminal width for console output. If None, auto-detect from
+            environment. Useful in Docker/non-TTY environments.
     """
     # Initialize console reporter
-    orchestrator.init_reporter(quiet=quiet)
+    orchestrator.init_reporter(quiet=quiet, width=width)
     reporter = orchestrator.get_reporter()
 
     logger.info(f"Starting orchestrator for workflow: {workflow_id}")

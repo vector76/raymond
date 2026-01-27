@@ -181,7 +181,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not args.no_run:
         print("\nStarting orchestrator...")
         debug = not args.no_debug
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, args.width)
     
     print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
@@ -205,15 +205,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
         return 1
     
     debug = not args.no_debug
-    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet)
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, args.width)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False, width: Optional[int] = None) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
-    
+
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions, quiet=quiet))
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions, quiet=quiet, width=width))
         # Note: workflow completion message is displayed by console reporter
         return 0
     except FileNotFoundError as e:
@@ -420,7 +420,16 @@ Examples:
         help="Suppress progress messages and tool invocations in console output. "
              "Still shows state transitions, errors, costs, and results.",
     )
-    
+    runtime_group.add_argument(
+        "--width",
+        type=int,
+        metavar="COLS",
+        default=None,
+        help="Override terminal width for output formatting. "
+             "Useful in Docker/non-TTY environments where auto-detection fails. "
+             "Can also be set via COLUMNS environment variable.",
+    )
+
     # Global options
     global_group = parser.add_argument_group("global options")
     global_group.add_argument(

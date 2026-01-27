@@ -327,6 +327,26 @@ class TestValidateConfig:
         assert "model" in str(exc_info.value)
         assert "must be one of" in str(exc_info.value)
 
+    def test_validates_width_type(self, tmp_path):
+        """Test that validate_config checks width is an integer."""
+        config_file = tmp_path / "config.toml"
+        config = {"width": "120"}  # String instead of integer
+
+        with pytest.raises(ConfigError) as exc_info:
+            validate_config(config, config_file)
+        assert "width" in str(exc_info.value)
+        assert "expected integer" in str(exc_info.value)
+
+    def test_validates_width_positive(self, tmp_path):
+        """Test that validate_config checks width is positive."""
+        config_file = tmp_path / "config.toml"
+        config = {"width": 0}
+
+        with pytest.raises(ConfigError) as exc_info:
+            validate_config(config, config_file)
+        assert "width" in str(exc_info.value)
+        assert "must be positive" in str(exc_info.value)
+
     def test_validates_all_valid_values(self, tmp_path):
         """Test that validate_config passes for all valid values."""
         config_file = tmp_path / "config.toml"
@@ -337,8 +357,9 @@ class TestValidateConfig:
             "no_debug": False,
             "verbose": True,
             "model": "opus",
+            "width": 120,
         }
-        
+
         # Should not raise
         validate_config(config, config_file)
 
@@ -420,6 +441,22 @@ class TestMergeConfigAndArgs:
         assert result.dangerously_skip_permissions is True  # From config
         assert result.verbose is True  # From config
 
+    def test_width_merges_correctly(self):
+        """Test that width config value merges correctly with CLI args."""
+        import argparse
+
+        # CLI not specified, use config
+        config = {"width": 120}
+        args = argparse.Namespace(width=None)
+        result = merge_config_and_args(config, args)
+        assert result.width == 120
+
+        # CLI specified, overrides config
+        config = {"width": 120}
+        args = argparse.Namespace(width=150)
+        result = merge_config_and_args(config, args)
+        assert result.width == 150
+
 
 class TestInitConfig:
     """Tests for init_config()."""
@@ -448,6 +485,7 @@ class TestInitConfig:
         assert "# timeout = 600.0" in content
         assert "# no_debug = false" in content
         assert "# verbose = false" in content
+        assert "# width = 120" in content
 
     def test_creates_raymond_dir_if_missing(self, tmp_path):
         """Test that init_config creates .raymond directory if it doesn't exist."""

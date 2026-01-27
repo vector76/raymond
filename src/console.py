@@ -53,11 +53,11 @@ class ConsoleReporter:
         self._agent_colors: Dict[str, str] = {}
         self._agent_counter = 0
         self._last_tool: Dict[str, Tuple[str, Optional[str]]] = {}  # agent_id -> (tool_name, detail)
-        
+
         # State tracking for interleaved multi-agent output
         self._agent_states: Dict[str, str] = {}  # agent_id -> current_state
         self._last_context: Optional[Tuple[str, str]] = None  # (agent_id, state) of last output
-        
+
         # Detect terminal capabilities
         self._supports_color = self._detect_color_support()
         self._supports_unicode = self._detect_unicode_support()
@@ -285,17 +285,17 @@ class ConsoleReporter:
     
     def progress_message(self, agent_id: str, message: str) -> None:
         """Display progress message from assistant.
-        
+
         Args:
             agent_id: Agent identifier
             message: Progress message text (will be truncated if long)
         """
         if self.quiet:
             return
-        
+
         # Ensure context header is displayed if needed
         self._ensure_context(agent_id)
-        
+
         truncated = self._truncate_message(message, max_width=self._available_width(self.PREFIX_TREE_BRANCH))
         self._print(f"  {self.TREE_BRANCH} {truncated}")
     

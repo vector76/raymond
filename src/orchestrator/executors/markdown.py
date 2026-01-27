@@ -805,11 +805,11 @@ class MarkdownExecutor:
                                 text = item.get("text", "")
                                 if text:
                                     first_line = text.split('\n')[0]
-                                    display_text = first_line[:80] + ("..." if len(first_line) > 80 else "")
+                                    # Let the reporter handle truncation based on terminal width
                                     # Emit event (ConsoleObserver handles display)
                                     context.bus.emit(ProgressMessage(
                                         agent_id=agent_id,
-                                        message=display_text,
+                                        message=first_line,
                                     ))
 
                             elif item.get("type") == "tool_use":

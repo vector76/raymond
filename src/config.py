@@ -297,7 +297,7 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
         if "timeout" in config:
             args.timeout = config["timeout"]
 
-    # Width: only set if CLI didn't specify
+    # Width: set from config if present
     if not hasattr(args, 'width') or args.width is None:
         if "width" in config:
             args.width = config["width"]

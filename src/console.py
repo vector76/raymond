@@ -136,7 +136,6 @@ class ConsoleReporter:
         In Docker/non-TTY environments, shutil.get_terminal_size() often returns
         the default 80 because there's no actual TTY. Users can override this by:
         - Setting COLUMNS environment variable: COLUMNS=120 raymond ...
-        - Using --width CLI option (passed to constructor as width parameter)
         - Adding width to config file
 
         Returns:

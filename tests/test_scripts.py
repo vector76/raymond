@@ -248,6 +248,120 @@ class TestRunScriptTimeout:
             await run_script(str(script_file), timeout=0.5)
 
 
+class TestRunScriptTimeoutProcessCleanup:
+    """Tests for process cleanup when scripts timeout.
+
+    These tests verify that when a script times out, all child processes
+    spawned by the script are also terminated, preventing zombie processes.
+    """
+
+    @pytest.mark.unix
+    async def test_child_processes_killed_on_timeout(self, tmp_path):
+        """Child processes spawned by script are killed on timeout."""
+        import subprocess
+        import time
+
+        # Use a unique identifier to find our specific sleep processes
+        unique_id = f"test_zombie_{os.getpid()}_{int(time.time())}"
+
+        script_file = tmp_path / "test.sh"
+        # Script spawns a background sleep with a unique marker in args
+        script_file.write_text(
+            f"#!/bin/bash\n"
+            f"sleep 300 &  # {unique_id}\n"
+            f"sleep 300\n"
+        )
+        script_file.chmod(0o755)
+
+        # Run the script with a short timeout
+        with pytest.raises(ScriptTimeoutError):
+            await run_script(str(script_file), timeout=0.5)
+
+        # Give a moment for process cleanup
+        await asyncio.sleep(0.2)
+
+        # Check if any sleep processes with our marker are still running
+        result = subprocess.run(
+            ["pgrep", "-f", unique_id],
+            capture_output=True,
+            text=True
+        )
+
+        # pgrep returns empty if no processes found
+        assert result.stdout.strip() == "", \
+            f"Child processes still running: {result.stdout.strip()}"
+
+    @pytest.mark.unix
+    async def test_multiple_child_processes_killed_on_timeout(self, tmp_path):
+        """Multiple child processes are all killed on timeout."""
+        import subprocess
+        import time
+
+        unique_id = f"test_multi_{os.getpid()}_{int(time.time())}"
+
+        script_file = tmp_path / "test.sh"
+        # Script spawns multiple background processes
+        script_file.write_text(
+            f"#!/bin/bash\n"
+            f"sleep 300 &  # {unique_id}_a\n"
+            f"sleep 301 &  # {unique_id}_b\n"
+            f"sleep 302 &  # {unique_id}_c\n"
+            f"sleep 300\n"
+        )
+        script_file.chmod(0o755)
+
+        with pytest.raises(ScriptTimeoutError):
+            await run_script(str(script_file), timeout=0.5)
+
+        await asyncio.sleep(0.2)
+
+        # Check for any of our marker processes
+        result = subprocess.run(
+            ["pgrep", "-f", unique_id],
+            capture_output=True,
+            text=True
+        )
+
+        assert result.stdout.strip() == "", \
+            f"Child processes still running: {result.stdout.strip()}"
+
+    @pytest.mark.unix
+    async def test_no_zombie_processes_after_timeout(self, tmp_path):
+        """Script child processes don't become zombies after timeout."""
+        import subprocess
+        import time
+
+        # Use unique markers to identify our specific processes
+        unique_id = f"test_nozombie_{os.getpid()}_{int(time.time())}"
+
+        script_file = tmp_path / "test.sh"
+        # Script that echoes its PID and spawns identifiable children
+        script_file.write_text(
+            f"#!/bin/bash\n"
+            f"echo \"BASH_PID=$$\"\n"
+            f"sleep 300 &  # {unique_id}\n"
+            f"sleep 300\n"
+        )
+        script_file.chmod(0o755)
+
+        with pytest.raises(ScriptTimeoutError):
+            await run_script(str(script_file), timeout=0.5)
+
+        # Give time for processes to be cleaned up
+        await asyncio.sleep(0.3)
+
+        # Check that no processes with our marker exist (running or zombie)
+        result = subprocess.run(
+            ["pgrep", "-f", unique_id],
+            capture_output=True,
+            text=True
+        )
+
+        # No processes with our marker should exist
+        assert result.stdout.strip() == "", \
+            f"Processes still exist (may be zombies): {result.stdout.strip()}"
+
+
 class TestRunScriptShellSelection:
     """Tests for correct shell selection based on file type."""
 

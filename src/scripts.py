@@ -5,10 +5,79 @@ files, capturing stdout, stderr, and exit codes.
 """
 
 import asyncio
+import ctypes
+import ctypes.util
 import os
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+
+# Track whether we've set up subreaper for this process
+_subreaper_initialized = False
+
+
+def _setup_subreaper() -> None:
+    """Set up this process as a subreaper for orphaned descendants (Linux only).
+
+    On Linux, when a child process dies, its children (grandchildren of this
+    process) are normally re-parented to init (PID 1). By setting the
+    PR_SET_CHILD_SUBREAPER flag, orphaned descendants are instead re-parented
+    to this process, allowing us to reap them and prevent zombies.
+
+    This is a no-op on non-Linux systems or if already initialized.
+    """
+    global _subreaper_initialized
+    if _subreaper_initialized or not is_unix():
+        return
+
+    # PR_SET_CHILD_SUBREAPER is Linux-specific
+    PR_SET_CHILD_SUBREAPER = 36
+
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+        result = libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+        if result == 0:
+            _subreaper_initialized = True
+    except (OSError, AttributeError):
+        # prctl not available (non-Linux) or library not found
+        pass
+
+
+def _reap_process_group(pgid: int) -> int:
+    """Reap zombie processes from a specific process group.
+
+    After killing a process group, orphaned grandchildren may become zombies.
+    This function reaps only zombies that were in the specified process group,
+    avoiding interference with other child processes (like pytest workers).
+
+    Args:
+        pgid: The process group ID to reap zombies from.
+
+    Returns:
+        Number of zombies reaped.
+    """
+    if not is_unix():
+        return 0
+
+    reaped = 0
+    # Use waitid with P_PGID to only wait for processes in the specific group.
+    # This is safer than waitpid(-1) which would reap ANY child.
+    while True:
+        try:
+            result = os.waitid(os.P_PGID, pgid, os.WEXITED | os.WNOHANG)
+            if result is None:
+                # No more children in this process group to reap
+                break
+            reaped += 1
+        except ChildProcessError:
+            # No child processes in this group
+            break
+        except OSError:
+            # Process group doesn't exist or other error
+            break
+    return reaped
 
 
 def build_script_env(
@@ -132,6 +201,10 @@ async def run_script(
         ValueError: If the script extension is not supported on the current platform.
         FileNotFoundError: If the script file doesn't exist.
     """
+    # Set up subreaper on first call (Linux only) so we can reap orphaned
+    # grandchildren that would otherwise become zombies
+    _setup_subreaper()
+
     path = Path(script_path)
 
     if not path.exists():
@@ -168,11 +241,14 @@ async def run_script(
 
     # Create the subprocess
     # Note: We don't set cwd, so the script runs in the orchestrator's directory
+    # On Unix, start_new_session=True creates a new process group so we can
+    # kill the entire group (including child processes) on timeout
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=process_env,
+        start_new_session=is_unix(),
     )
 
     try:
@@ -183,8 +259,20 @@ async def run_script(
         )
     except asyncio.TimeoutError:
         # Kill the process on timeout
-        process.kill()
+        # On Unix, kill the entire process group to clean up child processes
+        pgid = process.pid  # Save before it might become None
+        if is_unix() and pgid is not None:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # Process group may already be gone
+                pass
+        else:
+            process.kill()
         await process.wait()
+        # Reap any orphaned grandchildren from this specific process group
+        if is_unix() and pgid is not None:
+            _reap_process_group(pgid)
         raise ScriptTimeoutError(script_path, timeout)
 
     # Decode output

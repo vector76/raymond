@@ -134,9 +134,8 @@ class ConsoleReporter:
         4. Default of 80 columns
 
         In Docker/non-TTY environments, shutil.get_terminal_size() often returns
-        the default 80 because there's no actual TTY. Users can override this by:
-        - Setting COLUMNS environment variable: COLUMNS=120 raymond ...
-        - Adding width to config file
+        the default 80 because there's no actual TTY. Users can override this by
+        setting the COLUMNS environment variable: COLUMNS=120 raymond ...
 
         Returns:
             Terminal width in columns

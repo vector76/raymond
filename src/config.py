@@ -126,7 +126,7 @@ def validate_config(config: Dict[str, Any], config_file: Path) -> Dict[str, Any]
     # Known configuration keys
     known_keys = {
         "budget", "dangerously_skip_permissions", "model", "timeout",
-        "no_debug", "verbose", "width"
+        "no_debug", "verbose"
     }
     
     # Filter out unknown keys (forward compatibility)
@@ -188,18 +188,6 @@ def validate_config(config: Dict[str, Any], config_file: Path) -> Dict[str, Any]
             raise ConfigError(
                 f"Invalid value for 'model' in {config_file}: "
                 f"must be one of 'opus', 'sonnet', 'haiku', got '{validated_config['model']}'"
-            )
-
-    if "width" in validated_config:
-        if not isinstance(validated_config["width"], int):
-            raise ConfigError(
-                f"Invalid value for 'width' in {config_file}: "
-                f"expected integer, got {type(validated_config['width']).__name__}"
-            )
-        if validated_config["width"] <= 0:
-            raise ConfigError(
-                f"Invalid value for 'width' in {config_file}: "
-                f"must be positive, got {validated_config['width']}"
             )
 
     return validated_config
@@ -297,11 +285,6 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
         if "timeout" in config:
             args.timeout = config["timeout"]
 
-    # Width: set from config if present
-    if not hasattr(args, 'width') or args.width is None:
-        if "width" in config:
-            args.width = config["width"]
-
     # Note: state_dir is not merged from config - CLI --state-dir is primarily for testing
     # With project-based .raymond directory, all workflows use .raymond/state by default
 
@@ -367,11 +350,6 @@ def init_config(cwd: Optional[Path] = None) -> int:
 
 # Enable verbose logging (default: false)
 # verbose = false
-
-# Override terminal width for output formatting (default: auto-detect)
-# Useful in Docker/non-TTY environments where auto-detection fails.
-# Can also be set via COLUMNS environment variable.
-# width = 120
 """
     
     try:

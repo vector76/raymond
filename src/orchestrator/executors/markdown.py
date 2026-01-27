@@ -821,7 +821,17 @@ class MarkdownExecutor:
                                     detail = Path(tool_input["file_path"]).name
                                 elif tool_name == "Bash" and "command" in tool_input:
                                     cmd = tool_input["command"]
-                                    detail = cmd[:40] + ("..." if len(cmd) > 40 else "")
+                                    # Calculate available width for tool detail dynamically
+                                    # Prefix: "  ├─ [ToolName] " = 8 + len(tool_name) chars
+                                    if context.reporter is not None:
+                                        prefix_len = 8 + len(tool_name)
+                                        max_len = context.reporter._available_width(prefix_len)
+                                    else:
+                                        max_len = 40  # Fallback when reporter is not available
+                                    if len(cmd) > max_len:
+                                        detail = cmd[:max_len - 3] + "..."
+                                    else:
+                                        detail = cmd
 
                                 # Emit event (ConsoleObserver handles display)
                                 context.bus.emit(ToolInvocation(

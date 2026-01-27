@@ -10,12 +10,12 @@ from datetime import datetime
 
 class ConsoleReporter:
     """Handles formatted console output for workflow execution.
-    
+
     Provides real-time visibility into workflow execution with compact,
     hierarchical output format. Supports quiet mode and terminal capability
     detection (colors, Unicode, width).
     """
-    
+
     # Color palette for agent IDs (cycling through distinct colors)
     AGENT_COLORS = [
         '\033[36m',  # Cyan
@@ -32,20 +32,24 @@ class ConsoleReporter:
     # Width constants for dynamic truncation
     MIN_CONTENT_WIDTH = 40   # Minimum characters for truncated content
     MAX_CONTENT_WIDTH = 160  # Maximum characters for truncated content
+    DEFAULT_TERMINAL_WIDTH = 80  # Default when detection fails
 
     # Prefix lengths for width calculation
     PREFIX_TREE_BRANCH = 5   # "  ├─ "
     PREFIX_TOOL_ERROR_BASE = 4  # "  ! "
     PREFIX_RESULT = 15       # '  ⇒ Result: "' plus closing quote
 
-    def __init__(self, quiet: bool = False):
+    def __init__(self, quiet: bool = False, width: Optional[int] = None):
         """Initialize console reporter.
-        
+
         Args:
             quiet: If True, suppress progress messages and tool invocations.
                 Still shows state headers, transitions, errors, costs, and results.
+            width: Override terminal width. If None, auto-detect from environment.
+                In Docker/non-TTY environments, set COLUMNS env var or use this parameter.
         """
         self.quiet = quiet
+        self._width_override = width
         self._agent_colors: Dict[str, str] = {}
         self._agent_counter = 0
         self._last_tool: Dict[str, Tuple[str, Optional[str]]] = {}  # agent_id -> (tool_name, detail)
@@ -121,12 +125,47 @@ class ConsoleReporter:
         return False
     
     def _detect_terminal_width(self) -> int:
-        """Detect terminal width, defaulting to 80 if unknown."""
+        """Detect terminal width.
+
+        Detection priority:
+        1. Explicit width override (from constructor parameter)
+        2. COLUMNS environment variable (user-configurable)
+        3. shutil.get_terminal_size() (works when TTY is attached)
+        4. Default of 80 columns
+
+        In Docker/non-TTY environments, shutil.get_terminal_size() often returns
+        the default 80 because there's no actual TTY. Users can override this by:
+        - Setting COLUMNS environment variable: COLUMNS=120 raymond ...
+        - Using --width CLI option (passed to constructor as width parameter)
+        - Adding width to config file
+
+        Returns:
+            Terminal width in columns
+        """
+        # Priority 1: Explicit override from constructor
+        if self._width_override is not None:
+            return self._width_override
+
+        # Priority 2: COLUMNS environment variable
+        columns_env = os.getenv('COLUMNS')
+        if columns_env:
+            try:
+                width = int(columns_env)
+                if width > 0:
+                    return width
+            except ValueError:
+                pass  # Fall through to next detection method
+
+        # Priority 3: shutil.get_terminal_size()
+        # Note: In Docker/non-TTY environments, this returns the default (80, 24)
         try:
             size = shutil.get_terminal_size()
             return size.columns
         except (OSError, AttributeError):
-            return 80
+            pass
+
+        # Priority 4: Default fallback
+        return self.DEFAULT_TERMINAL_WIDTH
     
     def _get_agent_color(self, agent_id: str) -> str:
         """Get color code for an agent ID, assigning colors on first use."""
@@ -161,7 +200,8 @@ class ConsoleReporter:
     def _available_width(self, prefix_length: int) -> int:
         """Calculate available width for message content.
 
-        Re-detects terminal width on each call to handle terminal resize.
+        Re-detects terminal width on each call to handle terminal resize,
+        unless a width override is set.
         Clamps result between MIN_CONTENT_WIDTH and MAX_CONTENT_WIDTH.
 
         Args:
@@ -170,7 +210,7 @@ class ConsoleReporter:
         Returns:
             Available character width for content
         """
-        terminal_width = shutil.get_terminal_size().columns
+        terminal_width = self._detect_terminal_width()
         available = terminal_width - prefix_length - 2  # 2 = safety margin
         return max(self.MIN_CONTENT_WIDTH, min(available, self.MAX_CONTENT_WIDTH))
 
@@ -469,7 +509,7 @@ _reporter: Optional[ConsoleReporter] = None
 
 def get_reporter() -> ConsoleReporter:
     """Get the global console reporter instance.
-    
+
     Returns:
         ConsoleReporter instance (creates one if not initialized)
     """
@@ -479,11 +519,13 @@ def get_reporter() -> ConsoleReporter:
     return _reporter
 
 
-def init_reporter(quiet: bool = False) -> None:
+def init_reporter(quiet: bool = False, width: Optional[int] = None) -> None:
     """Initialize the global console reporter instance.
-    
+
     Args:
         quiet: If True, suppress progress messages and tool invocations
+        width: Override terminal width. If None, auto-detect from environment.
+            In Docker/non-TTY environments, set COLUMNS env var or use this parameter.
     """
     global _reporter
-    _reporter = ConsoleReporter(quiet=quiet)
+    _reporter = ConsoleReporter(quiet=quiet, width=width)

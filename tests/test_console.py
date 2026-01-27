@@ -691,6 +691,56 @@ class TestDynamicWidth:
         # Verify values
         assert ConsoleReporter.MIN_CONTENT_WIDTH == 40
         assert ConsoleReporter.MAX_CONTENT_WIDTH == 160
+        assert ConsoleReporter.DEFAULT_TERMINAL_WIDTH == 80
         assert ConsoleReporter.PREFIX_TREE_BRANCH == 5
         assert ConsoleReporter.PREFIX_TOOL_ERROR_BASE == 4
         assert ConsoleReporter.PREFIX_RESULT == 15
+
+    def test_width_override_via_constructor(self, capsys):
+        """Test width override via constructor parameter."""
+        reporter = ConsoleReporter(quiet=False, width=120)
+        # The override should be used for width calculation
+        with patch('shutil.get_terminal_size') as mock_size:
+            # Even if shutil returns 80, the override should be used
+            mock_size.return_value = MagicMock(columns=80)
+            width = reporter._detect_terminal_width()
+            assert width == 120
+
+    def test_width_override_takes_precedence(self, capsys):
+        """Test width override takes precedence over COLUMNS env var."""
+        reporter = ConsoleReporter(quiet=False, width=150)
+        # Even with COLUMNS set, the constructor override should win
+        with patch.dict(os.environ, {'COLUMNS': '100'}):
+            width = reporter._detect_terminal_width()
+            assert width == 150
+
+    def test_columns_env_var_respected(self, capsys):
+        """Test COLUMNS environment variable is respected when no override."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch.dict(os.environ, {'COLUMNS': '200'}):
+            width = reporter._detect_terminal_width()
+            assert width == 200
+
+    def test_columns_env_var_invalid_fallback(self, capsys):
+        """Test fallback when COLUMNS has invalid value."""
+        reporter = ConsoleReporter(quiet=False)
+        with patch.dict(os.environ, {'COLUMNS': 'not_a_number'}):
+            with patch('shutil.get_terminal_size') as mock_size:
+                mock_size.return_value = MagicMock(columns=80)
+                width = reporter._detect_terminal_width()
+                # Should fall back to shutil detection
+                assert width == 80
+
+    def test_available_width_uses_override(self, capsys):
+        """Test _available_width uses width override."""
+        reporter = ConsoleReporter(quiet=False, width=150)
+        # Width 150 - prefix 5 - safety 2 = 143, but capped at MAX_CONTENT_WIDTH 160
+        width = reporter._available_width(5)
+        assert width == 143
+
+    def test_init_reporter_accepts_width(self):
+        """Test init_reporter accepts width parameter."""
+        from src.console import init_reporter, get_reporter
+        init_reporter(quiet=False, width=180)
+        reporter = get_reporter()
+        assert reporter._width_override == 180

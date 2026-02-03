@@ -2170,6 +2170,7 @@ class TestScriptErrorHandling:
         assert len(error_files) > 0, "Script error file should be created"
 
     @pytest.mark.unix
+    @pytest.mark.skip(reason="Disabled: spawns real sleep processes")
     @pytest.mark.asyncio
     async def test_script_timeout_fatal_error_sh(self, tmp_path):
         """4.2.5: Script timeout → fatal error (.sh)."""

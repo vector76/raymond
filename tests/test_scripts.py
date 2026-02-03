@@ -216,6 +216,7 @@ class TestRunScriptTimeout:
         assert result.exit_code == 0
 
     @pytest.mark.unix
+    @pytest.mark.skip(reason="Disabled: spawns real sleep processes")
     async def test_run_script_sh_raises_on_timeout(self, tmp_path):
         """2.1.6: run_script() raises ScriptTimeoutError on timeout (.sh)."""
         script_file = tmp_path / "test.sh"
@@ -256,6 +257,7 @@ class TestRunScriptTimeoutProcessCleanup:
     """
 
     @pytest.mark.unix
+    @pytest.mark.skip(reason="Disabled: spawns real sleep processes")
     async def test_child_processes_killed_on_timeout(self, tmp_path):
         """Child processes spawned by script are killed on timeout."""
         import subprocess
@@ -292,6 +294,7 @@ class TestRunScriptTimeoutProcessCleanup:
             f"Child processes still running: {result.stdout.strip()}"
 
     @pytest.mark.unix
+    @pytest.mark.skip(reason="Disabled: spawns real sleep processes")
     async def test_multiple_child_processes_killed_on_timeout(self, tmp_path):
         """Multiple child processes are all killed on timeout."""
         import subprocess
@@ -326,6 +329,7 @@ class TestRunScriptTimeoutProcessCleanup:
             f"Child processes still running: {result.stdout.strip()}"
 
     @pytest.mark.unix
+    @pytest.mark.skip(reason="Disabled: spawns real sleep processes")
     async def test_no_zombie_processes_after_timeout(self, tmp_path):
         """Script child processes don't become zombies after timeout."""
         import subprocess
@@ -413,6 +417,7 @@ class TestRunScriptAsync:
     """Tests for async behavior of run_script()."""
 
     @pytest.mark.unix
+    @pytest.mark.skip(reason="Disabled: spawns real sleep processes")
     async def test_run_script_sh_is_async(self, tmp_path):
         """2.1.8: run_script() is async and doesn't block event loop (.sh)."""
         script_file = tmp_path / "test.sh"

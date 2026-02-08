@@ -64,6 +64,38 @@ class WorkflowPaused:
 
 
 @dataclass(frozen=True)
+class WorkflowWaiting:
+    """Emitted when the workflow is waiting for a usage limit reset.
+
+    Attributes:
+        workflow_id: Unique identifier for the workflow
+        total_cost_usd: Total cost accumulated across all agents
+        paused_agent_count: Number of agents currently paused
+        reset_time: Timezone-aware datetime when the limit resets
+        wait_seconds: Number of seconds the workflow will wait
+        timestamp: When the waiting started
+    """
+    workflow_id: str
+    total_cost_usd: float
+    paused_agent_count: int
+    reset_time: datetime
+    wait_seconds: float
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+@dataclass(frozen=True)
+class WorkflowResuming:
+    """Emitted when the workflow resumes after waiting for a usage limit reset.
+
+    Attributes:
+        workflow_id: Unique identifier for the workflow
+        timestamp: When the workflow resumed
+    """
+    workflow_id: str
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+@dataclass(frozen=True)
 class StateStarted:
     """Emitted when an agent begins executing a state.
 
@@ -292,6 +324,8 @@ ALL_EVENTS = (
     WorkflowStarted,
     WorkflowCompleted,
     WorkflowPaused,
+    WorkflowWaiting,
+    WorkflowResuming,
     StateStarted,
     StateCompleted,
     TransitionOccurred,

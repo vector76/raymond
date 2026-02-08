@@ -229,7 +229,8 @@ class TestClaudeCodeLimitErrorHandling:
 
         with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_stream_limit_error):
             # run_all_agents should handle limit error without retrying
-            await run_all_agents(workflow_id, state_dir=state_dir, quiet=True)
+            # Use no_wait=True to test pause behavior without auto-wait
+            await run_all_agents(workflow_id, state_dir=state_dir, quiet=True, no_wait=True)
 
             # Verify that wrap_claude_code_stream was only called once (no retries)
             assert call_count["count"] == 1, f"Expected 1 call (no retries), but got {call_count['count']} calls"

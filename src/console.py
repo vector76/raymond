@@ -446,6 +446,35 @@ class ConsoleReporter:
             pause_str = f"{self.WARNING_COLOR}{pause_str}{self.RESET_COLOR}"
         self._print(f"  {pause_str}")
 
+    def workflow_waiting(self, workflow_id: str, total_cost: float, paused_count: int,
+                         reset_time: datetime, wait_seconds: float) -> None:
+        """Display workflow waiting-for-limit-reset message.
+
+        Args:
+            workflow_id: Workflow identifier
+            total_cost: Total cost accumulated across all agents
+            paused_count: Number of paused agents
+            reset_time: Timezone-aware datetime when the limit resets
+            wait_seconds: Seconds until resume (including buffer)
+        """
+        from src.orchestrator.limit_wait import format_wait_message
+        msg = format_wait_message(reset_time)
+        self._print(f"\nWorkflow paused ({paused_count} agent(s) paused). Cost: ${total_cost:.4f}")
+        self._print(msg)
+
+        # Print long-wait warning inline
+        if wait_seconds > 5 * 3600:
+            hours = int(wait_seconds / 3600)
+            minutes = int((wait_seconds % 3600) / 60)
+            warning = f"Warning: wait time is {hours}h {minutes}m — this is unusually long"
+            if self._supports_color:
+                warning = f"{self.WARNING_COLOR}{warning}{self.RESET_COLOR}"
+            self._print(warning)
+
+    def workflow_resuming(self) -> None:
+        """Display workflow resuming message after limit reset wait."""
+        self._print("Usage limit reset. Resuming workflow...")
+
     def workflow_paused(self, workflow_id: str, total_cost: float, paused_count: int) -> None:
         """Display workflow paused message.
 

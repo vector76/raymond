@@ -80,6 +80,21 @@ def _reap_process_group(pgid: int) -> int:
     return reaped
 
 
+async def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+    """Kill a subprocess and its entire process group, then reap zombies."""
+    pgid = process.pid
+    if is_unix() and pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        await process.wait()
+        _reap_process_group(pgid)
+    else:
+        process.kill()
+        await process.wait()
+
+
 def build_script_env(
     workflow_id: str,
     agent_id: str,
@@ -258,22 +273,26 @@ async def run_script(
             timeout=timeout
         )
     except asyncio.TimeoutError:
-        # Kill the process on timeout
-        # On Unix, kill the entire process group to clean up child processes
-        pgid = process.pid  # Save before it might become None
-        if is_unix() and pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                # Process group may already be gone
-                pass
-        else:
-            process.kill()
-        await process.wait()
-        # Reap any orphaned grandchildren from this specific process group
-        if is_unix() and pgid is not None:
-            _reap_process_group(pgid)
+        await _kill_process_group(process)
         raise ScriptTimeoutError(script_path, timeout)
+    except BaseException:
+        # Any other exception (CancelledError, KeyboardInterrupt, etc.)
+        # — kill the process group so child processes don't leak
+        await _kill_process_group(process)
+        raise
+    finally:
+        # Last-resort cleanup: if the process is somehow still alive
+        # (e.g., await failed in an except handler during shutdown),
+        # at least send the kill signal synchronously
+        if process.returncode is None:
+            try:
+                pgid = process.pid
+                if is_unix() and pgid is not None:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
     # Decode output
     stdout = stdout_bytes.decode('utf-8', errors='replace')

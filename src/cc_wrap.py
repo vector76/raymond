@@ -321,6 +321,28 @@ async def wrap_claude_code(
         raise ClaudeCodeTimeoutError(
             f"Claude Code invocation timed out after {effective_timeout} seconds"
         )
+    except BaseException:
+        # Any other exception (CancelledError, KeyboardInterrupt, etc.)
+        # — kill the process group so child processes don't leak
+        if process.returncode is None:
+            pgid = _kill_process_tree(process)
+            await process.wait()
+            if pgid is not None:
+                _reap_process_group(pgid)
+        raise
+    finally:
+        # Last-resort cleanup: if the process is somehow still alive
+        # (e.g., await failed in an except handler during shutdown),
+        # at least send the kill signal synchronously
+        if process.returncode is None:
+            try:
+                pgid = process.pid
+                if _is_unix() and pgid is not None:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
     # Check for errors
     if returncode != 0:
@@ -480,19 +502,16 @@ async def wrap_claude_code_stream(
         # Wait for process to complete (only reached if loop exits normally)
         returncode = await asyncio.wait_for(process.wait(), timeout=30)
     except GeneratorExit:
-        # Generator is being closed (e.g., due to exception in caller)
-        # Ensure process is cleaned up before re-raising
+        # Generator is being closed (e.g., due to cancellation or CTRL-C)
+        # Kill the process group immediately — no graceful terminate, because
+        # we're shutting down and the 2s grace period blocks CTRL-C responsiveness
         if process.returncode is None:
             logger.debug("Cleaning up Claude Code process due to generator close")
             try:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=2)
-                except asyncio.TimeoutError:
-                    pgid = _kill_process_tree(process)
-                    await process.wait()
-                    if pgid is not None:
-                        _reap_process_group(pgid)
+                pgid = _kill_process_tree(process)
+                await process.wait()
+                if pgid is not None:
+                    _reap_process_group(pgid)
             except Exception as e:
                 logger.debug(f"Error during process cleanup on generator close: {e}")
         raise
@@ -508,16 +527,10 @@ async def wrap_claude_code_stream(
         # This handles cases where the generator is interrupted (e.g., limit errors)
         if process.returncode is None:
             try:
-                # Try to terminate gracefully first
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=2)
-                except asyncio.TimeoutError:
-                    # Force kill if terminate didn't work
-                    pgid = _kill_process_tree(process)
-                    await process.wait()
-                    if pgid is not None:
-                        _reap_process_group(pgid)
+                pgid = _kill_process_tree(process)
+                await process.wait()
+                if pgid is not None:
+                    _reap_process_group(pgid)
             except Exception as e:
                 # Log but don't raise - we're in cleanup
                 logger.debug(f"Error during process cleanup: {e}")

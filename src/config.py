@@ -126,7 +126,7 @@ def validate_config(config: Dict[str, Any], config_file: Path) -> Dict[str, Any]
     # Known configuration keys
     known_keys = {
         "budget", "dangerously_skip_permissions", "model", "timeout",
-        "no_debug", "verbose"
+        "no_debug", "no_wait", "verbose"
     }
     
     # Filter out unknown keys (forward compatibility)
@@ -170,7 +170,14 @@ def validate_config(config: Dict[str, Any], config_file: Path) -> Dict[str, Any]
                 f"Invalid value for 'no_debug' in {config_file}: "
                 f"expected boolean, got {type(validated_config['no_debug']).__name__}"
             )
-    
+
+    if "no_wait" in validated_config:
+        if not isinstance(validated_config["no_wait"], bool):
+            raise ConfigError(
+                f"Invalid value for 'no_wait' in {config_file}: "
+                f"expected boolean, got {type(validated_config['no_wait']).__name__}"
+            )
+
     if "verbose" in validated_config:
         if not isinstance(validated_config["verbose"], bool):
             raise ConfigError(
@@ -268,6 +275,11 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
         if not args.no_debug and config.get("no_debug", False):
             args.no_debug = True
     
+    # No-wait: matches CLI --no-wait semantics directly
+    if hasattr(args, 'no_wait'):
+        if not args.no_wait and config.get("no_wait", False):
+            args.no_wait = True
+
     # Verbose: similar to dangerously_skip_permissions
     # Note: If CLI explicitly set verbose=True, it stays True (not overridden)
     # If CLI is False (not provided), config can enable it
@@ -347,6 +359,9 @@ def init_config(cwd: Optional[Path] = None) -> int:
 
 # Disable debug mode (default: false, meaning debug mode is enabled by default)
 # no_debug = false
+
+# Don't wait for usage limit reset; pause and exit immediately (default: false)
+# no_wait = false
 
 # Enable verbose logging (default: false)
 # verbose = false

@@ -21,7 +21,9 @@ from ..events import (
     TransitionOccurred,
     WorkflowCompleted,
     WorkflowPaused,
+    WorkflowResuming,
     WorkflowStarted,
+    WorkflowWaiting,
 )
 from ...console import ConsoleReporter
 
@@ -60,6 +62,8 @@ class ConsoleObserver:
         self._bus.on(WorkflowStarted, self._on_workflow_started)
         self._bus.on(WorkflowCompleted, self._on_workflow_completed)
         self._bus.on(WorkflowPaused, self._on_workflow_paused)
+        self._bus.on(WorkflowWaiting, self._on_workflow_waiting)
+        self._bus.on(WorkflowResuming, self._on_workflow_resuming)
         self._bus.on(StateStarted, self._on_state_started)
         self._bus.on(StateCompleted, self._on_state_completed)
         self._bus.on(ScriptOutput, self._on_script_output)
@@ -76,6 +80,8 @@ class ConsoleObserver:
         self._bus.off(WorkflowStarted, self._on_workflow_started)
         self._bus.off(WorkflowCompleted, self._on_workflow_completed)
         self._bus.off(WorkflowPaused, self._on_workflow_paused)
+        self._bus.off(WorkflowWaiting, self._on_workflow_waiting)
+        self._bus.off(WorkflowResuming, self._on_workflow_resuming)
         self._bus.off(StateStarted, self._on_state_started)
         self._bus.off(StateCompleted, self._on_state_completed)
         self._bus.off(ScriptOutput, self._on_script_output)
@@ -122,6 +128,26 @@ class ConsoleObserver:
             )
         except Exception as e:
             logger.warning(f"ConsoleObserver failed on workflow_paused: {e}")
+
+    def _on_workflow_waiting(self, event: WorkflowWaiting) -> None:
+        """Handle WorkflowWaiting event."""
+        try:
+            self.reporter.workflow_waiting(
+                workflow_id=event.workflow_id,
+                total_cost=event.total_cost_usd,
+                paused_count=event.paused_agent_count,
+                reset_time=event.reset_time,
+                wait_seconds=event.wait_seconds
+            )
+        except Exception as e:
+            logger.warning(f"ConsoleObserver failed on workflow_waiting: {e}")
+
+    def _on_workflow_resuming(self, event: WorkflowResuming) -> None:
+        """Handle WorkflowResuming event."""
+        try:
+            self.reporter.workflow_resuming()
+        except Exception as e:
+            logger.warning(f"ConsoleObserver failed on workflow_resuming: {e}")
 
     def _on_state_started(self, event: StateStarted) -> None:
         """Handle StateStarted event."""

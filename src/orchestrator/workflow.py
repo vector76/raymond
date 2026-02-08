@@ -32,11 +32,17 @@ from src.orchestrator.events import (
     WorkflowStarted,
     WorkflowCompleted,
     WorkflowPaused,
+    WorkflowWaiting,
+    WorkflowResuming,
     TransitionOccurred,
     AgentSpawned,
     AgentTerminated,
     AgentPaused,
     ErrorOccurred,
+)
+from src.orchestrator.limit_wait import (
+    parse_limit_reset_time,
+    calculate_wait_seconds,
 )
 from src.orchestrator.executors import get_executor, ExecutionContext
 from src.orchestrator.observers.console import ConsoleObserver
@@ -185,6 +191,35 @@ async def _step_agent(
         return updated_agent
 
 
+def _reset_paused_agents(state: Dict[str, Any], workflow_id: str) -> None:
+    """Reset all paused agents so they can run again.
+
+    Clears the status, retry_count, and error fields while preserving
+    session_id for Claude Code --resume.
+
+    Args:
+        state: Full workflow state dictionary.
+        workflow_id: Workflow identifier (for logging).
+    """
+    for agent in state.get("agents", []):
+        if agent.get("status") == "paused":
+            agent.pop("status", None)
+            agent.pop("retry_count", None)
+            agent.pop("error", None)
+            # Keep session_id for Claude Code --resume
+            logger.info(
+                f"Reset paused agent {agent['id']} for resume",
+                extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
+            )
+
+
+# Buffer minutes to add after the stated reset time
+_LIMIT_RESET_BUFFER_MINUTES = 5
+
+# Threshold in hours for printing a "long wait" warning
+_LONG_WAIT_THRESHOLD_HOURS = 5
+
+
 async def run_all_agents(
     workflow_id: str,
     state_dir: str = None,
@@ -193,7 +228,8 @@ async def run_all_agents(
     timeout: Optional[float] = None,
     dangerously_skip_permissions: bool = False,
     quiet: bool = False,
-    width: Optional[int] = None
+    width: Optional[int] = None,
+    no_wait: bool = False
 ) -> None:
     """Run all agents in a workflow until they all terminate.
 
@@ -216,6 +252,7 @@ async def run_all_agents(
         quiet: If True, suppress progress messages and tool invocations in console output
         width: Override terminal width for console output. If None, auto-detect from
             environment. Useful in Docker/non-TTY environments.
+        no_wait: If True, don't auto-wait for limit reset; pause and exit immediately.
     """
     # Initialize console reporter
     orchestrator.init_reporter(quiet=quiet, width=width)
@@ -236,16 +273,7 @@ async def run_all_agents(
     state = orchestrator.read_state(workflow_id, state_dir=state_dir)
 
     # Reset paused agents on resume (allows them to run again)
-    for agent in state.get("agents", []):
-        if agent.get("status") == "paused":
-            agent.pop("status", None)
-            agent.pop("retry_count", None)
-            agent.pop("error", None)
-            # Keep session_id for Claude Code --resume
-            logger.info(
-                f"Reset paused agent {agent['id']} for resume",
-                extra={"workflow_id": workflow_id, "agent_id": agent["id"]}
-            )
+    _reset_paused_agents(state, workflow_id)
 
     scope_dir = state.get("scope_dir", "unknown")
 
@@ -334,16 +362,77 @@ async def run_all_agents(
                     }
                 )
 
-                # Emit WorkflowPaused event
-                bus.emit(WorkflowPaused(
-                    workflow_id=workflow_id,
-                    total_cost_usd=total_cost,
-                    paused_agent_count=len(paused_agents)
-                ))
+                # Try auto-wait if enabled: parse reset times from all paused agents
+                should_auto_wait = False
+                latest_reset_time = None
 
-                # Save state file for resume (don't delete)
-                orchestrator.write_state(workflow_id, state, state_dir=state_dir)
-                break
+                if not no_wait:
+                    reset_times = []
+                    for agent in paused_agents:
+                        error_msg = agent.get("error", "")
+                        reset_time = parse_limit_reset_time(error_msg)
+                        if reset_time is not None:
+                            reset_times.append(reset_time)
+                        else:
+                            # Agent paused for non-limit reason or unparseable message
+                            # Fall back to pause-and-exit
+                            reset_times = []
+                            break
+
+                    if reset_times:
+                        latest_reset_time = max(reset_times)
+                        should_auto_wait = True
+
+                if should_auto_wait and latest_reset_time is not None:
+                    # Auto-wait path: save state, sleep, then resume
+                    wait_seconds = calculate_wait_seconds(
+                        latest_reset_time,
+                        buffer_minutes=_LIMIT_RESET_BUFFER_MINUTES
+                    )
+
+                    # Emit WorkflowWaiting event (console observer shows wait message)
+                    bus.emit(WorkflowWaiting(
+                        workflow_id=workflow_id,
+                        total_cost_usd=total_cost,
+                        paused_agent_count=len(paused_agents),
+                        reset_time=latest_reset_time,
+                        wait_seconds=wait_seconds
+                    ))
+
+                    # Warn if wait is unusually long
+                    wait_hours = wait_seconds / 3600
+                    if wait_hours > _LONG_WAIT_THRESHOLD_HOURS:
+                        hours = int(wait_hours)
+                        minutes = int((wait_seconds % 3600) / 60)
+                        logger.warning(
+                            f"Wait time is {hours}h {minutes}m — this is unusually long",
+                            extra={"workflow_id": workflow_id}
+                        )
+
+                    # Save state before sleeping (Ctrl+C during wait leaves resumable state)
+                    orchestrator.write_state(workflow_id, state, state_dir=state_dir)
+
+                    # Sleep until reset time + buffer (or return immediately if past)
+                    if wait_seconds > 0:
+                        await asyncio.sleep(wait_seconds)
+
+                    # Emit WorkflowResuming event
+                    bus.emit(WorkflowResuming(workflow_id=workflow_id))
+
+                    # Reset paused agents and continue the loop
+                    _reset_paused_agents(state, workflow_id)
+                    continue
+                else:
+                    # Pause-and-exit path (original behavior)
+                    bus.emit(WorkflowPaused(
+                        workflow_id=workflow_id,
+                        total_cost_usd=total_cost,
+                        paused_agent_count=len(paused_agents)
+                    ))
+
+                    # Save state file for resume (don't delete)
+                    orchestrator.write_state(workflow_id, state, state_dir=state_dir)
+                    break
 
             logger.debug(
                 f"Workflow {workflow_id}: {len(agents)} agent(s) active, "

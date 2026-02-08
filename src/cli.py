@@ -181,8 +181,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not args.no_run:
         print("\nStarting orchestrator...")
         debug = not args.no_debug
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None))
-    
+        no_wait = getattr(args, 'no_wait', False)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
+
     print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
 
@@ -190,30 +191,31 @@ def cmd_start(args: argparse.Namespace) -> int:
 def cmd_resume(args: argparse.Namespace) -> int:
     """Resume an existing workflow."""
     workflow_id = args.resume
-    
+
     # Validate workflow_id
     error = validate_workflow_id(workflow_id)
     if error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    
+
     # Check if workflow exists before trying to run
     try:
         read_state(workflow_id, state_dir=args.state_dir)
     except FileNotFoundError:
         print(f"Error: Workflow '{workflow_id}' not found.", file=sys.stderr)
         return 1
-    
+
     debug = not args.no_debug
-    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None))
+    no_wait = getattr(args, 'no_wait', False)
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False, width: Optional[int] = None) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False, width: Optional[int] = None, no_wait: bool = False) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
 
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions, quiet=quiet, width=width))
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions, quiet=quiet, width=width, no_wait=no_wait))
         # Note: workflow completion message is displayed by console reporter
         return 0
     except FileNotFoundError as e:
@@ -419,6 +421,12 @@ Examples:
         action="store_true",
         help="Suppress progress messages and tool invocations in console output. "
              "Still shows state transitions, errors, costs, and results.",
+    )
+    runtime_group.add_argument(
+        "--no-wait",
+        dest="no_wait",
+        action="store_true",
+        help="Don't wait for usage limit reset; pause and exit immediately (default: auto-wait)",
     )
     # Global options
     global_group = parser.add_argument_group("global options")

@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from src.cc_wrap import wrap_claude_code, wrap_claude_code_stream, ClaudeCodeTimeoutError
 
 
@@ -307,7 +307,7 @@ class TestIdleTimeout:
             mock_process.stdout = MockStreamReaderWithDelays(chunks)
             mock_process.wait = AsyncMock(return_value=0)
             mock_process.stderr.read = AsyncMock(return_value=b'')
-            mock_process.kill = AsyncMock()
+            mock_process.kill = MagicMock()
             mock_subprocess.return_value = mock_process
             
             # Use a 0.5 second timeout - data arrives faster than this
@@ -321,7 +321,6 @@ class TestIdleTimeout:
             assert results[-1]["type"] == "end"
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Disabled: kills init process")
     async def test_timeout_with_long_idle_gap(self):
         """Test that a long gap between data chunks triggers idle timeout."""
         # First chunk arrives, then a long delay exceeding timeout
@@ -335,7 +334,7 @@ class TestIdleTimeout:
             mock_process.stdout = MockStreamReaderWithDelays(chunks)
             mock_process.wait = AsyncMock(return_value=0)
             mock_process.stderr.read = AsyncMock(return_value=b'')
-            mock_process.kill = AsyncMock()
+            mock_process.kill = MagicMock()
             mock_subprocess.return_value = mock_process
             
             # Use a 0.2 second timeout - second chunk arrives after 0.5s
@@ -376,7 +375,7 @@ class TestIdleTimeout:
             mock_process.stdout = MockStreamReaderWithDelays(chunks)
             mock_process.wait = AsyncMock(return_value=0)
             mock_process.stderr.read = AsyncMock(return_value=b'')
-            mock_process.kill = AsyncMock()
+            mock_process.kill = MagicMock()
             mock_subprocess.return_value = mock_process
             
             # Timeout is 0.3s per gap, total time ~0.6s
@@ -404,7 +403,7 @@ class TestIdleTimeout:
             mock_process.stdout = MockStreamReaderWithDelays(chunks)
             mock_process.wait = AsyncMock(return_value=0)
             mock_process.stderr.read = AsyncMock(return_value=b'')
-            mock_process.kill = AsyncMock()
+            mock_process.kill = MagicMock()
             mock_subprocess.return_value = mock_process
             
             # timeout=0 means no timeout
@@ -417,7 +416,6 @@ class TestIdleTimeout:
             mock_process.kill.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Disabled: kills init process")
     async def test_partial_data_preserved_on_timeout(self):
         """Test that data received before timeout is preserved."""
         chunks = [
@@ -431,7 +429,7 @@ class TestIdleTimeout:
             mock_process.stdout = MockStreamReaderWithDelays(chunks)
             mock_process.wait = AsyncMock(return_value=0)
             mock_process.stderr.read = AsyncMock(return_value=b'')
-            mock_process.kill = AsyncMock()
+            mock_process.kill = MagicMock()
             mock_subprocess.return_value = mock_process
             
             # First two chunks arrive quickly, third has long delay
@@ -446,7 +444,6 @@ class TestIdleTimeout:
             assert results[1]["type"] == "second"
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Disabled: kills init process")
     async def test_timeout_on_initial_delay(self):
         """Test that timeout triggers if no data arrives initially."""
         # Long delay before any data
@@ -459,7 +456,7 @@ class TestIdleTimeout:
             mock_process.stdout = MockStreamReaderWithDelays(chunks)
             mock_process.wait = AsyncMock(return_value=0)
             mock_process.stderr.read = AsyncMock(return_value=b'')
-            mock_process.kill = AsyncMock()
+            mock_process.kill = MagicMock()
             mock_subprocess.return_value = mock_process
             
             with pytest.raises(ClaudeCodeTimeoutError):

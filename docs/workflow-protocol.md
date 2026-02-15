@@ -364,7 +364,7 @@ Validation rules:
 - The agent must emit a transition that exactly matches one of the entries in
   `allowed_transitions` (tag, target, and all attributes must match).
 - If no matching entry is found, treat as an error and re-prompt (same as
-  error and re-prompt (same as “zero/multiple tags”).
+  "zero/multiple tags").
 - If `allowed_transitions` is not specified (no frontmatter or empty list), all
   transitions are allowed, but parse failures (no tag, multiple tags) will
   terminate the agent immediately since no reminder can be generated.

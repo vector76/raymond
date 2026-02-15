@@ -238,258 +238,40 @@ in multi-step workflows.
 
 ## Invocation Patterns
 
-Raymond supports five transition types for invoking Claude Code sessions.
-Each serves different needs and maps to familiar programming concepts.
+Raymond supports five transition types, each with different context semantics:
 
-The workflow definition (or orchestrator configuration) determines which
-pattern to use for each state transition. The AI signals *what* state to
-transition to; the orchestrator decides *how* to invoke it.
+| Tag | Context behavior | Session | Programming analogy |
+|-----|-----------------|---------|-------------------|
+| `<goto>` | Preserved | Resume current | Sequential code in same scope |
+| `<reset>` | Discarded (stack cleared) | Fresh | New function after writing results to disk |
+| `<call>` | Child branches from caller | Branched, caller resumed on return | Function call with stack frame |
+| `<function>` | Child starts fresh | Fresh, caller resumed on return | Pure function `f(x) → y` |
+| `<fork>` | Worker starts fresh | Fresh (independent lifecycle) | Unix `fork()` — independent process |
 
-The transition type is determined by the tag itself:
-- `<goto>` - resume in same context
-- `<reset>` - discard context, start fresh, continue workflow
-- `<function>` - stateless evaluation with return (requires `return` attribute)
-- `<call>` - isolated subtask with return (requires `return` attribute)
-- `<fork>` - independent spawn (attributes become template variables)
+The transition type is determined by the tag itself. Each run must emit exactly
+one protocol tag.
 
-Each tag name is self-documenting: `<goto>` continues, `<reset>` clears and
-restarts, `<call>` invokes a subroutine, `<function>` evaluates statelessly,
-`<fork>` spawns independently.
+For detailed guidance on when to use each pattern and complete examples, see
+[authoring-guide.md](authoring-guide.md#choosing-the-right-pattern).
 
-**Initial protocol scope:** Multi-tag semantics (multiple transition tags in a
-single response) are a future feature. Initially, require either:
-- exactly one protocol tag (`goto`, `reset`, `function`, `call`, `fork`, or `result`).
+### Implementation Details
 
-### Pattern 1: Pure Function (No Context)
+**Goto:** Resumes the existing Claude Code session via `--resume`.
 
-**Invocation:** Launch Claude Code with only a prompt, no session history.
+**Reset:** Creates a new session. Updates the session ID in the state file for
+future `<goto>` transitions. Clears the return stack.
 
-**Characteristics:**
-- Completely stateless - no prior context
-- Output depends only on the prompt (and model behavior)
-- Fast and cheap (minimal tokens)
-- Reproducible setup (same prompt always starts from the same state)
+**Call:** Pushes a return frame (caller's session + return state) onto the
+stack, then starts the child via `--fork-session` (branching from the caller's
+context). When the child emits `<result>`, the orchestrator pops the frame and
+resumes the caller.
 
-**Programming analogy:** A pure function like `f(x) -> y`. Given the same input,
-the function's behavior is self-contained. It cannot access variables from the
-caller's scope.
+**Function:** Same stack behavior as `<call>`, but the child starts in a fresh
+session (no context inheritance).
 
-**Example use cases:**
-- **Evaluators**: "Given this message, does it indicate the task is complete?
-  Respond YES or NO."
-- **Classifiers**: "Categorize this error message: SYNTAX, RUNTIME, or LOGIC."
-- **Decision points**: "Should this code change be committed or does it need
-  more review? Respond COMMIT or REVIEW."
-
-**Implementation:**
-```python
-# Invoke with no session context
-result = await wrap_claude_code(prompt)
-```
-
-**When to use:**
-- The task requires no context beyond what's in the prompt
-- You want fast, cheap evaluations
-- You need a "circuit breaker" or decision point in the workflow
-- Isolation is more important than continuity
-
-### Pattern 2: Call with Return (Isolated Subtask)
-
-**Invocation:** Call a child workflow, execute subtask in isolated context,
-return result to parent via resume.
-
-**Characteristics:**
-- Child session inherits parent's context at fork point
-- Child can iterate, make mistakes, accumulate noise
-- Only the final result returns to the parent
-- Parent's context stays clean
-
-**Programming analogy:** A function call with a stack frame. The function
-receives parameters (context at fork), creates local variables (intermediate
-work), and returns a value (final result). When the function returns, its stack
-frame is discarded - the caller never sees the local variables.
-
-```
-caller's scope                    function's scope
-┌─────────────────┐              ┌─────────────────┐
-│ variables...    │   call →     │ local vars...   │
-│                 │              │ intermediate... │
-│                 │   ← return   │ more work...    │
-│ + result        │              │ final result    │
-└─────────────────┘              └─────────────────┘
-                                   (discarded)
-```
-
-**Example use cases:**
-- **Iterative refinement**: Refine a plan through multiple passes, return only
-  the final plan.
-- **Implementation with debugging**: Implement a feature, fix failing tests
-  through several attempts, return only "implementation complete."
-- **Research tasks**: Explore a codebase to answer a question, return only the
-  answer (not the exploration steps).
-
-**Implementation:**
-```python
-# Call child workflow
-child_result = await run_child_workflow(parent_session_id, child_prompt)
-
-# Resume parent with result injected into return state
-await resume_session(parent_session_id, render_prompt(return_prompt, {"result": child_result}))
-```
-
-**When to use:**
-- The subtask may require multiple iterations
-- Intermediate steps would pollute the parent's context
-- You want clean separation between "doing the work" and "using the result"
-- The parent context is valuable and should be preserved
-
-### Pattern 3: Resume with New State (Goto)
-
-**Invocation:** Resume an existing session with a new prompt, continuing in the
-same context.
-
-**Characteristics:**
-- Context accumulates across states
-- No isolation - all history is visible
-- Efficient when history is needed
-- Can become cluttered over many transitions
-
-**Programming analogy:** Sequential execution within a single function scope.
-Each new state is like reaching the next block of code - you're still in the
-same scope with access to all prior variables. Alternatively, think of it like
-a `goto` to a new label within the same function: execution continues but at a
-different point, with full access to accumulated state.
-
-```
-same scope throughout
-┌─────────────────────────────────────┐
-│ state A work...                     │
-│ goto B                              │
-│ state B work...  (sees A's work)    │
-│ goto C                              │
-│ state C work...  (sees A and B)     │
-└─────────────────────────────────────┘
-```
-
-**Example use cases:**
-- **Commit after implementation**: The commit message needs to see what was
-  implemented.
-- **Sequential phases**: Plan → implement → test, where each phase benefits
-  from seeing the prior work.
-- **Conversational continuity**: Follow-up questions that reference prior
-  discussion.
-
-**Implementation:**
-```python
-# Resume existing session with new prompt (next state)
-await resume_session(session_id, new_state_prompt)
-```
-
-**When to use:**
-- Later steps need visibility into earlier work
-- Context continuity is more valuable than cleanliness
-- The workflow is linear without need for isolation
-- You're doing a "handoff" rather than a "subtask"
-
-### Pattern 4: Reset (Fresh Start)
-
-**Invocation:** Discard current context, start a fresh session, continue the
-workflow.
-
-**Characteristics:**
-- Current context is discarded entirely
-- New session starts with only the prompt (like Pattern 1)
-- But workflow continues (unlike Pattern 1 which is disposable)
-- Session ID is updated in state file for future `<goto>` transitions
-
-**Programming analogy:** Starting a new function scope after completing the
-previous one. Like finishing one phase of work, writing results to disk, then
-starting a new phase that reads from disk rather than relying on memory.
-
-```
-phase A scope                     phase B scope (fresh)
-┌─────────────────┐              ┌─────────────────┐
-│ planning work...│              │ reads plan.md   │
-│ writes plan.md  │   reset →    │ implementation..│
-│ (context full)  │              │ (context clean) │
-└─────────────────┘              └─────────────────┘
-   (discarded)
-```
-
-**Example use cases:**
-- **Plan then implement**: After creating plan.md, reset to implementation
-  phase. The plan is in the file; no need to carry planning iterations in
-  context.
-- **Phase transitions**: Moving from research to execution, where accumulated
-  research context would be noise.
-- **Context hygiene**: Intentionally clearing context when approaching limits
-  rather than letting it overflow.
-
-**Implementation:**
-```python
-# Discard current session, start fresh with new state
-new_session_id = await start_fresh_session(new_state_prompt)
-state["session_id"] = new_session_id  # Update for future <goto>
-```
-
-**When to use:**
-- Prior work is captured in files, not needed in context
-- Context is getting large and cluttered
-- Clean break between workflow phases
-- You want the benefits of Ralph's fresh-start approach at specific points
-
-**Contrast with other patterns:**
-
-| Aspect | `<goto>` | `<reset>` | `<function>` |
-|--------|----------|-----------|--------------|
-| Context | Preserved | Discarded | Discarded |
-| Workflow | Continues | Continues | Disposable |
-| Future `<goto>` | Same session | New session | N/A |
-
-## Choosing the Right Pattern
-
-| Question | Yes → | No → |
-|----------|-------|------|
-| Does the task need any prior context? | Pattern 2, 3, or 4 | Pattern 1 |
-| Should intermediate work be discarded? | Pattern 2 or 4 | Pattern 3 |
-| Is this a decision/evaluation point? | Pattern 1 | Others |
-| Will there be messy iterations? | Pattern 2 | Pattern 3 or 4 |
-| Does the next step need this step's history? | Pattern 3 | Pattern 1, 2, or 4 |
-| Is prior work saved to files? | Pattern 4 | Pattern 3 |
-| Should workflow continue after? | Pattern 2, 3, or 4 | Pattern 1 |
-
-### Combined Example
-
-A complete workflow might use multiple patterns:
-
-```
-1. [Pattern 1] Evaluator decides which issue to work on → "issue 195"
-       ↓
-2. [Fresh start] Main session begins: "Work on issue 195"
-       ↓           (this session will be resumed later)
-3. [Pattern 2] Call: "Create and refine plan" (iterates 3x)
-       ↓ returns: "Plan complete in plan-195.md"
-4. [Pattern 4] Reset: "Implement per plan-195.md" (fresh context, reads plan from file)
-       ↓
-5. [Pattern 2] Call: "Implement and fix until tests pass" (iterates 5x)
-       ↓ returns: "Implementation complete, all tests passing"
-6. [Pattern 3] Goto: "Review the implementation and commit."
-       ↓
-7. [Pattern 1] Evaluator: "Is this ready to commit?" → YES
-       ↓
-8. [Pattern 3] Goto: "Commit and close issue."
-       ↓
-   [Terminal] No transition tag - workflow complete
-```
-
-Step 4 uses `<reset>` to discard the planning context (which is now captured in
-plan-195.md) and start implementation fresh. Steps 6 and 8 use `<goto>` to
-preserve implementation context for the commit message.
-
-**Note on step 2:** Starting a new main session is technically a fresh start
-(like Pattern 1), but with the intent to resume it later. Pattern 1 is for
-stateless evaluations that won't be resumed. The distinction is about intent:
-Pattern 1 sessions are disposable; main sessions are persistent.
+**Fork:** Creates a new agent entry in the state file with an empty return
+stack and fresh session. The parent continues at `next` via resume (like
+`<goto>`). See the Fork section below for naming and lifecycle details.
 
 ## Persistent State and Crash Recovery
 
@@ -602,7 +384,7 @@ Code invocations, state persisted to disk for crash recovery.
 
 ## Fork: Spawning Independent Agents
 
-Beyond the call-and-return pattern (Pattern 2), Raymond supports spawning
+Beyond the call-and-return pattern (`<call>`), Raymond supports spawning
 independent agents that run in parallel. This is what the `<fork>...</fork>`
 transition tag represents (Unix fork() analogy), and it is distinct from Claude
 Code's `--fork-session` flag (which branches conversation history).
@@ -633,9 +415,9 @@ Agent A (dispatcher)                Agent B (spawned)
 
 All agents exist within the same orchestrator instance and state file.
 
-### Contrast with Pattern 2 (Call with Return)
+### Contrast with `<call>`
 
-| Aspect | Pattern 2 (Call) | Fork |
+| Aspect | `<call>` | `<fork>` |
 |--------|------------------|------|
 | Parent waits? | Yes, for result | No, continues immediately |
 | Result returns? | Yes, via resume | No, independent completion |

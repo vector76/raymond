@@ -1,8 +1,11 @@
-# Shell Script States
+# Shell Script States (Design Rationale)
 
 This document describes the problem of LLM overhead for deterministic operations
-and proposes shell scripts (`.sh` on Unix, `.bat` on Windows) as an alternative
-state implementation alongside markdown prompt files.
+and the design decisions behind shell scripts (`.sh` on Unix, `.bat` on Windows)
+as an alternative state implementation alongside markdown prompt files.
+
+For how to write shell script states, see
+[authoring-guide.md](authoring-guide.md#shell-script-states).
 
 ## Problem Statement
 
@@ -189,163 +192,11 @@ platform uses its native script type:
 - On Unix: `.sh` files are executed with `/bin/bash`
 - On Windows: `.bat` files are executed with `cmd.exe`
 
-### Context and Variables
-
-Shell scripts receive workflow context via environment variables. These
-variables are injected by the orchestrator before script execution.
-
-#### Core Environment Variables
-
-| Variable | Description | Example Value |
-|----------|-------------|---------------|
-| `RAYMOND_WORKFLOW_ID` | Unique identifier for the workflow run | `wf-2024-01-15-abc123` |
-| `RAYMOND_AGENT_ID` | Identifier for the current agent | `main`, `main_worker1` |
-| `RAYMOND_STATE_DIR` | Absolute path to the workflow states directory | `/home/user/workflows/test_cases` |
-| `RAYMOND_STATE_FILE` | Absolute path to the current state file | `/home/user/workflows/test_cases/POLL.sh` |
-
-**Example usage (Unix):**
-```bash
-#!/bin/bash
-echo "Workflow: $RAYMOND_WORKFLOW_ID"
-echo "Agent: $RAYMOND_AGENT_ID"
-echo "State dir: $RAYMOND_STATE_DIR"
-echo "Current state: $RAYMOND_STATE_FILE"
-```
-
-**Example usage (Windows):**
-```batch
-@echo off
-echo Workflow: %RAYMOND_WORKFLOW_ID%
-echo Agent: %RAYMOND_AGENT_ID%
-echo State dir: %RAYMOND_STATE_DIR%
-echo Current state: %RAYMOND_STATE_FILE%
-```
-
-#### Result Variable (Call Returns)
-
-| Variable | Description | When Set |
-|----------|-------------|----------|
-| `RAYMOND_RESULT` | Payload from the `<result>` tag of a called subroutine | Only when returning from `<call>` |
-
-When a script state is entered via a `<call>` return (i.e., the caller used
-`<call return="THIS_STATE.sh">SUBROUTINE.md</call>`), the subroutine's result
-payload is available in `RAYMOND_RESULT`.
-
-**Example:**
-```bash
-#!/bin/bash
-# RESUME_AFTER_CALL.sh - Entered after a <call> returns
-
-if [ -n "$RAYMOND_RESULT" ]; then
-    echo "Subroutine returned: $RAYMOND_RESULT"
-else
-    echo "No result (not returning from a call)"
-fi
-
-echo "<goto>NEXT.md</goto>"
-```
-
-#### Fork Attributes
-
-When a script is spawned via `<fork>`, all attributes from the fork tag become
-environment variables. This allows parent states to pass data to worker scripts.
-
-**Fork tag example:**
-```
-<fork next="CONTINUE.md" item="issue-123" priority="high">WORKER.sh</fork>
-```
-
-**Available in WORKER.sh:**
-```bash
-#!/bin/bash
-echo "Processing item: $item"        # "issue-123"
-echo "Priority level: $priority"     # "high"
-
-# Do work based on the item...
-echo "<result>Processed $item</result>"
-```
-
-**Windows equivalent:**
-```batch
-@echo off
-echo Processing item: %item%
-echo Priority level: %priority%
-
-REM Do work based on the item...
-echo ^<result^>Processed %item%^</result^>
-```
-
-**Note:** The `next` and `cd` attributes are used by the orchestrator and are
-NOT passed to the worker script as environment variables. Only user-defined
-attributes (like `item`, `priority`, etc.) become environment variables.
-
-#### Variable Naming
-
-Fork attribute names become environment variable names directly:
-- `item="value"` → `$item` (Unix) or `%item%` (Windows)
-- `task_id="123"` → `$task_id` or `%task_id%`
-- `myVar="test"` → `$myVar` or `%myVar%`
-
-Avoid using attribute names that conflict with existing environment variables
-or shell builtins (e.g., `PATH`, `HOME`, `COMSPEC`).
-
-#### Persisting Data Between Script Runs
-
-Scripts that use `<reset>` to loop back to themselves start with fresh context
-each time. To persist data across iterations, write to files:
-
-```bash
-#!/bin/bash
-# POLL.sh - Polling with persistent counter
-
-counter_file="${RAYMOND_STATE_DIR}/poll_counter.txt"
-
-# Read or initialize counter
-if [ -f "$counter_file" ]; then
-    count=$(cat "$counter_file")
-else
-    count=0
-fi
-
-# Increment and save
-count=$((count + 1))
-echo $count > "$counter_file"
-
-echo "Poll iteration: $count"
-
-if [ $count -lt 5 ]; then
-    echo "<reset>POLL.sh</reset>"
-else
-    rm -f "$counter_file"  # Cleanup
-    echo "<result>Polling complete after $count iterations</result>"
-fi
-```
-
-### Return Values and Results
-
-Scripts return results via `<result>` tags, just like LLM states:
-
-```bash
-#!/bin/bash
-# BUILD.sh - Build the project
-
-npm install
-npm run build
-
-if [ $? -eq 0 ]; then
-    echo "<result>Build succeeded</result>"
-else
-    echo "<result>Build failed with exit code $?</result>"
-fi
-```
-
-For `<call>` transitions, the result is captured and made available to the
-return state via `{{result}}` template variable (for markdown) or
-`RAYMOND_RESULT` environment variable (for scripts).
-
 ### Error Handling
 
-Script execution errors are handled as follows:
+Script execution errors are fatal by default (workflow terminates). This
+differs from LLM states, which can re-prompt on parse failures. Scripts are
+expected to be deterministic and correct; if they fail, it's a bug.
 
 | Condition | Behavior |
 |-----------|----------|
@@ -355,83 +206,11 @@ Script execution errors are handled as follows:
 | Script outputs multiple transition tags | Error: ambiguous transition |
 | Script times out | Error: timeout (configurable per-state) |
 
-Errors in script states are fatal by default (workflow terminates). This
-differs from LLM states, which can re-prompt on parse failures. Scripts are
-expected to be deterministic and correct; if they fail, it's a bug.
+### No Frontmatter Policy
 
-### No Transition Constraints (No Frontmatter)
-
-Shell scripts have no equivalent to YAML frontmatter for constraining allowed
-transitions. This is analogous to a markdown file without frontmatter: **all
-transition tags are permitted**.
-
-The orchestrator still validates the emitted tag:
-
-- The tag must be syntactically valid (`<goto>`, `<reset>`, `<result>`, etc.)
-- The tag's target must resolve to an existing state file
-- Exactly one transition tag must be present
-
-However, because there is no policy defining allowed transitions, **no
-"reminding" is possible**. When a markdown state with `allowed_transitions`
-frontmatter emits an invalid or missing tag, the orchestrator can re-prompt
-with a reminder of valid options. For script states, there is no LLM to
-re-prompt — the script has already terminated.
-
-Therefore, validation failures in script states are always fatal errors that
-terminate the workflow. Script authors must ensure their scripts emit exactly
-one valid transition tag on all code paths.
-
-### Example: Polling Workflow
-
-**Before (LLM-only, expensive and fragile):**
-
-```
-POLL.md:
-  Check GitHub API for issues. If found, <goto>PROCESS.md</goto>.
-  Otherwise, sleep 60 and <reset>POLL.md</reset>.
-
-PROCESS.md:
-  Analyze the issue and implement a fix...
-```
-
-**After (hybrid, efficient):**
-
-```
-POLL.sh:
-  #!/bin/bash
-  response=$(curl -s "$GITHUB_API/issues")
-  if [ $(echo "$response" | jq 'length') -gt 0 ]; then
-      echo "<goto>PROCESS.md</goto>"
-  else
-      sleep 60
-      echo "<reset>POLL.sh</reset>"
-  fi
-
-PROCESS.md:
-  Analyze the issue and implement a fix...
-  (LLM reasoning needed here)
-```
-
-The polling runs outside any LLM session. It can poll every second, sleep for
-hours, retry on network errors — all without spending tokens or risking
-timeouts. The LLM is only invoked when there's actual work requiring reasoning.
-
-### Example: Build Pipeline
-
-```
-BUILD.sh:
-  #!/bin/bash
-  set -e
-  npm install
-  npm run lint
-  npm run test
-  npm run build
-  echo "<result>Build completed successfully</result>"
-```
-
-This deterministic build sequence runs directly. If it fails, the workflow
-terminates with an error. If it succeeds, control returns to the caller with
-the result.
+Shell scripts have no equivalent to YAML frontmatter. All transition tags are
+permitted, but because there is no policy defining allowed transitions, no
+"reminding" is possible — validation failures are always fatal.
 
 ## Implementation Notes
 

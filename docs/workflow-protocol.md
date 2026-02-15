@@ -45,7 +45,7 @@ invoking an LLM, making them efficient for deterministic operations.
 
 **State resolution:** When a transition target omits the extension (e.g.,
 `<goto>POLL</goto>`), the orchestrator resolves it to the appropriate file
-type based on platform and what exists. See `wiki/bash-states.md` for details.
+type based on platform and what exists. See `docs/bash-states.md` for details.
 
 ## Initial Input (`--input`)
 

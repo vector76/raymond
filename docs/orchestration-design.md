@@ -40,10 +40,10 @@ Raymond treats workflows as a state machine where:
 **Markdown vs. Script states:** Markdown states are interpreted by Claude Code
 (LLM execution), while script states execute directly (no LLM). Both emit the
 same transition tags. Scripts are efficient for deterministic operations like
-polling, builds, and data processing. See `wiki/bash-states.md` for details.
+polling, builds, and data processing. See `docs/bash-states.md` for details.
 
 **Protocol note:** The authoritative protocol (including the return stack model
-and directory scoping) is defined in `wiki/workflow-protocol.md`.
+and directory scoping) is defined in `docs/workflow-protocol.md`.
 
 Two key protocol points worth calling out here:
 - The agent's final message must contain **exactly one** protocol tag, and that
@@ -675,7 +675,7 @@ will execute in this directory instead of the orchestrator's directory. The
 parent agent's working directory is unaffected. The `cd` attribute is consumed
 by the orchestrator and excluded from `fork_attributes`. The same attribute is
 also supported on `<reset>` to change the current agent's working directory.
-See `wiki/workflow-protocol.md` for full details.
+See `docs/workflow-protocol.md` for full details.
 
 **Agent Naming Strategy:**
 

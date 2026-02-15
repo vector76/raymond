@@ -75,12 +75,12 @@ Subsequent `<goto>` tags resume the existing session. `<reset>` explicitly
 creates a new session, discarding the current one.
 
 **Protocol note:** The authoritative protocol is defined in
-`wiki/workflow-protocol.md`, including the return stack model and the rule that
+`docs/workflow-protocol.md`, including the return stack model and the rule that
 each Claude Code run must end with exactly one protocol tag.
 
 **Per-state policy:** Prompt files may optionally include YAML frontmatter that
 declares allowed tags/targets for that state; the orchestrator enforces it (see
-`wiki/workflow-protocol.md`).
+`docs/workflow-protocol.md`).
 
 **Future consideration:** A `<compact>` tag could perform context summarization
 rather than full discard - partially preserving context while reducing token

@@ -94,11 +94,12 @@ def _build_claude_command(
 
 
 async def wrap_claude_code(
-    prompt: str, 
-    model: Optional[str] = None, 
+    prompt: str,
+    model: Optional[str] = None,
     session_id: Optional[str] = None,
     timeout: Optional[float] = None,
     dangerously_skip_permissions: bool = False,
+    cwd: Optional[str] = None,
     **kwargs
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
@@ -123,6 +124,8 @@ async def wrap_claude_code(
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
             instead of --permission-mode acceptEdits. WARNING: This allows Claude
             to execute any action without prompting for permission.
+        cwd: Optional working directory for the subprocess. If None, inherits the
+            orchestrator's working directory.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
@@ -157,6 +160,7 @@ async def wrap_claude_code(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=_build_claude_env(),
+        cwd=cwd,
     )
 
     results = []
@@ -259,11 +263,12 @@ async def wrap_claude_code(
 
 
 async def wrap_claude_code_stream(
-    prompt: str, 
+    prompt: str,
     model: Optional[str] = None,
     session_id: Optional[str] = None,
     timeout: Optional[float] = None,
     dangerously_skip_permissions: bool = False,
+    cwd: Optional[str] = None,
     **kwargs
 ) -> AsyncIterator[Dict[str, Any]]:
     """
@@ -286,6 +291,8 @@ async def wrap_claude_code_stream(
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
             instead of --permission-mode acceptEdits. WARNING: This allows Claude
             to execute any action without prompting for permission.
+        cwd: Optional working directory for the subprocess. If None, inherits the
+            orchestrator's working directory.
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
@@ -320,6 +327,7 @@ async def wrap_claude_code_stream(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=_build_claude_env(),
+        cwd=cwd,
     )
 
     loop = asyncio.get_running_loop()

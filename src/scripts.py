@@ -110,19 +110,23 @@ class ScriptTimeoutError(Exception):
 async def run_script(
     script_path: str,
     timeout: float | None = None,
-    env: dict[str, str] | None = None
+    env: dict[str, str] | None = None,
+    cwd: str | None = None
 ) -> ScriptResult:
     """Execute a shell script asynchronously and capture its output.
 
     Runs .sh files with bash (Unix) or .bat files with cmd.exe (Windows).
-    The script runs in the orchestrator's current working directory, not
-    in the directory containing the script.
+    By default, the script runs in the orchestrator's current working directory,
+    not in the directory containing the script. Use the cwd parameter to
+    override the working directory.
 
     Args:
         script_path: Path to the script file (absolute or relative).
         timeout: Maximum execution time in seconds. None for no timeout.
         env: Optional environment variables to pass to the script.
              If provided, these are added to (not replacing) the current environment.
+        cwd: Optional working directory for the script. If None, inherits the
+             orchestrator's working directory.
 
     Returns:
         ScriptResult containing stdout, stderr, and exit code.
@@ -167,7 +171,6 @@ async def run_script(
         process_env.update(env)
 
     # Create the subprocess
-    # Note: We don't set cwd, so the script runs in the orchestrator's directory
     # stdin=DEVNULL prevents the child from inheriting the terminal's stdin,
     # which would allow it to put the terminal in raw mode and disable SIGINT
     # generation from CTRL-C.
@@ -177,6 +180,7 @@ async def run_script(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=process_env,
+        cwd=cwd,
     )
 
     try:

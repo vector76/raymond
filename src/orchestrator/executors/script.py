@@ -77,6 +77,7 @@ class ScriptExecutor:
         current_state = agent["current_state"]
         agent_id = agent.get("id", "unknown")
         session_id = agent.get("session_id")  # Preserved, not modified
+        agent_cwd = agent.get("cwd")  # Per-agent working directory (None = orchestrator's cwd)
 
         # Build full path to script file
         script_path = str(Path(scope_dir) / current_state)
@@ -117,7 +118,7 @@ class ScriptExecutor:
 
         try:
             script_result = await orchestrator.run_script(
-                script_path, timeout=context.timeout, env=env
+                script_path, timeout=context.timeout, env=env, cwd=agent_cwd
             )
         except orchestrator.ScriptTimeoutError as e:
             logger.error(

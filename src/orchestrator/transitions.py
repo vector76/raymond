@@ -18,11 +18,33 @@ transitions, handling deep copying and transient field cleanup.
 
 import copy
 import logging
+import os
 from typing import Any, Dict, Optional, Tuple, Union
 
 from src.parsing import Transition
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_cd(cd_value: str, base_cwd: Optional[str]) -> str:
+    """Resolve a cd attribute value to an absolute, normalized path.
+
+    If cd_value is absolute, it is normalized and returned as-is.
+    If cd_value is relative, it is resolved against base_cwd (the agent's
+    current working directory). If base_cwd is None (agent has no cwd set),
+    relative paths are resolved against the orchestrator's working directory.
+
+    Args:
+        cd_value: The cd attribute value from the transition tag.
+        base_cwd: The agent's current cwd, or None if unset.
+
+    Returns:
+        Absolute, normalized path string.
+    """
+    if os.path.isabs(cd_value):
+        return os.path.normpath(cd_value)
+    base = base_cwd if base_cwd is not None else os.getcwd()
+    return os.path.normpath(os.path.join(base, cd_value))
 
 
 # Map transition tags to their handler functions
@@ -116,13 +138,19 @@ def handle_reset_transition(
     - Updates current_state to transition target
     - Sets session_id to None (fresh start)
     - Clears return stack (logs warning if non-empty)
+    - If ``cd`` attribute is present, sets agent's working directory
 
     Note: The transition target is already resolved by step_agent before this
     handler is called, so we use transition.target directly.
 
     Args:
         agent: Agent state dictionary
-        transition: Transition object with resolved target filename
+        transition: Transition object with resolved target filename.
+            Supports optional ``cd`` attribute to change the agent's working
+            directory for all subsequent state executions. Relative paths are
+            resolved against the agent's current cwd (or the orchestrator's
+            cwd if no agent cwd is set). The result is always stored as an
+            absolute, normalized path.
         state: Full workflow state dictionary (unused, for handler signature consistency)
 
     Returns:
@@ -144,6 +172,12 @@ def handle_reset_transition(
     agent["current_state"] = transition.target
     agent["session_id"] = None  # Fresh start
     agent["stack"] = []  # Clear return stack
+
+    # Apply cd attribute if specified (changes agent's working directory)
+    # Relative paths are resolved against the agent's current cwd.
+    if "cd" in transition.attributes:
+        agent["cwd"] = _resolve_cd(transition.attributes["cd"], agent.get("cwd"))
+
     return agent
 
 
@@ -261,8 +295,10 @@ def handle_fork_transition(
     - Creates new agent in agents array
     - New agent has unique ID, empty return stack, fresh session
     - New agent's current_state is fork target
+    - If ``cd`` attribute is present, sets the worker's working directory
     - Parent agent continues at next state (preserves session and stack)
-    - Fork attributes (beyond 'next') are available as template variables for new agent
+    - Fork attributes (beyond ``next`` and ``cd``) are available as template
+      variables for new agent
 
     Agent naming uses persistent fork counters per parent agent to ensure unique
     names even after previous workers have terminated. Names use a compact
@@ -277,7 +313,12 @@ def handle_fork_transition(
 
     Args:
         agent: Agent state dictionary (the parent)
-        transition: Transition object with resolved target filename and next attribute
+        transition: Transition object with resolved target filename and next attribute.
+            Supports optional ``cd`` attribute to set the worker's working directory.
+            Relative paths are resolved against the parent agent's current cwd (or
+            the orchestrator's cwd if no parent cwd is set). The result is always
+            stored as an absolute, normalized path. The ``cd`` attribute is consumed
+            by the orchestrator and not passed as a fork attribute.
         state: Full workflow state dictionary (used to track fork counters)
 
     Returns:
@@ -321,9 +362,14 @@ def handle_fork_transition(
         "stack": []  # Empty return stack
     }
 
-    # Store fork attributes (excluding 'next') for template substitution
+    # Apply cd attribute if specified (sets worker's working directory)
+    # Relative paths are resolved against the parent agent's current cwd.
+    if "cd" in transition.attributes:
+        new_agent["cwd"] = _resolve_cd(transition.attributes["cd"], agent.get("cwd"))
+
+    # Store fork attributes (excluding 'next' and 'cd') for template substitution
     fork_attributes = {
-        k: v for k, v in transition.attributes.items() if k != "next"
+        k: v for k, v in transition.attributes.items() if k not in ("next", "cd")
     }
     if fork_attributes:
         new_agent["fork_attributes"] = fork_attributes

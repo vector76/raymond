@@ -647,7 +647,7 @@ All agents exist within the same orchestrator instance and state file.
 Fork adds a new agent to the same state file:
 
 ```python
-# On <fork next="NEXT.md" item="foo">WORKER.md</fork>
+# On <fork next="NEXT.md" cd="/path/to/worktree" item="foo">WORKER.md</fork>
 # Extract state name and create compact abbreviation
 state_name = transition.target.replace('.md', '').lower()[:6]  # e.g., "worker"
 # Fork counter ensures unique names even after workers terminate
@@ -660,6 +660,7 @@ new_agent = {
     "current_state": "WORKER.md",
     "session_id": None,  # Fresh session
     "stack": [],         # Empty return stack
+    "cwd": "/path/to/worktree",  # Per-agent working directory (from cd attribute)
     "fork_attributes": {"item": "foo"}  # Available as template variables
 }
 state["agents"].append(new_agent)
@@ -667,6 +668,14 @@ state["agents"].append(new_agent)
 # Parent agent continues at NEXT.md (like goto)
 parent_agent["current_state"] = "NEXT.md"
 ```
+
+**Working directory (`cd` attribute):** The `cd` attribute on `<fork>` sets the
+worker's working directory. The worker's Claude Code and script subprocesses
+will execute in this directory instead of the orchestrator's directory. The
+parent agent's working directory is unaffected. The `cd` attribute is consumed
+by the orchestrator and excluded from `fork_attributes`. The same attribute is
+also supported on `<reset>` to change the current agent's working directory.
+See `wiki/workflow-protocol.md` for full details.
 
 **Agent Naming Strategy:**
 

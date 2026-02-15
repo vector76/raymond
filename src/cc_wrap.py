@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import List, Dict, Any, AsyncIterator, Tuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,18 @@ DEFAULT_TIMEOUT = 600  # 10 minutes
 class ClaudeCodeTimeoutError(Exception):
     """Raised when Claude Code invocation times out."""
     pass
+
+
+def _build_claude_env() -> dict[str, str]:
+    """Build environment for Claude Code subprocesses.
+
+    Strips the CLAUDECODE env var so that claude doesn't think it's being
+    nested inside another Claude Code session (raymond intentionally launches
+    claude as a managed subprocess, not as a nested session).
+    """
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    return env
 
 
 def _build_claude_command(
@@ -135,10 +148,15 @@ async def wrap_claude_code(
         effective_timeout = DEFAULT_TIMEOUT
 
     # Run the command asynchronously and capture stdout
+    # stdin=DEVNULL prevents the child from inheriting the terminal's stdin,
+    # which would allow it to put the terminal in raw mode and disable SIGINT
+    # generation from CTRL-C.
     process = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_build_claude_env(),
     )
 
     results = []
@@ -293,10 +311,15 @@ async def wrap_claude_code_stream(
         idle_timeout = DEFAULT_TIMEOUT
 
     # Run the command asynchronously and capture stdout
+    # stdin=DEVNULL prevents the child from inheriting the terminal's stdin,
+    # which would allow it to put the terminal in raw mode and disable SIGINT
+    # generation from CTRL-C.
     process = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_build_claude_env(),
     )
 
     loop = asyncio.get_running_loop()

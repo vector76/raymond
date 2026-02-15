@@ -182,6 +182,13 @@ class MarkdownExecutor:
         elif context.default_model:
             model_to_use = context.default_model.lower() if isinstance(context.default_model, str) else context.default_model
 
+        # Determine which effort level to use
+        effort_to_use = None
+        if policy and policy.effort:
+            effort_to_use = policy.effort
+        elif context.default_effort:
+            effort_to_use = context.default_effort.lower() if isinstance(context.default_effort, str) else context.default_effort
+
         # Retry loop for reminder prompts
         transition = None
         new_session_id = session_id
@@ -267,6 +274,7 @@ class MarkdownExecutor:
                 async with aclosing(orchestrator.wrap_claude_code_stream(
                     prompt,
                     model=model_to_use,
+                    effort=effort_to_use,
                     session_id=use_session_id,
                     timeout=context.timeout,
                     dangerously_skip_permissions=context.dangerously_skip_permissions,

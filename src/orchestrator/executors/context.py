@@ -27,6 +27,7 @@ class ExecutionContext:
         debug_dir: Directory for debug output (None if debug disabled)
         state_dir: Custom state directory if specified (for error saving)
         default_model: Model override from CLI (None uses prompt default)
+        default_effort: Effort level override from CLI (None uses prompt default)
         timeout: Timeout in seconds for Claude Code/script execution
         dangerously_skip_permissions: If True, skip permission prompts in Claude Code
         step_counters: Mutable dict tracking step numbers per agent (for debug files)
@@ -38,6 +39,7 @@ class ExecutionContext:
     debug_dir: Optional[Path] = None
     state_dir: Optional[str] = None
     default_model: Optional[str] = None
+    default_effort: Optional[str] = None
     timeout: Optional[float] = None
     dangerously_skip_permissions: bool = False
     step_counters: Dict[str, int] = field(default_factory=dict)

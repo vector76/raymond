@@ -125,7 +125,7 @@ def validate_config(config: Dict[str, Any], config_file: Path) -> Dict[str, Any]
     """
     # Known configuration keys
     known_keys = {
-        "budget", "dangerously_skip_permissions", "model", "timeout",
+        "budget", "dangerously_skip_permissions", "effort", "model", "timeout",
         "no_debug", "no_wait", "verbose"
     }
     
@@ -195,6 +195,18 @@ def validate_config(config: Dict[str, Any], config_file: Path) -> Dict[str, Any]
             raise ConfigError(
                 f"Invalid value for 'model' in {config_file}: "
                 f"must be one of 'opus', 'sonnet', 'haiku', got '{validated_config['model']}'"
+            )
+
+    if "effort" in validated_config:
+        if not isinstance(validated_config["effort"], str):
+            raise ConfigError(
+                f"Invalid value for 'effort' in {config_file}: "
+                f"expected string, got {type(validated_config['effort']).__name__}"
+            )
+        if validated_config["effort"] not in ("low", "medium", "high"):
+            raise ConfigError(
+                f"Invalid value for 'effort' in {config_file}: "
+                f"must be one of 'low', 'medium', 'high', got '{validated_config['effort']}'"
             )
 
     return validated_config
@@ -291,7 +303,12 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
     if not hasattr(args, 'model') or args.model is None:
         if "model" in config:
             args.model = config["model"]
-    
+
+    # Effort: only set if CLI didn't specify
+    if not hasattr(args, 'effort') or args.effort is None:
+        if "effort" in config:
+            args.effort = config["effort"]
+
     # Timeout: only set if CLI didn't specify
     if not hasattr(args, 'timeout') or args.timeout is None:
         if "timeout" in config:
@@ -353,6 +370,9 @@ def init_config(cwd: Optional[Path] = None) -> int:
 
 # Default model: "opus", "sonnet", or "haiku" (default: None)
 # model = "sonnet"
+
+# Default effort level: "low", "medium", or "high" (default: None)
+# effort = "medium"
 
 # Timeout per Claude Code invocation in seconds (default: 600, 0=none)
 # timeout = 600.0

@@ -26,6 +26,7 @@ async def step_agent(
     debug_dir: Optional[Path] = None,
     agent_step_counters: Optional[Dict[str, int]] = None,
     default_model: Optional[str] = None,
+    default_effort: Optional[str] = None,
     timeout: Optional[float] = None,
     dangerously_skip_permissions: bool = False,
     quiet: bool = False
@@ -42,6 +43,7 @@ async def step_agent(
         debug_dir: Optional debug directory path (for saving outputs)
         agent_step_counters: Optional dict to track step numbers per agent
         default_model: Optional model to use if not specified in frontmatter
+        default_effort: Optional effort level to use if not specified in frontmatter
         timeout: Optional timeout in seconds for Claude Code invocations (default: 600)
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
             to Claude instead of --permission-mode acceptEdits.
@@ -68,6 +70,7 @@ async def step_agent(
         debug_dir=debug_dir,
         state_dir=state_dir,
         default_model=default_model,
+        default_effort=default_effort,
         timeout=timeout,
         dangerously_skip_permissions=dangerously_skip_permissions,
         reporter=reporter,

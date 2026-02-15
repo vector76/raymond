@@ -18,6 +18,7 @@ Based on `src/cli.py`, the following options would benefit from configuration:
 
 - `budget` (float, default: 10.0)
 - `dangerously_skip_permissions` (bool, default: False)
+- `effort` (str: "low"|"medium"|"high", default: None)
 - `model` (str: "opus"|"sonnet"|"haiku", default: None)
 - `timeout` (float, default: 600, 0=none)
 - `no_debug` (bool, default: False) - Matches CLI `--no-debug` semantics (default: false means debug mode is enabled)
@@ -53,6 +54,9 @@ Based on `src/cli.py`, the following options would benefit from configuration:
 
 # Skip permission prompts (WARNING: allows any action without prompting) (default: false)
 # dangerously_skip_permissions = false
+
+# Default effort level: "low", "medium", or "high" (default: None)
+# effort = "medium"
 
 # Default model: "opus", "sonnet", or "haiku" (default: None)
 # model = "sonnet"
@@ -319,10 +323,10 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
 - **Type validation**: TOML preserves types, so validate that config values match expected types:
   - `budget` and `timeout` must be numbers (float/int), not strings
   - `dangerously_skip_permissions`, `no_debug`, `verbose` must be booleans
-  - `model` must be a string
+  - `effort` and `model` must be strings
   - Provide clear error messages like: "Error: Invalid value for 'budget' in .raymond/config.toml: expected number, got string '50.0'"
 - **Range validation**: Validate that numeric values are within expected ranges (e.g., budget > 0, timeout >= 0)
-- **Choice validation**: Validate that model values are one of the allowed choices ("opus", "sonnet", "haiku")
+- **Choice validation**: Validate that effort values are one of the allowed choices ("low", "medium", "high") and model values are one of the allowed choices ("opus", "sonnet", "haiku")
 - Handle missing keys gracefully (use defaults)
 - **Unknown keys**: Ignore unknown keys in the `[raymond]` section silently (allows forward compatibility)
 - **Missing section**: If config file exists but `[raymond]` section is missing, return empty dict (use defaults)
@@ -392,7 +396,7 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
 - Test validation of config values:
   - Type validation (string where number expected, etc.)
   - Range validation (budget > 0, timeout >= 0)
-  - Choice validation (valid model choices: "opus", "sonnet", "haiku")
+  - Choice validation (valid effort choices: "low", "medium", "high"; valid model choices: "opus", "sonnet", "haiku")
   - Unknown keys are ignored (forward compatibility)
   - Missing `[raymond]` section returns empty dict (uses defaults)
 - Test case where `.raymond` exists but is a file (not directory) - should continue searching

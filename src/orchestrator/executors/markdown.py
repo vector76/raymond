@@ -112,6 +112,7 @@ class MarkdownExecutor:
         current_state = agent["current_state"]
         agent_id = agent.get("id", "unknown")
         session_id = agent.get("session_id")
+        agent_cwd = agent.get("cwd")  # Per-agent working directory (None = orchestrator's cwd)
 
         # Emit StateStarted event (ConsoleObserver handles display)
         context.bus.emit(StateStarted(
@@ -269,6 +270,7 @@ class MarkdownExecutor:
                     session_id=use_session_id,
                     timeout=context.timeout,
                     dangerously_skip_permissions=context.dangerously_skip_permissions,
+                    cwd=agent_cwd,
                     fork=use_fork
                 )) as stream:
                     async for json_obj in stream:

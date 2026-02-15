@@ -275,8 +275,9 @@ REM Do work based on the item...
 echo ^<result^>Processed %item%^</result^>
 ```
 
-**Note:** The `next` attribute is used by the orchestrator for the parent's
-continuation and is NOT passed to the worker script.
+**Note:** The `next` and `cd` attributes are used by the orchestrator and are
+NOT passed to the worker script as environment variables. Only user-defined
+attributes (like `item`, `priority`, etc.) become environment variables.
 
 #### Variable Naming
 
@@ -445,14 +446,20 @@ The orchestrator's state resolution logic needs to:
 
 ### Working Directory
 
-Scripts execute in the **orchestrator's working directory** (where `raymond` was
-launched), not in the scope directory where state files reside. This ensures
-path consistency with Claude Code:
+By default, scripts execute in the **orchestrator's working directory** (where
+`raymond` was launched), not in the scope directory where state files reside.
+This ensures path consistency with Claude Code:
 
 - If Claude Code references `foo/bar/file.txt`, it's relative to the orchestrator
   directory
 - Shell scripts see the same path `foo/bar/file.txt`
 - The scope directory is only for resolving state file names, not for execution
+
+**Per-agent working directory:** Agents can have their own working directory,
+set via the `cd` attribute on `<fork>` or `<reset>` transitions. When set,
+both Claude Code and script subprocesses for that agent execute in the
+specified directory instead of the orchestrator's directory. See
+`wiki/workflow-protocol.md` for details.
 
 ### Async Execution
 

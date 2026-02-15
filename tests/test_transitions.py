@@ -4,8 +4,11 @@ This module tests the apply_transition wrapper function and the transition
 handler dispatch table.
 """
 
+import os
+
 import pytest
 from src.orchestrator.transitions import (
+    _resolve_cd,
     apply_transition,
     handle_goto_transition,
     handle_reset_transition,
@@ -297,3 +300,328 @@ class TestApplyTransitionTransientFieldClearing:
 
         # fork_session_id should be the caller's session (new_session), not old_fork_session
         assert result["fork_session_id"] == "new_session"
+
+
+class TestResolveCd:
+    """Tests for the _resolve_cd helper function."""
+
+    def test_absolute_path_returned_as_is(self):
+        assert _resolve_cd("/absolute/path", None) == "/absolute/path"
+
+    def test_absolute_path_normalized(self):
+        assert _resolve_cd("/a/b/../c/./d", None) == "/a/c/d"
+
+    def test_relative_path_with_base_cwd(self):
+        assert _resolve_cd("subdir", "/base") == "/base/subdir"
+
+    def test_relative_dotdot_with_base_cwd(self):
+        assert _resolve_cd("../sibling", "/base/child") == "/base/sibling"
+
+    def test_relative_path_without_base_uses_orchestrator_cwd(self):
+        result = _resolve_cd("subdir", None)
+        expected = os.path.normpath(os.path.join(os.getcwd(), "subdir"))
+        assert result == expected
+
+    def test_complex_relative_path_normalized(self):
+        assert _resolve_cd("../foo/../bar/../baz", "/repo/project") == "/repo/baz"
+
+    def test_dot_path_resolves_to_base(self):
+        assert _resolve_cd(".", "/base/dir") == "/base/dir"
+
+    def test_absolute_path_ignores_base_cwd(self):
+        assert _resolve_cd("/new/path", "/old/path") == "/new/path"
+
+
+class TestResetTransitionCd:
+    """Tests for cd attribute on reset transitions."""
+
+    def test_reset_with_absolute_cd_sets_agent_cwd(self):
+        """Reset with absolute cd attribute sets the agent's cwd field."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition("reset", "FRESH.md", {"cd": "/path/to/worktree"}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        assert result["current_state"] == "FRESH.md"
+        assert result["session_id"] is None
+        assert result["cwd"] == "/path/to/worktree"
+
+    def test_reset_without_cd_does_not_set_cwd(self):
+        """Reset without cd attribute does not add a cwd field."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition("reset", "FRESH.md", {}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        assert "cwd" not in result
+
+    def test_reset_with_cd_preserves_existing_cwd_when_no_cd(self):
+        """Reset without cd preserves the agent's existing cwd."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": [],
+            "cwd": "/existing/path"
+        }
+
+        transition = Transition("reset", "FRESH.md", {}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        # Existing cwd should be preserved (not cleared by reset)
+        assert result["cwd"] == "/existing/path"
+
+    def test_reset_with_cd_overrides_existing_cwd(self):
+        """Reset with absolute cd attribute overrides existing cwd."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": [],
+            "cwd": "/old/path"
+        }
+
+        transition = Transition("reset", "FRESH.md", {"cd": "/new/path"}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        assert result["cwd"] == "/new/path"
+
+    def test_reset_relative_cd_resolved_against_agent_cwd(self):
+        """Relative cd is resolved against the agent's current cwd."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": [],
+            "cwd": "/repo/project"
+        }
+
+        transition = Transition("reset", "FRESH.md", {"cd": "../other-project"}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        assert result["cwd"] == "/repo/other-project"
+
+    def test_reset_relative_cd_resolved_against_orchestrator_cwd_when_no_agent_cwd(self):
+        """Relative cd is resolved against orchestrator's cwd when agent has no cwd."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition("reset", "FRESH.md", {"cd": "subdir"}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        expected = os.path.normpath(os.path.join(os.getcwd(), "subdir"))
+        assert result["cwd"] == expected
+
+    def test_reset_cd_normalizes_path(self):
+        """cd paths are normalized (no redundant .. or . components)."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": [],
+            "cwd": "/repo/project"
+        }
+
+        transition = Transition("reset", "FRESH.md", {"cd": "../foo/../bar/../baz"}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        assert result["cwd"] == "/repo/baz"
+
+    def test_reset_absolute_cd_is_normalized(self):
+        """Absolute cd paths are also normalized."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition("reset", "FRESH.md", {"cd": "/a/b/../c/./d"}, "")
+        state = {}
+
+        result = apply_transition(agent, transition, state)
+
+        assert result["cwd"] == "/a/c/d"
+
+
+class TestForkTransitionCd:
+    """Tests for cd attribute on fork transitions."""
+
+    def test_fork_with_absolute_cd_sets_worker_cwd(self):
+        """Fork with absolute cd attribute sets the new worker's cwd field."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition(
+            "fork", "WORKER.md",
+            {"next": "NEXT.md", "cd": "/path/to/worktree"},
+            ""
+        )
+        state = {}
+
+        parent, worker = apply_transition(agent, transition, state)
+
+        assert worker["cwd"] == "/path/to/worktree"
+        # Parent should not get the cd
+        assert "cwd" not in parent
+
+    def test_fork_without_cd_does_not_set_worker_cwd(self):
+        """Fork without cd attribute does not add cwd to worker."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition(
+            "fork", "WORKER.md",
+            {"next": "NEXT.md"},
+            ""
+        )
+        state = {}
+
+        parent, worker = apply_transition(agent, transition, state)
+
+        assert "cwd" not in worker
+
+    def test_fork_cd_not_included_in_fork_attributes(self):
+        """cd attribute is NOT passed as a fork attribute (template variable)."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition(
+            "fork", "WORKER.md",
+            {"next": "NEXT.md", "cd": "/path/to/worktree", "item": "task1"},
+            ""
+        )
+        state = {}
+
+        parent, worker = apply_transition(agent, transition, state)
+
+        # cd should NOT be in fork_attributes
+        assert "cd" not in worker.get("fork_attributes", {})
+        # But other attributes should be
+        assert worker["fork_attributes"]["item"] == "task1"
+
+    def test_fork_parent_preserves_its_cwd(self):
+        """Fork does not change parent's existing cwd."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": [],
+            "cwd": "/parent/dir"
+        }
+
+        transition = Transition(
+            "fork", "WORKER.md",
+            {"next": "NEXT.md", "cd": "/worker/dir"},
+            ""
+        )
+        state = {}
+
+        parent, worker = apply_transition(agent, transition, state)
+
+        assert parent["cwd"] == "/parent/dir"
+        assert worker["cwd"] == "/worker/dir"
+
+    def test_fork_relative_cd_resolved_against_parent_cwd(self):
+        """Relative cd on fork is resolved against the parent agent's cwd."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": [],
+            "cwd": "/repo"
+        }
+
+        transition = Transition(
+            "fork", "WORKER.md",
+            {"next": "NEXT.md", "cd": "worktrees/feature-a"},
+            ""
+        )
+        state = {}
+
+        parent, worker = apply_transition(agent, transition, state)
+
+        assert worker["cwd"] == "/repo/worktrees/feature-a"
+        assert parent["cwd"] == "/repo"
+
+    def test_fork_relative_cd_resolved_against_orchestrator_cwd_when_no_parent_cwd(self):
+        """Relative cd on fork uses orchestrator's cwd when parent has no cwd."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": []
+        }
+
+        transition = Transition(
+            "fork", "WORKER.md",
+            {"next": "NEXT.md", "cd": "worktrees/feature-a"},
+            ""
+        )
+        state = {}
+
+        parent, worker = apply_transition(agent, transition, state)
+
+        expected = os.path.normpath(os.path.join(os.getcwd(), "worktrees/feature-a"))
+        assert worker["cwd"] == expected
+
+    def test_fork_cd_normalizes_path(self):
+        """Fork cd paths are normalized."""
+        agent = {
+            "id": "main",
+            "current_state": "START.md",
+            "session_id": "session_123",
+            "stack": [],
+            "cwd": "/repo"
+        }
+
+        transition = Transition(
+            "fork", "WORKER.md",
+            {"next": "NEXT.md", "cd": "./a/../b/./c"},
+            ""
+        )
+        state = {}
+
+        parent, worker = apply_transition(agent, transition, state)
+
+        assert worker["cwd"] == "/repo/b/c"

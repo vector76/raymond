@@ -381,6 +381,36 @@ class TestRunScriptWorkingDirectory:
         # Script should report the orchestrator's cwd, not the scope_dir
         assert original_cwd.lower() in result.stdout.lower()
 
+    @pytest.mark.unix
+    async def test_run_script_sh_with_cwd_runs_in_specified_directory(self, tmp_path):
+        """run_script() with cwd parameter runs in the specified directory."""
+        target_dir = tmp_path / "workdir"
+        target_dir.mkdir()
+
+        script_file = tmp_path / "test.sh"
+        script_file.write_text("#!/bin/bash\npwd\n")
+        script_file.chmod(0o755)
+
+        result = await run_script(str(script_file), cwd=str(target_dir))
+
+        assert str(target_dir) in result.stdout
+
+    @pytest.mark.unix
+    async def test_run_script_sh_cwd_does_not_affect_orchestrator(self, tmp_path):
+        """run_script() with cwd does not change the orchestrator's directory."""
+        target_dir = tmp_path / "workdir"
+        target_dir.mkdir()
+
+        script_file = tmp_path / "test.sh"
+        script_file.write_text("#!/bin/bash\npwd\n")
+        script_file.chmod(0o755)
+
+        original_cwd = os.getcwd()
+        await run_script(str(script_file), cwd=str(target_dir))
+
+        # Orchestrator's cwd should be unchanged
+        assert os.getcwd() == original_cwd
+
 
 class TestRunScriptErrorHandling:
     """Tests for error handling in run_script()."""

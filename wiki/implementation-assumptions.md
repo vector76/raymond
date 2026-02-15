@@ -45,14 +45,21 @@ must not contain `/` or `\` anywhere.
 **Assumption:** Use distinct tags for each transition type:
 - `<goto>FILE.md</goto>` - Pattern 3 (resume/continue in same context)
 - `<reset>FILE.md</reset>` - Pattern 4 (discard context, start fresh, continue)
+- `<reset cd="/path">FILE.md</reset>` - Pattern 4 with working directory change
 - `<call return="NEXT.md">CHILD.md</call>` - Pattern 2 (call with return)
 - `<function return="NEXT.md">EVAL.md</function>` - Pattern 1 (stateless evaluation with return)
 - `<fork next="NEXT.md" item="data">WORKER.md</fork>` - Independent spawn (parent continues at `next`)
+- `<fork next="NEXT.md" cd="/path">WORKER.md</fork>` - Independent spawn with working directory
 - `<result>...</result>` - Return/terminate
 
 The `<call>` tag requires a `return` attribute specifying which state to
 resume at when the child completes. The `<fork>` tag accepts arbitrary
-attributes that become metadata for the spawned agent.
+attributes that become metadata for the spawned agent. The `cd` attribute
+on `<fork>` and `<reset>` sets the agent's working directory (consumed by the
+orchestrator, not passed as metadata). The `cd` value can be absolute or
+relative; relative paths are resolved against the invoking agent's current
+working directory (or the orchestrator's directory if no agent cwd is set).
+The result is always stored as an absolute, normalized path.
 
 **Rationale:** Distinct tag names are self-documenting. `<goto>` clearly
 indicates same-context continuation. `<reset>` indicates intentional context

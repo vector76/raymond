@@ -177,6 +177,9 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Meaning**: Start a fresh session and continue at `FILE.md`.
 - **Return stack**: Cleared (discard all pending returns).
 - **Session behavior**: Start a new session with `FILE.md` (fresh context).
+- **Optional attribute**: `cd="/path/to/dir"` — changes the agent's working
+  directory for all subsequent state executions. See
+  [Working Directory](#working-directory-cd-attribute) below.
 
 **Warning behavior:** A `<reset>` with a non-empty return stack is usually a
 logic error (it discards the caller's pending return). The orchestrator should
@@ -203,6 +206,8 @@ log a warning when this occurs.
 - **Meaning**: Spawn an independent agent ("process-like") while the current
   agent continues.
 - **Required attribute**: `next="NEXT.md"` (the state the parent continues at)
+- **Optional attribute**: `cd="/path/to/dir"` — sets the worker's working
+  directory. See [Working Directory](#working-directory-cd-attribute) below.
 - **Return stack**:
   - **Worker**: starts with an empty return stack.
   - **Parent**: preserves its existing return stack (like `goto`).
@@ -212,6 +217,9 @@ log a warning when this occurs.
 
 `<fork>` increases the number of live agents by one.
 
+Additional attributes beyond `next` and `cd` become template variables
+available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
+
 ### `<result>...</result>`
 
 - **Meaning**: Return control to the most recent caller on the return stack, or
@@ -219,6 +227,58 @@ log a warning when this occurs.
 - **Return stack**: Pop one frame if present, otherwise terminate.
 - **Payload**: The raw text between the tags is passed as-is (no summarization by
   the orchestrator). The return state's prompt receives it via `{{result}}`.
+
+## Working Directory (`cd` Attribute)
+
+By default, all agents execute in the orchestrator's working directory (the
+directory where `raymond` was launched). The `cd` attribute on `<fork>` and
+`<reset>` transitions allows agents to operate in different directories.
+
+**Supported on:**
+- `<fork>` — sets the **worker's** working directory (parent is unaffected)
+- `<reset>` — changes the **current agent's** working directory
+
+**Not supported on:**
+- `<goto>` — continues an existing session; changing directory mid-session
+  would be incoherent
+- `<call>` — branches from the caller's session context, which is tied to
+  the original directory
+- `<function>` — not supported (could be added in future if needed)
+
+**Behavior:**
+- The `cd` value is always resolved to an absolute, normalized path and stored
+  in the agent's state dictionary as `cwd`
+- **Absolute paths** are used as-is (after normalization)
+- **Relative paths** are resolved against the invoking agent's current `cwd`.
+  If the agent has no `cwd` set, relative paths resolve against the
+  orchestrator's working directory (where `raymond` was launched)
+- Path normalization collapses redundant `..` and `.` components, so successive
+  relative transitions produce clean paths (e.g., `../foo/../bar` becomes
+  `../bar` relative to the base, not a chain of `..` segments)
+- Once set, `cwd` persists across subsequent transitions until changed by
+  another `<reset>` with a `cd` attribute
+- Both Claude Code subprocesses and script subprocesses respect the agent's `cwd`
+- The orchestrator's own working directory is never affected
+
+**Example — parallel worktrees (absolute):**
+```
+<fork next="CONTINUE.md" cd="/repo/worktree-a">WORKER.md</fork>
+<fork next="CONTINUE.md" cd="/repo/worktree-b">WORKER.md</fork>
+```
+
+**Example — relative worktrees (resolved against parent's cwd):**
+```
+<fork next="CONTINUE.md" cd="worktrees/feature-a">WORKER.md</fork>
+<fork next="CONTINUE.md" cd="worktrees/feature-b">WORKER.md</fork>
+```
+
+**Example — reset with directory change:**
+```
+<reset cd="/repo/worktree-feature">IMPLEMENT.md</reset>
+```
+
+**Note:** The `cd` attribute is consumed by the orchestrator and is NOT
+passed as a template variable or fork attribute.
 
 ## Multi-tag Outputs
 

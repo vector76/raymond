@@ -97,6 +97,26 @@ Precedence: frontmatter `model` > CLI `--model` > Claude Code default.
 Use this to run cheap evaluators on `haiku` while keeping complex reasoning
 on `sonnet` or `opus`.
 
+### Effort Level
+
+Frontmatter can specify the effort level for extended thinking:
+
+```yaml
+---
+effort: high
+allowed_transitions:
+  - { tag: goto, target: next.md }
+---
+Analyze this complex problem carefully...
+```
+
+Valid values: `low`, `medium`, `high`. This overrides the `--effort` CLI flag.
+
+Precedence: frontmatter `effort` > CLI `--effort` > Claude Code default.
+
+Use `high` effort for complex reasoning tasks, `medium` for balanced performance,
+or `low` for simple tasks where speed is preferred over depth.
+
 ## Shell Script States
 
 Shell scripts execute directly without invoking an LLM. Use them whenever
@@ -309,7 +329,7 @@ The payload text is passed as-is to the return state via `{{result}}`.
 
 ```
 1. [function]  Evaluator: "Which issue to work on?" → "issue 195"
-2. [fresh]     Main session: "Work on issue 195"
+2. [goto]      Main session: "Work on issue 195" (receives result)
 3. [call]      "Create and refine plan" (iterates 3x, returns plan)
 4. [reset]     "Implement per plan-195.md" (fresh context, reads from file)
 5. [call]      "Implement until tests pass" (iterates 5x, returns)
@@ -442,6 +462,7 @@ path. There is no re-prompting for scripts.
 raymond workflow.md                          # Defaults
 raymond workflow.md --budget 5.0             # Cost limit ($5.00)
 raymond workflow.md --model sonnet           # Default model for all states
+raymond workflow.md --effort high            # Default effort level for all states
 raymond workflow.md --dangerously-skip-permissions  # No permission prompts
 raymond workflow.md --input "data"           # Initial {{result}} value
 raymond workflow.md --no-debug               # Disable debug logging
@@ -460,6 +481,7 @@ raymond --init-config  # Generates config with all options commented out
 [raymond]
 budget = 50.0
 model = "sonnet"
+effort = "medium"
 # dangerously_skip_permissions = false
 ```
 

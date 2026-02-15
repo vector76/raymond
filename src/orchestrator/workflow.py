@@ -225,6 +225,7 @@ async def run_all_agents(
     state_dir: str = None,
     debug: bool = True,
     default_model: Optional[str] = None,
+    default_effort: Optional[str] = None,
     timeout: Optional[float] = None,
     dangerously_skip_permissions: bool = False,
     quiet: bool = False,
@@ -245,6 +246,7 @@ async def run_all_agents(
         state_dir: Optional custom state directory. If None, uses default.
         debug: If True, enable debug mode (save outputs and log transitions). Defaults to True.
         default_model: Optional model to use if not specified in frontmatter
+        default_effort: Optional effort level to use if not specified in frontmatter
         timeout: Optional timeout in seconds for Claude Code invocations (default: 600)
         dangerously_skip_permissions: If True, passes --dangerously-skip-permissions
             to Claude instead of --permission-mode acceptEdits. WARNING: This allows
@@ -305,6 +307,7 @@ async def run_all_agents(
         debug_dir=debug_dir,
         state_dir=state_dir,
         default_model=default_model,
+        default_effort=default_effort,
         timeout=timeout,
         dangerously_skip_permissions=dangerously_skip_permissions,
         reporter=reporter if not quiet else None

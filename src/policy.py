@@ -21,16 +21,19 @@ STATE_EXTENSIONS = {'.md', '.sh', '.bat'}
 @dataclass
 class Policy:
     """Represents a workflow state's transition policy.
-    
+
     Attributes:
         allowed_transitions: List of allowed transition combinations.
             Each entry is a dict with 'tag' and optionally 'target', 'return', 'next', etc.
             Example: [{"tag": "goto", "target": "NEXT.md"}, {"tag": "result"}]
         model: Optional model specification from frontmatter (e.g., "opus", "sonnet", "haiku").
             If specified, this model will be used for Claude Code invocations for this state.
+        effort: Optional effort level from frontmatter (e.g., "low", "medium", "high").
+            If specified, this effort level will be used for Claude Code invocations for this state.
     """
     allowed_transitions: List[Dict[str, Any]]
     model: Optional[str] = None
+    effort: Optional[str] = None
 
 
 class PolicyViolationError(ValueError):
@@ -182,8 +185,30 @@ def parse_frontmatter(content: str) -> tuple[Optional[Policy], str]:
                         f"Valid values for Claude Code: opus, sonnet, haiku. "
                         f"Passing to Claude Code as-is."
                     )
-        
-        policy = Policy(allowed_transitions=validated_transitions, model=model)
+
+        # Extract effort field (optional)
+        effort = data.get("effort")
+        if effort is not None:
+            if not isinstance(effort, str):
+                # Effort must be a string if present
+                effort = None
+            else:
+                # Normalize: strip whitespace and convert to lowercase
+                effort = effort.strip().lower()
+                # Treat empty strings as None
+                if not effort:
+                    effort = None
+                # Validate effort value
+                # Valid values: low, medium, high
+                elif effort not in ("low", "medium", "high"):
+                    # Invalid effort - log warning but don't fail
+                    logger.warning(
+                        f"Unknown effort level '{effort}' in frontmatter. "
+                        f"Valid values for Claude Code: low, medium, high. "
+                        f"Passing to Claude Code as-is."
+                    )
+
+        policy = Policy(allowed_transitions=validated_transitions, model=model, effort=effort)
         
         return policy, body
     except yaml.YAMLError as e:

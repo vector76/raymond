@@ -182,7 +182,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("\nStarting orchestrator...")
         debug = not args.no_debug
         no_wait = getattr(args, 'no_wait', False)
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.effort, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
 
     print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
@@ -207,15 +207,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
     debug = not args.no_debug
     no_wait = getattr(args, 'no_wait', False)
-    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.effort, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
 
 
-def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False, width: Optional[int] = None, no_wait: bool = False) -> int:
+def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, default_effort: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False, width: Optional[int] = None, no_wait: bool = False) -> int:
     """Run a workflow by ID."""
     setup_logging(verbose)
 
     try:
-        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions, quiet=quiet, width=width, no_wait=no_wait))
+        asyncio.run(run_all_agents(workflow_id, state_dir=state_dir, debug=debug, default_model=default_model, default_effort=default_effort, timeout=timeout, dangerously_skip_permissions=dangerously_skip_permissions, quiet=quiet, width=width, no_wait=no_wait))
         # Note: workflow completion message is displayed by console reporter
         return 0
     except FileNotFoundError as e:
@@ -401,6 +401,12 @@ Examples:
         choices=["opus", "sonnet", "haiku"],
         default=None,
         help="Default model for Claude Code (can be overridden by prompt frontmatter)",
+    )
+    runtime_group.add_argument(
+        "--effort",
+        choices=["low", "medium", "high"],
+        default=None,
+        help="Default effort level for Claude Code (can be overridden by prompt frontmatter)",
     )
     runtime_group.add_argument(
         "--timeout",

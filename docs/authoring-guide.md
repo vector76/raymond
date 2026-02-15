@@ -41,6 +41,64 @@ Review the code for issues. If everything looks good, emit:
 The agent's final message must contain **exactly one** transition tag. The tag
 can appear anywhere in the message.
 
+### Scoping: Tell the Agent When to Stop
+
+The Claude Code instance executing a state does not know it is part of a
+workflow. It sees your prompt, nothing more. It has no awareness of other state
+files, the overall workflow structure, or what steps come later. This means it
+will try to be helpful by doing as much as it can — which often means racing
+ahead and doing work that belongs to later steps.
+
+To prevent this, every state prompt should clearly define its scope:
+
+1. **State what to do.** Be specific about the task for *this* step.
+2. **State when to stop.** Use explicit language like "STOP after writing the
+   file" or "After reading the file, respond with exactly:
+   `<goto>NEXT.md</goto>`".
+3. **State what not to do yet.** If the agent can infer what logically comes
+   next (and it will), tell it not to do that yet. Use the word **"yet"** or
+   phrases like **"that happens in a later step"** — this prevents the
+   constraint from lingering in context and blocking later steps that *should*
+   perform those actions.
+
+**Example — too vague:**
+
+```markdown
+Read the requirements file. Once done, proceed to the next step:
+<goto>GENERATE.md</goto>
+```
+
+The word "proceed" is ambiguous. The agent may interpret it as permission to
+keep going and start doing the work that `GENERATE.md` is supposed to handle.
+
+**Example — explicit scope:**
+
+```markdown
+Read the requirements from requirements.md.
+
+STOP after reading the file. Do not generate any code or create any files
+yet — that happens in a later step.
+
+After reading the file, respond with exactly:
+<goto>GENERATE.md</goto>
+```
+
+For states with **implicit transitions** (single allowed transition in
+frontmatter), the agent doesn't need to emit a tag, but scope boundaries are
+still important. The agent can still race ahead and do work belonging to later
+steps:
+
+```markdown
+---
+allowed_transitions:
+  - { tag: goto, target: REVIEW.md }
+---
+Create a plan in plan.md covering all the requirements.
+
+STOP after writing plan.md. Do not start implementing yet — that happens
+in a later step.
+```
+
 ### YAML Frontmatter
 
 Markdown states can optionally include YAML frontmatter to declare policy:

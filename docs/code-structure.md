@@ -8,6 +8,7 @@ This document defines the code organization for the raymond project.
 
 ```
 raymond/
+├── README.md               # Project overview and quick start
 ├── main.py                 # Entry point launcher (delegates to src.cli)
 ├── src/                    # All source code
 │   ├── __init__.py
@@ -135,3 +136,93 @@ pytest -v                       # Verbose output
 - **Production**: Linux only (typically in a Linux container for containment).
 - **Development**: Windows is supported for development/testing, but some docs
   include Linux-specific commands.
+
+## Docker Setup
+
+Modern Debian/Ubuntu-based Docker images use PEP 668 to protect the system
+Python. In a Docker container (which is disposable), use
+`--break-system-packages` to bypass this:
+
+```bash
+pip install --break-system-packages -e .
+pip install --break-system-packages -r requirements.txt
+```
+
+The `-e` (editable) flag creates a link to your source code so changes take
+effect immediately. Packages install to `~/.local/bin/`.
+
+**Verify installation:**
+```bash
+which raymond  # Should show: /home/devuser/.local/bin/raymond
+raymond --help
+```
+
+**If command not found**, ensure `~/.local/bin` is in PATH:
+```bash
+export PATH="$HOME/.local/bin:$PATH"  # Add to ~/.bashrc for persistence
+```
+
+**Alternative:** Install `python3-venv` in the container and use a virtual
+environment instead:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+pip install -r requirements.txt
+```
+
+## WSL Integration (Windows)
+
+When developing on Windows, WSL can run Unix shell scripts and tests.
+
+### Path Mangling
+
+Git Bash auto-converts Unix paths to Windows paths, breaking WSL commands.
+Use double slash (`//`) to prevent this:
+
+```bash
+# Broken (Git Bash mangles the path):
+wsl cat /mnt/c/Users/user/project/file.txt
+
+# Working:
+wsl -- cat //mnt/c/Users/user/project/file.txt
+```
+
+### CRLF Line Endings
+
+Shell scripts created on Windows often have CRLF line endings, causing
+`$'\r': command not found` errors in bash. Solutions:
+
+1. **`.gitattributes`** (recommended): `*.sh text eol=lf`
+2. **On-the-fly conversion**: `wsl -- bash -c "tr -d '\r' < //mnt/c/path/script.sh | bash"`
+3. **Permanent conversion**: `wsl -- dos2unix //mnt/c/path/script.sh`
+
+If `.gitattributes` was added after files were committed, re-normalize:
+```bash
+git rm --cached -r .
+git add .
+git commit -m "Normalize line endings per .gitattributes"
+```
+
+### Running Tests via WSL
+
+Use `bash -l` (login shell) so `~/.local/bin` is on PATH:
+
+```bash
+# Install dependencies (one-time)
+wsl -- pip3 install --break-system-packages -r //mnt/c/path/to/raymond/requirements.txt
+
+# Run tests (use -l for login shell)
+wsl -- bash -l -c "cd /mnt/c/path/to/raymond && python3 -m pytest tests/ -q"
+
+# Run only Unix-specific tests
+wsl -- bash -l -c "cd /mnt/c/path/to/raymond && python3 -m pytest tests/ -v -k 'unix'"
+```
+
+### Recommendations
+
+1. **Production use:** Windows users should use `.bat` files; the orchestrator
+   routes to platform-appropriate scripts automatically.
+2. **Development/testing:** Use WSL to run Unix-specific tests. Ensure
+   `.gitattributes` has `*.sh text eol=lf`.
+3. **CI/CD:** Run the full test suite on a Linux runner for complete coverage.

@@ -20,9 +20,9 @@ When implementing features or making changes:
 
 **Shell commands:** Don't use `cd` in commands. Use `pwd` to check the current directory if unsure.
 
-## Wiki Documentation
+## Documentation
 
-The `wiki/` folder contains topic-oriented markdown documents organized in a **flat structure** (no subfolders). These documents serve as timeless knowledge base for the project.
+The `docs/` folder contains topic-oriented markdown documents organized in a **flat structure** (no subfolders). These documents serve as timeless knowledge base for the project.
 
 **Purpose:**
 - Document program architecture and design decisions

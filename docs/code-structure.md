@@ -22,7 +22,7 @@ raymond/
 │   ├── test_cc_wrap.py
 │   └── ...                # Test file per source module
 │
-├── wiki/                   # Architecture and design documentation
+├── docs/                   # Architecture and design documentation
 │
 ├── .gitignore
 ├── requirements.txt        # Production dependencies
@@ -35,7 +35,7 @@ raymond/
 ### Separation of Concerns
 - **`src/`**: All production code
 - **`tests/`**: All test code, mirroring source structure
-- **`wiki/`**: Architecture and design documentation
+- **`docs/`**: Architecture and design documentation
 - **Root**: Configuration files, entry point (`main.py`), and project-level docs
 
 ### Test Organization

@@ -459,7 +459,7 @@ This ensures path consistency with Claude Code:
 set via the `cd` attribute on `<fork>` or `<reset>` transitions. When set,
 both Claude Code and script subprocesses for that agent execute in the
 specified directory instead of the orchestrator's directory. See
-`wiki/workflow-protocol.md` for details.
+`docs/workflow-protocol.md` for details.
 
 ### Async Execution
 

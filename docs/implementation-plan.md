@@ -1,7 +1,7 @@
 # Implementation Plan: Shell Script States
 
 This document outlines the implementation plan for shell script states as
-described in `wiki/bash-states.md`. The feature allows workflow states to be
+described in `docs/bash-states.md`. The feature allows workflow states to be
 implemented as shell scripts (`.sh`/`.bat`) that execute directly, bypassing
 the LLM for deterministic operations.
 
@@ -253,7 +253,7 @@ and are skipped on incompatible platforms.
 
 #### Step 6.3: Documentation Updates
 
-- [x] **6.3.1** Update `wiki/sample-workflows.md` with script examples
+- [x] **6.3.1** Update `docs/sample-workflows.md` with script examples
 - [x] **6.3.2** Add script state examples to existing documentation
 - [x] **6.3.3** Document environment variables in detail
 

@@ -168,8 +168,12 @@ async def run_script(
 
     # Create the subprocess
     # Note: We don't set cwd, so the script runs in the orchestrator's directory
+    # stdin=DEVNULL prevents the child from inheriting the terminal's stdin,
+    # which would allow it to put the terminal in raw mode and disable SIGINT
+    # generation from CTRL-C.
     process = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=process_env,

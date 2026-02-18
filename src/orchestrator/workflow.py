@@ -47,6 +47,7 @@ from src.orchestrator.limit_wait import (
 from src.orchestrator.executors import get_executor, ExecutionContext
 from src.orchestrator.observers.console import ConsoleObserver
 from src.orchestrator.observers.debug import DebugObserver
+from src.orchestrator.observers.titlebar import TitleBarObserver
 from src.orchestrator.transitions import apply_transition
 
 logger = logging.getLogger(__name__)
@@ -291,6 +292,10 @@ async def run_all_agents(
     console_observer = None
     if not quiet:
         console_observer = ConsoleObserver(reporter, bus)
+
+    # Create and attach TitleBarObserver (always active)
+    title_bar_observer = None
+    title_bar_observer = TitleBarObserver(bus)
 
     # Emit WorkflowStarted event
     bus.emit(WorkflowStarted(
@@ -808,6 +813,8 @@ async def run_all_agents(
 
     finally:
         # Clean up observers
+        if title_bar_observer:
+            title_bar_observer.close()
         if debug_observer:
             debug_observer.close()
         if console_observer:

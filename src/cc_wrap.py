@@ -76,9 +76,9 @@ def _build_claude_command(
         cmd.extend(["--resume", session_id])
 
     # Unconditionally disallow orchestrator-level tools from managed agents
-    cmd.extend(["--disallowed-tools", *DISALLOWED_TOOLS])
+    cmd.extend(["--disallowed-tools", ",".join(DISALLOWED_TOOLS)])
 
-    cmd.append(prompt)
+    cmd.extend(["--", prompt])
 
     # Add any additional kwargs as command-line arguments
     for key, value in kwargs.items():

@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 # Can be overridden via timeout parameter
 DEFAULT_TIMEOUT = 600  # 10 minutes
 
+# Tools that raymond-managed agents must never use (they are orchestrator-level concerns)
+DISALLOWED_TOOLS = ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion", "NotebookEdit"]
+
 
 class ClaudeCodeTimeoutError(Exception):
     """Raised when Claude Code invocation times out."""
@@ -71,6 +74,9 @@ def _build_claude_command(
     # Add --resume flag if session_id is provided
     if session_id is not None:
         cmd.extend(["--resume", session_id])
+
+    # Unconditionally disallow orchestrator-level tools from managed agents
+    cmd.extend(["--disallowed-tools", *DISALLOWED_TOOLS])
 
     cmd.append(prompt)
 

@@ -30,6 +30,7 @@ from src.orchestrator.events import (
 )
 from src.orchestrator.observers.debug import DebugObserver
 from src.orchestrator.observers.console import ConsoleObserver
+from src.orchestrator.observers.titlebar import TitleBarObserver
 
 
 class TestDebugObserverStateTracking:
@@ -1187,3 +1188,171 @@ class TestNoDuplicateConsoleOutput:
         assert reporter.state_completed.call_count == 1
 
         observer.close()
+
+
+class TestTitleBarObserverExtensions:
+    """Tests for TitleBarObserver file extension stripping."""
+
+    def test_md_extension_stripped(self, capsys):
+        """StateStarted with .md extension strips it from title."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="START.md", state_type="markdown"))
+        out, err = capsys.readouterr()
+        assert "ray: START" in out
+        observer.close()
+
+    def test_sh_extension_stripped(self, capsys):
+        """StateStarted with .sh extension strips it from title."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="CHECK.sh", state_type="script"))
+        out, err = capsys.readouterr()
+        assert "ray: CHECK" in out
+        observer.close()
+
+    def test_bat_extension_stripped(self, capsys):
+        """StateStarted with .bat extension strips it from title."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="RUN.bat", state_type="script"))
+        out, err = capsys.readouterr()
+        assert "ray: RUN" in out
+        observer.close()
+
+    def test_no_extension(self, capsys):
+        """StateStarted with no extension uses name as-is."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="NOEXT", state_type="markdown"))
+        out, err = capsys.readouterr()
+        assert "ray: NOEXT" in out
+        observer.close()
+
+    def test_multiple_dots(self, capsys):
+        """StateStarted with multiple dots strips only last extension."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="foo.bar.md", state_type="markdown"))
+        out, err = capsys.readouterr()
+        assert "ray: foo.bar" in out
+        observer.close()
+
+
+class TestTitleBarObserverTitleFormat:
+    """Tests for TitleBarObserver OSC 2 title format."""
+
+    def test_title_format(self, capsys):
+        """StateStarted writes exact OSC 2 escape sequence with no trailing newline."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="START.md", state_type="markdown"))
+        out, err = capsys.readouterr()
+        assert out == "\x1b]2;ray: START\x07"
+        observer.close()
+
+
+class TestTitleBarObserverTriggers:
+    """Tests for which events trigger a TitleBarObserver update."""
+
+    def test_state_started_triggers_update(self, capsys):
+        """StateStarted event writes to stdout."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="START.md", state_type="markdown"))
+        out, err = capsys.readouterr()
+        assert out != ""
+        observer.close()
+
+    def test_state_completed_does_not_trigger(self, capsys):
+        """StateCompleted event does not write to stdout."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateCompleted(
+            agent_id="main",
+            state_name="START.md",
+            cost_usd=0.0,
+            total_cost_usd=0.0,
+            session_id=None,
+            duration_ms=0
+        ))
+        out, err = capsys.readouterr()
+        assert out == ""
+        observer.close()
+
+    def test_transition_does_not_trigger(self, capsys):
+        """TransitionOccurred event does not write to stdout."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(TransitionOccurred(
+            agent_id="main",
+            from_state="A.md",
+            to_state="B.md",
+            transition_type="goto",
+            metadata={}
+        ))
+        out, err = capsys.readouterr()
+        assert out == ""
+        observer.close()
+
+    def test_tool_invocation_does_not_trigger(self, capsys):
+        """ToolInvocation event does not write to stdout."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(ToolInvocation(agent_id="main", tool_name="Read"))
+        out, err = capsys.readouterr()
+        assert out == ""
+        observer.close()
+
+    def test_progress_message_does_not_trigger(self, capsys):
+        """ProgressMessage event does not write to stdout."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(ProgressMessage(agent_id="main", message="Thinking..."))
+        out, err = capsys.readouterr()
+        assert out == ""
+        observer.close()
+
+    def test_first_state_triggers_update(self, capsys):
+        """First StateStarted event triggers a title update (not skipped).
+
+        Verifies that the first emission is not skipped by any debounce/dedup logic.
+        """
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        # Emit without any prior state — first event must still produce output
+        bus.emit(StateStarted(agent_id="fresh", state_name="INIT.md", state_type="markdown"))
+        out, err = capsys.readouterr()
+        assert out != ""
+        observer.close()
+
+    def test_multiple_agents_last_write_wins(self, capsys):
+        """Multiple StateStarted events each write their own OSC 2 sequence in order."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        bus.emit(StateStarted(agent_id="main", state_name="ALPHA.md", state_type="markdown"))
+        bus.emit(StateStarted(agent_id="main", state_name="BETA.md", state_type="markdown"))
+        out, err = capsys.readouterr()
+        assert out.count("\x1b]2;") == 2
+        assert "ray: ALPHA" in out
+        assert "ray: BETA" in out
+        assert out.index("ray: ALPHA") < out.index("ray: BETA")
+        observer.close()
+
+
+class TestTitleBarObserverLifecycle:
+    """Tests for TitleBarObserver subscription lifecycle."""
+
+    def test_subscribes_on_construction(self):
+        """TitleBarObserver subscribes to StateStarted on construction."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        assert bus.has_handlers(StateStarted) is True
+        observer.close()
+
+    def test_close_unsubscribes(self):
+        """close() unsubscribes TitleBarObserver from StateStarted."""
+        bus = EventBus()
+        observer = TitleBarObserver(bus)
+        observer.close()
+        assert bus.has_handlers(StateStarted) is False

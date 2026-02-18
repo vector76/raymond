@@ -10,8 +10,10 @@ subscribes to relevant events and handles them independently.
 
 from .console import ConsoleObserver
 from .debug import DebugObserver
+from .titlebar import TitleBarObserver
 
 __all__ = [
     "ConsoleObserver",
     "DebugObserver",
+    "TitleBarObserver",
 ]

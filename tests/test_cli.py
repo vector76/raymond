@@ -234,6 +234,144 @@ class TestCLIStart:
         assert "pending_result" not in state["agents"][0]
 
 
+class TestCLIStartDirectory:
+    """Tests for the start command when given a directory path instead of a file."""
+
+    def test_start_with_directory_containing_1_start_md(self, tmp_path):
+        """Test that start command accepts a directory when 1_START.md is present."""
+        scope_dir = tmp_path / "workflows" / "test"
+        scope_dir.mkdir(parents=True)
+
+        start_file = scope_dir / "1_START.md"
+        start_file.write_text("Test prompt")
+
+        state_dir = tmp_path / ".raymond" / "state"
+
+        args = argparse.Namespace(
+            workflow_id=None,
+            initial_file=str(scope_dir),
+            state_dir=str(state_dir),
+            no_run=True,
+            verbose=False,
+            budget=None,
+            no_debug=False,
+            model=None,
+            timeout=None,
+            initial_input=None,
+            dangerously_skip_permissions=False,
+            quiet=False,
+            effort=None,
+        )
+
+        result = cmd_start(args)
+
+        assert result == 0
+
+        workflows = list_workflows(state_dir=str(state_dir))
+        assert len(workflows) == 1
+
+        workflow_id = workflows[0]
+        state = read_state(workflow_id, state_dir=str(state_dir))
+        assert state["scope_dir"] == str(scope_dir.resolve())
+        assert state["agents"][0]["current_state"] == "1_START.md"
+
+    def test_start_with_directory_missing_1_start_md(self, tmp_path, capsys):
+        """Test that start command gives informative error when directory lacks 1_START.md."""
+        scope_dir = tmp_path / "workflows" / "test"
+        scope_dir.mkdir(parents=True)
+        # No 1_START.md created
+
+        state_dir = tmp_path / ".raymond" / "state"
+
+        args = argparse.Namespace(
+            workflow_id=None,
+            initial_file=str(scope_dir),
+            state_dir=str(state_dir),
+            no_run=True,
+            verbose=False,
+            budget=None,
+            no_debug=False,
+            model=None,
+            timeout=None,
+            initial_input=None,
+            dangerously_skip_permissions=False,
+            quiet=False,
+            effort=None,
+        )
+
+        result = cmd_start(args)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "1_START.md" in captured.err
+
+    def test_start_with_nonexistent_path(self, tmp_path, capsys):
+        """Test that start command gives a distinct error for a path that is neither file nor directory."""
+        nonexistent = tmp_path / "does_not_exist"
+        # Neither created as file nor directory
+
+        state_dir = tmp_path / ".raymond" / "state"
+
+        args = argparse.Namespace(
+            workflow_id=None,
+            initial_file=str(nonexistent),
+            state_dir=str(state_dir),
+            no_run=True,
+            verbose=False,
+            budget=None,
+            no_debug=False,
+            model=None,
+            timeout=None,
+            initial_input=None,
+            dangerously_skip_permissions=False,
+            quiet=False,
+            effort=None,
+        )
+
+        result = cmd_start(args)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        # Should give a distinct message — not the generic "does not exist" file message
+        assert "not a file or directory" in captured.err.lower()
+
+    def test_start_with_directory_and_cli_options(self, tmp_path):
+        """Test that start command accepts directory path alongside --workflow-id, --budget, --input, --no-run."""
+        scope_dir = tmp_path / "workflows" / "test"
+        scope_dir.mkdir(parents=True)
+
+        start_file = scope_dir / "1_START.md"
+        start_file.write_text("Process this: {{result}}")
+
+        state_dir = tmp_path / ".raymond" / "state"
+
+        args = argparse.Namespace(
+            workflow_id="dir-options-test",
+            initial_file=str(scope_dir),
+            state_dir=str(state_dir),
+            no_run=True,
+            verbose=False,
+            budget=5.0,
+            no_debug=False,
+            model=None,
+            timeout=None,
+            initial_input="hello from dir",
+            dangerously_skip_permissions=False,
+            quiet=False,
+            effort=None,
+        )
+
+        result = cmd_start(args)
+
+        assert result == 0
+
+        state = read_state("dir-options-test", state_dir=str(state_dir))
+        assert state["workflow_id"] == "dir-options-test"
+        assert state["budget_usd"] == 5.0
+        assert state["agents"][0]["current_state"] == "1_START.md"
+        assert state["agents"][0]["pending_result"] == "hello from dir"
+
+
 class TestWorkflowIDGeneration:
     """Tests for workflow ID generation."""
 

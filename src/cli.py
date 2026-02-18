@@ -146,10 +146,16 @@ def cmd_start(args: argparse.Namespace) -> int:
     
     # Parse the initial file path to extract scope_dir and initial_state
     initial_path = Path(args.initial_file)
-    
-    # Validate initial state file exists
-    if not initial_path.is_file():
-        print(f"Error: Initial state file does not exist: {initial_path}", file=sys.stderr)
+
+    # Resolve directory input: if a directory is given, look for 1_START.md inside it
+    if initial_path.is_dir():
+        candidate = initial_path / "1_START.md"
+        if not candidate.is_file():
+            print(f"Error: Directory does not contain 1_START.md: {initial_path}", file=sys.stderr)
+            return 1
+        initial_path = candidate
+    elif not initial_path.is_file():
+        print(f"Error: Path is not a file or directory: {initial_path}", file=sys.stderr)
         return 1
     
     # Infer scope directory and initial state filename

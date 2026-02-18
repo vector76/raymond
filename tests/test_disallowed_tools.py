@@ -26,20 +26,11 @@ class TestBuildClaudeCommandDisallowedTools:
     """Tests for _build_claude_command disallowed-tools flag injection."""
 
     def _get_disallowed_tools_from_cmd(self, cmd):
-        """Extract the tool names listed after --disallowed-tools in cmd.
-
-        Collects the next len(DISALLOWED_TOOLS) arguments after the flag,
-        stopping early if a flag (starting with --) is encountered.
-        """
+        """Extract the tool names from the comma-separated value after --disallowed-tools in cmd."""
         if "--disallowed-tools" not in cmd:
             return []
         idx = cmd.index("--disallowed-tools")
-        tools = []
-        for item in cmd[idx + 1:idx + 1 + len(DISALLOWED_TOOLS)]:
-            if item.startswith("--"):
-                break
-            tools.append(item)
-        return tools
+        return cmd[idx + 1].split(",")
 
     def test_disallowed_tools_flag_present_by_default(self):
         """Test that --disallowed-tools is always present in the command."""
@@ -102,6 +93,13 @@ class TestBuildClaudeCommandDisallowedTools:
         prompt_idx = cmd.index(prompt)
         assert disallowed_idx < prompt_idx
 
+    def test_double_dash_appears_immediately_before_prompt(self):
+        """Test that -- separator appears immediately before the prompt to end option parsing."""
+        prompt = "test prompt"
+        cmd = _build_claude_command(prompt)
+        prompt_idx = cmd.index(prompt)
+        assert cmd[prompt_idx - 1] == "--"
+
 
 class TestWrapClaudeCodeDisallowedTools:
     """Tests for disallowed-tools flag propagation through the wrapper layer."""
@@ -123,6 +121,5 @@ class TestWrapClaudeCodeDisallowedTools:
 
             assert "--disallowed-tools" in cmd
             idx = cmd.index("--disallowed-tools")
-            # All four tool names should follow the flag
-            injected = cmd[idx + 1:idx + 1 + len(DISALLOWED_TOOLS)]
+            injected = cmd[idx + 1].split(",")
             assert set(injected) == set(DISALLOWED_TOOLS)

@@ -80,24 +80,73 @@ When done, emit <result>done</result>
 - After the first state runs, `pending_result` is cleared (same as normal
   `<result>` handling)
 
-## Workflow Scope (Directory Scoping)
+## Workflow Scope
 
-A workflow is started from a specific prompt file path (e.g.
-`workflows/coding/START.md` or `C:\path\to\START.md` during development).
+A workflow is started from one of three input forms:
 
-- The directory containing the starting prompt is the workflow's **scope
-  directory**.
+1. **A prompt file path** — e.g. `workflows/coding/START.md`. The directory
+   containing that file becomes the workflow scope.
+2. **A directory path** — e.g. `workflows/coding/`. The directory itself is the
+   scope; Raymond looks for `1_START.md` inside it.
+3. **A zip archive path** — e.g. `workflows/coding.zip`. The archive *is* the
+   scope; file access goes through the zip abstraction layer.
+
+The scope is recorded in the workflow state as `scope_dir`, which holds the
+path to the directory **or** the path to the zip file.
+
+### Directory scope
+
+- The directory containing the starting prompt is the workflow's scope.
 - Any tag that references another prompt file (e.g. `<goto>REVIEW.md</goto>`)
   is resolved **only within the scope directory**.
 - **Cross-directory transitions are not allowed.**
 
-**Path safety rule:** Tag targets are treated as *filenames*, not paths. The
-referenced filename must not contain `/` or `\` anywhere (no forward/backward
-slashes), which prevents `../` and absolute/drive-root style references by
-construction.
+### Zip scope
 
-This allows having multiple workflow collections in separate subdirectories
-without name collisions.
+When `scope_dir` ends in `.zip`, the orchestrator treats the archive as the
+workflow scope.
+
+**Accepted zip layouts:**
+
+- **Flat layout** — all state files at the archive root:
+  ```
+  1_START.md
+  REVIEW.md
+  CHECK.sh
+  ```
+- **Single-folder layout** — all state files inside exactly one top-level
+  directory:
+  ```
+  mywf/1_START.md
+  mywf/REVIEW.md
+  mywf/CHECK.sh
+  ```
+
+In the single-folder layout the folder prefix is stripped; state files are
+addressed by their bare names (e.g. `REVIEW.md`, not `mywf/REVIEW.md`).
+
+**Rejected layouts** (produce an error at startup):
+
+- Multiple top-level folders
+- A mix of top-level files and a top-level folder
+- Files nested more than one level deep
+- Empty archive
+
+**Entry point requirement:** The archive must contain `1_START.md` (after
+prefix stripping). Raymond uses this file as the initial state when a zip
+archive is given as input.
+
+**Resume behaviour:** The zip file must remain at the same path when a workflow
+is resumed. Raymond validates the archive at resume time and reports an error
+if it is missing or corrupt.
+
+**Path safety rule (applies to all scope types):** Tag targets are treated as
+*filenames*, not paths. The referenced filename must not contain `/` or `\`
+anywhere (no forward/backward slashes), which prevents `../` and
+absolute/drive-root style references by construction.
+
+This allows having multiple workflow collections in separate subdirectories (or
+separate archives) without name collisions.
 
 ## The Return Stack
 
@@ -107,7 +156,7 @@ represents "where to return to" when a callee produces `<result>...</result>`.
 Conceptually, a frame contains:
 
 - **resume session**: which Claude Code session to resume (the caller's session)
-- **return state**: which prompt file to load next (within the same scope directory)
+- **return state**: which prompt file to load next (within the same workflow scope)
 
 At return time, the `<result>...</result>` payload is injected into the return
 state prompt (e.g. via `{{result}}`), but those values are not modeled as part

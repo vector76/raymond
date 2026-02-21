@@ -676,7 +676,8 @@ the LLM.
 ## Running the Tests
 
 Each test should be runnable independently using the `start` command with the
-workflow file path:
+workflow file path. Raymond accepts a plain `.md` file, a directory (uses
+`1_START.md`), or a zip archive (uses `1_START.md` from the archive):
 
 ```bash
 # Test 1: Pure function

@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple, Optional
 from .policy import Policy, parse_frontmatter
 from .scripts import is_windows, is_unix
+from .zip_scope import is_zip_scope, read_text, file_exists, list_files, ZipFileNotFoundError
 
 # Placeholder format for template variables
 PLACEHOLDER_PREFIX = "{{"
@@ -29,7 +30,17 @@ def load_prompt(scope_dir: str, filename: str) -> Tuple[str, Optional[Policy]]:
             f"Filename '{filename}' contains path separator. "
             "Filenames must not contain / or \\"
         )
-    
+
+    if is_zip_scope(scope_dir):
+        try:
+            content = read_text(scope_dir, filename)
+        except ZipFileNotFoundError:
+            raise FileNotFoundError(
+                f"Prompt file not found in zip archive: {filename} (in {scope_dir})"
+            )
+        policy, body = parse_frontmatter(content)
+        return body, policy
+
     prompt_path = Path(scope_dir) / filename
     
     if not prompt_path.exists():
@@ -111,7 +122,10 @@ def resolve_state(scope_dir: str, state_name: str) -> str:
             f"State name '{state_name}' contains path separator. "
             "State names must not contain / or \\"
         )
-    
+
+    if is_zip_scope(scope_dir):
+        return _resolve_state_from_zip(scope_dir, state_name)
+
     scope_path = Path(scope_dir)
     
     # Check if state_name has an explicit extension
@@ -210,6 +224,82 @@ def get_state_type(filename: str) -> str:
     raise ValueError(
         f"Unsupported state file extension '{extension}' in '{filename}'. "
         "Supported extensions: .md, .sh (Unix), .bat (Windows)."
+    )
+
+
+def _resolve_state_from_zip(zip_path: str, state_name: str) -> str:
+    """Resolve a state name against files inside a zip archive.
+
+    Applies the same logic as the directory-based resolution:
+    - Explicit extension: validate platform compatibility, check existence.
+    - Abstract name: prefer .md, fallback to platform script, reject ambiguity.
+
+    Args:
+        zip_path: Path to the zip archive acting as scope directory.
+        state_name: State name, either abstract or with explicit extension.
+
+    Returns:
+        The resolved filename (e.g., "NEXT.md", "NEXT.sh").
+
+    Raises:
+        FileNotFoundError: If no matching file exists.
+        ValueError: If ambiguous or wrong-platform extension.
+    """
+    name_path = Path(state_name)
+    extension = name_path.suffix.lower()
+
+    if extension:
+        # Explicit extension — check platform compatibility then existence
+        if extension in SCRIPT_EXTENSIONS_UNIX and is_windows():
+            raise ValueError(
+                f"Cannot use Unix script '{state_name}' on Windows. "
+                "Use a .bat file instead."
+            )
+        if extension in SCRIPT_EXTENSIONS_WINDOWS and is_unix():
+            raise ValueError(
+                f"Cannot use Windows script '{state_name}' on Unix. "
+                "Use a .sh file instead."
+            )
+        if not file_exists(zip_path, state_name):
+            raise FileNotFoundError(
+                f"State file not found in zip archive: {state_name} (in {zip_path})"
+            )
+        return state_name
+
+    # Abstract name — inspect available files (single zip open via list_files)
+    platform_script_ext = _get_platform_script_extension()
+    other_script_ext = _get_other_platform_script_extension()
+
+    md_name = f"{state_name}.md"
+    script_name = f"{state_name}{platform_script_ext}"
+    other_script_name = f"{state_name}{other_script_ext}"
+
+    available = list_files(zip_path)
+    md_exists = md_name in available
+    script_exists = script_name in available
+    other_script_exists = other_script_name in available
+
+    if md_exists and script_exists:
+        raise ValueError(
+            f"Ambiguous state '{state_name}': both {md_name} and "
+            f"{script_name} exist. Use explicit extension."
+        )
+
+    if md_exists:
+        return md_name
+
+    if script_exists:
+        return script_name
+
+    if other_script_exists:
+        raise FileNotFoundError(
+            f"State '{state_name}' not found. Only {other_script_name} exists, "
+            f"which is not compatible with this platform."
+        )
+
+    raise FileNotFoundError(
+        f"State '{state_name}' not found in {zip_path}. "
+        f"Looked for: {md_name}, {script_name}"
     )
 
 

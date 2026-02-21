@@ -8,6 +8,5 @@ echo Script state executing...
 echo Environment variables:
 echo   RAYMOND_WORKFLOW_ID=%RAYMOND_WORKFLOW_ID%
 echo   RAYMOND_AGENT_ID=%RAYMOND_AGENT_ID%
-echo   RAYMOND_STATE_DIR=%RAYMOND_STATE_DIR%
 
 echo ^<goto^>SCRIPT_TARGET.md^</goto^>

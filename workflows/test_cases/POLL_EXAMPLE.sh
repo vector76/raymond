@@ -9,7 +9,7 @@
 # This is a key use case for script states - polling without
 # consuming LLM tokens or risking session timeouts.
 
-poll_counter="${RAYMOND_STATE_DIR:-/tmp}/poll_counter.txt"
+poll_counter="/tmp/poll_counter.txt"
 poll_target=3  # Number of polls before "finding" work
 
 # Initialize or read counter

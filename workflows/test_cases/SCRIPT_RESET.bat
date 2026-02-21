@@ -9,11 +9,7 @@ REM Reset clears the agent's conversation context but keeps workflow state.
 setlocal enabledelayedexpansion
 
 REM Determine counter file location
-if defined RAYMOND_STATE_DIR (
-    set "counter_file=%RAYMOND_STATE_DIR%\reset_counter.txt"
-) else (
-    set "counter_file=%TEMP%\reset_counter.txt"
-)
+set "counter_file=%TEMP%\reset_counter.txt"
 
 REM Initialize counter
 set /a count=0

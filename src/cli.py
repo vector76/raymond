@@ -226,10 +226,29 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
     # Check if workflow exists before trying to run
     try:
-        read_state(workflow_id, state_dir=args.state_dir)
+        state = read_state(workflow_id, state_dir=args.state_dir)
     except FileNotFoundError:
         print(f"Error: Workflow '{workflow_id}' not found.", file=sys.stderr)
         return 1
+
+    # If the workflow uses a zip scope, verify the archive is still present and valid
+    scope_dir = state.get("scope_dir", "")
+    if is_zip_scope(scope_dir):
+        try:
+            detect_layout(scope_dir)
+        except ZipLayoutError as e:
+            print(f"Error: Zip archive for workflow '{workflow_id}' is invalid: {e}", file=sys.stderr)
+            return 1
+        except FileNotFoundError:
+            print(
+                f"Error: Zip archive not found for workflow '{workflow_id}': {scope_dir}\n"
+                f"The archive must be present to resume this workflow.",
+                file=sys.stderr,
+            )
+            return 1
+        except OSError as e:
+            print(f"Error: Cannot open zip archive for workflow '{workflow_id}': {scope_dir}\n{e}", file=sys.stderr)
+            return 1
 
     debug = not args.no_debug
     no_wait = getattr(args, 'no_wait', False)
@@ -297,7 +316,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     scope_dir = state.get("scope_dir", "unknown")
     
     print(f"Workflow: {workflow_id}")
-    print(f"Scope directory: {scope_dir}")
+    print(f"Workflow scope: {scope_dir}")
     print(f"Status: {'in-progress' if agents else 'completed'}")
     print(f"Active agents: {len(agents)}")
     

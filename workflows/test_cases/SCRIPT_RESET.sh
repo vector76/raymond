@@ -6,7 +6,7 @@
 # then finishes with a result on the third iteration.
 # Reset clears the agent's conversation context but keeps workflow state.
 
-counter_file="${RAYMOND_STATE_DIR:-/tmp}/reset_counter.txt"
+counter_file="/tmp/reset_counter.txt"
 
 # Initialize or read counter
 if [ -f "$counter_file" ]; then

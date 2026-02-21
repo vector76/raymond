@@ -12,11 +12,7 @@ REM consuming LLM tokens or risking session timeouts.
 setlocal enabledelayedexpansion
 
 REM Determine counter file location
-if defined RAYMOND_STATE_DIR (
-    set "poll_counter=%RAYMOND_STATE_DIR%\poll_counter.txt"
-) else (
-    set "poll_counter=%TEMP%\poll_counter.txt"
-)
+set "poll_counter=%TEMP%\poll_counter.txt"
 
 set /a poll_target=3
 

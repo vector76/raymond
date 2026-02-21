@@ -1057,8 +1057,6 @@ class TestScriptExecutionMetadataPhase52:
         env_vars = {
             "RAYMOND_WORKFLOW_ID": "wf-123",
             "RAYMOND_AGENT_ID": "main",
-            "RAYMOND_STATE_DIR": "/path/to/states",
-            "RAYMOND_STATE_FILE": "/path/to/states/CHECK.bat"
         }
 
         save_script_output_metadata(
@@ -1088,8 +1086,6 @@ class TestScriptExecutionMetadataPhase52:
         env_vars = {
             "RAYMOND_WORKFLOW_ID": "wf-123",
             "RAYMOND_AGENT_ID": "worker_1",
-            "RAYMOND_STATE_DIR": "/path/to/states",
-            "RAYMOND_STATE_FILE": "/path/to/states/WORKER.bat",
             "item": "task1",
             "priority": "high"
         }
@@ -1120,8 +1116,6 @@ class TestScriptExecutionMetadataPhase52:
         env_vars = {
             "RAYMOND_WORKFLOW_ID": "wf-123",
             "RAYMOND_AGENT_ID": "main",
-            "RAYMOND_STATE_DIR": "/path/to/states",
-            "RAYMOND_STATE_FILE": "/path/to/states/RESUME.bat",
             "RAYMOND_RESULT": "child task completed"
         }
 

@@ -89,8 +89,6 @@ class ScriptExecutor:
         env = orchestrator.build_script_env(
             workflow_id=workflow_id,
             agent_id=agent_id,
-            state_dir=scope_dir,
-            state_file=script_path,
             result=pending_result,
             fork_attributes=fork_attributes
         )

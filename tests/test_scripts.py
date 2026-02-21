@@ -944,8 +944,6 @@ class TestBuildScriptEnv:
         env = build_script_env(
             workflow_id="wf-12345",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/CHECK.bat"
         )
 
         assert "RAYMOND_WORKFLOW_ID" in env
@@ -956,62 +954,48 @@ class TestBuildScriptEnv:
         env = build_script_env(
             workflow_id="wf-12345",
             agent_id="worker_1",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/PROCESS.bat"
         )
 
         assert "RAYMOND_AGENT_ID" in env
         assert env["RAYMOND_AGENT_ID"] == "worker_1"
 
-    def test_build_script_env_sets_state_dir(self):
-        """3.1.3: RAYMOND_STATE_DIR is set to scope directory."""
-        env = build_script_env(
-            workflow_id="wf-12345",
-            agent_id="main",
-            state_dir="/workflows/my_workflow/states",
-            state_file="/workflows/my_workflow/states/CHECK.bat"
-        )
-
-        assert "RAYMOND_STATE_DIR" in env
-        assert env["RAYMOND_STATE_DIR"] == "/workflows/my_workflow/states"
-
-    def test_build_script_env_sets_state_file(self):
-        """3.1.4: RAYMOND_STATE_FILE is set to state file path."""
-        env = build_script_env(
-            workflow_id="wf-12345",
-            agent_id="main",
-            state_dir="/workflows/my_workflow/states",
-            state_file="/workflows/my_workflow/states/CHECK.bat"
-        )
-
-        assert "RAYMOND_STATE_FILE" in env
-        assert env["RAYMOND_STATE_FILE"] == "/workflows/my_workflow/states/CHECK.bat"
-
     def test_build_script_env_includes_all_required_vars(self):
-        """3.1.1-4: All four core environment variables are present."""
+        """3.1.1-2: All core environment variables are present."""
         env = build_script_env(
             workflow_id="workflow-abc",
             agent_id="agent-xyz",
-            state_dir="/some/dir",
-            state_file="/some/dir/STATE.sh"
         )
 
         required_vars = [
             "RAYMOND_WORKFLOW_ID",
             "RAYMOND_AGENT_ID",
-            "RAYMOND_STATE_DIR",
-            "RAYMOND_STATE_FILE"
         ]
         for var in required_vars:
             assert var in env, f"Missing required environment variable: {var}"
+
+    def test_build_script_env_state_dir_not_present(self):
+        """RAYMOND_STATE_DIR is not set in the environment."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+        )
+
+        assert "RAYMOND_STATE_DIR" not in env
+
+    def test_build_script_env_state_file_not_present(self):
+        """RAYMOND_STATE_FILE is not set in the environment."""
+        env = build_script_env(
+            workflow_id="wf-1",
+            agent_id="main",
+        )
+
+        assert "RAYMOND_STATE_FILE" not in env
 
     def test_build_script_env_returns_dict(self):
         """build_script_env() returns a dict suitable for run_script()."""
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/dir",
-            state_file="/dir/file.bat"
         )
 
         assert isinstance(env, dict)
@@ -1033,8 +1017,6 @@ class TestEnvironmentVariablesInScripts:
         env = build_script_env(
             workflow_id="test-workflow-123",
             agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
         )
         result = await run_script(str(script_file), env=env)
 
@@ -1049,64 +1031,24 @@ class TestEnvironmentVariablesInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_7",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
         )
         result = await run_script(str(script_file), env=env)
 
         assert "AGENT_ID=worker_7" in result.stdout
 
     @pytest.mark.windows
-    async def test_script_receives_state_dir_bat(self, tmp_path):
-        """3.1.3: Script can access RAYMOND_STATE_DIR (.bat)."""
-        script_file = tmp_path / "test.bat"
-        script_file.write_text("@echo off\necho STATE_DIR=%RAYMOND_STATE_DIR%\n")
-
-        env = build_script_env(
-            workflow_id="wf-1",
-            agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
-        )
-        result = await run_script(str(script_file), env=env)
-
-        # Normalize path comparison for Windows
-        assert str(tmp_path).lower() in result.stdout.lower()
-
-    @pytest.mark.windows
-    async def test_script_receives_state_file_bat(self, tmp_path):
-        """3.1.4: Script can access RAYMOND_STATE_FILE (.bat)."""
-        script_file = tmp_path / "test.bat"
-        script_file.write_text("@echo off\necho STATE_FILE=%RAYMOND_STATE_FILE%\n")
-
-        env = build_script_env(
-            workflow_id="wf-1",
-            agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
-        )
-        result = await run_script(str(script_file), env=env)
-
-        # Normalize path comparison for Windows
-        assert str(script_file).lower() in result.stdout.lower()
-
-    @pytest.mark.windows
     async def test_script_receives_all_env_vars_bat(self, tmp_path):
-        """3.1.1-4: Script receives all environment variables (.bat)."""
+        """3.1.1-2: Script receives all environment variables (.bat)."""
         script_file = tmp_path / "test.bat"
         script_file.write_text(
             "@echo off\n"
             "echo WF=%RAYMOND_WORKFLOW_ID%\n"
             "echo AG=%RAYMOND_AGENT_ID%\n"
-            "echo SD=%RAYMOND_STATE_DIR%\n"
-            "echo SF=%RAYMOND_STATE_FILE%\n"
         )
 
         env = build_script_env(
             workflow_id="multi-test-wf",
             agent_id="multi-test-agent",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
         )
         result = await run_script(str(script_file), env=env)
 
@@ -1123,8 +1065,6 @@ class TestEnvironmentVariablesInScripts:
         env = build_script_env(
             workflow_id="test-workflow-123",
             agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
         )
         result = await run_script(str(script_file), env=env)
 
@@ -1140,65 +1080,25 @@ class TestEnvironmentVariablesInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_7",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
         )
         result = await run_script(str(script_file), env=env)
 
         assert "AGENT_ID=worker_7" in result.stdout
 
     @pytest.mark.unix
-    async def test_script_receives_state_dir_sh(self, tmp_path):
-        """3.1.3: Script can access RAYMOND_STATE_DIR (.sh)."""
-        script_file = tmp_path / "test.sh"
-        script_file.write_text("#!/bin/bash\necho \"STATE_DIR=$RAYMOND_STATE_DIR\"\n")
-        script_file.chmod(0o755)
-
-        env = build_script_env(
-            workflow_id="wf-1",
-            agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
-        )
-        result = await run_script(str(script_file), env=env)
-
-        assert f"STATE_DIR={tmp_path}" in result.stdout
-
-    @pytest.mark.unix
-    async def test_script_receives_state_file_sh(self, tmp_path):
-        """3.1.4: Script can access RAYMOND_STATE_FILE (.sh)."""
-        script_file = tmp_path / "test.sh"
-        script_file.write_text("#!/bin/bash\necho \"STATE_FILE=$RAYMOND_STATE_FILE\"\n")
-        script_file.chmod(0o755)
-
-        env = build_script_env(
-            workflow_id="wf-1",
-            agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
-        )
-        result = await run_script(str(script_file), env=env)
-
-        assert f"STATE_FILE={script_file}" in result.stdout
-
-    @pytest.mark.unix
     async def test_script_receives_all_env_vars_sh(self, tmp_path):
-        """3.1.1-4: Script receives all environment variables (.sh)."""
+        """3.1.1-2: Script receives all environment variables (.sh)."""
         script_file = tmp_path / "test.sh"
         script_file.write_text(
             "#!/bin/bash\n"
             "echo \"WF=$RAYMOND_WORKFLOW_ID\"\n"
             "echo \"AG=$RAYMOND_AGENT_ID\"\n"
-            "echo \"SD=$RAYMOND_STATE_DIR\"\n"
-            "echo \"SF=$RAYMOND_STATE_FILE\"\n"
         )
         script_file.chmod(0o755)
 
         env = build_script_env(
             workflow_id="multi-test-wf",
             agent_id="multi-test-agent",
-            state_dir=str(tmp_path),
-            state_file=str(script_file)
         )
         result = await run_script(str(script_file), env=env)
 
@@ -1223,8 +1123,6 @@ class TestBuildScriptEnvResultVariable:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/RESUME.bat",
             result="Task completed successfully"
         )
 
@@ -1236,8 +1134,6 @@ class TestBuildScriptEnvResultVariable:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/START.bat",
             result=None
         )
 
@@ -1248,8 +1144,6 @@ class TestBuildScriptEnvResultVariable:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/START.bat"
         )
 
         assert "RAYMOND_RESULT" not in env
@@ -1259,8 +1153,6 @@ class TestBuildScriptEnvResultVariable:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/RESUME.bat",
             result=""
         )
 
@@ -1273,8 +1165,6 @@ class TestBuildScriptEnvResultVariable:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/RESUME.bat",
             result='{"status": "ok", "count": 42}'
         )
 
@@ -1293,8 +1183,6 @@ class TestBuildScriptEnvForkAttributes:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/WORKER.bat",
             fork_attributes={"item": "task1"}
         )
 
@@ -1306,8 +1194,6 @@ class TestBuildScriptEnvForkAttributes:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/WORKER.bat",
             fork_attributes={"item": "my-task-value"}
         )
 
@@ -1319,8 +1205,6 @@ class TestBuildScriptEnvForkAttributes:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/WORKER.bat",
             fork_attributes={
                 "item": "task1",
                 "priority": "high",
@@ -1339,16 +1223,12 @@ class TestBuildScriptEnvForkAttributes:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/START.bat"
         )
 
-        # Only the 4 core RAYMOND_ variables should be present
+        # Only the 2 core RAYMOND_ variables should be present
         expected_keys = {
             "RAYMOND_WORKFLOW_ID",
             "RAYMOND_AGENT_ID",
-            "RAYMOND_STATE_DIR",
-            "RAYMOND_STATE_FILE"
         }
         assert set(env.keys()) == expected_keys
 
@@ -1357,17 +1237,13 @@ class TestBuildScriptEnvForkAttributes:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/START.bat",
             fork_attributes={}
         )
 
-        # Only the 4 core RAYMOND_ variables
+        # Only the 2 core RAYMOND_ variables
         expected_keys = {
             "RAYMOND_WORKFLOW_ID",
             "RAYMOND_AGENT_ID",
-            "RAYMOND_STATE_DIR",
-            "RAYMOND_STATE_FILE"
         }
         assert set(env.keys()) == expected_keys
 
@@ -1376,8 +1252,6 @@ class TestBuildScriptEnvForkAttributes:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/WORKER.bat",
             fork_attributes={"item": "value1", "extra": "value2"}
         )
 
@@ -1393,8 +1267,6 @@ class TestBuildScriptEnvForkAttributes:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir="/path/to/states",
-            state_file="/path/to/states/RESUME.bat",
             result="some result",
             fork_attributes={"item": "task1", "priority": "low"}
         )
@@ -1418,8 +1290,6 @@ class TestResultVariableInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file),
             result="child task completed"
         )
         result = await run_script(str(script_file), env=env)
@@ -1436,8 +1306,6 @@ class TestResultVariableInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="main",
-            state_dir=str(tmp_path),
-            state_file=str(script_file),
             result="child task completed"
         )
         result = await run_script(str(script_file), env=env)
@@ -1457,8 +1325,6 @@ class TestForkAttributesInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir=str(tmp_path),
-            state_file=str(script_file),
             fork_attributes={"item": "process-this-task"}
         )
         result = await run_script(str(script_file), env=env)
@@ -1475,8 +1341,6 @@ class TestForkAttributesInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir=str(tmp_path),
-            state_file=str(script_file),
             fork_attributes={"item": "process-this-task"}
         )
         result = await run_script(str(script_file), env=env)
@@ -1497,8 +1361,6 @@ class TestForkAttributesInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir=str(tmp_path),
-            state_file=str(script_file),
             fork_attributes={"item": "task1", "priority": "high", "index": "5"}
         )
         result = await run_script(str(script_file), env=env)
@@ -1522,8 +1384,6 @@ class TestForkAttributesInScripts:
         env = build_script_env(
             workflow_id="wf-1",
             agent_id="worker_1",
-            state_dir=str(tmp_path),
-            state_file=str(script_file),
             fork_attributes={"item": "task1", "priority": "high", "index": "5"}
         )
         result = await run_script(str(script_file), env=env)

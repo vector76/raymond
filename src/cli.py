@@ -5,10 +5,12 @@ import asyncio
 import logging
 import re
 import sys
+import zipfile
 from pathlib import Path
 from typing import Optional
 
 from .config import load_config, merge_config_and_args, init_config, ConfigError
+from .zip_scope import is_zip_scope, detect_layout, file_exists, ZipLayoutError
 from .orchestrator import run_all_agents
 from .state import (
     create_initial_state,
@@ -147,21 +149,39 @@ def cmd_start(args: argparse.Namespace) -> int:
     # Parse the initial file path to extract scope_dir and initial_state
     initial_path = Path(args.initial_file)
 
-    # Resolve directory input: if a directory is given, look for 1_START.md inside it
-    if initial_path.is_dir():
-        candidate = initial_path / "1_START.md"
-        if not candidate.is_file():
-            print(f"Error: Directory does not contain 1_START.md: {initial_path}", file=sys.stderr)
+    if is_zip_scope(str(args.initial_file)):
+        # Zip archive input: validate layout and presence of 1_START.md
+        zip_path = str(initial_path.resolve())
+        try:
+            detect_layout(zip_path)
+        except ZipLayoutError as e:
+            print(f"Error: {e}", file=sys.stderr)
             return 1
-        initial_path = candidate
-    elif not initial_path.is_file():
-        print(f"Error: Path is not a file or directory: {initial_path}", file=sys.stderr)
-        return 1
-    
-    # Infer scope directory and initial state filename
-    scope_dir = str(initial_path.parent.resolve())
-    initial_state = initial_path.name
-    state_dir = args.state_dir
+        except (zipfile.BadZipFile, OSError) as e:
+            print(f"Error: Cannot open zip file '{zip_path}': {e}", file=sys.stderr)
+            return 1
+        if not file_exists(zip_path, "1_START.md"):
+            print(f"Error: Zip archive does not contain 1_START.md: {zip_path}", file=sys.stderr)
+            return 1
+        scope_dir = zip_path
+        initial_state = "1_START.md"
+        state_dir = args.state_dir
+    else:
+        # Resolve directory input: if a directory is given, look for 1_START.md inside it
+        if initial_path.is_dir():
+            candidate = initial_path / "1_START.md"
+            if not candidate.is_file():
+                print(f"Error: Directory does not contain 1_START.md: {initial_path}", file=sys.stderr)
+                return 1
+            initial_path = candidate
+        elif not initial_path.is_file():
+            print(f"Error: Path is not a file or directory: {initial_path}", file=sys.stderr)
+            return 1
+
+        # Infer scope directory and initial state filename
+        scope_dir = str(initial_path.parent.resolve())
+        initial_state = initial_path.name
+        state_dir = args.state_dir
     
     # Check if workflow already exists
     existing = list_workflows(state_dir=state_dir)
@@ -177,7 +197,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     write_state(workflow_id, state, state_dir=state_dir)
     
     print(f"Created workflow '{workflow_id}'")
-    print(f"  Scope directory: {scope_dir}")
+    print(f"  Workflow scope: {scope_dir}")
     print(f"  Initial state: {initial_state}")
     if args.initial_input is not None:
         # Truncate long inputs for display

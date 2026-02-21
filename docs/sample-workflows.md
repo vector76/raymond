@@ -395,7 +395,6 @@ echo "Script state executing..."
 echo "Environment variables:"
 echo "  RAYMOND_WORKFLOW_ID=$RAYMOND_WORKFLOW_ID"
 echo "  RAYMOND_AGENT_ID=$RAYMOND_AGENT_ID"
-echo "  RAYMOND_STATE_DIR=$RAYMOND_STATE_DIR"
 
 echo "<goto>SCRIPT_TARGET.md</goto>"
 ```
@@ -409,7 +408,6 @@ echo Script state executing...
 echo Environment variables:
 echo   RAYMOND_WORKFLOW_ID=%RAYMOND_WORKFLOW_ID%
 echo   RAYMOND_AGENT_ID=%RAYMOND_AGENT_ID%
-echo   RAYMOND_STATE_DIR=%RAYMOND_STATE_DIR%
 
 echo ^<goto^>SCRIPT_TARGET.md^</goto^>
 ```
@@ -498,7 +496,7 @@ the counter reaches a limit.
 #!/bin/bash
 # Reset transition test - runs 3 iterations
 
-counter_file="${RAYMOND_STATE_DIR:-/tmp}/reset_counter.txt"
+counter_file="/tmp/reset_counter.txt"
 
 if [ -f "$counter_file" ]; then
     count=$(cat "$counter_file")
@@ -623,7 +621,7 @@ between polls, and transitions to a processing state when ready.
 #!/bin/bash
 # Polling workflow with sleep
 
-poll_counter="${RAYMOND_STATE_DIR:-/tmp}/poll_counter.txt"
+poll_counter="/tmp/poll_counter.txt"
 poll_target=3
 
 if [ -f "$poll_counter" ]; then

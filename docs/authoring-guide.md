@@ -216,8 +216,6 @@ Scripts receive workflow context via environment variables:
 |----------|-------------|---------|
 | `RAYMOND_WORKFLOW_ID` | Workflow run identifier | `wf-2024-01-15-abc123` |
 | `RAYMOND_AGENT_ID` | Current agent identifier | `main`, `main_worker1` |
-| `RAYMOND_STATE_DIR` | Absolute path to the workflow directory | `/home/user/workflows/test_cases` |
-| `RAYMOND_STATE_FILE` | Absolute path to the current script | `/home/user/workflows/test_cases/POLL.sh` |
 | `RAYMOND_RESULT` | Result payload from a `<call>` return | (set only when returning from a call) |
 
 ### Persisting Data Between Script Runs
@@ -227,7 +225,7 @@ iterations, write to files:
 
 ```bash
 #!/bin/bash
-counter_file="${RAYMOND_STATE_DIR}/poll_counter.txt"
+counter_file="/tmp/poll_counter.txt"
 
 if [ -f "$counter_file" ]; then
     count=$(cat "$counter_file")

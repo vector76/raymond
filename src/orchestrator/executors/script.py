@@ -18,12 +18,17 @@ Key differences from MarkdownExecutor:
 
 import json
 import logging
+import os
+import stat
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Import src.orchestrator as a module to support test patching
 import src.orchestrator as orchestrator
+
+from src.zip_scope import is_zip_scope, extract_script
 
 from src.orchestrator.errors import ScriptError
 from src.orchestrator.events import (
@@ -82,6 +87,14 @@ class ScriptExecutor:
         # Build full path to script file
         script_path = str(Path(scope_dir) / current_state)
 
+        # For zip scopes, extract script to a temp file
+        tmp_script_path = None
+        if is_zip_scope(scope_dir):
+            tmp_script_path = extract_script(scope_dir, current_state)
+            if sys.platform != 'win32':
+                os.chmod(tmp_script_path, os.stat(tmp_script_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            script_path = tmp_script_path
+
         # Build environment variables for the script
         pending_result = agent.get("pending_result")
         fork_attributes = agent.get("fork_attributes", {})
@@ -115,56 +128,63 @@ class ScriptExecutor:
         script_result = None
 
         try:
-            script_result = await orchestrator.run_script(
-                script_path, timeout=context.timeout, env=env, cwd=agent_cwd
-            )
-        except orchestrator.ScriptTimeoutError as e:
-            logger.error(
-                f"Script timeout for agent {agent_id}: {current_state}",
-                extra={
-                    "workflow_id": workflow_id,
-                    "agent_id": agent_id,
-                    "current_state": current_state,
-                    "timeout": context.timeout
-                }
-            )
-            error = ScriptError(f"Script timeout: {e}")
-            self._try_save_script_error(
-                workflow_id, agent_id, error, script_path,
-                "", "", None, current_state, context.state_dir
-            )
-            raise error from e
-        except FileNotFoundError as e:
-            logger.error(
-                f"Script not found for agent {agent_id}: {current_state}",
-                extra={
-                    "workflow_id": workflow_id,
-                    "agent_id": agent_id,
-                    "current_state": current_state,
-                    "script_path": script_path
-                }
-            )
-            error = ScriptError(f"Script not found: {e}")
-            self._try_save_script_error(
-                workflow_id, agent_id, error, script_path,
-                "", "", None, current_state, context.state_dir
-            )
-            raise error from e
-        except ValueError as e:
-            logger.error(
-                f"Script execution error for agent {agent_id}: {e}",
-                extra={
-                    "workflow_id": workflow_id,
-                    "agent_id": agent_id,
-                    "current_state": current_state
-                }
-            )
-            error = ScriptError(f"Script execution error: {e}")
-            self._try_save_script_error(
-                workflow_id, agent_id, error, script_path,
-                "", "", None, current_state, context.state_dir
-            )
-            raise error from e
+            try:
+                script_result = await orchestrator.run_script(
+                    script_path, timeout=context.timeout, env=env, cwd=agent_cwd
+                )
+            except orchestrator.ScriptTimeoutError as e:
+                logger.error(
+                    f"Script timeout for agent {agent_id}: {current_state}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "current_state": current_state,
+                        "timeout": context.timeout
+                    }
+                )
+                error = ScriptError(f"Script timeout: {e}")
+                self._try_save_script_error(
+                    workflow_id, agent_id, error, script_path,
+                    "", "", None, current_state, context.state_dir
+                )
+                raise error from e
+            except FileNotFoundError as e:
+                logger.error(
+                    f"Script not found for agent {agent_id}: {current_state}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "current_state": current_state,
+                        "script_path": script_path
+                    }
+                )
+                error = ScriptError(f"Script not found: {e}")
+                self._try_save_script_error(
+                    workflow_id, agent_id, error, script_path,
+                    "", "", None, current_state, context.state_dir
+                )
+                raise error from e
+            except ValueError as e:
+                logger.error(
+                    f"Script execution error for agent {agent_id}: {e}",
+                    extra={
+                        "workflow_id": workflow_id,
+                        "agent_id": agent_id,
+                        "current_state": current_state
+                    }
+                )
+                error = ScriptError(f"Script execution error: {e}")
+                self._try_save_script_error(
+                    workflow_id, agent_id, error, script_path,
+                    "", "", None, current_state, context.state_dir
+                )
+                raise error from e
+        finally:
+            if tmp_script_path is not None:
+                try:
+                    Path(tmp_script_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         # Calculate execution time
         end_time = time.perf_counter()

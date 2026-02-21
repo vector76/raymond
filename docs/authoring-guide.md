@@ -11,9 +11,10 @@ see [orchestration-design.md](orchestration-design.md).
 
 ## Concepts
 
-A **workflow** is a directory of state files that reference each other via
+A **workflow** is a collection of state files that reference each other via
 transition tags. Raymond runs these files in sequence, following the transitions
-your prompts declare.
+your prompts declare. The collection may be a plain directory **or a zip
+archive** (see [Zip Workflow Packaging](#zip-workflow-packaging) below).
 
 A **state file** is either:
 - A **markdown prompt** (`.md`) — sent to Claude Code for LLM interpretation
@@ -23,9 +24,11 @@ A **state file** is either:
 An **agent** is a logical thread of execution within a workflow. Workflows
 start with one agent (`main`) and can spawn more via `<fork>`.
 
-**Directory scoping:** All state files in a workflow must live in the same
-directory. Transitions reference filenames only — no paths, no `/` or `\`
-characters. The directory containing the starting file is the workflow's scope.
+**Workflow scoping:** All state files in a workflow must live within the same
+scope — either the same directory or the same zip archive. Transitions reference
+filenames only — no paths, no `/` or `\` characters. The workflow's scope is
+the directory containing all state files, or the zip archive when one is used
+as input.
 
 ## Markdown States
 
@@ -515,7 +518,9 @@ path. There is no re-prompting for scripts.
 ### CLI Flags
 
 ```bash
-raymond workflow.md                          # Defaults
+raymond workflow.md                          # Start from a specific .md file
+raymond workflows/coding/                    # Start from a directory (uses 1_START.md)
+raymond workflow.zip                         # Start from a zip archive (uses 1_START.md)
 raymond workflow.md --budget 5.0             # Cost limit ($5.00)
 raymond workflow.md --model sonnet           # Default model for all states
 raymond workflow.md --effort high            # Default effort level for all states
@@ -643,3 +648,57 @@ When done: <result>Processed {{item}}</result>
 ```
 
 For more complete examples, see [sample-workflows.md](sample-workflows.md).
+
+## Zip Workflow Packaging
+
+Workflows can be distributed and run directly from a zip archive. This is
+useful for sharing self-contained workflows without exposing the individual
+files.
+
+### Creating a zip archive
+
+Package your workflow files into a zip archive. Raymond accepts two layouts:
+
+**Flat layout** — all state files at the archive root:
+```bash
+zip workflow.zip 1_START.md REVIEW.md CHECK.sh
+```
+```
+workflow.zip
+├── 1_START.md
+├── REVIEW.md
+└── CHECK.sh
+```
+
+**Single-folder layout** — all state files inside one top-level directory:
+```bash
+zip -r workflow.zip mywf/
+```
+```
+workflow.zip
+└── mywf/
+    ├── 1_START.md
+    ├── REVIEW.md
+    └── CHECK.sh
+```
+
+In either layout, the archive **must** contain `1_START.md`. Raymond uses this
+as the entry point when you pass a zip file as input.
+
+### Running from a zip
+
+```bash
+raymond workflow.zip
+```
+
+State file transitions work exactly as with directory-based workflows — tag
+targets are bare filenames (e.g. `<goto>REVIEW.md</goto>`), resolved within the
+archive.
+
+### Constraints
+
+- Files may not be nested more than one level deep.
+- Mixed layouts (some files at root, some in a folder) are rejected.
+- Multiple top-level folders are rejected.
+- Empty archives are rejected.
+- The zip file must remain at the same path for `raymond resume` to work.

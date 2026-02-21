@@ -4,7 +4,7 @@
 
 | Term | Meaning |
 |------|---------|
-| **Prompt folder** | A directory of state files (`.md` prompts or `.sh`/`.bat` scripts) that reference each other via transition tags. Represents the static definition of a workflow. |
+| **Prompt folder** | A directory (or zip archive) of state files (`.md` prompts or `.sh`/`.bat` scripts) that reference each other via transition tags. Represents the static definition of a workflow. |
 | **Orchestrator** | The running Python program. Single-threaded but async, enabling concurrent Claude Code executions. Each orchestrator instance manages exactly one state file. |
 | **State file** | JSON file persisting all agent state for one orchestrator run. One orchestrator = one state file. It is an error for multiple orchestrators to access the same state file. |
 | **Agent** | A logical thread of execution within the orchestrator. Has a current state (prompt filename) and a return stack. Created initially or via `<fork>`. Terminates when it emits `<result>` with an empty stack. |
@@ -43,7 +43,7 @@ same transition tags. Scripts are efficient for deterministic operations like
 polling, builds, and data processing. See `docs/bash-states.md` for details.
 
 **Protocol note:** The authoritative protocol (including the return stack model
-and directory scoping) is defined in `docs/workflow-protocol.md`.
+and workflow scoping) is defined in `docs/workflow-protocol.md`.
 
 Two key protocol points worth calling out here:
 - The agent's final message must contain **exactly one** protocol tag, and that
@@ -67,10 +67,15 @@ The Python orchestrator:
 3. Launches the next Claude Code session with that prompt
 4. Acts as an interpreter for a small "workflow language" defined in markdown: it follows the declared transitions and enforces the rules of what transitions are allowed
 
-**Workflow directory scoping (important):**
-- A workflow is started from a specific prompt file path (e.g. `workflows/coding/START.md`).
-- Transitions that reference a filename (e.g. `<goto>REVIEW.md</goto>`) are resolved **only within the starting file's directory**.
-- Cross-directory transitions are not allowed. This keeps workflow collections self-contained and prevents name collisions.
+**Workflow scoping (important):**
+- A workflow is started from a specific prompt file path, a directory, or a zip
+  archive (e.g. `workflows/coding/START.md`, `workflows/coding/`, or
+  `workflows/coding.zip`).
+- Transitions that reference a filename (e.g. `<goto>REVIEW.md</goto>`) are
+  resolved **only within the workflow scope** (the starting file's directory, or
+  the zip archive).
+- Cross-scope transitions are not allowed. This keeps workflow collections
+  self-contained and prevents name collisions.
 
 **Path safety rule:** Transition targets are filenames, not paths. Tag targets
 must not contain `/` or `\` anywhere.

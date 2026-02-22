@@ -251,6 +251,18 @@ def cmd_resume(args: argparse.Namespace) -> int:
     scope_dir = state.get("scope_dir", "")
     if is_zip_scope(scope_dir):
         try:
+            verify_zip_hash(scope_dir)
+        except ZipHashMismatchError as e:
+            print(
+                f"Error: Hash mismatch for zip archive of workflow '{workflow_id}': "
+                f"expected {e.expected}, got {e.actual}",
+                file=sys.stderr,
+            )
+            return 1
+        except ZipFilenameAmbiguousError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        try:
             detect_layout(scope_dir)
         except ZipLayoutError as e:
             print(f"Error: Zip archive for workflow '{workflow_id}' is invalid: {e}", file=sys.stderr)

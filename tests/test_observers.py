@@ -941,7 +941,7 @@ class TestConsoleObserverErrorHandling:
         for method in [
             'workflow_started', 'workflow_completed', 'workflow_paused',
             'state_started', 'script_started', 'state_completed',
-            'script_completed', 'transition', 'tool_invocation',
+            'script_state_completed', 'transition', 'tool_invocation',
             'progress_message', 'error', 'agent_terminated',
             'agent_paused', 'agent_spawned'
         ]:
@@ -960,6 +960,8 @@ class TestConsoleObserverErrorHandling:
                                     total_cost_usd=0, session_id=None, duration_ms=0))
             bus.emit(ScriptOutput(agent_id="a", state_name="S.sh", step_number=1,
                                   stdout="", stderr="", exit_code=0, execution_time_ms=0, env_vars={}))
+            bus.emit(StateCompleted(agent_id="a", state_name="S.sh", cost_usd=0,
+                                    total_cost_usd=0, session_id=None, duration_ms=0))
             bus.emit(TransitionOccurred(agent_id="a", from_state="A", to_state="B",
                                         transition_type="goto", metadata={}))
             bus.emit(ToolInvocation(agent_id="a", tool_name="T"))
@@ -1219,6 +1221,74 @@ class TestNoDuplicateConsoleOutput:
         assert reporter.progress_message.call_count == 2
         assert reporter.tool_invocation.call_count == 2
         assert reporter.state_completed.call_count == 1
+
+        observer.close()
+
+    def test_script_completion_produces_one_combined_done_line(self):
+        """ScriptOutput + StateCompleted for a script state calls script_state_completed exactly once."""
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        bus.emit(ScriptOutput(
+            agent_id="main", state_name="CHECK.sh",
+            step_number=1, stdout="ok", stderr="",
+            exit_code=0, execution_time_ms=250.5, env_vars={}
+        ))
+        bus.emit(StateCompleted(
+            agent_id="main", state_name="CHECK.sh",
+            cost_usd=0.0, total_cost_usd=14.8081,
+            session_id=None, duration_ms=970
+        ))
+
+        reporter.script_state_completed.assert_called_once_with(
+            agent_id="main",
+            exit_code=0,
+            duration_ms=250.5,
+            cost=0.0,
+            total_cost=14.8081
+        )
+        reporter.script_completed.assert_not_called()
+        reporter.state_completed.assert_not_called()
+
+        observer.close()
+
+    def test_markdown_state_completion_unchanged(self):
+        """StateCompleted without preceding ScriptOutput calls state_completed exactly once."""
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        bus.emit(StateCompleted(
+            agent_id="main", state_name="START.md",
+            cost_usd=0.05, total_cost_usd=0.10,
+            session_id="sess-123", duration_ms=1500
+        ))
+
+        reporter.state_completed.assert_called_once_with(
+            agent_id="main",
+            cost=0.05,
+            total_cost=0.10
+        )
+        reporter.script_state_completed.assert_not_called()
+
+        observer.close()
+
+    def test_script_output_without_state_completed_does_not_crash(self):
+        """ScriptOutput alone (no following StateCompleted) calls no Done reporter method."""
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        bus.emit(ScriptOutput(
+            agent_id="main", state_name="CHECK.sh",
+            step_number=1, stdout="", stderr="",
+            exit_code=0, execution_time_ms=100.0, env_vars={}
+        ))
+
+        reporter.script_completed.assert_not_called()
+        reporter.script_state_completed.assert_not_called()
+        reporter.state_completed.assert_not_called()
 
         observer.close()
 

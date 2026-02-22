@@ -124,20 +124,60 @@ class TestConsoleReporter:
         """Test transition displays with arrow symbol."""
         reporter = ConsoleReporter(quiet=False)
         reporter.transition("main", "NEXT.md", "goto")
-        
+
         captured = capsys.readouterr()
         assert "→" in captured.out or "->" in captured.out
         assert "NEXT.md" in captured.out
+        assert "goto" in captured.out
 
     def test_transition_fork_displays_fork_symbol(self, capsys):
         """Test fork transition displays with fork symbol."""
         reporter = ConsoleReporter(quiet=False)
         reporter.transition("main", "WORKER.md", "fork", "main_worker1")
-        
+
         captured = capsys.readouterr()
         assert "⑂" in captured.out or "++" in captured.out
         assert "WORKER.md" in captured.out
         assert "main_worker1" in captured.out
+
+    def test_transition_reset_displays_label(self, capsys):
+        """Test reset transition displays type label and target."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "TARGET.md", "reset")
+
+        captured = capsys.readouterr()
+        assert "reset" in captured.out
+        assert "TARGET.md" in captured.out
+
+    def test_transition_call_displays_label(self, capsys):
+        """Test call transition displays type label and target."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "TARGET.md", "call")
+
+        captured = capsys.readouterr()
+        assert "call" in captured.out
+        assert "TARGET.md" in captured.out
+
+    def test_transition_function_displays_label(self, capsys):
+        """Test function transition displays type label and target."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "TARGET.md", "function")
+
+        captured = capsys.readouterr()
+        assert "function" in captured.out
+        assert "TARGET.md" in captured.out
+
+    def test_transition_fork_does_not_display_fork_label(self, capsys):
+        """Test fork transition uses fork symbol, not a 'fork' type label prefix."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "WORKER.md", "fork", "worker_1")
+
+        captured = capsys.readouterr()
+        assert "⑂" in captured.out or "++" in captured.out
+        # The word "fork" should not appear as a label before the target
+        lines = [l for l in captured.out.splitlines() if "WORKER.md" in l]
+        assert lines, "Expected a line containing WORKER.md"
+        assert not any(line.lstrip().startswith("fork") for line in lines)
 
     def test_agent_terminated_displays_result(self, capsys):
         """Test agent_terminated displays result with ⇒ symbol."""
@@ -269,6 +309,7 @@ class TestConsoleReporter:
         # Check that transition was printed (either Unicode or ASCII format is acceptable)
         captured = capsys.readouterr()
         assert "NEXT.md" in captured.out
+        assert "goto" in captured.out
         # Should contain either Unicode arrow (→) or ASCII arrow (->)
         assert ("→" in captured.out or "->" in captured.out)
 

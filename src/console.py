@@ -394,7 +394,7 @@ class ConsoleReporter:
             pass
         else:
             # Regular transitions (goto, reset, function, call) all use same arrow
-            self._print(f"  {self.ARROW} {target}")
+            self._print(f"  {transition_type} {self.ARROW} {target}")
     
     def agent_terminated(self, agent_id: str, result: str) -> None:
         """Display agent termination with result.

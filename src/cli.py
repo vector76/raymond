@@ -10,7 +10,15 @@ from pathlib import Path
 from typing import Optional
 
 from .config import load_config, merge_config_and_args, init_config, ConfigError
-from .zip_scope import is_zip_scope, detect_layout, file_exists, ZipLayoutError
+from .zip_scope import (
+    is_zip_scope,
+    detect_layout,
+    file_exists,
+    ZipLayoutError,
+    ZipHashMismatchError,
+    ZipFilenameAmbiguousError,
+    verify_zip_hash,
+)
 from .orchestrator import run_all_agents
 from .state import (
     create_initial_state,
@@ -152,6 +160,14 @@ def cmd_start(args: argparse.Namespace) -> int:
     if is_zip_scope(str(args.initial_file)):
         # Zip archive input: validate layout and presence of 1_START.md
         zip_path = str(initial_path.resolve())
+        try:
+            verify_zip_hash(zip_path)
+        except ZipHashMismatchError as e:
+            print(f"Error: Hash mismatch for '{zip_path}': expected {e.expected}, got {e.actual}", file=sys.stderr)
+            return 1
+        except ZipFilenameAmbiguousError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
         try:
             detect_layout(zip_path)
         except ZipLayoutError as e:

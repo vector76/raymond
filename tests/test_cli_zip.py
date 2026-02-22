@@ -293,6 +293,68 @@ class TestCmdResumeZipValidation:
 
 
 # ---------------------------------------------------------------------------
+# Resume: hash check
+# ---------------------------------------------------------------------------
+
+class TestCmdResumeHashCheck:
+
+    def test_no_hash_in_filename_returns_zero(self, tmp_path):
+        """Resuming a zip with no hash in filename proceeds normally."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"})
+        state_dir = str(tmp_path / "state")
+        create_workflow(state_dir, "test-resume", zip_path)
+        args = make_resume_args("test-resume", state_dir)
+        with patch("src.cli.cmd_run_workflow", return_value=0):
+            assert cmd_resume(args) == 0
+
+    def test_correct_hash_in_filename_returns_zero(self, tmp_path):
+        """Resuming a zip with correct hash in filename proceeds normally."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"})
+        actual_hash = hashlib.sha256(Path(zip_path).read_bytes()).hexdigest()
+        new_path = Path(zip_path).rename(tmp_path / f"workflow-{actual_hash}.zip")
+        state_dir = str(tmp_path / "state")
+        create_workflow(state_dir, "test-resume", str(new_path))
+        args = make_resume_args("test-resume", state_dir)
+        with patch("src.cli.cmd_run_workflow", return_value=0):
+            assert cmd_resume(args) == 0
+
+    def test_incorrect_hash_in_filename_returns_one(self, tmp_path, capsys):
+        """Resuming a zip with wrong hash in filename is rejected with error mentioning both hashes."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"},
+                            zip_name="workflow-" + "0" * 64 + ".zip")
+        actual_hash = hashlib.sha256(Path(zip_path).read_bytes()).hexdigest()
+        wrong_hash = "0" * 64
+        state_dir = str(tmp_path / "state")
+        create_workflow(state_dir, "test-resume", zip_path)
+        args = make_resume_args("test-resume", state_dir)
+        result = cmd_resume(args)
+        assert result == 1
+        captured = capsys.readouterr()
+        assert wrong_hash in captured.err
+        assert actual_hash in captured.err
+
+    def test_ambiguous_filename_returns_one(self, tmp_path):
+        """Resuming a zip with ambiguous hex run in filename is rejected."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"},
+                            zip_name="workflow-" + "a" * 65 + ".zip")
+        state_dir = str(tmp_path / "state")
+        create_workflow(state_dir, "test-resume", zip_path)
+        args = make_resume_args("test-resume", state_dir)
+        assert cmd_resume(args) == 1
+
+    def test_directory_scope_unaffected(self, tmp_path):
+        """Resuming a directory-scoped workflow skips hash check entirely."""
+        scope_dir = tmp_path / "wf"
+        scope_dir.mkdir()
+        (scope_dir / "1_START.md").write_text("# Start")
+        state_dir = str(tmp_path / "state")
+        create_workflow(state_dir, "test-resume", str(scope_dir))
+        args = make_resume_args("test-resume", state_dir)
+        with patch("src.cli.cmd_run_workflow", return_value=0):
+            assert cmd_resume(args) == 0
+
+
+# ---------------------------------------------------------------------------
 # Status: label
 # ---------------------------------------------------------------------------
 

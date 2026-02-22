@@ -179,6 +179,83 @@ class TestConsoleReporter:
         assert lines, "Expected a line containing WORKER.md"
         assert not any(line.lstrip().startswith("fork") for line in lines)
 
+    def test_transition_result_return_displays_snippet(self, capsys):
+        """Test return transition displays snippet, arrow, and target."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "CALLER.md", "result", result_payload="OK")
+
+        captured = capsys.readouterr()
+        assert "return" in captured.out
+        assert "OK" in captured.out
+        assert "→" in captured.out or "->" in captured.out
+        assert "CALLER.md" in captured.out
+
+    def test_transition_result_snippet_whitespace_trimmed(self, capsys):
+        """Test return transition trims whitespace from payload."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "CALLER.md", "result", result_payload="  OK  ")
+
+        captured = capsys.readouterr()
+        assert "OK" in captured.out
+        assert "  OK  " not in captured.out
+
+    def test_transition_result_snippet_multiline_first_line_only(self, capsys):
+        """Test return transition uses only first line of payload."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "CALLER.md", "result", result_payload="line1\nline2")
+
+        captured = capsys.readouterr()
+        assert "line1" in captured.out
+        assert "line2" not in captured.out
+
+    def test_transition_result_snippet_exactly_20_chars_no_truncation(self, capsys):
+        """Test return transition does not truncate a 20-character payload."""
+        payload = "A" * 20
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "CALLER.md", "result", result_payload=payload)
+
+        captured = capsys.readouterr()
+        assert payload in captured.out
+        assert "..." not in captured.out
+
+    def test_transition_result_snippet_21_chars_truncated(self, capsys):
+        """Test return transition truncates a 21-character payload to 20 chars + '...'."""
+        payload = "A" * 21
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "CALLER.md", "result", result_payload=payload)
+
+        captured = capsys.readouterr()
+        assert "A" * 20 + "..." in captured.out
+        assert "A" * 21 not in captured.out
+
+    def test_transition_result_snippet_long_payload_truncated(self, capsys):
+        """Test return transition truncates a long payload."""
+        payload = "B" * 50
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "CALLER.md", "result", result_payload=payload)
+
+        captured = capsys.readouterr()
+        assert "..." in captured.out
+
+    def test_transition_result_snippet_empty_after_trim(self, capsys):
+        """Test return transition shows empty parens when payload is blank."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.transition("main", "CALLER.md", "result", result_payload="   ")
+
+        captured = capsys.readouterr()
+        assert "return ()" in captured.out
+
+    def test_agent_terminated_whitespace_trimmed(self, capsys):
+        """Test agent_terminated trims leading/trailing whitespace from result."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.agent_terminated("main", "  \nStory complete\n  ")
+
+        captured = capsys.readouterr()
+        assert "Story complete" in captured.out
+        # Should not have whitespace/newline immediately after the opening quote
+        assert 'Result: "  ' not in captured.out
+        assert 'Result: "\n' not in captured.out
+
     def test_agent_terminated_displays_result(self, capsys):
         """Test agent_terminated displays result with ⇒ symbol."""
         reporter = ConsoleReporter(quiet=False)

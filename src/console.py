@@ -390,8 +390,14 @@ class ConsoleReporter:
             else:
                 self._print(f"{agent_str} {self.FORK_SYMBOL} {target}")
         elif transition_type == "result":
-            # Result transitions are handled by agent_terminated
-            pass
+            # Return transition: display snippet of result payload
+            payload = (result_payload or "").strip()
+            first_line = payload.split("\n")[0]
+            if len(first_line) > 20:
+                snippet = first_line[:20] + "..."
+            else:
+                snippet = first_line
+            self._print(f"  return ({snippet}) {self.ARROW} {target}")
         else:
             # Regular transitions (goto, reset, function, call) all use same arrow
             self._print(f"  {transition_type} {self.ARROW} {target}")
@@ -409,7 +415,8 @@ class ConsoleReporter:
         # Extract result from <result> tags if present
         if "<result>" in result and "</result>" in result:
             result = result.split("<result>")[1].split("</result>")[0]
-        
+        result = result.strip()
+
         # Truncate long results
         truncated_result = self._truncate_message(result, max_width=self._available_width(self.PREFIX_RESULT))
         self._print(f"  {self.RESULT_ARROW} Result: \"{truncated_result}\"")

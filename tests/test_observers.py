@@ -673,7 +673,8 @@ class TestConsoleObserverTransitionEvents:
             agent_id="main",
             target="NEXT.md",
             transition_type="goto",
-            spawned_agent_id=None
+            spawned_agent_id=None,
+            result_payload=None
         )
 
         observer.close()
@@ -696,7 +697,8 @@ class TestConsoleObserverTransitionEvents:
             agent_id="main",
             target="WORKER.md",
             transition_type="fork",
-            spawned_agent_id="worker_001"
+            spawned_agent_id="worker_001",
+            result_payload=None
         )
 
         observer.close()
@@ -731,10 +733,40 @@ class TestConsoleObserverTransitionEvents:
             from_state="FUNC.md",
             to_state="CALLER.md",
             transition_type="result",
+            metadata={"result_payload": "test result"}
+        ))
+
+        reporter.transition.assert_called_once_with(
+            agent_id="main",
+            target="CALLER.md",
+            transition_type="result",
+            spawned_agent_id=None,
+            result_payload="test result"
+        )
+
+        observer.close()
+
+    def test_transition_result_with_target_no_payload(self):
+        """TransitionOccurred result with to_state and no result_payload passes None."""
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        bus.emit(TransitionOccurred(
+            agent_id="main",
+            from_state="FUNC.md",
+            to_state="CALLER.md",
+            transition_type="result",
             metadata={}
         ))
 
-        reporter.transition.assert_called_once()
+        reporter.transition.assert_called_once_with(
+            agent_id="main",
+            target="CALLER.md",
+            transition_type="result",
+            spawned_agent_id=None,
+            result_payload=None
+        )
 
         observer.close()
 

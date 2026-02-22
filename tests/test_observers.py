@@ -594,7 +594,7 @@ class TestConsoleObserverStateEvents:
         observer.close()
 
     def test_script_output(self):
-        """ScriptOutput event calls reporter.script_completed()."""
+        """ScriptOutput event buffers data and does not call reporter immediately."""
         bus = EventBus()
         reporter = MagicMock()
         observer = ConsoleObserver(reporter, bus)
@@ -610,11 +610,44 @@ class TestConsoleObserverStateEvents:
             env_vars={}
         ))
 
-        reporter.script_completed.assert_called_once_with(
+        reporter.script_completed.assert_not_called()
+        reporter.script_state_completed.assert_not_called()
+
+        observer.close()
+
+    def test_script_state_completed_on_combined_events(self):
+        """ScriptOutput then StateCompleted calls reporter.script_state_completed()."""
+        bus = EventBus()
+        reporter = MagicMock()
+        observer = ConsoleObserver(reporter, bus)
+
+        bus.emit(ScriptOutput(
+            agent_id="main",
+            state_name="CHECK.sh",
+            step_number=1,
+            stdout="ok",
+            stderr="",
+            exit_code=0,
+            execution_time_ms=250.5,
+            env_vars={}
+        ))
+        bus.emit(StateCompleted(
+            agent_id="main",
+            state_name="CHECK.sh",
+            cost_usd=0.05,
+            total_cost_usd=0.10,
+            session_id="sess-123",
+            duration_ms=1500
+        ))
+
+        reporter.script_state_completed.assert_called_once_with(
             agent_id="main",
             exit_code=0,
-            duration_ms=250.5
+            duration_ms=250.5,
+            cost=0.05,
+            total_cost=0.10
         )
+        reporter.state_completed.assert_not_called()
 
         observer.close()
 

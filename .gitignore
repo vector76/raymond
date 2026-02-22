@@ -1,13 +1,16 @@
-# Python
+# Python cache (residual — not part of Go port)
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
 
-# Virtual environment
-.venv/
-venv/
-ENV/
+# Go binaries
+/raymond
+/ray
+raymond.exe
+ray.exe
+*.exe
+
+# Go build cache / vendor
+vendor/
 
 # IDE
 .idea/
@@ -15,23 +18,18 @@ ENV/
 *.swp
 *.swo
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Distribution
-dist/
-build/
-*.egg-info/
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Raymond runtime state
 /.raymond
+/.claude
 
 # Test outputs
 workflows/test_cases/test_outputs/
 test-logs/
 TASK-DONE*
-/.claude
+
+# Environment
+.env

@@ -7,8 +7,10 @@ import pytest
 
 from src.zip_scope import (
     ZipFileNotFoundError,
+    ZipFilenameAmbiguousError,
     ZipLayoutError,
     detect_layout,
+    extract_hash_from_filename,
     extract_script,
     file_exists,
     is_zip_scope,
@@ -315,3 +317,46 @@ class TestExtractScript:
     def test_nonexistent_archive_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             extract_script(str(tmp_path / "missing.zip"), "run.sh")
+
+
+# ---------------------------------------------------------------------------
+# extract_hash_from_filename
+# ---------------------------------------------------------------------------
+
+class TestExtractHashFromFilename:
+
+    def test_no_hex_runs_returns_none(self):
+        assert extract_hash_from_filename("nohex.txt") is None
+
+    def test_hex_runs_shorter_than_64_returns_none(self):
+        assert extract_hash_from_filename("abc123def.zip") is None
+
+    def test_single_64_char_run_mid_filename_returns_hash(self):
+        h = "a" * 64
+        assert extract_hash_from_filename(f"workflow-{h}.zip") == h
+
+    def test_single_64_char_run_is_full_basename_returns_hash(self):
+        h = "a" * 64
+        assert extract_hash_from_filename(h) == h
+
+    def test_run_longer_than_64_raises_ambiguous_error(self):
+        with pytest.raises(ZipFilenameAmbiguousError):
+            extract_hash_from_filename("a" * 65)
+
+    def test_two_64_char_runs_raises_ambiguous_error(self):
+        with pytest.raises(ZipFilenameAmbiguousError):
+            extract_hash_from_filename("a" * 64 + "-" + "b" * 64)
+
+    def test_uppercase_hex_normalized_to_lowercase(self):
+        h = "A" * 64
+        assert extract_hash_from_filename(h) == "a" * 64
+
+    def test_merging_prefix_creates_run_over_64_raises_ambiguous_error(self):
+        # 'a' + 'c' * 64 = 65 contiguous hex chars → ambiguous
+        with pytest.raises(ZipFilenameAmbiguousError):
+            extract_hash_from_filename("a" + "c" * 64 + ".zip")
+
+    def test_zip_extension_terminates_adjacent_hex_run(self):
+        # 64-char hex run immediately before '.zip'; z/i/p are not hex
+        h = "a" * 64
+        assert extract_hash_from_filename(h + ".zip") == h

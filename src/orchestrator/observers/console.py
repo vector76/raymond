@@ -202,6 +202,7 @@ class ConsoleObserver:
         try:
             # Extract spawned agent ID for fork transitions
             spawned_agent_id = event.metadata.get("spawned_agent_id")
+            result_payload = event.metadata.get("result_payload")
 
             # Skip result transitions to terminated state (handled by AgentTerminated)
             if event.transition_type == "result" and event.to_state is None:
@@ -211,7 +212,8 @@ class ConsoleObserver:
                 agent_id=event.agent_id,
                 target=event.to_state or "(terminated)",
                 transition_type=event.transition_type,
-                spawned_agent_id=spawned_agent_id
+                spawned_agent_id=spawned_agent_id,
+                result_payload=result_payload
             )
         except Exception as e:
             logger.warning(f"ConsoleObserver failed on transition_occurred: {e}")

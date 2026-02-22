@@ -370,7 +370,7 @@ class ConsoleReporter:
         
         self._print(f"  {self.TREE_END} Done (${cost:.4f}, total: ${total_cost:.4f})")
     
-    def transition(self, agent_id: str, target: str, transition_type: str, spawned_agent_id: Optional[str] = None) -> None:
+    def transition(self, agent_id: str, target: str, transition_type: str, spawned_agent_id: Optional[str] = None, result_payload: Optional[str] = None) -> None:
         """Display state transition.
         
         Args:

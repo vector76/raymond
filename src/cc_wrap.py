@@ -160,6 +160,10 @@ async def wrap_claude_code(
     # stdin=DEVNULL prevents the child from inheriting the terminal's stdin,
     # which would allow it to put the terminal in raw mode and disable SIGINT
     # generation from CTRL-C.
+    # start_new_session=True calls setsid() in the child, giving it a new
+    # session with no controlling terminal so Claude Code (Ink/Node.js TUI)
+    # cannot open /dev/tty and emit terminal control sequences (e.g. alternate
+    # screen buffer) that would silence Raymond's console output.
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.DEVNULL,
@@ -167,6 +171,7 @@ async def wrap_claude_code(
         stderr=asyncio.subprocess.PIPE,
         env=_build_claude_env(),
         cwd=cwd,
+        start_new_session=True,
     )
 
     results = []
@@ -327,6 +332,10 @@ async def wrap_claude_code_stream(
     # stdin=DEVNULL prevents the child from inheriting the terminal's stdin,
     # which would allow it to put the terminal in raw mode and disable SIGINT
     # generation from CTRL-C.
+    # start_new_session=True calls setsid() in the child, giving it a new
+    # session with no controlling terminal so Claude Code (Ink/Node.js TUI)
+    # cannot open /dev/tty and emit terminal control sequences (e.g. alternate
+    # screen buffer) that would silence Raymond's console output.
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.DEVNULL,
@@ -334,6 +343,7 @@ async def wrap_claude_code_stream(
         stderr=asyncio.subprocess.PIPE,
         env=_build_claude_env(),
         cwd=cwd,
+        start_new_session=True,
     )
 
     loop = asyncio.get_running_loop()

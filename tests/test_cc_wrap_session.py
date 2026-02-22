@@ -198,6 +198,28 @@ class TestWrapClaudeCodeSession:
             assert results[0]["type"] == "content"
 
 
+    @pytest.mark.asyncio
+    async def test_wrap_claude_code_uses_start_new_session(self):
+        """Test that wrap_claude_code passes start_new_session=True to create_subprocess_exec.
+
+        Claude Code is built on Node.js/Ink (a TUI framework) and may open /dev/tty
+        directly and emit terminal control sequences (e.g. alternate screen buffer)
+        that silence Raymond's console output. start_new_session=True calls setsid()
+        in the child, giving it a new session with no controlling terminal.
+        """
+        with patch('src.cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
+            mock_process = AsyncMock()
+            mock_process.stdout = MockStreamReader(b'{"type": "content", "text": "hi"}\n')
+            mock_process.wait = AsyncMock(return_value=0)
+            mock_process.stderr.read = AsyncMock(return_value=b'')
+            mock_subprocess.return_value = mock_process
+
+            await wrap_claude_code("test prompt")
+
+            call_kwargs = mock_subprocess.call_args[1]
+            assert call_kwargs.get("start_new_session") is True
+
+
 class TestWrapClaudeCodeStream:
     """Tests for wrap_claude_code_stream() chunk-based reading."""
 
@@ -223,6 +245,29 @@ class TestWrapClaudeCodeStream:
             assert len(results) == 1
             assert results[0]["type"] == "content"
             assert len(results[0]["text"]) == 70 * 1024
+
+    @pytest.mark.asyncio
+    async def test_wrap_claude_code_stream_uses_start_new_session(self):
+        """Test that wrap_claude_code_stream passes start_new_session=True to create_subprocess_exec.
+
+        Claude Code is built on Node.js/Ink (a TUI framework) and may open /dev/tty
+        directly and emit terminal control sequences (e.g. alternate screen buffer)
+        that silence Raymond's console output. start_new_session=True calls setsid()
+        in the child, giving it a new session with no controlling terminal.
+        """
+        with patch('src.cc_wrap.asyncio.create_subprocess_exec') as mock_subprocess:
+            mock_process = AsyncMock()
+            mock_process.stdout = MockStreamReader(b'{"type": "content", "text": "hi"}\n')
+            mock_process.wait = AsyncMock(return_value=0)
+            mock_process.stderr.read = AsyncMock(return_value=b'')
+            mock_subprocess.return_value = mock_process
+
+            results = []
+            async for obj in wrap_claude_code_stream("test prompt"):
+                results.append(obj)
+
+            call_kwargs = mock_subprocess.call_args[1]
+            assert call_kwargs.get("start_new_session") is True
 
     @pytest.mark.asyncio
     async def test_wrap_claude_code_stream_handles_chunked_reads(self):

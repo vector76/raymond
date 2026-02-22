@@ -11,6 +11,7 @@ Valid archive layouts:
 """
 
 import os
+import re
 import tempfile
 import zipfile
 from pathlib import Path
@@ -27,6 +28,10 @@ class ZipLayoutError(Exception):
 
 class ZipFileNotFoundError(Exception):
     """Raised when a requested file is not found within a zip archive."""
+
+
+class ZipFilenameAmbiguousError(Exception):
+    """Raised when a zip filename contains an ambiguous hash-like hex run."""
 
 
 def is_zip_scope(scope_dir: str) -> bool:
@@ -238,3 +243,41 @@ def extract_script(zip_path: str, filename: str) -> str:
         os.close(fd)
 
     return tmp_path
+
+
+def extract_hash_from_filename(basename: str) -> str | None:
+    """Extract a SHA256 hash from a zip filename, if unambiguously present.
+
+    Scans basename for maximal contiguous hex runs. A 64-character hex run
+    is interpreted as a SHA256 hash.
+
+    Args:
+        basename: The filename (without directory path) to inspect.
+
+    Returns:
+        The 64-character lowercase hex hash string if exactly one such run
+        exists, or None if no 64-character run is found.
+
+    Raises:
+        ZipFilenameAmbiguousError: If any hex run exceeds 64 characters, or
+            if more than one 64-character hex run is present.
+    """
+    lower = basename.lower()
+    runs = re.findall(r'[0-9a-f]+', lower)
+
+    if any(len(r) > 64 for r in runs):
+        raise ZipFilenameAmbiguousError(
+            f"Filename '{basename}' contains a hex run longer than 64 characters"
+        )
+
+    runs_64 = [r for r in runs if len(r) == 64]
+
+    if len(runs_64) > 1:
+        raise ZipFilenameAmbiguousError(
+            f"Filename '{basename}' contains multiple 64-character hex runs"
+        )
+
+    if len(runs_64) == 1:
+        return runs_64[0]
+
+    return None

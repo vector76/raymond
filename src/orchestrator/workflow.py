@@ -181,12 +181,16 @@ async def _step_agent(
             updated_agent["session_id"] = result.session_id
 
         # Emit TransitionOccurred event
+        if transition.tag == "result":
+            metadata = {"state_type": state_type, "result_payload": transition.payload}
+        else:
+            metadata = {"state_type": state_type}
         bus.emit(TransitionOccurred(
             agent_id=agent_id,
             from_state=from_state,
             to_state=updated_agent.get("current_state"),
             transition_type=transition.tag,
-            metadata={"state_type": state_type}
+            metadata=metadata
         ))
 
         return updated_agent

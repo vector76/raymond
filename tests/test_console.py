@@ -205,15 +205,17 @@ class TestConsoleReporter:
         captured = capsys.readouterr()
         assert "[main] CHECK.bat" in captured.out
 
-    def test_script_completed_displays_exit_code_and_time(self, capsys):
-        """Test script_completed displays exit code and execution time."""
+    def test_script_state_completed_displays_exit_code_time_and_cost(self, capsys):
+        """Test script_state_completed displays exit code, execution time, and costs."""
         reporter = ConsoleReporter(quiet=False)
-        reporter.script_completed("main", 0, 125.5)
+        reporter.script_state_completed("main", 0, 125.5, 0.0, 14.8081)
 
         captured = capsys.readouterr()
         assert "Done" in captured.out
         assert "exit 0" in captured.out
         assert "125ms" in captured.out or "126ms" in captured.out
+        assert "$0.0000" in captured.out
+        assert "total: $14.8081" in captured.out
 
     def test_script_state_completed_displays_all_values(self, capsys):
         """Test script_state_completed displays exit code, duration, and costs in one Done line."""
@@ -444,32 +446,32 @@ class TestConsoleReporter:
     def test_script_started_updates_tracking(self, capsys):
         """Test script_started updates state tracking like state_started."""
         reporter = ConsoleReporter(quiet=False)
-        
+
         # Script starts
         reporter.script_started("main", "CHECK.bat")
-        reporter.script_completed("main", 0, 100.0)
-        
+        reporter.script_state_completed("main", 0, 100.0, 0.0, 0.0)
+
         captured = capsys.readouterr()
         assert "[main] CHECK.bat" in captured.out
         assert "Done" in captured.out
 
-    def test_script_completed_checks_context(self, capsys):
-        """Test script_completed checks context and shows header if needed."""
+    def test_script_state_completed_checks_context(self, capsys):
+        """Test script_state_completed checks context and shows header if needed."""
         reporter = ConsoleReporter(quiet=False)
-        
+
         # Script starts
         reporter.script_started("main", "CHECK.bat")
-        
+
         # Another agent outputs
         reporter.state_started("worker1", "WORKER.md")
         reporter.progress_message("worker1", "Working...")
-        
+
         # Script completes - should show header
-        reporter.script_completed("main", 0, 100.0)
-        
+        reporter.script_state_completed("main", 0, 100.0, 0.0, 0.0)
+
         captured = capsys.readouterr()
         lines = captured.out.strip().split('\n')
-        
+
         # Should have script header multiple times (initial + before completion)
         script_headers = [line for line in lines if "[main] CHECK.bat" in line]
         assert len(script_headers) >= 2, f"Expected at least 2 script headers, got {len(script_headers)}"

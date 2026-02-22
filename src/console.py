@@ -514,21 +514,6 @@ class ConsoleReporter:
         if not self.quiet:
             self._print(f"  {self.TREE_BRANCH} Executing script...")
     
-    def script_completed(self, agent_id: str, exit_code: int, duration_ms: float) -> None:
-        """Display script execution completion.
-        
-        Args:
-            agent_id: Agent identifier
-            exit_code: Script exit code
-            duration_ms: Execution time in milliseconds
-        """
-        # Ensure context header is displayed if needed
-        self._ensure_context(agent_id)
-        
-        # Format duration (round to nearest integer)
-        duration_str = f"{int(round(duration_ms))}ms"
-        self._print(f"  {self.TREE_END} Done (exit {exit_code}, {duration_str})")
-
     def script_state_completed(self, agent_id: str, exit_code: int, duration_ms: float, cost: float, total_cost: float) -> None:
         """Display combined script and state completion as a single Done line.
 

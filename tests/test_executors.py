@@ -71,8 +71,8 @@ class MockReporter:
     def script_started(self, agent_id, state_name):
         self.calls.append(("script_started", agent_id, state_name))
 
-    def script_completed(self, agent_id, exit_code, time_ms):
-        self.calls.append(("script_completed", agent_id, exit_code, time_ms))
+    def script_state_completed(self, agent_id, exit_code, duration_ms, cost, total_cost):
+        self.calls.append(("script_state_completed", agent_id, exit_code, duration_ms, cost, total_cost))
 
     def tool_invocation(self, agent_id, tool_name, detail):
         self.calls.append(("tool_invocation", agent_id, tool_name, detail))

@@ -209,11 +209,23 @@ class TestConsoleReporter:
         """Test script_completed displays exit code and execution time."""
         reporter = ConsoleReporter(quiet=False)
         reporter.script_completed("main", 0, 125.5)
-        
+
         captured = capsys.readouterr()
         assert "Done" in captured.out
         assert "exit 0" in captured.out
         assert "125ms" in captured.out or "126ms" in captured.out
+
+    def test_script_state_completed_displays_all_values(self, capsys):
+        """Test script_state_completed displays exit code, duration, and costs in one Done line."""
+        reporter = ConsoleReporter(quiet=False)
+        reporter.script_state_completed("main", 0, 125.5, 0.0353, 14.8081)
+
+        captured = capsys.readouterr()
+        assert "Done" in captured.out
+        assert "exit 0" in captured.out
+        assert "125ms" in captured.out or "126ms" in captured.out
+        assert "$0.0353" in captured.out
+        assert "total: $14.8081" in captured.out
 
     def test_tool_error_tracks_last_tool(self, capsys):
         """Test tool_error uses last tool invocation for context."""

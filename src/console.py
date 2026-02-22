@@ -529,6 +529,20 @@ class ConsoleReporter:
         duration_str = f"{int(round(duration_ms))}ms"
         self._print(f"  {self.TREE_END} Done (exit {exit_code}, {duration_str})")
 
+    def script_state_completed(self, agent_id: str, exit_code: int, duration_ms: float, cost: float, total_cost: float) -> None:
+        """Display combined script and state completion as a single Done line.
+
+        Args:
+            agent_id: Agent identifier
+            exit_code: Script exit code
+            duration_ms: Execution time in milliseconds
+            cost: Cost for this specific invocation/state
+            total_cost: Workflow-wide accumulated total cost
+        """
+        self._ensure_context(agent_id)
+        duration_str = f"{int(round(duration_ms))}ms"
+        self._print(f"  {self.TREE_END} Done (exit {exit_code}, {duration_str}, ${cost:.4f}, total: ${total_cost:.4f})")
+
 
 # Module-level singleton instance
 _reporter: Optional[ConsoleReporter] = None

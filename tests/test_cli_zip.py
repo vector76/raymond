@@ -1,7 +1,9 @@
 """Tests for CLI zip input: start, resume validation, and status label."""
 
 import argparse
+import hashlib
 import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -324,3 +326,74 @@ class TestCmdStatusLabel:
         captured = capsys.readouterr()
         assert "Workflow scope:" in captured.out
         assert "Scope directory:" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Hash check integration
+# ---------------------------------------------------------------------------
+
+class TestCmdStartHashCheck:
+
+    def test_no_hash_in_filename_returns_zero(self, tmp_path):
+        """Zip with no hash in filename (default name) is accepted."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"})
+        state_dir = str(tmp_path / "state")
+        args = make_args(zip_path, state_dir)
+        assert cmd_start(args) == 0
+
+    def test_correct_hash_in_filename_returns_zero(self, tmp_path):
+        """Zip with correct SHA256 hash in filename is accepted."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"})
+        actual_hash = hashlib.sha256(Path(zip_path).read_bytes()).hexdigest()
+        new_path = Path(zip_path).rename(tmp_path / f"workflow-{actual_hash}.zip")
+        state_dir = str(tmp_path / "state")
+        args = make_args(str(new_path), state_dir)
+        assert cmd_start(args) == 0
+
+    def test_incorrect_hash_in_filename_returns_one(self, tmp_path, capsys):
+        """Zip with wrong hash in filename is rejected with error mentioning both hashes."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"})
+        actual_hash = hashlib.sha256(Path(zip_path).read_bytes()).hexdigest()
+        wrong_hash = "0" * 64
+        new_path = Path(zip_path).rename(tmp_path / f"workflow-{wrong_hash}.zip")
+        state_dir = str(tmp_path / "state")
+        args = make_args(str(new_path), state_dir)
+        result = cmd_start(args)
+        assert result == 1
+        captured = capsys.readouterr()
+        assert wrong_hash in captured.err
+        assert actual_hash in captured.err
+
+    def test_ambiguous_filename_run_over_64_returns_one(self, tmp_path):
+        """Zip with hex run > 64 chars in filename is rejected."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"},
+                            zip_name="workflow-" + "a" * 65 + ".zip")
+        state_dir = str(tmp_path / "state")
+        args = make_args(zip_path, state_dir)
+        assert cmd_start(args) == 1
+
+    def test_ambiguous_filename_two_64_char_runs_returns_one(self, tmp_path):
+        """Zip with two 64-char hex runs in filename is rejected."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"},
+                            zip_name="a" * 64 + "-" + "b" * 64 + ".zip")
+        state_dir = str(tmp_path / "state")
+        args = make_args(zip_path, state_dir)
+        assert cmd_start(args) == 1
+
+    def test_no_run_with_correct_hash_returns_zero(self, tmp_path):
+        """--no-run with correct hash: hash check runs at registration time, returns 0."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"})
+        actual_hash = hashlib.sha256(Path(zip_path).read_bytes()).hexdigest()
+        new_path = Path(zip_path).rename(tmp_path / f"workflow-{actual_hash}.zip")
+        state_dir = str(tmp_path / "state")
+        args = make_args(str(new_path), state_dir)  # make_args defaults no_run=True
+        assert cmd_start(args) == 0
+
+    def test_no_run_with_incorrect_hash_returns_one(self, tmp_path):
+        """--no-run with wrong hash: hash check runs at registration time, returns 1."""
+        zip_path = make_zip(tmp_path, {"1_START.md": "# Start"})
+        wrong_hash = "0" * 64
+        new_path = Path(zip_path).rename(tmp_path / f"workflow-{wrong_hash}.zip")
+        state_dir = str(tmp_path / "state")
+        args = make_args(str(new_path), state_dir)  # make_args defaults no_run=True
+        assert cmd_start(args) == 1

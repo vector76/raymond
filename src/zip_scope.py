@@ -10,6 +10,7 @@ Valid archive layouts:
   (prefix = "foldername/")
 """
 
+import hashlib
 import os
 import re
 import tempfile
@@ -32,6 +33,15 @@ class ZipFileNotFoundError(Exception):
 
 class ZipFilenameAmbiguousError(Exception):
     """Raised when a zip filename contains an ambiguous hash-like hex run."""
+
+
+class ZipHashMismatchError(Exception):
+    """Raised when a zip file's SHA256 does not match the hash in its filename."""
+
+    def __init__(self, expected: str, actual: str):
+        super().__init__(f"Hash mismatch: expected {expected}, got {actual}")
+        self.expected = expected
+        self.actual = actual
 
 
 def is_zip_scope(scope_dir: str) -> bool:
@@ -281,3 +291,30 @@ def extract_hash_from_filename(basename: str) -> str | None:
         return runs_64[0]
 
     return None
+
+
+def verify_zip_hash(zip_path: str) -> None:
+    """Verify that a zip file's SHA256 matches the hash embedded in its filename.
+
+    If no hash is present in the filename, returns immediately (no-op).
+    If the filename is ambiguous, ZipFilenameAmbiguousError propagates.
+
+    Args:
+        zip_path: Path to the zip archive.
+
+    Raises:
+        ZipFilenameAmbiguousError: If the filename contains an ambiguous hex run.
+        ZipHashMismatchError: If the file's SHA256 does not match the filename hash.
+    """
+    expected = extract_hash_from_filename(Path(zip_path).name)
+    if expected is None:
+        return
+
+    h = hashlib.sha256()
+    with open(zip_path, 'rb') as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    actual = h.hexdigest()
+
+    if actual != expected:
+        raise ZipHashMismatchError(expected=expected, actual=actual)

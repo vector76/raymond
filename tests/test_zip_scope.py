@@ -1,13 +1,16 @@
 """Tests for src/zip_scope.py — zip archive access module."""
 
+import hashlib
 import os
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from src.zip_scope import (
     ZipFileNotFoundError,
     ZipFilenameAmbiguousError,
+    ZipHashMismatchError,
     ZipLayoutError,
     detect_layout,
     extract_hash_from_filename,
@@ -16,6 +19,7 @@ from src.zip_scope import (
     is_zip_scope,
     list_files,
     read_text,
+    verify_zip_hash,
 )
 
 
@@ -360,3 +364,40 @@ class TestExtractHashFromFilename:
         # 64-char hex run immediately before '.zip'; z/i/p are not hex
         h = "a" * 64
         assert extract_hash_from_filename(h + ".zip") == h
+
+
+# ---------------------------------------------------------------------------
+# verify_zip_hash
+# ---------------------------------------------------------------------------
+
+class TestVerifyZipHash:
+
+    def test_no_hash_in_filename_returns_without_error(self, tmp_path):
+        zip_path = make_zip(tmp_path, {"1_START.md": b"start"})
+        verify_zip_hash(zip_path)  # should not raise
+
+    def test_correct_hash_in_filename_returns_without_error(self, tmp_path):
+        zip_path = make_zip(tmp_path, {"1_START.md": b"start"})
+        actual_hash = hashlib.sha256(Path(zip_path).read_bytes()).hexdigest()
+        new_path = Path(zip_path).rename(tmp_path / f"workflow-{actual_hash}.zip")
+        verify_zip_hash(str(new_path))  # should not raise
+
+    def test_incorrect_hash_in_filename_raises_mismatch_error(self, tmp_path):
+        zip_path = make_zip(tmp_path, {"1_START.md": b"start"})
+        actual_hash = hashlib.sha256(Path(zip_path).read_bytes()).hexdigest()
+        wrong_hash = "0" * 64
+        new_path = Path(zip_path).rename(tmp_path / f"workflow-{wrong_hash}.zip")
+        with pytest.raises(ZipHashMismatchError) as exc_info:
+            verify_zip_hash(str(new_path))
+        assert exc_info.value.expected == wrong_hash
+        assert exc_info.value.actual == actual_hash
+
+    def test_ambiguous_filename_run_over_64_raises_ambiguous_error(self, tmp_path):
+        path = str(tmp_path / ("workflow-" + "a" * 65 + ".zip"))
+        with pytest.raises(ZipFilenameAmbiguousError):
+            verify_zip_hash(path)
+
+    def test_ambiguous_filename_two_64_char_runs_raises_ambiguous_error(self, tmp_path):
+        path = str(tmp_path / ("a" * 64 + "-" + "b" * 64 + ".zip"))
+        with pytest.raises(ZipFilenameAmbiguousError):
+            verify_zip_hash(path)

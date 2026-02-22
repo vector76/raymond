@@ -53,6 +53,7 @@ class ConsoleObserver:
         """
         self.reporter = reporter
         self._bus = bus
+        self._script_buffer: dict = {}
 
         # Subscribe to events
         self._subscribe()
@@ -168,22 +169,31 @@ class ConsoleObserver:
     def _on_state_completed(self, event: StateCompleted) -> None:
         """Handle StateCompleted event."""
         try:
-            self.reporter.state_completed(
-                agent_id=event.agent_id,
-                cost=event.cost_usd,
-                total_cost=event.total_cost_usd
-            )
+            script_data = self._script_buffer.pop((event.agent_id, event.state_name), None)
+            if script_data is not None:
+                self.reporter.script_state_completed(
+                    agent_id=event.agent_id,
+                    exit_code=script_data["exit_code"],
+                    duration_ms=script_data["duration_ms"],
+                    cost=event.cost_usd,
+                    total_cost=event.total_cost_usd
+                )
+            else:
+                self.reporter.state_completed(
+                    agent_id=event.agent_id,
+                    cost=event.cost_usd,
+                    total_cost=event.total_cost_usd
+                )
         except Exception as e:
             logger.warning(f"ConsoleObserver failed on state_completed: {e}")
 
     def _on_script_output(self, event: ScriptOutput) -> None:
         """Handle ScriptOutput event."""
         try:
-            self.reporter.script_completed(
-                agent_id=event.agent_id,
-                exit_code=event.exit_code,
-                duration_ms=event.execution_time_ms
-            )
+            self._script_buffer[(event.agent_id, event.state_name)] = {
+                "exit_code": event.exit_code,
+                "duration_ms": event.execution_time_ms,
+            }
         except Exception as e:
             logger.warning(f"ConsoleObserver failed on script_output: {e}")
 

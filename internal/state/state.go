@@ -62,6 +62,11 @@ type AgentState struct {
 	PendingResult *string      `json:"pending_result,omitempty"` // absent from JSON when nil
 	Cwd           string       `json:"cwd,omitempty"`            // per-agent working directory; empty = inherit
 
+	// Orchestrator-managed lifecycle fields.
+	Status     string `json:"status,omitempty"`      // "paused", "failed", or "" (active)
+	RetryCount int    `json:"retry_count,omitempty"` // transient error retry counter
+	Error      string `json:"error,omitempty"`       // last error message when paused/failed
+
 	// Transient execution fields — not persisted to JSON.
 	// Set by the orchestrator / transition handlers; consumed by the next executor step.
 	ForkSessionID  *string           `json:"-"` // session to fork from (call transitions)

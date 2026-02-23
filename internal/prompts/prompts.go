@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/vector76/raymond/internal/platform"
@@ -82,9 +83,21 @@ func LoadPrompt(scopeDir, filename string) (string, *policy.Policy, error) {
 // corresponding value from variables. Values that are not strings are
 // converted with fmt.Sprintf("%v", value). Placeholders with no matching key
 // are left unchanged.
+//
+// Keys are sorted longest-first before substitution so that longer key names
+// (e.g. "firstname") are replaced before shorter ones that are substrings of
+// them (e.g. "name"), giving deterministic results regardless of map iteration
+// order.
 func RenderPrompt(template string, variables map[string]any) string {
+	keys := make([]string, 0, len(variables))
+	for k := range variables {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+
 	result := template
-	for key, value := range variables {
+	for _, key := range keys {
+		value := variables[key]
 		placeholder := "{{" + key + "}}"
 		var str string
 		if s, ok := value.(string); ok {

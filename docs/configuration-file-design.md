@@ -14,15 +14,16 @@ This document explores design alternatives for a per-project configuration file 
 
 ## Configuration Options to Support
 
-Based on `src/cli.py`, the following options would benefit from configuration:
+Based on `internal/config/config.go`, the following options are supported in config files:
 
 - `budget` (float, default: 10.0)
-- `dangerously_skip_permissions` (bool, default: False)
-- `effort` (str: "low"|"medium"|"high", default: None)
-- `model` (str: "opus"|"sonnet"|"haiku", default: None)
+- `dangerously_skip_permissions` (bool, default: false)
+- `effort` (str: "low"|"medium"|"high", default: none)
+- `model` (str: "opus"|"sonnet"|"haiku", default: none)
 - `timeout` (float, default: 600, 0=none)
-- `no_debug` (bool, default: False) - Matches CLI `--no-debug` semantics (default: false means debug mode is enabled)
-- `verbose` (bool, default: False)
+- `no_debug` (bool, default: false) - Matches CLI `--no-debug` semantics (default: false means debug mode is enabled)
+- `no_wait` (bool, default: false) - Do not auto-wait when usage limit is reached; exit immediately instead
+- `verbose` (bool, default: false)
 
 **Note on `state_dir`**: The `--state-dir` CLI option is not included in the config file. With project-based `.raymond` directory location, all workflows in a project naturally use the same state directory (`.raymond/state`). Since workflows have unique IDs, they can coexist in the same directory. The CLI `--state-dir` option remains available primarily for **testing** (to use temporary directories for test isolation), but for normal end-user operation, the default project-based location is sufficient and doesn't need to be configured.
 
@@ -33,14 +34,10 @@ Based on `src/cli.py`, the following options would benefit from configuration:
 **Decision**: TOML format located in `.raymond/config.toml`
 
 **Rationale:**
-- Already using TOML for `pyproject.toml` (familiar format)
 - Human-readable, supports comments (using `#`)
 - Good type support (strings, numbers, booleans, arrays)
-- Standard library support via `tomllib` (Python 3.11+)
-- Common in Python ecosystem (pyproject.toml, Poetry, etc.)
+- Standard library support in Go via `github.com/BurntSushi/toml`
 - Natural location alongside other `.raymond` directory contents (state, debug, etc.)
-
-**Python Version Requirement**: Python 3.11 or greater is required (uses `tomllib` from standard library)
 
 **Example:**
 ```toml
@@ -103,7 +100,7 @@ The `.raymond` directory location follows the same search policy as the config f
 - If `.raymond` directory doesn't exist yet, it will be created at the project root when needed (for state files, debug files, or config generation)
 - For normal operation, if `.raymond` directory doesn't exist, defaults are used (no config file found)
 
-**Implementation Note:** This behavior is implemented in `src/config.py` and `src/state.py`.
+**Implementation Note:** This behavior is implemented in `internal/config/config.go` and `internal/state/state.go`.
 
 **⚠️ Breaking Change Note:**
 This change to `.raymond` directory location is a **breaking change** for existing workflows:
@@ -404,10 +401,10 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
 ## Implementation Status
 
 **Implemented in:**
-- `src/config.py` - Configuration loading, validation, and merging
-- `src/state.py` - Updated to use project-based `.raymond` directory location
-- `src/cli.py` - `--init-config` command and config integration
-- `tests/test_config.py` - Comprehensive test coverage
+- `internal/config/config.go` - Configuration loading, validation, and merging
+- `internal/state/state.go` - Updated to use project-based `.raymond` directory location
+- `internal/cli/cli.go` - `--init-config` command and config integration
+- `internal/config/config_test.go` - Comprehensive test coverage
 
 **Migration Notes:**
 - Existing workflows with CWD-based `.raymond` directories will not be found in the new project-based location

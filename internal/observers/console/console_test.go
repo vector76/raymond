@@ -146,9 +146,9 @@ func TestConsoleStateCompletedScript(t *testing.T) {
 	obs := newObs(b, &buf, false)
 	defer obs.Close()
 
-	b.Emit(events.StateStarted{AgentID: "main", StateName: "CHECK.sh", StateType: "script"})
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "CHECK.sh", StateType: "script", Timestamp: time.Now()})
 	b.Emit(events.ScriptOutput{AgentID: "main", ExitCode: 0, ExecutionTimeMS: 125})
-	b.Emit(events.StateCompleted{AgentID: "main", DurationMS: 125})
+	b.Emit(events.StateCompleted{AgentID: "main", StateName: "CHECK.sh", DurationMS: 125, Timestamp: time.Now()})
 
 	out := buf.String()
 	assert.Contains(t, out, "exit 0")
@@ -162,9 +162,9 @@ func TestConsoleStateCompletedScriptNonZeroExit(t *testing.T) {
 	obs := newObs(b, &buf, false)
 	defer obs.Close()
 
-	b.Emit(events.StateStarted{AgentID: "main", StateName: "FAIL.sh", StateType: "script"})
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "FAIL.sh", StateType: "script", Timestamp: time.Now()})
 	b.Emit(events.ScriptOutput{AgentID: "main", ExitCode: 1, ExecutionTimeMS: 50})
-	b.Emit(events.StateCompleted{AgentID: "main", DurationMS: 50})
+	b.Emit(events.StateCompleted{AgentID: "main", StateName: "FAIL.sh", DurationMS: 50, Timestamp: time.Now()})
 
 	assert.Contains(t, buf.String(), "exit 1")
 }

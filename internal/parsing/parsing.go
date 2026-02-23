@@ -15,7 +15,8 @@ import (
 var openTagRe = regexp.MustCompile(`<(goto|reset|function|call|fork|result)([^>]*)>`)
 
 // attrRe matches key="value" or key='value' attribute pairs.
-var attrRe = regexp.MustCompile(`(\w+)=["']([^"']*)["']`)
+// Two alternatives enforce matching quote characters so key="val' is rejected.
+var attrRe = regexp.MustCompile(`(\w+)=(?:"([^"]*)"|'([^']*)')`)
 
 // Transition represents a single transition tag parsed from agent output.
 type Transition struct {
@@ -78,10 +79,18 @@ func ParseTransitions(output string) ([]Transition, error) {
 }
 
 // parseAttributes parses HTML-style key="value" or key='value' pairs.
+// The regex uses two alternatives to enforce matching quotes:
+// group 2 captures the value for double-quoted attributes,
+// group 3 captures the value for single-quoted attributes.
 func parseAttributes(attrsStr string) map[string]string {
 	attrs := make(map[string]string)
 	for _, m := range attrRe.FindAllStringSubmatch(attrsStr, -1) {
-		attrs[m[1]] = m[2]
+		// m[2] is non-empty for double-quoted values; m[3] for single-quoted.
+		value := m[2]
+		if value == "" && m[3] != "" {
+			value = m[3]
+		}
+		attrs[m[1]] = value
 	}
 	return attrs
 }

@@ -1,5 +1,7 @@
 # Console Output Design
 
+> **Document status**: This document is a design history record. The "Current Output Format" section below describes the original Python implementation's output (now superseded). The "Proposed Output Format" section describes the format implemented in the current Go implementation (`internal/observers/console/`).
+
 This document describes the console output format for the Raymond orchestrator, designed to provide real-time visibility into workflow execution.
 
 ## Design Goals

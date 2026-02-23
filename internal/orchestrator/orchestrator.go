@@ -104,6 +104,10 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		resetPausedAgents(ws)
 	}
 
+	// Initialise transient map that is never persisted (json:"-") but must be
+	// writable from the first HandleResult call.
+	ws.AgentTerminationResults = make(map[string]string)
+
 	// Create debug directory if debug is enabled.
 	debugDir := ""
 	if opts.Debug {

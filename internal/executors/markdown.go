@@ -104,7 +104,7 @@ func (e *MarkdownExecutor) Execute(
 	var transition *parsing.Transition
 	newSessionID := sessionID
 	reminderAttempt := 0
-	var invocationCost float64
+	var stateTotalCost float64
 	startTime := time.Now()
 
 	for transition == nil {
@@ -222,8 +222,9 @@ func (e *MarkdownExecutor) Execute(
 		}
 
 		// Extract and accumulate cost.
-		invocationCost = ExtractCostFromResults(results)
+		invocationCost := ExtractCostFromResults(results)
 		if invocationCost > 0 {
+			stateTotalCost += invocationCost
 			wfState.TotalCostUSD += invocationCost
 		}
 
@@ -270,7 +271,7 @@ func (e *MarkdownExecutor) Execute(
 	execCtx.Bus.Emit(events.StateCompleted{
 		AgentID:      agentID,
 		StateName:    currentState,
-		CostUSD:      invocationCost,
+		CostUSD:      stateTotalCost,
 		TotalCostUSD: wfState.TotalCostUSD,
 		SessionID:    sessionIDStr(newSessionID),
 		DurationMS:   durationMS,
@@ -280,7 +281,7 @@ func (e *MarkdownExecutor) Execute(
 	return ExecutionResult{
 		Transition: *transition,
 		SessionID:  newSessionID,
-		CostUSD:    invocationCost,
+		CostUSD:    stateTotalCost,
 	}, nil
 }
 
@@ -476,18 +477,23 @@ func (e *MarkdownExecutor) processStreamForConsole(obj map[string]any, agentID s
 	}
 }
 
-// appendJSONL appends obj as a JSON line to path, silently ignoring errors.
+// appendJSONL appends obj as a JSON line to path.
+// I/O errors are written to stderr so that debug output failures are visible.
 func (e *MarkdownExecutor) appendJSONL(path string, obj map[string]any) {
 	data, err := json.Marshal(obj)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "markdown executor: debug marshal error for %s: %v\n", path, err)
 		return
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "markdown executor: debug write error for %s: %v\n", path, err)
 		return
 	}
 	defer f.Close()
-	_, _ = f.Write(append(data, '\n'))
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		fmt.Fprintf(os.Stderr, "markdown executor: debug write error for %s: %v\n", path, err)
+	}
 }
 
 // extractOutputText extracts the Claude text output from stream results.

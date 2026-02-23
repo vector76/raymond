@@ -528,6 +528,8 @@ raymond workflow.md --dangerously-skip-permissions  # No permission prompts
 raymond workflow.md --input "data"           # Initial {{result}} value
 raymond workflow.md --no-debug               # Disable debug logging
 raymond workflow.md --verbose                # Verbose output
+raymond workflow.md --quiet                  # Suppress progress/tool output lines
+raymond workflow.md --no-wait               # Do not auto-wait when limit is reached
 ```
 
 ### Config File

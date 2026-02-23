@@ -1182,6 +1182,153 @@ func TestExtractCostFromResults_IntValue(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Reminder loop detailed tests
+// --------------------------------------------------------------------------
+
+// TestMarkdownExecutor_ReminderEmitsIsReminderFlag verifies that on retry
+// invocations the ClaudeInvocationStarted event carries IsReminder=true and
+// the correct ReminderAttempt counter.
+func TestMarkdownExecutor_ReminderEmitsIsReminderFlag(t *testing.T) {
+	_, wfState := makeWorkflowWithPolicy(t)
+
+	b := newBus()
+	invocations, cancel := collectEvents[events.ClaudeInvocationStarted](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	callCount := 0
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		callCount++
+		if callCount == 1 {
+			// First attempt: no transition
+			return makeMockStream([]map[string]any{
+				{"type": "content", "text": "No transition here"},
+				{"total_cost_usd": 0.01},
+			})
+		}
+		// Second attempt: valid transition
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.02},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*invocations) != 2 {
+		t.Fatalf("expected 2 ClaudeInvocationStarted events, got %d", len(*invocations))
+	}
+
+	first := (*invocations)[0]
+	if first.IsReminder {
+		t.Error("first invocation should not have IsReminder=true")
+	}
+	if first.ReminderAttempt != 0 {
+		t.Errorf("first ReminderAttempt = %d, want 0", first.ReminderAttempt)
+	}
+
+	second := (*invocations)[1]
+	if !second.IsReminder {
+		t.Error("second invocation should have IsReminder=true")
+	}
+	if second.ReminderAttempt != 1 {
+		t.Errorf("second ReminderAttempt = %d, want 1", second.ReminderAttempt)
+	}
+}
+
+// TestMarkdownExecutor_CostAccumulatesAcrossReminders verifies that the
+// StateCompleted.CostUSD reflects the sum of all reminder invocation costs,
+// not just the last one.
+func TestMarkdownExecutor_CostAccumulatesAcrossReminders(t *testing.T) {
+	_, wfState := makeWorkflowWithPolicy(t)
+
+	b := newBus()
+	completed, cancel := collectEvents[events.StateCompleted](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	callCount := 0
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		callCount++
+		if callCount == 1 {
+			return makeMockStream([]map[string]any{
+				{"type": "content", "text": "No transition"},
+				{"total_cost_usd": 0.10}, // first attempt cost
+			})
+		}
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.20}, // second attempt cost
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// CostUSD in result should be the sum of both invocations.
+	if result.CostUSD < 0.29 || result.CostUSD > 0.31 {
+		t.Errorf("result.CostUSD = %v, want ~0.30 (sum of both invocations)", result.CostUSD)
+	}
+
+	// StateCompleted event should also report the total state cost.
+	if len(*completed) != 1 {
+		t.Fatalf("expected 1 StateCompleted event, got %d", len(*completed))
+	}
+	ev := (*completed)[0]
+	if ev.CostUSD < 0.29 || ev.CostUSD > 0.31 {
+		t.Errorf("StateCompleted.CostUSD = %v, want ~0.30 (sum of both invocations)", ev.CostUSD)
+	}
+
+	// WorkflowState total should also be updated.
+	if wfState.TotalCostUSD < 0.29 || wfState.TotalCostUSD > 0.31 {
+		t.Errorf("TotalCostUSD = %v, want ~0.30", wfState.TotalCostUSD)
+	}
+}
+
+// TestMarkdownExecutor_ReminderSuccessOnThirdAttempt verifies the executor
+// succeeds when the transition is found on the third (final allowed) attempt.
+func TestMarkdownExecutor_ReminderSuccessOnThirdAttempt(t *testing.T) {
+	_, wfState := makeWorkflowWithPolicy(t)
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	callCount := 0
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		callCount++
+		if callCount < 3 {
+			return makeMockStream([]map[string]any{
+				{"type": "content", "text": "No transition"},
+				{"total_cost_usd": 0.01},
+			})
+		}
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<result>done</result>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error on attempt 3: %v", err)
+	}
+	if result.Transition.Tag != "result" {
+		t.Errorf("transition tag = %q, want result", result.Transition.Tag)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 invocations, got %d", callCount)
+	}
+}
+
+// --------------------------------------------------------------------------
 // asError is errors.As without the import (keeps test file self-contained).
 // --------------------------------------------------------------------------
 

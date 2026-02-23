@@ -64,7 +64,7 @@ func parseResetWaitSeconds(msg string, now time.Time, bufferMinutes int) (float6
 	}
 
 	target := reset.Add(time.Duration(bufferMinutes) * time.Minute)
-	secs := time.Until(target).Seconds()
+	secs := target.Sub(now).Seconds()
 	if secs < 0 {
 		secs = 0
 	}

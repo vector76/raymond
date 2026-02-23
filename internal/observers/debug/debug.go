@@ -57,7 +57,10 @@ func (o *DebugObserver) onWorkflowStarted(e events.WorkflowStarted) {
 	if e.DebugDir == "" {
 		return
 	}
-	_ = os.MkdirAll(e.DebugDir, 0o700)
+	if err := os.MkdirAll(e.DebugDir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "debug observer: cannot create debug dir %s: %v\n", e.DebugDir, err)
+		return
+	}
 	o.mu.Lock()
 	o.debugDir = e.DebugDir
 	o.mu.Unlock()

@@ -223,7 +223,7 @@ func ValidateConfig(config map[string]any, configFile string) (map[string]any, e
 		}
 		if s != "opus" && s != "sonnet" && s != "haiku" {
 			return nil, &ConfigError{msg: fmt.Sprintf(
-				"Invalid value for 'model' in %s: must be one of 'opus', 'sonnet', 'haiku', got %q",
+				"Invalid value for 'model' in %s: must be one of 'opus', 'sonnet', 'haiku' (lowercase), got %q",
 				configFile, s,
 			)}
 		}
@@ -239,7 +239,7 @@ func ValidateConfig(config map[string]any, configFile string) (map[string]any, e
 		}
 		if s != "low" && s != "medium" && s != "high" {
 			return nil, &ConfigError{msg: fmt.Sprintf(
-				"Invalid value for 'effort' in %s: must be one of 'low', 'medium', 'high', got %q",
+				"Invalid value for 'effort' in %s: must be one of 'low', 'medium', 'high' (lowercase), got %q",
 				configFile, s,
 			)}
 		}

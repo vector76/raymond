@@ -242,10 +242,11 @@ specified directory instead of the orchestrator's directory. See
 
 ### Async Execution
 
-Script execution must be non-blocking. The orchestrator uses async subprocess
-APIs (`asyncio.create_subprocess_exec()`) to run scripts without blocking the
-event loop. This allows multiple agents to make progress concurrently, even if
-one agent is running a long script.
+Script execution is synchronous within each agent step. The orchestrator runs
+scripts via `os/exec.Cmd` with context cancellation support (see
+`internal/platform/`). The sequential orchestration loop steps through agents
+one at a time, so script execution blocks the current agent step but does not
+block other agents.
 
 ### Cost Tracking
 

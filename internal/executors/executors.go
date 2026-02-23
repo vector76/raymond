@@ -7,6 +7,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/parsing"
@@ -27,19 +28,23 @@ type ExecutionContext struct {
 	Bus                        *bus.Bus
 	WorkflowID                 string
 	ScopeDir                   string
-	DebugDir                   string // empty string = debug disabled
-	StateDir                   string // empty string = use default
-	DefaultModel               string // empty = no override; policy takes precedence
-	DefaultEffort              string // empty = no override
+	DebugDir                   string  // empty string = debug disabled
+	StateDir                   string  // empty string = use default
+	DefaultModel               string  // empty = no override; policy takes precedence
+	DefaultEffort              string  // empty = no override
 	Timeout                    float64 // ≤ 0 = no timeout
 	DangerouslySkipPermissions bool
-	StepCounters               map[string]int // per-agent step counter for debug filenames
-	Reporter                   any            // *ConsoleReporter or nil
+
+	stepMu       sync.Mutex
+	StepCounters map[string]int // per-agent step counter for debug filenames; guarded by stepMu
 }
 
 // GetNextStepNumber increments and returns the step counter for agentID.
 // Step numbers are 1-indexed and tracked separately per agent.
+// Safe for concurrent calls.
 func (c *ExecutionContext) GetNextStepNumber(agentID string) int {
+	c.stepMu.Lock()
+	defer c.stepMu.Unlock()
 	if c.StepCounters == nil {
 		c.StepCounters = make(map[string]int)
 	}
@@ -52,6 +57,12 @@ func (c *ExecutionContext) GetNextStepNumber(agentID string) int {
 // Execute runs a single state, emits the appropriate events, and returns the
 // resolved transition and cost. The caller (orchestrator) is responsible for
 // applying the transition and persisting updated state.
+//
+// SessionID contract: ExecutionResult.SessionID uses nil to mean "no change"
+// (preserve the agent's existing session ID). A non-nil pointer — even one
+// pointing to an empty string — replaces the agent's session ID. Script
+// executors always return nil because scripts do not own or modify sessions;
+// markdown executors return the new session ID obtained from Claude.
 type StateExecutor interface {
 	Execute(
 		ctx context.Context,
@@ -85,15 +96,9 @@ func GetExecutor(filename string) StateExecutor {
 
 // ExtractStateName strips the recognized state file extension (.md, .sh, .bat)
 // from filename, case-insensitively. If no recognized extension is present the
-// filename is returned unchanged.
+// filename is returned unchanged. Delegates to parsing.ExtractStateName.
 func ExtractStateName(filename string) string {
-	lower := strings.ToLower(filename)
-	for _, ext := range []string{".md", ".sh", ".bat"} {
-		if strings.HasSuffix(lower, ext) {
-			return filename[:len(filename)-len(ext)]
-		}
-	}
-	return filename
+	return parsing.ExtractStateName(filename)
 }
 
 // ResolveTransitionTargets resolves abstract state names in t to concrete

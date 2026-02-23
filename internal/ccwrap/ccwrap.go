@@ -278,6 +278,13 @@ func runStream(
 			return ctx.Err()
 
 		case <-idleExpired:
+			// Prefer context cancellation over idle timeout when both fire
+			// simultaneously (e.g. total timeout deadline expired at the same
+			// moment the idle timer fired).
+			if ctx.Err() != nil {
+				killAndDrain()
+				return ctx.Err()
+			}
 			killAndDrain()
 			return &ClaudeCodeTimeoutError{Timeout: idleTimeout, Idle: true}
 

@@ -115,9 +115,6 @@ func TestExecutionContext_Creation(t *testing.T) {
 	if ctx.StepCounters != nil {
 		t.Error("StepCounters should default to nil")
 	}
-	if ctx.Reporter != nil {
-		t.Error("Reporter should default to nil")
-	}
 }
 
 func TestExecutionContext_WithAllFields(t *testing.T) {
@@ -1125,6 +1122,62 @@ func TestStateStarted_HasTimestamp(t *testing.T) {
 	ts := (*started)[0].Timestamp
 	if ts.Before(before) || ts.After(after) {
 		t.Errorf("timestamp %v not in [%v, %v]", ts, before, after)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ExtractCostFromResults edge cases
+// --------------------------------------------------------------------------
+
+func TestExtractCostFromResults_Empty(t *testing.T) {
+	got := executors.ExtractCostFromResults(nil)
+	if got != 0.0 {
+		t.Errorf("empty results: got %v, want 0.0", got)
+	}
+	got = executors.ExtractCostFromResults([]map[string]any{})
+	if got != 0.0 {
+		t.Errorf("empty slice: got %v, want 0.0", got)
+	}
+}
+
+func TestExtractCostFromResults_MissingKey(t *testing.T) {
+	results := []map[string]any{
+		{"type": "assistant", "message": "hello"},
+	}
+	got := executors.ExtractCostFromResults(results)
+	if got != 0.0 {
+		t.Errorf("missing key: got %v, want 0.0", got)
+	}
+}
+
+func TestExtractCostFromResults_NonNumericValue(t *testing.T) {
+	results := []map[string]any{
+		{"total_cost_usd": "not-a-number"},
+	}
+	got := executors.ExtractCostFromResults(results)
+	if got != 0.0 {
+		t.Errorf("non-numeric value: got %v, want 0.0", got)
+	}
+}
+
+func TestExtractCostFromResults_UsesLastEntry(t *testing.T) {
+	results := []map[string]any{
+		{"total_cost_usd": 0.01},
+		{"total_cost_usd": 0.05},
+	}
+	got := executors.ExtractCostFromResults(results)
+	if got != 0.05 {
+		t.Errorf("should use last entry: got %v, want 0.05", got)
+	}
+}
+
+func TestExtractCostFromResults_IntValue(t *testing.T) {
+	results := []map[string]any{
+		{"total_cost_usd": int(3)},
+	}
+	got := executors.ExtractCostFromResults(results)
+	if got != 3.0 {
+		t.Errorf("int value: got %v, want 3.0", got)
 	}
 }
 

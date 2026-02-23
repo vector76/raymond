@@ -33,9 +33,12 @@ declared within the prompts themselves.
 ## Quick start
 
 ```bash
-# Install (requires Python 3.11+)
-pip install -e .
-pip install -r requirements.txt
+# Build (requires Go 1.21+)
+go build -o raymond ./cmd/raymond
+go build -o ray ./cmd/ray
+
+# Or install to GOPATH/bin
+go install ./cmd/raymond ./cmd/ray
 
 # Run a workflow
 raymond workflows/test_cases/CLASSIFY.md

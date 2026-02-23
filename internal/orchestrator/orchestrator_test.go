@@ -35,7 +35,7 @@ type mockExec struct {
 func (m *mockExec) Execute(
 	_ context.Context,
 	_ *wfstate.AgentState,
-	_ *wfstate.WorkflowState,
+	wfState *wfstate.WorkflowState,
 	_ *executors.ExecutionContext,
 ) (executors.ExecutionResult, error) {
 	m.mu.Lock()
@@ -46,7 +46,13 @@ func (m *mockExec) Execute(
 		return executors.ExecutionResult{}, m.errs[i]
 	}
 	if i < len(m.results) {
-		return m.results[i], nil
+		res := m.results[i]
+		// Mirror real executor behaviour: accumulate cost directly into
+		// wfState so that the orchestrator does not need to do it again.
+		if res.CostUSD > 0 {
+			wfState.TotalCostUSD += res.CostUSD
+		}
+		return res, nil
 	}
 	return executors.ExecutionResult{}, errors.New("mock: no more results configured")
 }
@@ -315,6 +321,51 @@ func TestSessionIDAppliedToAgentAfterStep(t *testing.T) {
 	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
 }
 
+func TestSessionIDPreservedThroughScriptStep(t *testing.T) {
+	// A nil SessionID in ExecutionResult means "no change" (script executor
+	// contract). Verify that the agent's existing session ID is preserved when
+	// a step returns nil SessionID.
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	initialSID := "original-session"
+
+	// Prime the workflow with an initial session ID by setting it in state.
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err)
+	ws.Agents[0].SessionID = &initialSID
+	require.NoError(t, wfstate.WriteState(wfID, ws, dir))
+
+	// Script step: returns nil SessionID (should preserve existing).
+	mock := newMock(
+		executors.ExecutionResult{
+			Transition: parsing.Transition{Tag: "goto", Target: "NEXT.md", Attributes: map[string]string{}},
+			SessionID:  nil, // nil = no change
+		},
+		resultExecResult(""),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	// Capture state after the first transition to verify session ID preserved.
+	var capturedSID *string
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.TransitionOccurred) {
+			if capturedSID != nil {
+				return
+			}
+			ws2, rerr := wfstate.ReadState(wfID, dir)
+			if rerr == nil && len(ws2.Agents) > 0 {
+				capturedSID = ws2.Agents[0].SessionID
+			}
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.NotNil(t, capturedSID, "session ID should be preserved after script step")
+	assert.Equal(t, initialSID, *capturedSID)
+}
+
 func TestStatePersistenceAfterEachStep(t *testing.T) {
 	// After a limit error the agent is paused and state must be persisted to disk
 	// so the workflow can be resumed. This tests that WriteState is called.
@@ -337,6 +388,65 @@ func TestStatePersistenceAfterEachStep(t *testing.T) {
 	require.Len(t, ws.Agents, 1)
 	assert.Equal(t, "NEXT.md", ws.Agents[0].CurrentState)
 	assert.Equal(t, "paused", ws.Agents[0].Status)
+}
+
+func TestStatePersistenceAfterNormalGoto(t *testing.T) {
+	// Verifies that WriteState is called after a successful (non-error) goto
+	// transition, so crash recovery can resume from the intermediate state.
+	//
+	// Strategy: use a mock executor that returns a goto on step 1, then
+	// cancels the context on step 2. The context cancellation surfaces as an
+	// error from the orchestrator; but the state file should already reflect
+	// the goto from step 1 (current_state = NEXT.md).
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cancellingMock := &cancelOnSecondCallExec{
+		first:  gotoResult("NEXT.md"),
+		cancel: cancel,
+	}
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return cancellingMock })
+	defer orchestrator.ResetExecutorFactory()
+
+	// Expect context.Canceled since the second step will cancel the context.
+	runErr := orchestrator.RunAllAgents(ctx, wfID, defaultOpts(dir))
+	require.ErrorIs(t, runErr, context.Canceled)
+
+	// After the first goto, state must have been written with current_state=NEXT.md.
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err, "state file should persist after cancellation")
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "NEXT.md", ws.Agents[0].CurrentState,
+		"state should be written at NEXT.md after first goto")
+}
+
+// cancelOnSecondCallExec returns a goto on the first call, then cancels the
+// context and returns context.Canceled on the second call.
+type cancelOnSecondCallExec struct {
+	mu     sync.Mutex
+	calls  int
+	first  executors.ExecutionResult
+	cancel context.CancelFunc
+}
+
+func (e *cancelOnSecondCallExec) Execute(
+	ctx context.Context,
+	_ *wfstate.AgentState,
+	_ *wfstate.WorkflowState,
+	_ *executors.ExecutionContext,
+) (executors.ExecutionResult, error) {
+	e.mu.Lock()
+	n := e.calls
+	e.calls++
+	e.mu.Unlock()
+	if n == 0 {
+		return e.first, nil
+	}
+	e.cancel()
+	<-ctx.Done()
+	return executors.ExecutionResult{}, ctx.Err()
 }
 
 // ----------------------------------------------------------------------------

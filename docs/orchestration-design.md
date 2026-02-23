@@ -5,7 +5,7 @@
 | Term | Meaning |
 |------|---------|
 | **Prompt folder** | A directory (or zip archive) of state files (`.md` prompts or `.sh`/`.bat` scripts) that reference each other via transition tags. Represents the static definition of a workflow. |
-| **Orchestrator** | The running Python program. Single-threaded but async, enabling concurrent Claude Code executions. Each orchestrator instance manages exactly one state file. |
+| **Orchestrator** | The running Go program (`raymond` binary). Manages agents in a sequential round-robin loop. Each orchestrator instance manages exactly one state file. |
 | **State file** | JSON file persisting all agent state for one orchestrator run. One orchestrator = one state file. It is an error for multiple orchestrators to access the same state file. |
 | **Agent** | A logical thread of execution within the orchestrator. Has a current state (prompt filename) and a return stack. Created initially or via `<fork>`. Terminates when it emits `<result>` with an empty stack. |
 | **Workflow** | An abstract chain or DAG of steps designed by a prompt engineer. May refer to the static definition (prompt folder) or the conceptual flow. Context clarifies meaning. |
@@ -35,7 +35,7 @@ Limitations:
 Raymond treats workflows as a state machine where:
 - Each state is a markdown prompt file (`.md`) or a shell script (`.sh`/`.bat`)
 - Transitions are declared within the prompts/scripts themselves
-- The Python orchestrator parses transition tags and routes accordingly
+- The orchestrator parses transition tags and routes accordingly
 
 **Markdown vs. Script states:** Markdown states are interpreted by Claude Code
 (LLM execution), while script states execute directly (no LLM). Both emit the
@@ -343,49 +343,26 @@ If the orchestrator crashes at any point:
 - Step 5: State file has old state, but session ID allows recovery
 - Step 6: Clean state, restart continues normally
 
-The main risk is if the Python process dies while Claude Code is mid-execution
+The main risk is if the raymond process dies while Claude Code is mid-execution
 (e.g., editing files). In practice this is rare and usually recoverable - the
 session can be resumed, or at worst the workflow restarts from the current
 state with a fresh session.
 
-### Multiple Concurrent Workflows
+### Multiple Workflows
 
-A single Python process manages all active workflows using async/await. No
-worker threads, multiprocessing, or separate application instances are needed.
-The orchestrator runs multiple Claude Code invocations concurrently and
-processes each completion as it arrives:
-
-```python
-async def run_orchestrator():
-    pending = {asyncio.create_task(step_workflow(wf)): wf
-               for wf in active_workflows}
-
-    while pending:
-        # Wait for ANY task to complete (not all)
-        done, _ = await asyncio.wait(pending.keys(), return_when=FIRST_COMPLETED)
-
-        for task in done:
-            wf = pending.pop(task)
-            result = task.result()
-            # Process this completion immediately
-            # Maybe fork new agents, update state file, etc.
-            if next_state := get_next_state(result):
-                new_task = asyncio.create_task(step_workflow(wf))
-                pending[new_task] = wf
-```
-
-Each workflow has its own state file:
+Each workflow has its own state file, and separate `raymond` invocations manage
+them independently:
 
 ```
 .raymond/
-  workflows/
+  state/
     issue-195-abc123.json
     issue-196-def456.json
     issue-197-ghi789.json
 ```
 
-This keeps the architecture simple: one Python process, multiple async Claude
-Code invocations, state persisted to disk for crash recovery.
+This keeps the architecture simple: one raymond process per workflow, state
+persisted to disk for crash recovery.
 
 ## Fork: Spawning Independent Agents
 
@@ -495,7 +472,7 @@ This approach guarantees that:
 The spawned agent:
 - Is added to the `agents` array in the same state file
 - Managed by the same orchestrator instance
-- Runs concurrently via `asyncio.wait()`
+- Runs in round-robin order with the parent and other agents
 - Terminates when it emits `<result>` with an empty stack
 
 ### Use Cases

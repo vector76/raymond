@@ -153,11 +153,12 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				Timeout:                    effectiveTimeout,
 				DangerouslySkipPermissions: merged.DangerouslySkipPermissions,
 				Quiet:                      quiet,
+				Verbose:                    merged.Verbose,
 				Debug:                      !merged.NoDebug,
 				NoWait:                     merged.NoWait,
 			}
 			opts.ObserverSetup = func(b *bus.Bus) {
-				console.New(b, quiet, 0)
+				console.New(b, quiet, merged.Verbose, 0)
 				if !merged.NoDebug {
 					debug.New(b)
 				}
@@ -306,13 +307,13 @@ func (c *CLI) cmdStatus(cmd *cobra.Command, workflowID, stateDir string) error {
 		for _, a := range ws.Agents {
 			agentStatus := "active"
 			switch a.Status {
-			case "paused":
+			case wfstate.AgentStatusPaused:
 				if a.Error != "" {
 					agentStatus = fmt.Sprintf("paused: %s", truncate(a.Error, 40))
 				} else {
 					agentStatus = "paused"
 				}
-			case "failed":
+			case wfstate.AgentStatusFailed:
 				agentStatus = "failed"
 			}
 			fmt.Fprintf(w, "  %s at %s [%s]\n", a.ID, a.CurrentState, agentStatus)

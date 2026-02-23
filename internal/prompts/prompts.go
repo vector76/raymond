@@ -191,7 +191,11 @@ func resolveStateFromZip(zipPath, stateName string) (string, error) {
 			return "", fmt.Errorf(
 				"Cannot use Windows script %q on Unix. Use a .sh file instead.", stateName)
 		}
-		if !zipscope.FileExists(zipPath, stateName) {
+		found, ferr := zipscope.FileExists(zipPath, stateName)
+		if ferr != nil {
+			return "", fmt.Errorf("checking zip for %s: %w", stateName, ferr)
+		}
+		if !found {
 			return "", fmt.Errorf(
 				"State file not found in zip archive: %s (in %s)", stateName, zipPath)
 		}

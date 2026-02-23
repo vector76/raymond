@@ -72,8 +72,10 @@ type ConsoleReporter struct {
 	w   io.Writer
 	sym symbols
 
-	// quiet is immutable after construction; safe to read without the lock.
-	quiet bool
+	// quiet and verbose are immutable after construction; safe to read without
+	// the lock.
+	quiet   bool
+	verbose bool // show transition type labels and extra tool detail
 
 	// Per-agent tracking — protected by mu.
 	lastStateType map[string]string // agentID → "markdown" or "script"
@@ -81,7 +83,7 @@ type ConsoleReporter struct {
 	lastTool      map[string]string // agentID → last tool name (for error ctx)
 }
 
-func newReporter(w io.Writer, quiet, unicode bool) *ConsoleReporter {
+func newReporter(w io.Writer, quiet, verbose, unicode bool) *ConsoleReporter {
 	sym := asciiSyms
 	if unicode {
 		sym = unicodeSyms
@@ -90,6 +92,7 @@ func newReporter(w io.Writer, quiet, unicode bool) *ConsoleReporter {
 		w:             w,
 		sym:           sym,
 		quiet:         quiet,
+		verbose:       verbose,
 		lastStateType: make(map[string]string),
 		lastExitCode:  make(map[string]int),
 		lastTool:      make(map[string]string),
@@ -139,7 +142,7 @@ func (r *ConsoleReporter) onStateStarted(e events.StateStarted) {
 	defer r.mu.Unlock()
 	r.lastStateType[e.AgentID] = e.StateType
 	fmt.Fprintf(r.w, "[%s] %s\n", e.AgentID, e.StateName)
-	if e.StateType == "script" && !r.quiet {
+	if e.StateType == events.StateTypeScript && !r.quiet {
 		fmt.Fprintf(r.w, "  %s Executing script...\n", r.sym.progress)
 	}
 }
@@ -148,7 +151,7 @@ func (r *ConsoleReporter) onStateCompleted(e events.StateCompleted) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	stateType := r.lastStateType[e.AgentID]
-	if stateType == "script" {
+	if stateType == events.StateTypeScript {
 		exitCode := r.lastExitCode[e.AgentID]
 		fmt.Fprintf(r.w, "  %s Done (exit %d, %.0fms)\n", r.sym.done, exitCode, e.DurationMS)
 	} else {
@@ -214,7 +217,11 @@ func (r *ConsoleReporter) onTransitionOccurred(e events.TransitionOccurred) {
 
 	default:
 		// goto, reset, call, function — all use the same arrow.
-		fmt.Fprintf(r.w, "  %s %s\n", r.sym.arrow, e.ToState)
+		if r.verbose {
+			fmt.Fprintf(r.w, "  %s (%s) %s\n", r.sym.arrow, e.TransitionType, e.ToState)
+		} else {
+			fmt.Fprintf(r.w, "  %s %s\n", r.sym.arrow, e.ToState)
+		}
 	}
 }
 
@@ -284,15 +291,15 @@ type ConsoleObserver struct {
 
 // New creates a ConsoleObserver writing to os.Stdout. Unicode symbols are
 // used automatically when os.Stdout is a character device (terminal).
-func New(b *bus.Bus, quiet bool, width int) *ConsoleObserver {
+func New(b *bus.Bus, quiet, verbose bool, width int) *ConsoleObserver {
 	unicode := isCharDevice(os.Stdout)
-	return NewWithWriter(b, quiet, width, os.Stdout, unicode)
+	return NewWithWriter(b, quiet, verbose, width, os.Stdout, unicode)
 }
 
 // NewWithWriter creates a ConsoleObserver writing to w with an explicit
 // unicode setting. Use this in tests to capture output predictably.
-func NewWithWriter(b *bus.Bus, quiet bool, _ int, w io.Writer, unicode bool) *ConsoleObserver {
-	r := newReporter(w, quiet, unicode)
+func NewWithWriter(b *bus.Bus, quiet, verbose bool, _ int, w io.Writer, unicode bool) *ConsoleObserver {
+	r := newReporter(w, quiet, verbose, unicode)
 	o := &ConsoleObserver{reporter: r}
 	o.cancels = []func(){
 		bus.Subscribe(b, r.onWorkflowStarted),

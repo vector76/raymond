@@ -64,8 +64,8 @@ type RunOptions struct {
 	// Quiet suppresses console observer output.
 	Quiet bool
 
-	// Width overrides the terminal width for console output (0 = auto-detect).
-	Width int
+	// Verbose enables more detailed console output (e.g. full tool details).
+	Verbose bool
 
 	// NoWait disables automatic waiting for usage-limit reset; the workflow
 	// is paused and exits immediately instead.
@@ -107,7 +107,12 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// Create debug directory if debug is enabled.
 	debugDir := ""
 	if opts.Debug {
-		debugDir = createDebugDirectory(workflowID, stateDir)
+		var debugErr error
+		debugDir, debugErr = createDebugDirectory(workflowID, stateDir)
+		if debugErr != nil {
+			// Non-fatal: warn but continue without debug output.
+			fmt.Fprintf(os.Stderr, "warning: debug mode disabled: %v\n", debugErr)
+		}
 	}
 
 	b := bus.New()
@@ -158,12 +163,15 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			if !opts.NoWait {
 				// Attempt auto-wait: parse reset times from paused agents.
 				if waitSec, ok := computeAutoWait(ws.Agents); ok {
+					now := time.Now()
+					resetTime := now.Add(time.Duration(float64(time.Second) * waitSec))
 					b.Emit(events.WorkflowWaiting{
 						WorkflowID:       workflowID,
 						TotalCostUSD:     ws.TotalCostUSD,
 						PausedAgentCount: len(ws.Agents),
+						ResetTime:        resetTime,
 						WaitSeconds:      waitSec,
-						Timestamp:        time.Now(),
+						Timestamp:        now,
 					})
 					if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
 						return err
@@ -257,8 +265,9 @@ func stepAgent(
 		tr.Agent.SessionID = execResult.SessionID
 	}
 
-	// Accumulate cost.
-	ws.TotalCostUSD += execResult.CostUSD
+	// Note: cost is already accumulated into ws.TotalCostUSD by the executor
+	// (markdown executor adds directly; script executor contributes 0). We do
+	// not add execResult.CostUSD here to avoid double-counting.
 
 	// Emit TransitionOccurred.
 	toState := ""
@@ -355,7 +364,7 @@ func handleStepError(
 			MaxRetries:   0,
 			Timestamp:    time.Now(),
 		})
-		agent.Status = "paused"
+		agent.Status = wfstate.AgentStatusPaused
 		agent.Error = err.Error()
 		b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: "usage limit", Timestamp: time.Now()})
 		return nil
@@ -378,12 +387,9 @@ func handleStepError(
 
 		if !retryable {
 			// Exceeded max retries — pause.
-			agent.Status = "paused"
+			agent.Status = wfstate.AgentStatusPaused
 			agent.Error = err.Error()
-			reason := "error"
-			if isTimeoutError(err) {
-				reason = "timeout"
-			}
+			reason := agentPausedReason(err)
 			b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: reason, Timestamp: time.Now()})
 		}
 		return nil
@@ -398,7 +404,7 @@ func handleStepError(
 // so they will run again. Called on resume.
 func resetPausedAgents(ws *wfstate.WorkflowState) {
 	for i := range ws.Agents {
-		if ws.Agents[i].Status == "paused" {
+		if ws.Agents[i].Status == wfstate.AgentStatusPaused {
 			ws.Agents[i].Status = ""
 			ws.Agents[i].RetryCount = 0
 			ws.Agents[i].Error = ""
@@ -412,7 +418,7 @@ func allPaused(agents []wfstate.AgentState) bool {
 		return false
 	}
 	for _, a := range agents {
-		if a.Status != "paused" {
+		if a.Status != wfstate.AgentStatusPaused {
 			return false
 		}
 	}
@@ -423,7 +429,7 @@ func allPaused(agents []wfstate.AgentState) bool {
 // or -1 if all are paused.
 func firstActiveIndex(agents []wfstate.AgentState) int {
 	for i, a := range agents {
-		if a.Status != "paused" {
+		if a.Status != wfstate.AgentStatusPaused {
 			return i
 		}
 	}
@@ -452,6 +458,20 @@ func isRetryableError(err error) bool {
 	return errors.As(err, &ce) || errors.As(err, &te) || errors.As(err, &pe)
 }
 
+// agentPausedReason returns a short reason string for AgentPaused events that
+// distinguishes between timeout, prompt file errors, and Claude invocation errors.
+func agentPausedReason(err error) string {
+	var te *executors.ClaudeCodeTimeoutWrappedError
+	if errors.As(err, &te) {
+		return "timeout"
+	}
+	var pe *executors.PromptFileError
+	if errors.As(err, &pe) {
+		return "prompt_error"
+	}
+	return "claude_error"
+}
+
 // errorTypeName returns a short type name string for use in ErrorOccurred events.
 func errorTypeName(err error) string {
 	var ce *executors.ClaudeCodeError
@@ -469,13 +489,14 @@ func errorTypeName(err error) string {
 	return fmt.Sprintf("%T", err)
 }
 
-// stateType returns "script" for .sh/.bat files and "markdown" for everything else.
+// stateType returns events.StateTypeScript for .sh/.bat files and
+// events.StateTypeMarkdown for everything else.
 func stateType(filename string) string {
 	lower := strings.ToLower(filename)
 	if strings.HasSuffix(lower, ".sh") || strings.HasSuffix(lower, ".bat") {
-		return "script"
+		return events.StateTypeScript
 	}
-	return "markdown"
+	return events.StateTypeMarkdown
 }
 
 // computeAutoWait inspects all paused agents for limit-reset times and returns
@@ -484,7 +505,7 @@ func stateType(filename string) string {
 func computeAutoWait(agents []wfstate.AgentState) (float64, bool) {
 	var maxWait float64
 	for _, a := range agents {
-		if a.Status != "paused" {
+		if a.Status != wfstate.AgentStatusPaused {
 			continue
 		}
 		wait, ok := parseLimitResetWait(a.Error)
@@ -516,14 +537,14 @@ func parseLimitResetWait(msg string) (float64, bool) {
 }
 
 // createDebugDirectory creates and returns the path to the per-workflow debug
-// directory (.raymond/debug/<workflowID>/).  Returns "" on failure.
-func createDebugDirectory(workflowID, stateDir string) string {
+// directory (.raymond/debug/<workflowID>/). Returns ("", error) on failure.
+func createDebugDirectory(workflowID, stateDir string) (string, error) {
 	// stateDir is typically "<root>/.raymond/state"; go up one level to get
 	// <root>/.raymond/, then create debug/<workflowID>/.
 	raymondDir := filepath.Dir(stateDir)
 	dir := filepath.Join(raymondDir, "debug", workflowID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ""
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create debug directory %s: %w", dir, err)
 	}
-	return dir
+	return dir, nil
 }

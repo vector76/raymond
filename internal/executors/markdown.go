@@ -49,6 +49,11 @@ func (e *MarkdownExecutor) Execute(
 	wfState *wfstate.WorkflowState,
 	execCtx *ExecutionContext,
 ) (ExecutionResult, error) {
+	// Wrap with a cancel so that the InvokeStream goroutine exits cleanly
+	// whenever Execute returns early (error, budget exceeded, etc.).
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	agentID := agent.ID
 	currentState := agent.CurrentState
 	scopeDir := wfState.ScopeDir
@@ -58,7 +63,7 @@ func (e *MarkdownExecutor) Execute(
 	execCtx.Bus.Emit(events.StateStarted{
 		AgentID:   agentID,
 		StateName: currentState,
-		StateType: "markdown",
+		StateType: events.StateTypeMarkdown,
 		Timestamp: time.Now(),
 	})
 
@@ -222,7 +227,13 @@ func (e *MarkdownExecutor) Execute(
 			wfState.TotalCostUSD += invocationCost
 		}
 
-		// Budget check.
+		// Budget check. The check is intentionally performed after accumulating
+		// the cost: a single invocation may push spend above the budget limit,
+		// but that overage is bounded to one LLM call. Strict pre-invocation
+		// checking would require estimating token costs upfront, which is not
+		// reliably possible. The chosen approach keeps the logic simple and
+		// predictable: every invocation runs to completion, then the budget is
+		// evaluated.
 		if wfState.TotalCostUSD > wfState.BudgetUSD {
 			budgetExceeded := parsing.Transition{
 				Tag:     "result",
@@ -471,7 +482,7 @@ func (e *MarkdownExecutor) appendJSONL(path string, obj map[string]any) {
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

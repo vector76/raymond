@@ -115,14 +115,17 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 		c.ForkAttributes = m
 	}
 
-	// Always allocate a new backing array for the stack so handlers can
-	// append without aliasing the original.
-	newStack := make([]wfstate.StackFrame, len(a.Stack))
-	for i, frame := range a.Stack {
-		newStack[i] = wfstate.StackFrame{State: frame.State}
-		if frame.Session != nil {
-			s := *frame.Session
-			newStack[i].Session = &s
+	// Allocate a new backing array for the stack so handlers can append
+	// without aliasing the original. Skip allocation for the common empty case.
+	var newStack []wfstate.StackFrame
+	if len(a.Stack) > 0 {
+		newStack = make([]wfstate.StackFrame, len(a.Stack))
+		for i, frame := range a.Stack {
+			newStack[i] = wfstate.StackFrame{State: frame.State}
+			if frame.Session != nil {
+				s := *frame.Session
+				newStack[i].Session = &s
+			}
 		}
 	}
 	c.Stack = newStack
@@ -247,14 +250,7 @@ func HandleFork(
 	}
 
 	// Derive state abbreviation from the fork target filename.
-	stateName := transition.Target
-	for _, ext := range []string{".md", ".sh", ".bat"} {
-		if strings.HasSuffix(strings.ToLower(stateName), ext) {
-			stateName = stateName[:len(stateName)-len(ext)]
-			break
-		}
-	}
-	stateName = strings.ToLower(stateName)
+	stateName := strings.ToLower(parsing.ExtractStateName(transition.Target))
 	stateAbbrev := stateName
 	if len(stateAbbrev) > 6 {
 		stateAbbrev = stateAbbrev[:6]

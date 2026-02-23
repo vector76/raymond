@@ -57,7 +57,7 @@ func (o *DebugObserver) onWorkflowStarted(e events.WorkflowStarted) {
 	if e.DebugDir == "" {
 		return
 	}
-	_ = os.MkdirAll(e.DebugDir, 0o755)
+	_ = os.MkdirAll(e.DebugDir, 0o700)
 	o.mu.Lock()
 	o.debugDir = e.DebugDir
 	o.mu.Unlock()
@@ -114,7 +114,7 @@ func (o *DebugObserver) onTransitionOccurred(e events.TransitionOccurred) {
 // appendToFile appends text to path, creating the file if necessary.
 // Errors are silently ignored.
 func appendToFile(path, text string) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

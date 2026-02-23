@@ -37,6 +37,12 @@ func buildScriptCmd(scriptPath, ext string) ([]string, error) {
 
 // setupCmd configures platform-specific process attributes for Windows.
 // Creates a new process group so child processes can be managed as a unit.
+//
+// Limitation: unlike Unix (which kills the entire process group with -pid),
+// Windows uses TerminateProcess on the root script process only. Child
+// processes spawned by the script are not automatically terminated; they may
+// continue running as orphans. A complete solution would use a Windows Job
+// Object to track and terminate the full process tree.
 func setupCmd(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: createNewProcessGroup,

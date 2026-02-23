@@ -148,11 +148,17 @@ func RunScript(ctx context.Context, scriptPath string, timeout float64, env map[
 }
 
 // mergeEnv builds a []string environment from os.Environ() overridden by extra.
+// CLAUDECODE is stripped so that script subprocesses cannot accidentally treat
+// themselves as nested Claude sessions (mirrors the behaviour in ccwrap.BuildClaudeEnv).
 func mergeEnv(extra map[string]string) []string {
 	base := make(map[string]string, len(os.Environ()))
 	for _, kv := range os.Environ() {
 		if idx := strings.IndexByte(kv, '='); idx >= 0 {
-			base[kv[:idx]] = kv[idx+1:]
+			k := kv[:idx]
+			if k == "CLAUDECODE" {
+				continue
+			}
+			base[k] = kv[idx+1:]
 		}
 	}
 	for k, v := range extra {

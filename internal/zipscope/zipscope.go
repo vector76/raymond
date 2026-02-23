@@ -11,12 +11,22 @@ package zipscope
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// validateFilename rejects filenames that contain path separators, which would
+// allow directory traversal outside the zip scope.
+func validateFilename(filename string) error {
+	if strings.ContainsAny(filename, `/\`) {
+		return fmt.Errorf("invalid filename (must not contain path separators): %q", filename)
+	}
+	return nil
+}
 
 // ZipFileNotFoundError is returned by ReadText when the requested file does
 // not exist inside the zip archive.
@@ -39,6 +49,9 @@ func IsZipScope(scopeDir string) bool {
 // contents as a UTF-8 string. Returns *ZipFileNotFoundError when the file does
 // not exist inside the archive.
 func ReadText(zipPath, filename string) (string, error) {
+	if err := validateFilename(filename); err != nil {
+		return "", err
+	}
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open zip %s: %w", zipPath, err)
@@ -63,10 +76,18 @@ func ReadText(zipPath, filename string) (string, error) {
 }
 
 // FileExists reports whether filename exists inside the zip archive at zipPath.
-// Returns false for any error (including invalid zip or missing file).
-func FileExists(zipPath, filename string) bool {
+// Returns (false, nil) when the file is not present, (false, err) when the
+// archive is unreadable or the filename is invalid, and (true, nil) on success.
+func FileExists(zipPath, filename string) (bool, error) {
 	_, err := ReadText(zipPath, filename)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	var notFound *ZipFileNotFoundError
+	if errors.As(err, &notFound) {
+		return false, nil
+	}
+	return false, err
 }
 
 // ExtractScript extracts filename from the zip archive at zipPath to a

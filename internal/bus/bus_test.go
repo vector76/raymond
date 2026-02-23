@@ -36,6 +36,11 @@ func TestSubscribeAndEmit(t *testing.T) {
 	assert.Equal(t, evt, received[0])
 }
 
+// TestMultipleHandlersAllCalled verifies that all registered handlers receive
+// an emitted event. Handler execution order is intentionally undefined (handlers
+// are stored in a map and iterated in non-deterministic order); this test only
+// verifies that all handlers are called, not that they are called in any
+// particular sequence.
 func TestMultipleHandlersAllCalled(t *testing.T) {
 	b := bus.New()
 	counts := map[string]int{"h1": 0, "h2": 0, "h3": 0}

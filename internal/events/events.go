@@ -10,6 +10,12 @@ package events
 
 import "time"
 
+// State type constants used in StateStarted.StateType.
+const (
+	StateTypeMarkdown = "markdown"
+	StateTypeScript   = "script"
+)
+
 // WorkflowStarted is emitted when a workflow begins execution.
 type WorkflowStarted struct {
 	WorkflowID string

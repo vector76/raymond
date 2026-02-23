@@ -2,227 +2,212 @@
 
 ## Overview
 
-This document defines the code organization for the raymond project.
+This document defines the code organization for the raymond project, written in Go.
 
 ## Project Structure
 
 ```
 raymond/
-├── README.md               # Project overview and quick start
-├── main.py                 # Entry point launcher (delegates to src.cli)
-├── src/                    # All source code
-│   ├── __init__.py
-│   ├── cli.py             # Command-line interface (argparse)
-│   ├── orchestrator.py    # Main orchestration logic
-│   ├── cc_wrap.py         # Claude code wrapper
-│   └── ...                # Additional modules as needed
+├── README.md                    # Project overview and quick start
+├── AGENTS.md                    # Agent instructions (authoritative)
+├── CLAUDE.md                    # Copy of AGENTS.md for tooling compatibility
+├── go.mod                       # Go module definition (github.com/vector76/raymond)
+├── go.sum                       # Dependency checksums
 │
-├── tests/                  # Test files (mirrors src/ structure)
-│   ├── __init__.py
-│   ├── conftest.py        # Pytest configuration and fixtures
-│   ├── test_cc_wrap.py
-│   └── ...                # Test file per source module
+├── cmd/                         # Binary entry points
+│   ├── raymond/
+│   │   └── main.go              # Main raymond binary (full workflow runner)
+│   └── ray/
+│       └── main.go              # ray alias (thin wrapper around raymond)
 │
-├── docs/                   # Architecture and design documentation
+├── internal/                    # Private packages (not importable externally)
+│   ├── bus/                     # Event bus (publish/subscribe)
+│   ├── ccwrap/                  # Claude Code CLI wrapper (streaming JSON)
+│   ├── cli/                     # Command-line interface (cobra)
+│   ├── config/                  # .raymond.toml configuration file handling
+│   ├── events/                  # Event type definitions (StateStarted, etc.)
+│   ├── executors/               # State executors (markdown and script)
+│   ├── observers/               # Event subscribers that produce output
+│   │   ├── console/             # Human-readable terminal output
+│   │   ├── debug/               # Debug JSONL files per step
+│   │   └── titlebar/            # Terminal title bar updates
+│   ├── orchestrator/            # Workflow orchestration loop
+│   ├── parsing/                 # Transition tag parsing (<goto>, <result>, etc.)
+│   ├── platform/                # Cross-platform script execution (.sh / .bat)
+│   ├── policy/                  # Model and effort policy resolution
+│   ├── prompts/                 # Prompt file loading and state name resolution
+│   ├── state/                   # Workflow state persistence (JSON files)
+│   ├── transitions/             # Transition application logic (all 6 types)
+│   └── zipscope/                # ZIP archive workflow scope support
 │
-├── .gitignore
-├── requirements.txt        # Production dependencies
-├── AGENTS.md              # Agent instructions
-└── CLAUDE.md              # Copy of AGENTS.md (keep synchronized)
+├── tests/
+│   └── integration/             # End-to-end integration tests (build tag: integration)
+│
+├── docs/                        # Architecture and design documentation (flat structure)
+│
+└── workflows/
+    └── test_cases/              # Workflow fixture files used by integration tests
 ```
 
 ## Key Principles
 
 ### Separation of Concerns
-- **`src/`**: All production code
-- **`tests/`**: All test code, mirroring source structure
-- **`docs/`**: Architecture and design documentation
-- **Root**: Configuration files, entry point (`main.py`), and project-level docs
 
-### Test Organization
-- Each module `src/foo.py` has a corresponding `tests/test_foo.py`
-- Use `conftest.py` for shared fixtures and path setup
-- Run tests with `pytest` or `pytest tests/`
+- **`cmd/`**: Thin entry points only — delegate to `internal/cli` immediately
+- **`internal/`**: All production logic; packages are independently testable
+- **`tests/integration/`**: End-to-end tests gated behind the `integration` build tag
+- **`docs/`**: Architecture and design documentation (flat structure, no subfolders)
+- **Root**: Module definition, project-level docs, and agent instructions
 
-### Package Structure
-- `src/` is a Python package (with `__init__.py`)
-- **Current test setup**: `tests/conftest.py` adds `src/` to the import path so tests can import modules like `cc_wrap` directly.
-- **Runtime entrypoints**: root `main.py` runs `src.main` as a module (via `runpy`) so runtime imports work without `sys.path` manipulation.
-- Within `src/`, modules use **relative imports** (e.g., `from .cc_wrap import ...`) to behave well when run as a package.
+### Internal Package Architecture
 
-**Note on IDE support:** The current `sys.path` approach in tests is pragmatic
-and matches the repository today, but some IDEs may provide better intellisense
-with an installable package / editable install. Treat this as a future
-refinement rather than a hard requirement.
+The internal packages form a layered dependency graph:
+
+```
+cmd/raymond  cmd/ray
+     └──────────┬──────────┘
+                │
+          internal/cli
+                │
+      internal/orchestrator
+         /           \
+  internal/executors  internal/transitions
+    /       \                   |
+ccwrap    platform         internal/state
+    \              \            |
+     \         internal/parsing |
+      \                         |
+       ──── internal/events ────
+                  │
+            internal/bus
+                  │
+           internal/observers
+            (console/debug/titlebar)
+```
+
+Lower-level packages (`events`, `bus`, `parsing`, `state`) have no dependencies
+on higher-level orchestration code.
+
+### Package Responsibilities
+
+| Package | Responsibility |
+|---------|---------------|
+| `bus` | Typed publish/subscribe event bus with panic recovery |
+| `ccwrap` | Spawn and stream `claude` CLI output; parse JSONL; handle timeouts |
+| `cli` | Parse CLI flags, load config, wire observers, call orchestrator |
+| `config` | Load and merge `.raymond.toml` configuration files |
+| `events` | All event struct definitions shared across the codebase |
+| `executors` | `MarkdownExecutor` (LLM) and `ScriptExecutor` (.sh/.bat); `ExecutionContext` |
+| `observers/console` | Print workflow progress to the terminal |
+| `observers/debug` | Write per-step JSONL debug files to a debug directory |
+| `observers/titlebar` | Update the terminal title bar with workflow status |
+| `orchestrator` | Main loop: load state, pick next agent, execute, apply transition, persist |
+| `parsing` | Parse `<goto>`, `<reset>`, `<call>`, `<fork>`, `<function>`, `<result>` tags |
+| `platform` | Build and run `exec.Cmd` for .sh (bash) or .bat (cmd.exe); merge env |
+| `policy` | Resolve effective model and effort level from config + defaults |
+| `prompts` | Load prompt files from directory or ZIP scope; resolve state names |
+| `state` | Read/write `WorkflowState` JSON; atomic writes via temp+rename |
+| `transitions` | Apply each of the 6 transition types to `WorkflowState` |
+| `zipscope` | Treat ZIP archives as read-only workflow scope directories |
 
 ## Testing
 
-- **Test files**: One test file per source module (1:1 mapping)
-- **Naming**: `test_<module_name>.py`
-- **Framework**: pytest with pytest-asyncio for async functions
-- **Fixtures**: Shared fixtures go in `conftest.py`
+### Unit Tests
 
-## Import Patterns
-
-### In tests (via conftest.py)
-```python
-# tests/conftest.py
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-# tests/test_cc_wrap.py
-from cc_wrap import wrap_claude_code
-```
-
-### Within src/ (use relative imports)
-```python
-# src/main.py
-from .cc_wrap import wrap_claude_code_stream
-
-# src/orchestrator.py
-from .cc_wrap import wrap_claude_code
-from .models import SomeModel
-```
-
-### Root main.py (launcher)
-```python
-# main.py - Simple launcher that runs the CLI
-import sys
-from src.cli import main
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-**Why this approach?**
-- No `sys.path` manipulation needed
-- IDE can resolve imports statically (ctrl-click works)
-- Clean package structure with proper relative imports
-- Can also run directly: `python -m src.cli`
-
-## Virtual Environment
+Each `internal/<package>/` directory contains a `<package>_test.go` file (and
+sometimes an `export_test.go` to expose internal symbols for testing).
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-source .venv/bin/activate  # Linux/Mac
+go test ./...                    # Run all unit tests
+go test ./internal/orchestrator/ # Run tests for a single package
+go test -v ./internal/ccwrap/    # Verbose output
+go test -run TestFoo ./...       # Run tests matching a name pattern
+```
+
+### Integration Tests
+
+Integration tests live in `tests/integration/` and are gated behind the
+`integration` build tag so they are excluded from the normal `go test ./...`
+run.
+
+```bash
+# Script-only tests (no claude CLI needed)
+go test -tags integration ./tests/integration/ -run TestScript
+
+# All integration tests (requires claude CLI in PATH)
+go test -tags integration ./tests/integration/
+```
+
+Tests that require the Claude CLI call `skipIfNoClaude(t)` to skip gracefully
+when `claude` is not installed.
+
+## Building
+
+```bash
+# Build both binaries
+go build ./cmd/raymond
+go build ./cmd/ray
+
+# Build to a specific output path
+go build -o /usr/local/bin/raymond ./cmd/raymond
+
+# Verify everything compiles (no output produced)
+go build ./...
 ```
 
 ## Running the Application
 
 ```bash
-# Run via installed command (recommended after pip install -e .)
-raymond --help
-raymond workflows/test_cases/CLASSIFY.md
+# Run a workflow
+raymond path/to/workflow/START.md
 
-# Or run via root launcher
-python main.py --help
+# Resume a paused workflow
+raymond --resume workflow-id
 
-# Or run directly as a module
-python -m src.cli
-```
+# Run with debug output
+raymond --debug path/to/workflow/START.md
 
-## Running Tests
-
-```bash
-pytest                          # Run all tests
-pytest tests/test_cc_wrap.py    # Run specific test file
-pytest -v                       # Verbose output
+# Run quietly (suppress progress output)
+raymond --quiet path/to/workflow/START.md
 ```
 
 ## Platform Support
 
-- **Production**: Linux only (typically in a Linux container for containment).
-- **Development**: Windows is supported for development/testing, but some docs
-  include Linux-specific commands.
+- **Primary platform**: Linux (recommended for production use)
+- **Development**: Windows is supported; `.bat` scripts run via `cmd.exe /c`,
+  `.sh` scripts run via `bash`
+- **macOS**: Supported for development
 
-## Docker Setup
+### Cross-Platform Script Execution
 
-Modern Debian/Ubuntu-based Docker images use PEP 668 to protect the system
-Python. In a Docker container (which is disposable), use
-`--break-system-packages` to bypass this:
+The `platform` package selects the shell based on file extension and OS:
 
-```bash
-pip install --break-system-packages -e .
-pip install --break-system-packages -r requirements.txt
-```
+| Extension | Unix | Windows |
+|-----------|------|---------|
+| `.sh` | `bash <script>` | error |
+| `.bat` | error | `cmd.exe /c <script>` |
 
-The `-e` (editable) flag creates a link to your source code so changes take
-effect immediately. Packages install to `~/.local/bin/`.
+### Windows WSL Integration
 
-**Verify installation:**
-```bash
-which raymond  # Should show: /home/devuser/.local/bin/raymond
-raymond --help
-```
-
-**If command not found**, ensure `~/.local/bin` is in PATH:
-```bash
-export PATH="$HOME/.local/bin:$PATH"  # Add to ~/.bashrc for persistence
-```
-
-**Alternative:** Install `python3-venv` in the container and use a virtual
-environment instead:
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-pip install -r requirements.txt
-```
-
-## WSL Integration (Windows)
-
-When developing on Windows, WSL can run Unix shell scripts and tests.
-
-### Path Mangling
-
-Git Bash auto-converts Unix paths to Windows paths, breaking WSL commands.
-Use double slash (`//`) to prevent this:
+When developing on Windows, WSL can run `.sh` scripts and integration tests:
 
 ```bash
-# Broken (Git Bash mangles the path):
-wsl cat /mnt/c/Users/user/project/file.txt
-
-# Working:
-wsl -- cat //mnt/c/Users/user/project/file.txt
+# Run integration tests via WSL
+wsl -- bash -l -c "cd /mnt/c/path/to/raymond && go test -tags integration ./tests/integration/"
 ```
 
-### CRLF Line Endings
+**CRLF line endings**: Shell scripts committed on Windows may have CRLF endings.
+The `.gitattributes` file enforces `*.sh text eol=lf` to prevent this.
 
-Shell scripts created on Windows often have CRLF line endings, causing
-`$'\r': command not found` errors in bash. Solutions:
+## Dependencies
 
-1. **`.gitattributes`** (recommended): `*.sh text eol=lf`
-2. **On-the-fly conversion**: `wsl -- bash -c "tr -d '\r' < //mnt/c/path/script.sh | bash"`
-3. **Permanent conversion**: `wsl -- dos2unix //mnt/c/path/script.sh`
+Dependencies are declared in `go.mod` and pinned in `go.sum`:
 
-If `.gitattributes` was added after files were committed, re-normalize:
-```bash
-git rm --cached -r .
-git add .
-git commit -m "Normalize line endings per .gitattributes"
-```
+| Dependency | Purpose |
+|-----------|---------|
+| `github.com/spf13/cobra` | CLI flag parsing and subcommand structure |
+| `github.com/BurntSushi/toml` | `.raymond.toml` configuration file parsing |
+| `github.com/stretchr/testify` | Test assertions (`assert`, `require`) |
 
-### Running Tests via WSL
-
-Use `bash -l` (login shell) so `~/.local/bin` is on PATH:
-
-```bash
-# Install dependencies (one-time)
-wsl -- pip3 install --break-system-packages -r //mnt/c/path/to/raymond/requirements.txt
-
-# Run tests (use -l for login shell)
-wsl -- bash -l -c "cd /mnt/c/path/to/raymond && python3 -m pytest tests/ -q"
-
-# Run only Unix-specific tests
-wsl -- bash -l -c "cd /mnt/c/path/to/raymond && python3 -m pytest tests/ -v -k 'unix'"
-```
-
-### Recommendations
-
-1. **Production use:** Windows users should use `.bat` files; the orchestrator
-   routes to platform-appropriate scripts automatically.
-2. **Development/testing:** Use WSL to run Unix-specific tests. Ensure
-   `.gitattributes` has `*.sh text eol=lf`.
-3. **CI/CD:** Run the full test suite on a Linux runner for complete coverage.
+No runtime dependencies beyond the Go standard library and the above three
+packages.

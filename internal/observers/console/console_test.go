@@ -14,7 +14,7 @@ import (
 
 // newObs creates a ConsoleObserver backed by buf using ASCII symbols.
 func newObs(b *bus.Bus, buf *bytes.Buffer, quiet bool) *console.ConsoleObserver {
-	return console.NewWithWriter(b, quiet, 0, buf, false)
+	return console.NewWithWriter(b, quiet, false, 0, buf, false)
 }
 
 // ----------------------------------------------------------------------------
@@ -505,7 +505,7 @@ func TestConsoleErrorFatalMessage(t *testing.T) {
 func TestConsoleUnicodeArrow(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := console.NewWithWriter(b, false, 0, &buf, true) // unicode=true
+	obs := console.NewWithWriter(b, false, false, 0, &buf, true) // unicode=true
 	defer obs.Close()
 
 	b.Emit(events.TransitionOccurred{
@@ -541,7 +541,7 @@ func TestConsoleASCIIArrow(t *testing.T) {
 func TestConsoleUnicodeFork(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := console.NewWithWriter(b, false, 0, &buf, true)
+	obs := console.NewWithWriter(b, false, false, 0, &buf, true)
 	defer obs.Close()
 
 	b.Emit(events.AgentSpawned{

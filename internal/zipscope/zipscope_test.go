@@ -130,15 +130,43 @@ func TestReadText_EmptyContent(t *testing.T) {
 
 func TestFileExists_ExistingFile(t *testing.T) {
 	zp := makeZip(t, map[string]string{"START.md": "content"})
-	if !FileExists(zp, "START.md") {
+	found, err := FileExists(zp, "START.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
 		t.Error("expected FileExists to return true for existing file")
 	}
 }
 
 func TestFileExists_MissingFile(t *testing.T) {
 	zp := makeZip(t, map[string]string{"START.md": "content"})
-	if FileExists(zp, "OTHER.md") {
+	found, err := FileExists(zp, "OTHER.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found {
 		t.Error("expected FileExists to return false for missing file")
+	}
+}
+
+func TestFileExists_InvalidZip(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.zip")
+	if err := os.WriteFile(bad, []byte("not a zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := FileExists(bad, "file.md")
+	if err == nil {
+		t.Error("expected error for invalid zip archive")
+	}
+}
+
+func TestFileExists_PathTraversal(t *testing.T) {
+	zp := makeZip(t, map[string]string{"START.md": "content"})
+	_, err := FileExists(zp, "../evil.md")
+	if err == nil {
+		t.Error("expected error for path traversal filename")
 	}
 }
 

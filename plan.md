@@ -438,24 +438,22 @@ Applies a parsed transition to an agent's state, producing the next state.
 
 Main workflow loop. Coordinates all agents.
 
-**Concurrency model:**
-- One goroutine per active agent
-- Each agent goroutine: execute current state → apply transition → loop
-- A coordinator goroutine receives from all agent goroutines via a shared results channel
-- `context.Context` cancellation propagates to all agent goroutines and their subprocesses
-- `sync.WaitGroup` tracks live agents; workflow completes when WaitGroup reaches zero
+**Concurrency model (as implemented):**
+- Single-threaded round-robin loop: each iteration picks the next active agent and runs its current state to completion before moving to the next agent
+- `context.Context` cancellation propagates to the running executor and its subprocesses
+- State is persisted to disk after every step
 
 **What it does:**
-- Accepts initial workflow state and a `ClaudeInvoker`
-- Starts the main agent goroutine
-- As `fork` transitions produce new agents, spawns additional goroutines
+- Accepts initial workflow state
+- Loops over active agents in round-robin order; executes each state and applies the resulting transition
+- As `fork` transitions produce new agents, they join the rotation for subsequent rounds
 - After each transition, persists state to disk (via `internal/state`)
 - Enforces global budget across all agents
 - Handles `AgentPaused` (rate limit): waits for reset time, resumes
 - On error: emits `ErrorOccurred`; orchestrator decides fatal vs. recoverable
 - On all agents terminated: emits `WorkflowCompleted`, deletes state file
 
-**Tests:** Mirror `tests/test_orchestrator.py`. Use `MockInvoker`. Cover: single linear workflow, call/return, fork and join (fork terminates independently), concurrent forks, budget enforcement stops all agents, crash recovery resumes from state file, context cancellation cleans up all goroutines.
+**Tests:** Use `mockExec`. Cover: single linear workflow, call/return, fork and join (fork terminates independently), budget enforcement stops all agents, crash recovery resumes from state file, context cancellation.
 
 ---
 

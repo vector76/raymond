@@ -285,10 +285,11 @@ Console output verbosity is controlled via CLI flag:
 ```
 raymond --quiet workflow.md      # Only state transitions, errors, and final result
 raymond workflow.md              # Default: transitions + all progress messages
-raymond --verbose workflow.md    # Default output + DEBUG-level logging
+raymond --verbose workflow.md    # Default output + transition type annotations
 ```
 
-**Note**: The `--quiet` flag needs to be added to the CLI argument parser. The `--verbose` flag already exists and controls logging verbosity; it will also enable DEBUG-level logging in addition to the default console output.
+- `--quiet`: Suppresses assistant text, tool invocations, and script progress. Retains headers, transitions, errors, and final result.
+- `--verbose`: Adds transition type labels (e.g., `goto`, `reset`, `call`) to transition lines.
 
 ### Default behavior (no flag)
 

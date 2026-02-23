@@ -242,3 +242,16 @@ func TestValidateMultipleTransitionsErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expected exactly one transition")
 }
+
+func TestParseForkWithEmptyAttribute(t *testing.T) {
+	// An attribute with an empty quoted value is valid XML and should parse correctly.
+	out := `<fork next="NEXT.md" item="">WORKER.md</fork>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "fork", tr.Tag)
+	assert.Equal(t, "WORKER.md", tr.Target)
+	assert.Equal(t, "NEXT.md", tr.Attributes["next"])
+	assert.Equal(t, "", tr.Attributes["item"])
+}

@@ -38,16 +38,14 @@ raymond --resume workflow_2026-01-15_14-30-22
 When debug mode is enabled (the default), a debug directory is created for each workflow run:
 
 ```
-.raymond/debug/{workflow_id}_{timestamp}/
+.raymond/debug/{workflow_id}/
 ```
 
-Where:
-- `{workflow_id}` is the workflow identifier (e.g., `workflow_2026-01-15_14-30-22`)
-- `{timestamp}` is the execution start time in format `YYYYMMDD_HHMMSS` (e.g., `20260115_143022`)
+Where `{workflow_id}` is the workflow identifier (e.g., `workflow_2026-01-15_14-30-22`).
 
-Example: `.raymond/debug/workflow_2026-01-15_14-30-22_20260115_143022/`
+Example: `.raymond/debug/workflow_2026-01-15_14-30-22/`
 
-This ensures each run gets a unique directory, even if the same workflow is run multiple times.
+Each workflow run writes its debug files to the same directory. Files within the directory use `{agent_id}_{state_name}_{step_number}` naming to distinguish steps across runs.
 
 ## Files Saved
 

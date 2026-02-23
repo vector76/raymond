@@ -5,7 +5,7 @@ reasonable choices existed. These can be revisited if they prove problematic.
 
 ## State File Location
 
-**Assumption:** State files live in `.raymond/workflows/` relative to the
+**Assumption:** State files live in `.raymond/state/` relative to the
 project root.
 
 **Rationale:** Dedicated `.raymond/` directory keeps runtime artifacts separate
@@ -225,8 +225,9 @@ and may evolve as implementation progresses.
 
 ## Logging Format
 
-**Assumption:** Use Python's standard logging module with structured messages.
-Log to stderr by default, with optional file output.
+**Assumption:** Use Go's standard `log` package for internal warnings. Progress
+and status information is emitted via the event bus to observers (console, debug).
+Log to stderr by default.
 
 **Rationale:** Standard tooling, easy to integrate with existing infrastructure.
 

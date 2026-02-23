@@ -118,8 +118,9 @@ func TestScriptResetWorkflow(t *testing.T) {
 	}
 
 	if runtime.GOOS != "windows" {
-		_ = os.Remove("/tmp/reset_counter.txt")
-		t.Cleanup(func() { _ = os.Remove("/tmp/reset_counter.txt") })
+		counterFile := filepath.Join(os.TempDir(), "reset_counter.txt")
+		_ = os.Remove(counterFile)
+		t.Cleanup(func() { _ = os.Remove(counterFile) })
 	}
 
 	completed, err := runWorkflow(t, testCasesDir(), scriptName, 10.0)
@@ -137,8 +138,9 @@ func TestCrashRecovery(t *testing.T) {
 	}
 
 	if runtime.GOOS != "windows" {
-		_ = os.Remove("/tmp/reset_counter.txt")
-		t.Cleanup(func() { _ = os.Remove("/tmp/reset_counter.txt") })
+		counterFile := filepath.Join(os.TempDir(), "reset_counter.txt")
+		_ = os.Remove(counterFile)
+		t.Cleanup(func() { _ = os.Remove(counterFile) })
 	}
 
 	stateDir := t.TempDir()
@@ -265,8 +267,9 @@ func TestPollWorkflow(t *testing.T) {
 		t.Skip("poll workflow uses .sh scripts; skipping on Windows")
 	}
 
-	_ = os.Remove("/tmp/poll_counter.txt")
-	t.Cleanup(func() { _ = os.Remove("/tmp/poll_counter.txt") })
+	pollFile := filepath.Join(os.TempDir(), "poll_counter.txt")
+	_ = os.Remove(pollFile)
+	t.Cleanup(func() { _ = os.Remove(pollFile) })
 
 	completed, err := runWorkflow(t, testCasesDir(), "POLL_EXAMPLE.sh", 10.0)
 	require.NoError(t, err)

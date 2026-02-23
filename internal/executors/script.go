@@ -76,7 +76,7 @@ func (e *ScriptExecutor) Execute(
 	execCtx.Bus.Emit(events.StateStarted{
 		AgentID:   agentID,
 		StateName: currentState,
-		StateType: "script",
+		StateType: events.StateTypeScript,
 		Timestamp: time.Now(),
 	})
 
@@ -203,7 +203,7 @@ func (e *ScriptExecutor) saveDebugFiles(
 
 // writeDebugFile writes content to path, silently ignoring errors.
 func writeDebugFile(path, content string) {
-	_ = os.WriteFile(path, []byte(content), 0o644)
+	_ = os.WriteFile(path, []byte(content), 0o600)
 }
 
 // sessionIDStr returns the string value of a *string or "" if nil.

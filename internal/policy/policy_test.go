@@ -377,6 +377,25 @@ func TestTargetsMatchAbstractDoesNotMatchInvalidExtension(t *testing.T) {
 	assert.False(t, policy.TargetsMatch("COUNT", "COUNT.txt"))
 }
 
+// Case sensitivity: the extension check is case-insensitive (.MD matches .md),
+// but the stem comparison is case-sensitive. Policy targets and resolved
+// filenames must use the same stem case to match.
+func TestTargetsMatchMixedCaseExtension(t *testing.T) {
+	// Extension case is normalized — ".MD", ".SH", ".BAT" all match.
+	assert.True(t, policy.TargetsMatch("COUNT", "COUNT.MD"))
+	assert.True(t, policy.TargetsMatch("COUNT", "COUNT.SH"))
+	assert.True(t, policy.TargetsMatch("COUNT", "COUNT.BAT"))
+}
+
+func TestTargetsMatchStemCaseSensitive(t *testing.T) {
+	// Stem comparison is case-sensitive; different cases do not match.
+	// On case-insensitive filesystems (macOS, Windows), file resolution
+	// will normalize the stem before it reaches policy validation, but
+	// the policy itself does not perform case folding.
+	assert.False(t, policy.TargetsMatch("count", "COUNT.md"))
+	assert.True(t, policy.TargetsMatch("count", "count.MD"))
+}
+
 func TestAbstractReturnAttributeMatchesResolved(t *testing.T) {
 	p := &policy.Policy{
 		AllowedTransitions: []map[string]string{

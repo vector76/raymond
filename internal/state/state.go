@@ -30,12 +30,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/vector76/raymond/internal/config"
+)
+
+// Agent status constants. The zero value ("") means the agent is active.
+const (
+	AgentStatusPaused = "paused"
+	AgentStatusFailed = "failed"
 )
 
 // StateFileError is returned when a state file cannot be parsed.
@@ -155,12 +162,16 @@ func WriteState(workflowID string, ws *WorkflowState, stateDir string) error {
 	}()
 	if writeErr != nil {
 		tmp.Close()
-		os.Remove(tmpName)
+		if rmErr := os.Remove(tmpName); rmErr != nil {
+			log.Printf("warning: failed to remove temp state file %s: %v", tmpName, rmErr)
+		}
 		return fmt.Errorf("failed to write state: %w", writeErr)
 	}
 
 	if err := os.Rename(tmpName, final); err != nil {
-		os.Remove(tmpName)
+		if rmErr := os.Remove(tmpName); rmErr != nil {
+			log.Printf("warning: failed to remove temp state file %s: %v", tmpName, rmErr)
+		}
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 	return nil

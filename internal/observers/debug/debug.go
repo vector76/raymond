@@ -11,8 +11,8 @@
 // set by the orchestrator. When DebugDir is empty (debug disabled) the
 // observer is a no-op.
 //
-// All file I/O errors are silently ignored so that debug mode never disrupts
-// workflow execution.
+// File I/O errors are written to stderr so that debug output failures are
+// visible to the developer, while workflow execution continues uninterrupted.
 package debug
 
 import (
@@ -77,6 +77,7 @@ func (o *DebugObserver) onClaudeStreamOutput(e events.ClaudeStreamOutput) {
 
 	line, err := json.Marshal(e.JSONObject)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "debug observer: marshal error for %s step %d: %v\n", e.StateName, e.StepNumber, err)
 		return
 	}
 	appendToFile(path, string(line)+"\n")
@@ -112,14 +113,17 @@ func (o *DebugObserver) onTransitionOccurred(e events.TransitionOccurred) {
 }
 
 // appendToFile appends text to path, creating the file if necessary.
-// Errors are silently ignored.
+// Errors are written to stderr so that debug output failures are visible.
 func appendToFile(path, text string) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "debug observer: cannot open %s: %v\n", path, err)
 		return
 	}
 	defer f.Close()
-	_, _ = f.WriteString(text)
+	if _, err := f.WriteString(text); err != nil {
+		fmt.Fprintf(os.Stderr, "debug observer: write error for %s: %v\n", path, err)
+	}
 }
 
 // stripExt removes the last known workflow-state extension from name.

@@ -138,6 +138,11 @@ func ReadState(workflowID, stateDir string) (*WorkflowState, error) {
 // The directory is created if it does not exist. The write is atomic on
 // all supported platforms: the JSON is written to a temporary file and then
 // renamed over the destination.
+//
+// Nil-pointer fields in WorkflowState and AgentState are serialized as JSON
+// null (not omitted). Callers that want to preserve an existing field value
+// must read the current state first and carry that value forward — WriteState
+// always overwrites the complete state file.
 func WriteState(workflowID string, ws *WorkflowState, stateDir string) error {
 	dir := GetStateDir(stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

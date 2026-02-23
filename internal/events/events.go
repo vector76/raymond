@@ -16,6 +16,14 @@ const (
 	StateTypeScript   = "script"
 )
 
+// AgentPaused reason constants used in AgentPaused.Reason.
+const (
+	PauseReasonUsageLimit  = "usage limit"
+	PauseReasonTimeout     = "timeout"
+	PauseReasonPromptError = "prompt_error"
+	PauseReasonClaudeError = "claude_error"
+)
+
 // WorkflowStarted is emitted when a workflow begins execution.
 type WorkflowStarted struct {
 	WorkflowID string

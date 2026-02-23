@@ -366,7 +366,7 @@ func handleStepError(
 		})
 		agent.Status = wfstate.AgentStatusPaused
 		agent.Error = err.Error()
-		b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: "usage limit", Timestamp: time.Now()})
+		b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: events.PauseReasonUsageLimit, Timestamp: time.Now()})
 		return nil
 
 	case isRetryableError(err):
@@ -463,13 +463,13 @@ func isRetryableError(err error) bool {
 func agentPausedReason(err error) string {
 	var te *executors.ClaudeCodeTimeoutWrappedError
 	if errors.As(err, &te) {
-		return "timeout"
+		return events.PauseReasonTimeout
 	}
 	var pe *executors.PromptFileError
 	if errors.As(err, &pe) {
-		return "prompt_error"
+		return events.PauseReasonPromptError
 	}
-	return "claude_error"
+	return events.PauseReasonClaudeError
 }
 
 // errorTypeName returns a short type name string for use in ErrorOccurred events.

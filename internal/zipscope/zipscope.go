@@ -13,6 +13,7 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -66,6 +67,33 @@ func ReadText(zipPath, filename string) (string, error) {
 func FileExists(zipPath, filename string) bool {
 	_, err := ReadText(zipPath, filename)
 	return err == nil
+}
+
+// ExtractScript extracts filename from the zip archive at zipPath to a
+// temporary file and returns its path. The caller is responsible for removing
+// the temp file when done. Returns *ZipFileNotFoundError when the file does
+// not exist inside the archive.
+func ExtractScript(zipPath, filename string) (string, error) {
+	content, err := ReadText(zipPath, filename)
+	if err != nil {
+		return "", err
+	}
+
+	ext := filepath.Ext(filename)
+	tmp, err := os.CreateTemp("", "raymond-script-*"+ext)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file for script: %w", err)
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("failed to write temp script file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("failed to close temp script file: %w", err)
+	}
+	return tmp.Name(), nil
 }
 
 // ListFiles returns the names of all non-directory entries in the zip archive

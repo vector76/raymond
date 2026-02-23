@@ -49,9 +49,15 @@ func (e *StateFileError) Error() string { return e.msg }
 type AgentState struct {
 	ID            string   `json:"id"`
 	CurrentState  string   `json:"current_state"`
-	SessionID     *string  `json:"session_id"`              // null when no session has been started
-	Stack         []string `json:"stack"`                   // call stack of return states
+	SessionID     *string  `json:"session_id"`               // null when no session has been started
+	Stack         []string `json:"stack"`                    // call stack of return states
 	PendingResult *string  `json:"pending_result,omitempty"` // absent from JSON when nil
+
+	// Transient execution fields — not persisted to JSON.
+	// Set by the orchestrator before calling Execute(); read by executors.
+	ForkSessionID  *string           `json:"-"` // session to fork from (call transitions)
+	ForkAttributes map[string]string `json:"-"` // template variables from fork
+	Cwd            string            `json:"-"` // per-agent working directory; empty = inherit
 }
 
 // WorkflowState is the top-level structure persisted for each workflow.

@@ -69,14 +69,16 @@ func BuildScriptEnv(workflowID, agentID string, result *string, forkAttributes m
 
 // RunScript executes the script at scriptPath and returns its output.
 //
-//   - timeout ≤ 0 means no timeout.
+//   - ctx is used as the parent for any internal timeout context; cancelling
+//     ctx will also cancel a running script.
+//   - timeout ≤ 0 means no timeout (only ctx cancellation applies).
 //   - env is merged over the current process environment (supplied keys win).
 //   - cwd == "" means the child inherits the caller's working directory.
 //
 // Returns *ScriptTimeoutError on timeout, os.ErrNotExist-wrapping error when
 // the script file doesn't exist, and a plain error for other failures.
 // Non-zero exit codes are NOT errors; they are captured in ScriptResult.ExitCode.
-func RunScript(scriptPath string, timeout float64, env map[string]string, cwd string) (*ScriptResult, error) {
+func RunScript(ctx context.Context, scriptPath string, timeout float64, env map[string]string, cwd string) (*ScriptResult, error) {
 	// Check the script exists before trying to exec it.
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("Script not found: %s: %w", scriptPath, os.ErrNotExist)
@@ -91,16 +93,16 @@ func RunScript(scriptPath string, timeout float64, env map[string]string, cwd st
 	// Merge env over the parent's environment (supplied keys take precedence).
 	merged := mergeEnv(env)
 
-	// Create context with optional timeout.
-	var ctx context.Context
+	// Create context with optional timeout, rooted in the caller's ctx so that
+	// cancelling ctx also cancels a running script.
 	var cancel context.CancelFunc
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(
-			context.Background(),
+			ctx,
 			time.Duration(float64(time.Second)*timeout),
 		)
 	} else {
-		ctx, cancel = context.WithCancel(context.Background())
+		ctx, cancel = context.WithCancel(ctx)
 	}
 	defer cancel()
 

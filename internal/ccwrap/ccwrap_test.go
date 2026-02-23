@@ -45,7 +45,7 @@ func writeFakeClaude(t *testing.T, body string) string {
 // --------------------------------------------------------------------------
 
 func TestBuildClaudeCommand_Default(t *testing.T) {
-	got := BuildClaudeCommand("hello world", "", "", false, false)
+	got := BuildClaudeCommand("hello world", "", "", "", false, false)
 	want := []string{
 		"claude", "-p",
 		"--output-format", "stream-json",
@@ -65,21 +65,32 @@ func TestBuildClaudeCommand_Default(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_WithModel(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "haiku", "", false, false)
+	got := BuildClaudeCommand("prompt", "haiku", "", "", false, false)
 	if !containsSeq(got, "--model", "haiku") {
 		t.Errorf("expected --model haiku in %v", got)
 	}
 }
 
+func TestBuildClaudeCommand_WithEffort(t *testing.T) {
+	got := BuildClaudeCommand("prompt", "", "", "", false, false)
+	if contains(got, "--effort") {
+		t.Errorf("should not have --effort when effort is empty: %v", got)
+	}
+	got = BuildClaudeCommand("prompt", "", "high", "", false, false)
+	if !containsSeq(got, "--effort", "high") {
+		t.Errorf("expected --effort high in %v", got)
+	}
+}
+
 func TestBuildClaudeCommand_WithSessionID(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "sess-abc", false, false)
+	got := BuildClaudeCommand("prompt", "", "", "sess-abc", false, false)
 	if !containsSeq(got, "--resume", "sess-abc") {
 		t.Errorf("expected --resume sess-abc in %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_DangerouslySkipPermissions(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", true, false)
+	got := BuildClaudeCommand("prompt", "", "", "", true, false)
 	if !contains(got, "--dangerously-skip-permissions") {
 		t.Errorf("expected --dangerously-skip-permissions in %v", got)
 	}
@@ -89,14 +100,14 @@ func TestBuildClaudeCommand_DangerouslySkipPermissions(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_PermissionModeAcceptEdits(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", false, false)
+	got := BuildClaudeCommand("prompt", "", "", "", false, false)
 	if !containsSeq(got, "--permission-mode", "acceptEdits") {
 		t.Errorf("expected --permission-mode acceptEdits in %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_Fork(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "sess-xyz", false, true)
+	got := BuildClaudeCommand("prompt", "", "", "sess-xyz", false, true)
 	// --fork-session must appear after --
 	sepIdx := indexOf(got, "--")
 	forkIdx := indexOf(got, "--fork-session")
@@ -109,14 +120,14 @@ func TestBuildClaudeCommand_Fork(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_NoFork(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", false, false)
+	got := BuildClaudeCommand("prompt", "", "", "", false, false)
 	if contains(got, "--fork-session") {
 		t.Errorf("should not have --fork-session when fork=false: %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_AllOptions(t *testing.T) {
-	got := BuildClaudeCommand("my prompt", "opus", "sid123", true, true)
+	got := BuildClaudeCommand("my prompt", "opus", "high", "sid123", true, true)
 	checks := []struct {
 		name string
 		fn   func() bool
@@ -127,6 +138,7 @@ func TestBuildClaudeCommand_AllOptions(t *testing.T) {
 		{"--verbose", func() bool { return contains(got, "--verbose") }},
 		{"--dangerously-skip-permissions", func() bool { return contains(got, "--dangerously-skip-permissions") }},
 		{"--model opus", func() bool { return containsSeq(got, "--model", "opus") }},
+		{"--effort high", func() bool { return containsSeq(got, "--effort", "high") }},
 		{"--resume sid123", func() bool { return containsSeq(got, "--resume", "sid123") }},
 		{"--disallowed-tools", func() bool { return contains(got, "--disallowed-tools") }},
 		{"prompt after --", func() bool { return afterSep(got, "my prompt") }},
@@ -140,7 +152,7 @@ func TestBuildClaudeCommand_AllOptions(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_DisallowedToolsJoined(t *testing.T) {
-	got := BuildClaudeCommand("p", "", "", false, false)
+	got := BuildClaudeCommand("p", "", "", "", false, false)
 	idx := indexOf(got, "--disallowed-tools")
 	if idx < 0 || idx+1 >= len(got) {
 		t.Fatalf("--disallowed-tools not found in %v", got)
@@ -159,7 +171,7 @@ func TestBuildClaudeCommand_DisallowedToolsJoined(t *testing.T) {
 
 func TestBuildClaudeCommand_PromptAfterSeparator(t *testing.T) {
 	prompt := "do something\nwith newlines"
-	got := BuildClaudeCommand(prompt, "", "", false, false)
+	got := BuildClaudeCommand(prompt, "", "", "", false, false)
 	sepIdx := indexOf(got, "--")
 	if sepIdx < 0 {
 		t.Fatal("-- separator not found")
@@ -277,7 +289,7 @@ echo '{"type":"end"}'
 	overrideClaudeExe(t, script)
 
 	ctx := context.Background()
-	ch := InvokeStream(ctx, "test prompt", "", "", 0, false, false, "")
+	ch := InvokeStream(ctx, "test prompt", "", "", "", 0, false, false, "")
 
 	var items []StreamItem
 	for item := range ch {
@@ -310,7 +322,7 @@ echo '{"type":"data2"}'
 `)
 	overrideClaudeExe(t, script)
 
-	ch := InvokeStream(context.Background(), "p", "", "", 0, false, false, "")
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "")
 	var objects []map[string]any
 	for item := range ch {
 		if item.Err != nil {
@@ -334,7 +346,7 @@ echo 'also not json'
 `)
 	overrideClaudeExe(t, script)
 
-	ch := InvokeStream(context.Background(), "p", "", "", 0, false, false, "")
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "")
 	var objects []map[string]any
 	for item := range ch {
 		if item.Err != nil {
@@ -360,7 +372,7 @@ exit 42
 `)
 	overrideClaudeExe(t, script)
 
-	ch := InvokeStream(context.Background(), "p", "", "", 0, false, false, "")
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "")
 	var lastErr error
 	var objCount int
 	for item := range ch {
@@ -392,7 +404,7 @@ echo '{"type":"end"}'
 
 	ctx := context.Background()
 	start := time.Now()
-	ch := InvokeStream(ctx, "p", "", "", 0.15, false, false, "") // 150 ms idle timeout
+	ch := InvokeStream(ctx, "p", "", "", "", 0.15, false, false, "") // 150 ms idle timeout
 
 	var lastErr error
 	for item := range ch {
@@ -424,7 +436,7 @@ sleep 30
 	overrideClaudeExe(t, script)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ch := InvokeStream(ctx, "p", "", "", 0, false, false, "")
+	ch := InvokeStream(ctx, "p", "", "", "", 0, false, false, "")
 
 	// Receive the first item, then cancel.
 	item := <-ch
@@ -455,7 +467,7 @@ func TestInvokeStream_Cwd(t *testing.T) {
 	overrideClaudeExe(t, script)
 
 	dir := t.TempDir()
-	ch := InvokeStream(context.Background(), "p", "", "", 0, false, false, dir)
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, dir)
 	var objects []map[string]any
 	for item := range ch {
 		if item.Err != nil {
@@ -491,7 +503,7 @@ echo '{"type":"result","content":"done"}'
 `)
 	overrideClaudeExe(t, script)
 
-	objects, sid, err := Invoke(context.Background(), "p", "", "", 0, false, false, "")
+	objects, sid, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -510,7 +522,7 @@ echo '{"type":"meta","metadata":{"session_id":"nested-sid"}}'
 `)
 	overrideClaudeExe(t, script)
 
-	_, sid, err := Invoke(context.Background(), "p", "", "", 0, false, false, "")
+	_, sid, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -525,7 +537,7 @@ func TestInvoke_TotalTimeout(t *testing.T) {
 	overrideClaudeExe(t, script)
 
 	start := time.Now()
-	_, _, err := Invoke(context.Background(), "p", "", "", 0.2, false, false, "") // 200 ms timeout
+	_, _, err := Invoke(context.Background(), "p", "", "", "", 0.2, false, false, "") // 200 ms timeout
 	elapsed := time.Since(start)
 
 	if elapsed > 5*time.Second {
@@ -546,7 +558,7 @@ func TestInvoke_ExitError(t *testing.T) {
 	script := writeFakeClaude(t, `exit 1`)
 	overrideClaudeExe(t, script)
 
-	_, _, err := Invoke(context.Background(), "p", "", "", 0, false, false, "")
+	_, _, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
 	if err == nil {
 		t.Fatal("expected error for exit code 1")
 	}
@@ -561,7 +573,7 @@ func TestInvoke_NoTimeout(t *testing.T) {
 	script := writeFakeClaude(t, `echo '{"type":"ok"}'`)
 	overrideClaudeExe(t, script)
 
-	objects, _, err := Invoke(context.Background(), "p", "", "", 0, false, false, "")
+	objects, _, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

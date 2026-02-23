@@ -82,10 +82,11 @@ func BuildClaudeEnv() map[string]string {
 // BuildClaudeCommand constructs the full claude CLI argument slice.
 //
 //   - model == ""     → omit --model
+//   - effort == ""    → omit --effort
 //   - sessionID == "" → omit --resume
 //   - fork == true    → append --fork-session after the prompt separator
 func BuildClaudeCommand(
-	prompt, model, sessionID string,
+	prompt, model, effort, sessionID string,
 	dangerouslySkipPermissions, fork bool,
 ) []string {
 	cmd := []string{
@@ -103,6 +104,10 @@ func BuildClaudeCommand(
 
 	if model != "" {
 		cmd = append(cmd, "--model", model)
+	}
+
+	if effort != "" {
+		cmd = append(cmd, "--effort", effort)
 	}
 
 	if sessionID != "" {
@@ -158,7 +163,7 @@ type StreamItem struct {
 // timeout.
 func InvokeStream(
 	ctx context.Context,
-	prompt, model, sessionID string,
+	prompt, model, effort, sessionID string,
 	idleTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
@@ -166,7 +171,7 @@ func InvokeStream(
 	ch := make(chan StreamItem, 64)
 	go func() {
 		defer close(ch)
-		err := runStream(ctx, ch, prompt, model, sessionID, idleTimeout,
+		err := runStream(ctx, ch, prompt, model, effort, sessionID, idleTimeout,
 			dangerouslySkipPermissions, fork, cwd)
 		if err != nil {
 			select {
@@ -188,12 +193,12 @@ type lineMsg struct {
 func runStream(
 	ctx context.Context,
 	ch chan<- StreamItem,
-	prompt, model, sessionID string,
+	prompt, model, effort, sessionID string,
 	idleTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
 ) error {
-	cmdSlice := BuildClaudeCommand(prompt, model, sessionID, dangerouslySkipPermissions, fork)
+	cmdSlice := BuildClaudeCommand(prompt, model, effort, sessionID, dangerouslySkipPermissions, fork)
 	execCmd := exec.Command(cmdSlice[0], cmdSlice[1:]...)
 	execCmd.Stdin = nil // → /dev/null per exec.Cmd docs
 
@@ -327,7 +332,7 @@ func runStream(
 //   - totalTimeout > 0: ClaudeCodeTimeoutError if total duration exceeded
 func Invoke(
 	ctx context.Context,
-	prompt, model, sessionID string,
+	prompt, model, effort, sessionID string,
 	totalTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
@@ -339,7 +344,7 @@ func Invoke(
 		defer cancel()
 	}
 
-	ch := InvokeStream(ctx, prompt, model, sessionID, 0,
+	ch := InvokeStream(ctx, prompt, model, effort, sessionID, 0,
 		dangerouslySkipPermissions, fork, cwd)
 
 	var results []map[string]any

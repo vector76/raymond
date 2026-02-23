@@ -24,12 +24,12 @@ const maxReminderAttempts = 3
 // MarkdownExecutor. Overridable in tests.
 var invokeStreamFn = func(
 	ctx context.Context,
-	prompt, model, sessionID string,
+	prompt, model, effort, sessionID string,
 	idleTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
 ) <-chan ccwrap.StreamItem {
-	return ccwrap.InvokeStream(ctx, prompt, model, sessionID, idleTimeout,
+	return ccwrap.InvokeStream(ctx, prompt, model, effort, sessionID, idleTimeout,
 		dangerouslySkipPermissions, fork, cwd)
 }
 
@@ -80,12 +80,19 @@ func (e *MarkdownExecutor) Execute(
 	}
 	basePrompt := prompts.RenderPrompt(body, variables)
 
-	// Determine model and effort.
+	// Determine model and effort (frontmatter takes precedence over defaults).
 	model := ""
 	if pol != nil && pol.Model != "" {
 		model = pol.Model
 	} else if execCtx.DefaultModel != "" {
 		model = strings.ToLower(execCtx.DefaultModel)
+	}
+
+	effort := ""
+	if pol != nil && pol.Effort != "" {
+		effort = pol.Effort
+	} else if execCtx.DefaultEffort != "" {
+		effort = execCtx.DefaultEffort
 	}
 
 	// Reminder loop.
@@ -139,7 +146,7 @@ func (e *MarkdownExecutor) Execute(
 		var results []map[string]any
 		var streamErr error
 
-		ch := invokeStreamFn(ctx, prompt, model, useSessionID,
+		ch := invokeStreamFn(ctx, prompt, model, effort, useSessionID,
 			execCtx.Timeout, execCtx.DangerouslySkipPermissions, useFork, agent.Cwd)
 
 		streamLoop:

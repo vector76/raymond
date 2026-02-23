@@ -30,7 +30,7 @@ type ScriptExecutor struct{}
 
 // Execute runs the script state and returns the parsed transition.
 func (e *ScriptExecutor) Execute(
-	_ context.Context,
+	ctx context.Context,
 	agent *wfstate.AgentState,
 	wfState *wfstate.WorkflowState,
 	execCtx *ExecutionContext,
@@ -82,7 +82,7 @@ func (e *ScriptExecutor) Execute(
 
 	// Execute script and measure time.
 	start := time.Now()
-	sr, err := runScriptFn(scriptPath, execCtx.Timeout, env, agent.Cwd)
+	sr, err := runScriptFn(ctx, scriptPath, execCtx.Timeout, env, agent.Cwd)
 	executionTimeMS := float64(time.Since(start).Milliseconds())
 
 	if err != nil {

@@ -49,7 +49,7 @@ func makeWorkflow(t *testing.T) (scopeDir string, wfState *wfstate.WorkflowState
 		ScopeDir:     dir,
 		TotalCostUSD: 0.0,
 		BudgetUSD:    10.0,
-		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []string{}}},
+		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []wfstate.StackFrame{}}},
 	}
 	return dir, ws
 }
@@ -386,7 +386,7 @@ func makeScriptWorkflow(t *testing.T) (scopeDir string, wfState *wfstate.Workflo
 		ScopeDir:     dir,
 		TotalCostUSD: 0.0,
 		BudgetUSD:    10.0,
-		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "CHECK.sh", Stack: []string{}}},
+		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "CHECK.sh", Stack: []wfstate.StackFrame{}}},
 	}
 	return dir, ws
 }
@@ -872,7 +872,7 @@ func TestMarkdownExecutor_RaisesPromptFileError(t *testing.T) {
 		WorkflowID: "test",
 		ScopeDir:   emptyDir,
 		BudgetUSD:  10.0,
-		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []string{}}},
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []wfstate.StackFrame{}}},
 	}
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: emptyDir}
@@ -1022,7 +1022,7 @@ func makeWorkflowWithPolicy(t *testing.T) (string, *wfstate.WorkflowState) {
 		ScopeDir:     dir,
 		TotalCostUSD: 0.0,
 		BudgetUSD:    10.0,
-		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []string{}}},
+		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []wfstate.StackFrame{}}},
 	}
 	return dir, ws
 }

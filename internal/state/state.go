@@ -45,28 +45,40 @@ type StateFileError struct {
 
 func (e *StateFileError) Error() string { return e.msg }
 
+// StackFrame is one entry on an agent's call-return stack.
+// It records the caller's session and the state to return to after the
+// current function/call completes.
+type StackFrame struct {
+	Session *string `json:"session"` // caller session_id; null when the caller had no session
+	State   string  `json:"state"`   // return state filename
+}
+
 // AgentState holds the persisted state of a single agent within a workflow.
 type AgentState struct {
-	ID            string   `json:"id"`
-	CurrentState  string   `json:"current_state"`
-	SessionID     *string  `json:"session_id"`               // null when no session has been started
-	Stack         []string `json:"stack"`                    // call stack of return states
-	PendingResult *string  `json:"pending_result,omitempty"` // absent from JSON when nil
+	ID            string       `json:"id"`
+	CurrentState  string       `json:"current_state"`
+	SessionID     *string      `json:"session_id"`               // null when no session has been started
+	Stack         []StackFrame `json:"stack"`                    // call-return stack of frames
+	PendingResult *string      `json:"pending_result,omitempty"` // absent from JSON when nil
+	Cwd           string       `json:"cwd,omitempty"`            // per-agent working directory; empty = inherit
 
 	// Transient execution fields — not persisted to JSON.
-	// Set by the orchestrator before calling Execute(); read by executors.
+	// Set by the orchestrator / transition handlers; consumed by the next executor step.
 	ForkSessionID  *string           `json:"-"` // session to fork from (call transitions)
 	ForkAttributes map[string]string `json:"-"` // template variables from fork
-	Cwd            string            `json:"-"` // per-agent working directory; empty = inherit
 }
 
 // WorkflowState is the top-level structure persisted for each workflow.
 type WorkflowState struct {
-	WorkflowID   string       `json:"workflow_id"`
-	ScopeDir     string       `json:"scope_dir"`
-	TotalCostUSD float64      `json:"total_cost_usd"`
-	BudgetUSD    float64      `json:"budget_usd"`
-	Agents       []AgentState `json:"agents"`
+	WorkflowID   string         `json:"workflow_id"`
+	ScopeDir     string         `json:"scope_dir"`
+	TotalCostUSD float64        `json:"total_cost_usd"`
+	BudgetUSD    float64        `json:"budget_usd"`
+	Agents       []AgentState   `json:"agents"`
+	ForkCounters map[string]int `json:"fork_counters,omitempty"` // per-parent agent fork counters
+
+	// Transient: populated by HandleResult when an agent terminates; consumed by orchestrator.
+	AgentTerminationResults map[string]string `json:"-"`
 }
 
 // GetStateDir returns the state directory to use. If stateDir is non-empty it
@@ -195,7 +207,7 @@ func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD flo
 		ID:           "main",
 		CurrentState: initialState,
 		SessionID:    nil,
-		Stack:        []string{},
+		Stack:        []StackFrame{},
 	}
 	if initialInput != nil {
 		agent.PendingResult = initialInput

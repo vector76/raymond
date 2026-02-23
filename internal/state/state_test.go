@@ -31,7 +31,7 @@ func TestWriteStateCreatesFile(t *testing.T) {
 		WorkflowID: "test-001",
 		ScopeDir:   "workflows/test",
 		Agents: []state.AgentState{
-			{ID: "main", CurrentState: "START.md", Stack: []string{}},
+			{ID: "main", CurrentState: "START.md", Stack: []state.StackFrame{}},
 		},
 	}
 
@@ -49,7 +49,7 @@ func TestWriteStateJSONIsValid(t *testing.T) {
 		TotalCostUSD: 0.0,
 		BudgetUSD:    10.0,
 		Agents: []state.AgentState{
-			{ID: "main", CurrentState: "START.md", Stack: []string{}},
+			{ID: "main", CurrentState: "START.md", Stack: []state.StackFrame{}},
 		},
 	}
 
@@ -73,7 +73,7 @@ func TestReadStateReturnsWritten(t *testing.T) {
 		TotalCostUSD: 1.5,
 		BudgetUSD:    10.0,
 		Agents: []state.AgentState{
-			{ID: "main", CurrentState: "NEXT.md", SessionID: &sid, Stack: []string{}},
+			{ID: "main", CurrentState: "NEXT.md", SessionID: &sid, Stack: []state.StackFrame{}},
 		},
 	}
 
@@ -210,7 +210,7 @@ func TestCreateInitialStateBasic(t *testing.T) {
 	assert.Equal(t, "main", agent.ID)
 	assert.Equal(t, "START.md", agent.CurrentState)
 	assert.Nil(t, agent.SessionID)
-	assert.Equal(t, []string{}, agent.Stack)
+	assert.Equal(t, []state.StackFrame{}, agent.Stack)
 	assert.Nil(t, agent.PendingResult)
 }
 

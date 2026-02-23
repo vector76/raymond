@@ -74,6 +74,12 @@ type RunOptions struct {
 	// NoResetPaused skips the reset of paused agents on startup (used in tests
 	// to simulate a mid-run resume without the initial status clearing).
 	NoResetPaused bool
+
+	// ObserverSetup, if non-nil, is called with the Bus immediately after it
+	// is created (before WorkflowStarted is emitted). Use it to register
+	// observers from production code (e.g. the CLI). Tests use SetBusHook
+	// from export_test.go instead.
+	ObserverSetup func(*bus.Bus)
 }
 
 // RunAllAgents executes the workflow identified by workflowID until all agents
@@ -107,6 +113,9 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	b := bus.New()
 	if busHook != nil {
 		busHook(b)
+	}
+	if opts.ObserverSetup != nil {
+		opts.ObserverSetup(b)
 	}
 
 	execCtx := &executors.ExecutionContext{

@@ -240,7 +240,7 @@ elif obj.get("type") == "result":
 
 **Note on `├─` vs `└─`:** During streaming, we cannot know which message is the last one. The implementation always uses `├─` for progress messages and prints the "Done" line separately after the stream completes. If a state has no progress messages (only tool invocations or nothing), the "Done" line still appears.
 
-**Note on cost display:** The "Done" line shows `Done ($X.XX, total: $Y.YY)` where `$X.XX` is the cost for this specific invocation/state and `$Y.YY` is the workflow-wide accumulated total cost across all agents and invocations.
+**Note on cost display:** The "Done" line shows `Done ($X.XXXX, total: $Y.YYYY)` where `$X.XXXX` is the cost for this specific invocation/state and `$Y.YYYY` is the workflow-wide accumulated total cost across all agents and invocations. Costs are displayed with four decimal places.
 
 **Note on transition types:** All non-fork, non-result transitions (goto, reset, function, call) use the same `→` symbol. The distinction is internal to the orchestrator (e.g., function/call push to return stack, reset clears it) but doesn't need to be shown in console output for clarity.
 

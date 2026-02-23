@@ -296,8 +296,13 @@ func LoadConfig(cwd string) (map[string]any, error) {
 	}
 
 	// Extract the [raymond] section.
-	raymondSection, _ := raw["raymond"].(map[string]any)
-	if raymondSection == nil {
+	raymondSection, ok := raw["raymond"].(map[string]any)
+	if !ok {
+		if _, exists := raw["raymond"]; exists {
+			return nil, &ConfigError{msg: fmt.Sprintf(
+				"Failed to parse %s: [raymond] must be a TOML table, not a scalar value", configFile,
+			)}
+		}
 		return map[string]any{}, nil
 	}
 

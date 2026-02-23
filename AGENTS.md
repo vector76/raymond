@@ -39,4 +39,4 @@ The `docs/` folder contains topic-oriented markdown documents organized in a **f
 ## AGENTS.md vs CLAUDE.md
 
 - **Source of truth**: `AGENTS.md` is the authoritative copy.
-- **Synchronization**: `CLAUDE.md` is intended to be a copy for tooling compatibility. If they ever differ, update `CLAUDE.md` to match `AGENTS.md`.
+- **Synchronization**: `CLAUDE.md` uses `@AGENTS.md` to include this file via Claude Code's file-include directive. Do not replace this with a manual copy — the include directive keeps them in sync automatically.

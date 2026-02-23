@@ -412,6 +412,20 @@ func TestLoadConfigErrorOnValidationFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "model")
 }
 
+func TestLoadConfigErrorOnScalarRaymondSection(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".raymond"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, ".raymond", "config.toml"),
+		[]byte("raymond = \"oops\"\n"), 0o644,
+	))
+
+	_, err := config.LoadConfig(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "[raymond]")
+	assert.Contains(t, err.Error(), "table")
+}
+
 // ----------------------------------------------------------------------------
 // MergeConfig
 // ----------------------------------------------------------------------------

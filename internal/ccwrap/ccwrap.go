@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -319,6 +320,7 @@ func runStream(
 			var obj map[string]any
 			if err := json.Unmarshal([]byte(line), &obj); err != nil {
 				// Skip non-JSON lines (mirrors Python's warning + continue).
+				log.Printf("ccwrap: skipping non-JSON line from claude: %q", line)
 				continue
 			}
 

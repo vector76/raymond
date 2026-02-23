@@ -116,7 +116,7 @@ func GetStateDir(stateDir string) string {
 // Returns os.ErrNotExist (via errors.Is) when the state file does not exist.
 // Returns *StateFileError when the file exists but contains invalid JSON.
 func ReadState(workflowID, stateDir string) (*WorkflowState, error) {
-	path := statePath(stateDir, workflowID)
+	path := filepath.Join(GetStateDir(stateDir), workflowID+".json")
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -149,7 +149,7 @@ func WriteState(workflowID string, ws *WorkflowState, stateDir string) error {
 		return fmt.Errorf("failed to create state directory %s: %w", dir, err)
 	}
 
-	final := statePath(stateDir, workflowID)
+	final := filepath.Join(dir, workflowID+".json")
 
 	tmp, err := os.CreateTemp(dir, workflowID+"_*.tmp")
 	if err != nil {
@@ -185,7 +185,7 @@ func WriteState(workflowID string, ws *WorkflowState, stateDir string) error {
 // DeleteState removes the state file for workflowID. If the file does not
 // exist, DeleteState returns nil (idempotent).
 func DeleteState(workflowID, stateDir string) error {
-	path := statePath(stateDir, workflowID)
+	path := filepath.Join(GetStateDir(stateDir), workflowID+".json")
 	err := os.Remove(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to delete state file %s: %w", path, err)
@@ -307,10 +307,4 @@ func RecoverWorkflows(stateDir string) ([]string, error) {
 	return ids, nil
 }
 
-// statePath returns the full path to the state file for workflowID.
-// stateDir is used as-is (no GetStateDir expansion) so callers that already
-// have the resolved dir can call this directly.
-func statePath(stateDir, workflowID string) string {
-	return filepath.Join(stateDir, workflowID+".json")
-}
 

@@ -137,6 +137,13 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 
 			merged := config.MergeConfig(fileConfig, cliArgs)
 
+			if merged.Model != "" && merged.Model != "opus" && merged.Model != "sonnet" && merged.Model != "haiku" {
+				return fmt.Errorf("invalid --model value %q: must be one of 'opus', 'sonnet', 'haiku'", merged.Model)
+			}
+			if merged.Effort != "" && merged.Effort != "low" && merged.Effort != "medium" && merged.Effort != "high" {
+				return fmt.Errorf("invalid --effort value %q: must be one of 'low', 'medium', 'high'", merged.Effort)
+			}
+
 			effectiveBudget := defaultBudgetUSD
 			if merged.Budget != nil {
 				effectiveBudget = *merged.Budget

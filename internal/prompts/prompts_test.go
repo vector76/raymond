@@ -183,7 +183,7 @@ func TestRenderPrompt_MultiplePlaceholders(t *testing.T) {
 	}
 }
 
-func TestRenderPrompt_MissingKeyLeaveplaceholder(t *testing.T) {
+func TestRenderPrompt_MissingKeyLeavesPlaceholder(t *testing.T) {
 	result := RenderPrompt("Hello {{name}}, status: {{status}}", map[string]any{
 		"name": "Charlie",
 	})

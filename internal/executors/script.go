@@ -118,8 +118,9 @@ func (e *ScriptExecutor) Execute(
 	// Non-zero exit code is always fatal for scripts.
 	if sr.ExitCode != 0 {
 		stderr := sr.Stderr
-		if len(stderr) > 500 {
-			stderr = stderr[:500]
+		const maxStderrInError = 4096
+		if len(stderr) > maxStderrInError {
+			stderr = stderr[:maxStderrInError]
 		}
 		return ExecutionResult{}, &ScriptError{
 			Msg: fmt.Sprintf(

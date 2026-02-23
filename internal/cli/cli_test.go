@@ -342,3 +342,35 @@ func TestDangerouslySkipPermissionsFlag(t *testing.T) {
 		"--dangerously-skip-permissions", "--state-dir", stateDir)
 	require.NoError(t, err)
 }
+
+func TestInvalidModelFlagReturnsError(t *testing.T) {
+	stateDir := makeStateDir(t)
+	writeWorkflow(t, "wf-m", "workflows/test", "START.md", stateDir)
+
+	_, _, err := run(t, "--resume", "wf-m", "--model", "gpt5", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gpt5")
+	assert.Contains(t, err.Error(), "model")
+}
+
+func TestInvalidEffortFlagReturnsError(t *testing.T) {
+	stateDir := makeStateDir(t)
+	writeWorkflow(t, "wf-e", "workflows/test", "START.md", stateDir)
+
+	_, _, err := run(t, "--resume", "wf-e", "--effort", "extreme", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extreme")
+	assert.Contains(t, err.Error(), "effort")
+}
+
+func TestValidEffortFlagValues(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high"} {
+		t.Run(effort, func(t *testing.T) {
+			stateDir := makeStateDir(t)
+			writeWorkflow(t, "wf-ef-"+effort, "workflows/test", "START.md", stateDir)
+
+			_, _, err := run(t, "--resume", "wf-ef-"+effort, "--effort", effort, "--state-dir", stateDir)
+			require.NoError(t, err)
+		})
+	}
+}

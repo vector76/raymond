@@ -43,8 +43,8 @@ workflows/test_cases/
     dispatch-items.txt  # Test 4: Items to dispatch
     ...
   test_outputs/         # Test output files (ignored by git)
-    story-output.txt    # Test 2: Story output
-    research-summary.txt # Test 3: Research summary output
+    story-output.md     # Test 2: Story output
+    research-summary.md  # Test 3: Research summary output
     dispatch-log.txt    # Test 4: Dispatch log
     worker-*.txt        # Test 4: Worker outputs (one per item)
     improve-output.txt # Test 5: Improvement iterations
@@ -122,7 +122,7 @@ interesting trait to solve the problem. Write 2-3 sentences.
 
 Reference details from both previous steps to demonstrate continuity.
 
-When done, write the complete mini-story to workflows/test_cases/test_outputs/story-output.txt and respond with:
+When done, write the complete mini-story to workflows/test_cases/test_outputs/story-output.md and respond with:
 <result>Story complete</result>
 ```
 
@@ -132,7 +132,7 @@ When done, write the complete mini-story to workflows/test_cases/test_outputs/st
 3. Verify CONFLICT.md references the character by name (context preserved)
 4. Verify it transitions to RESOLUTION.md
 5. Verify RESOLUTION.md references both character and conflict
-6. Verify workflow terminates with result message and `workflows/test_cases/test_outputs/story-output.txt` contains the story
+6. Verify workflow terminates with result message and `workflows/test_cases/test_outputs/story-output.md` contains the story
 
 **Success criteria:** Context flows through all three states, character details
 persist.
@@ -184,12 +184,12 @@ You received research results from your assistant:
 
 {{result}}
 
-Write a one-paragraph summary of the research to workflows/test_cases/test_outputs/research-summary.txt.
+Write a one-paragraph summary of the research to workflows/test_cases/test_outputs/research-summary.md.
 
 Mention at least two of the facts from the research in your summary.
 
 Then respond with:
-<result>Summary written to workflows/test_cases/test_outputs/research-summary.txt</result>
+<result>Summary written to workflows/test_cases/test_outputs/research-summary.md</result>
 ```
 
 Note: The `{{result}}` placeholder is replaced with the content from the
@@ -201,7 +201,7 @@ child's `<result>` tag. This is how the parent receives the child's return value
 3. Verify it calls RESEARCH.md as a child workflow
 4. Verify RESEARCH.md returns facts about purple elephants via `<result>` tag
 5. Verify parent resumes at SUMMARIZE.md with `{{result}}` populated
-6. Verify research-summary.txt contains a summary referencing the fictional facts
+6. Verify research-summary.md contains a summary referencing the fictional facts
 
 **Success criteria:** Child context is isolated, only result returns to parent.
 
@@ -729,7 +729,7 @@ their purpose (CLASSIFY.md, START.md, CONFLICT.md, etc.).
 Test data files in `test_files/` (inputs) and `test_outputs/` (outputs) should
 also use distinct names to avoid collisions between workflows. Examples:
 - Input files: `input1.txt`, `input2.txt`, `research-input.txt`, `dispatch-items.txt`
-- Output files: `story-output.txt`, `research-summary.txt`, `dispatch-log.txt`, `worker-*.txt`
+- Output files: `story-output.md`, `research-summary.md`, `dispatch-log.txt`, `worker-*.txt`
 
 ## Cleanup
 

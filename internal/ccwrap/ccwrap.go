@@ -16,7 +16,7 @@
 // Node.js/Ink TUI cannot emit terminal control sequences (e.g. alternate screen
 // buffer, SetConsoleTitleW) that would interfere with raymond's console output.
 // On Unix this is achieved with setsid (new session, no controlling tty); on
-// Windows with DETACHED_PROCESS (no inherited console handle).
+// Windows with CREATE_NO_WINDOW (child gets its own hidden console).
 package ccwrap
 
 import (

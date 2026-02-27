@@ -148,6 +148,20 @@ func TestParseFrontmatterEmptyModelTreatedAsEmpty(t *testing.T) {
 	assert.Equal(t, "", p.Model)
 }
 
+func TestParseFrontmatterCRLFLineEndings(t *testing.T) {
+	// Files checked out on Windows have \r\n line endings. The parser must
+	// normalize them so the frontmatter regex matches correctly.
+	content := "---\r\nallowed_transitions:\r\n  - { tag: goto, target: NEXT.md }\r\n---\r\n# Prompt\r\nContent."
+
+	p, body, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	assert.Len(t, p.AllowedTransitions, 1)
+	assert.Contains(t, p.AllowedTransitions, map[string]string{"tag": "goto", "target": "NEXT.md"})
+	assert.Contains(t, body, "# Prompt")
+	assert.True(t, policy.CanUseImplicitTransition(p))
+}
+
 // ----------------------------------------------------------------------------
 // ValidateTransitionPolicy
 // ----------------------------------------------------------------------------

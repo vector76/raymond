@@ -48,6 +48,11 @@ func (e *PolicyViolationError) Error() string { return e.msg }
 // Returns (*Policy, body, nil) on success.
 // Returns (nil, "", error) when frontmatter contains invalid YAML.
 func ParseFrontmatter(content string) (*Policy, string, error) {
+	// Normalize Windows line endings so the regex works regardless of how the
+	// file was checked out. Python's text-mode file I/O does this automatically;
+	// Go's os.ReadFile reads raw bytes, so we do it explicitly here.
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+
 	// Try non-empty frontmatter first.
 	if m := frontmatterRe.FindStringSubmatchIndex(content); m != nil {
 		yamlContent := content[m[2]:m[3]]

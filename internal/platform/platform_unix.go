@@ -15,13 +15,15 @@ func IsWindows() bool { return false }
 func IsUnix() bool { return true }
 
 // buildScriptCmd returns the command+args to execute the given script.
-// On Unix, .sh files are run with bash. .bat files are rejected.
+// On Unix, .sh files are run with bash. .bat and .ps1 files are rejected.
 func buildScriptCmd(scriptPath, ext string) ([]string, error) {
 	switch ext {
 	case ".sh":
 		return []string{"bash", scriptPath}, nil
 	case ".bat":
 		return nil, platformError("Cannot execute .bat file on Unix: %s. Use .sh files on Unix.", scriptPath)
+	case ".ps1":
+		return nil, platformError("Cannot execute .ps1 file on Unix: %s. Use .sh files on Unix.", scriptPath)
 	default:
 		return nil, unsupportedExt(ext)
 	}

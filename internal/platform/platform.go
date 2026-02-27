@@ -2,12 +2,9 @@
 //
 // Shell selection by platform and file extension:
 //
-//	Unix  (!windows): .sh → bash; .bat → error
-//	Windows:          .bat → cmd.exe /c; .sh → error
+//	Unix  (!windows): .sh → bash; .bat/.ps1 → error
+//	Windows:          .bat → cmd.exe /c; .ps1 → powershell.exe -ExecutionPolicy Bypass -File; .sh → error
 //	Both:             unsupported extension → error
-//
-// .ps1 / PowerShell support is designed in (add a case in buildScriptCmd in
-// platform_windows.go) but deferred to a future release.
 //
 // RunScript merges the provided env map over the current process environment;
 // the child process inherits all parent env vars with supplied keys overriding

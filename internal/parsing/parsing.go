@@ -105,12 +105,12 @@ func ValidateSingleTransition(transitions []Transition) error {
 	return nil
 }
 
-// ExtractStateName strips the recognized state file extension (.md, .sh, .bat)
+// ExtractStateName strips the recognized state file extension (.md, .sh, .bat, .ps1)
 // from filename, case-insensitively. If no recognized extension is present the
 // filename is returned unchanged. Case of the base name is preserved.
 func ExtractStateName(filename string) string {
 	lower := strings.ToLower(filename)
-	for _, ext := range []string{".md", ".sh", ".bat"} {
+	for _, ext := range []string{".md", ".sh", ".bat", ".ps1"} {
 		if strings.HasSuffix(lower, ext) {
 			return filename[:len(filename)-len(ext)]
 		}

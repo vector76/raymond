@@ -2,6 +2,7 @@ package console_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,9 +13,9 @@ import (
 	"github.com/vector76/raymond/internal/observers/console"
 )
 
-// newObs creates a ConsoleObserver backed by buf using ASCII symbols.
+// newObs creates a ConsoleObserver backed by buf using ASCII symbols, no color.
 func newObs(b *bus.Bus, buf *bytes.Buffer, quiet bool) *console.ConsoleObserver {
-	return console.NewWithWriter(b, quiet, false, 0, buf, false)
+	return console.NewWithWriter(b, quiet, false, 0, buf, false, false)
 }
 
 // ----------------------------------------------------------------------------
@@ -505,7 +506,7 @@ func TestConsoleErrorFatalMessage(t *testing.T) {
 func TestConsoleUnicodeArrow(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := console.NewWithWriter(b, false, false, 0, &buf, true) // unicode=true
+	obs := console.NewWithWriter(b, false, false, 0, &buf, true, false) // unicode=true
 	defer obs.Close()
 
 	b.Emit(events.TransitionOccurred{
@@ -541,7 +542,7 @@ func TestConsoleASCIIArrow(t *testing.T) {
 func TestConsoleUnicodeFork(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := console.NewWithWriter(b, false, false, 0, &buf, true)
+	obs := console.NewWithWriter(b, false, false, 0, &buf, true, false)
 	defer obs.Close()
 
 	b.Emit(events.AgentSpawned{
@@ -603,4 +604,122 @@ func TestConsoleCloseUnsubscribes(t *testing.T) {
 	})
 
 	assert.Empty(t, buf.String())
+}
+
+// ----------------------------------------------------------------------------
+// Color output
+// ----------------------------------------------------------------------------
+
+// newColorObs creates a ConsoleObserver with color=true and unicode=false.
+func newColorObs(b *bus.Bus, buf *bytes.Buffer) *console.ConsoleObserver {
+	return console.NewWithWriter(b, false, false, 0, buf, false, true)
+}
+
+func TestConsoleColorAgentIDWrappedInEscapes(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[")
+	assert.Contains(t, out, "main")
+	assert.Contains(t, out, "\x1b[0m")
+	assert.Contains(t, out, "START.md")
+}
+
+func TestConsoleColorFirstAgentGetsCyan(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+
+	// Cyan (\x1b[36m) is the first color in the palette.
+	assert.Contains(t, buf.String(), "\x1b[36m[main]\x1b[0m")
+}
+
+func TestConsoleColorSecondAgentGetsYellow(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+	b.Emit(events.StateStarted{AgentID: "worker1", StateName: "TASK.md", StateType: "markdown"})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36m[main]\x1b[0m")    // cyan
+	assert.Contains(t, out, "\x1b[33m[worker1]\x1b[0m") // yellow
+}
+
+func TestConsoleColorSameAgentSameColor(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "A.md", StateType: "markdown"})
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "B.md", StateType: "markdown"})
+
+	out := buf.String()
+	// Both occurrences of [main] must use the same (cyan) color.
+	assert.Equal(t, 2, strings.Count(out, "\x1b[36m[main]\x1b[0m"))
+}
+
+func TestConsoleNoColorAgentIDPlain(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false) // color=false
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+
+	out := buf.String()
+	assert.Contains(t, out, "[main] START.md")
+	assert.NotContains(t, out, "\x1b[")
+}
+
+func TestConsoleColorErrorMessageRed(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.ErrorOccurred{ErrorMessage: "something went wrong", IsRetryable: false})
+
+	assert.Contains(t, buf.String(), "\x1b[31msomething went wrong\x1b[0m")
+}
+
+func TestConsoleColorAgentPausedYellowReason(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.AgentPaused{AgentID: "main", Reason: events.PauseReasonUsageLimit, Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36m[main]\x1b[0m")                            // agent cyan
+	assert.Contains(t, out, "\x1b[33m"+events.PauseReasonUsageLimit+"\x1b[0m") // reason yellow
+}
+
+func TestConsoleColorCycleWrapsAfterSix(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	agents := []string{"a", "b", "c", "d", "e", "f", "g"}
+	for _, id := range agents {
+		b.Emit(events.StateStarted{AgentID: id, StateName: "X.md", StateType: "markdown"})
+	}
+
+	out := buf.String()
+	// 7th agent wraps back to cyan (same as 1st).
+	assert.Contains(t, out, "\x1b[36m[a]\x1b[0m")
+	assert.Contains(t, out, "\x1b[36m[g]\x1b[0m")
 }

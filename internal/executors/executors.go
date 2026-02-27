@@ -79,11 +79,11 @@ var (
 )
 
 // GetExecutor returns the singleton executor appropriate for filename.
-// Markdown (.md) → MarkdownExecutor; scripts (.sh, .bat) → ScriptExecutor.
+// Markdown (.md) → MarkdownExecutor; scripts (.sh, .bat, .ps1) → ScriptExecutor.
 // Unknown extensions fall back to MarkdownExecutor.
 func GetExecutor(filename string) StateExecutor {
 	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".sh", ".bat":
+	case ".sh", ".bat", ".ps1":
 		return scriptSingleton
 	default:
 		return markdownSingleton
@@ -94,7 +94,7 @@ func GetExecutor(filename string) StateExecutor {
 // Shared utilities
 // --------------------------------------------------------------------------
 
-// ExtractStateName strips the recognized state file extension (.md, .sh, .bat)
+// ExtractStateName strips the recognized state file extension (.md, .sh, .bat, .ps1)
 // from filename, case-insensitively. If no recognized extension is present the
 // filename is returned unchanged. Delegates to parsing.ExtractStateName.
 func ExtractStateName(filename string) string {

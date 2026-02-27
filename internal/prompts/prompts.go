@@ -13,7 +13,7 @@
 // Resolution priority for abstract state names:
 //
 //  1. .md   (preferred on all platforms)
-//  2. .sh   (Unix only)  / .bat (Windows only)
+//  2. .sh   (Unix only)  / .ps1 or .bat (Windows only; error if both present)
 //
 // Explicit filenames (e.g. "NEXT.md", "NEXT.sh") skip the search but are still
 // validated for platform compatibility.
@@ -113,10 +113,11 @@ func RenderPrompt(template string, variables map[string]any) string {
 // ResolveState maps stateName to a concrete filename inside scopeDir.
 //
 // Abstract names (no extension) are resolved by searching for files with
-// recognized extensions in priority order: .md > platform script (.sh/.bat).
-// If both .md and the platform script exist the name is ambiguous — an error
-// is returned. A wrong-platform script that is the only match also returns
-// an error.
+// recognized extensions in priority order: .md > platform script (.sh on Unix;
+// .ps1 or .bat on Windows). If both .md and a platform script exist the name
+// is ambiguous — an error is returned. On Windows, if both .ps1 and .bat exist
+// (without .md), that is also ambiguous. A wrong-platform script that is the
+// only match also returns an error.
 //
 // Explicit names (with extension) skip the search but are validated for
 // platform compatibility and existence.
@@ -144,9 +145,9 @@ func ResolveState(scopeDir, stateName string) (string, error) {
 func resolveExplicitExtension(scopeDir, stateName, ext string) (string, error) {
 	if ext == ".sh" && platform.IsWindows() {
 		return "", fmt.Errorf(
-			"Cannot use Unix script %q on Windows. Use a .bat file instead.", stateName)
+			"Cannot use Unix script %q on Windows. Use a .ps1 or .bat file instead.", stateName)
 	}
-	if ext == ".bat" && platform.IsUnix() {
+	if (ext == ".bat" || ext == ".ps1") && platform.IsUnix() {
 		return "", fmt.Errorf(
 			"Cannot use Windows script %q on Unix. Use a .sh file instead.", stateName)
 	}
@@ -159,35 +160,87 @@ func resolveExplicitExtension(scopeDir, stateName, ext string) (string, error) {
 
 // resolveAbstractName handles state names without an extension.
 func resolveAbstractName(scopeDir, stateName string) (string, error) {
-	platformExt, otherExt := scriptExts()
-
 	mdPath := filepath.Join(scopeDir, stateName+".md")
-	scriptPath := filepath.Join(scopeDir, stateName+platformExt)
-	otherPath := filepath.Join(scopeDir, stateName+otherExt)
-
 	mdExists := pathExists(mdPath)
-	scriptExists := pathExists(scriptPath)
-	otherExists := pathExists(otherPath)
 
-	if mdExists && scriptExists {
+	if platform.IsWindows() {
+		ps1Exists := pathExists(filepath.Join(scopeDir, stateName+".ps1"))
+		batExists := pathExists(filepath.Join(scopeDir, stateName+".bat"))
+		shExists := pathExists(filepath.Join(scopeDir, stateName+".sh"))
+
+		if mdExists && (ps1Exists || batExists) {
+			switch {
+			case ps1Exists && batExists:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: %s.md, %s.ps1, and %s.bat all exist. Use explicit extension.",
+					stateName, stateName, stateName, stateName)
+			case ps1Exists:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: both %s.md and %s.ps1 exist. Use explicit extension.",
+					stateName, stateName, stateName)
+			default:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: both %s.md and %s.bat exist. Use explicit extension.",
+					stateName, stateName, stateName)
+			}
+		}
+		if mdExists {
+			return stateName + ".md", nil
+		}
+		if ps1Exists && batExists {
+			return "", fmt.Errorf(
+				"Ambiguous state %q: both %s.ps1 and %s.bat exist. Use explicit extension.",
+				stateName, stateName, stateName)
+		}
+		if ps1Exists {
+			return stateName + ".ps1", nil
+		}
+		if batExists {
+			return stateName + ".bat", nil
+		}
+		if shExists {
+			return "", fmt.Errorf(
+				"State %q not found. Only %s.sh exists, which is not compatible with Windows.",
+				stateName, stateName)
+		}
 		return "", fmt.Errorf(
-			"Ambiguous state %q: both %s.md and %s%s exist. Use explicit extension.",
-			stateName, stateName, stateName, platformExt)
+			"State %q not found in %s. Looked for: %s.md, %s.ps1, %s.bat",
+			stateName, scopeDir, stateName, stateName, stateName)
+	}
+
+	// Unix path.
+	shExists := pathExists(filepath.Join(scopeDir, stateName+".sh"))
+	batExists := pathExists(filepath.Join(scopeDir, stateName+".bat"))
+	ps1Exists := pathExists(filepath.Join(scopeDir, stateName+".ps1"))
+
+	if mdExists && shExists {
+		return "", fmt.Errorf(
+			"Ambiguous state %q: both %s.md and %s.sh exist. Use explicit extension.",
+			stateName, stateName, stateName)
 	}
 	if mdExists {
 		return stateName + ".md", nil
 	}
-	if scriptExists {
-		return stateName + platformExt, nil
+	if shExists {
+		return stateName + ".sh", nil
 	}
-	if otherExists {
+	switch {
+	case batExists && ps1Exists:
 		return "", fmt.Errorf(
-			"State %q not found. Only %s%s exists, which is not compatible with this platform.",
-			stateName, stateName, otherExt)
+			"State %q not found. Only Windows scripts (%s.bat, %s.ps1) exist, which are not compatible with this platform.",
+			stateName, stateName, stateName)
+	case batExists:
+		return "", fmt.Errorf(
+			"State %q not found. Only %s.bat exists, which is not compatible with this platform.",
+			stateName, stateName)
+	case ps1Exists:
+		return "", fmt.Errorf(
+			"State %q not found. Only %s.ps1 exists, which is not compatible with this platform.",
+			stateName, stateName)
 	}
 	return "", fmt.Errorf(
-		"State %q not found in %s. Looked for: %s.md, %s%s",
-		stateName, scopeDir, stateName, stateName, platformExt)
+		"State %q not found in %s. Looked for: %s.md, %s.sh",
+		stateName, scopeDir, stateName, stateName)
 }
 
 // resolveStateFromZip applies the same resolution logic for zip archives.
@@ -198,9 +251,9 @@ func resolveStateFromZip(zipPath, stateName string) (string, error) {
 		// Explicit extension — validate platform, then check existence.
 		if ext == ".sh" && platform.IsWindows() {
 			return "", fmt.Errorf(
-				"Cannot use Unix script %q on Windows. Use a .bat file instead.", stateName)
+				"Cannot use Unix script %q on Windows. Use a .ps1 or .bat file instead.", stateName)
 		}
-		if ext == ".bat" && platform.IsUnix() {
+		if (ext == ".bat" || ext == ".ps1") && platform.IsUnix() {
 			return "", fmt.Errorf(
 				"Cannot use Windows script %q on Unix. Use a .sh file instead.", stateName)
 		}
@@ -216,10 +269,7 @@ func resolveStateFromZip(zipPath, stateName string) (string, error) {
 	}
 
 	// Abstract name — list all zip entries once.
-	platformExt, otherExt := scriptExts()
 	mdName := stateName + ".md"
-	scriptName := stateName + platformExt
-	otherName := stateName + otherExt
 
 	available, err := zipscope.ListFiles(zipPath)
 	if err != nil {
@@ -231,39 +281,102 @@ func resolveStateFromZip(zipPath, stateName string) (string, error) {
 	}
 
 	mdExists := avail[mdName]
-	scriptExists := avail[scriptName]
-	otherExists := avail[otherName]
 
-	if mdExists && scriptExists {
+	if platform.IsWindows() {
+		ps1Name := stateName + ".ps1"
+		batName := stateName + ".bat"
+		shName := stateName + ".sh"
+		ps1Exists := avail[ps1Name]
+		batExists := avail[batName]
+		shExists := avail[shName]
+
+		if mdExists && (ps1Exists || batExists) {
+			switch {
+			case ps1Exists && batExists:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: %s, %s, and %s all exist. Use explicit extension.",
+					stateName, mdName, ps1Name, batName)
+			case ps1Exists:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
+					stateName, mdName, ps1Name)
+			default:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
+					stateName, mdName, batName)
+			}
+		}
+		if mdExists {
+			return mdName, nil
+		}
+		if ps1Exists && batExists {
+			return "", fmt.Errorf(
+				"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
+				stateName, ps1Name, batName)
+		}
+		if ps1Exists {
+			return ps1Name, nil
+		}
+		if batExists {
+			return batName, nil
+		}
+		if shExists {
+			return "", fmt.Errorf(
+				"State %q not found. Only %s exists, which is not compatible with Windows.",
+				stateName, shName)
+		}
+		return "", fmt.Errorf(
+			"State %q not found in %s. Looked for: %s, %s, %s",
+			stateName, zipPath, mdName, ps1Name, batName)
+	}
+
+	// Unix path.
+	shName := stateName + ".sh"
+	batName := stateName + ".bat"
+	ps1Name := stateName + ".ps1"
+	shExists := avail[shName]
+	batExists := avail[batName]
+	ps1Exists := avail[ps1Name]
+
+	if mdExists && shExists {
 		return "", fmt.Errorf(
 			"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
-			stateName, mdName, scriptName)
+			stateName, mdName, shName)
 	}
 	if mdExists {
 		return mdName, nil
 	}
-	if scriptExists {
-		return scriptName, nil
+	if shExists {
+		return shName, nil
 	}
-	if otherExists {
+	switch {
+	case batExists && ps1Exists:
+		return "", fmt.Errorf(
+			"State %q not found. Only Windows scripts (%s, %s) exist, which are not compatible with this platform.",
+			stateName, batName, ps1Name)
+	case batExists:
 		return "", fmt.Errorf(
 			"State %q not found. Only %s exists, which is not compatible with this platform.",
-			stateName, otherName)
+			stateName, batName)
+	case ps1Exists:
+		return "", fmt.Errorf(
+			"State %q not found. Only %s exists, which is not compatible with this platform.",
+			stateName, ps1Name)
 	}
 	return "", fmt.Errorf(
 		"State %q not found in %s. Looked for: %s, %s",
-		stateName, zipPath, mdName, scriptName)
+		stateName, zipPath, mdName, shName)
 }
 
 // GetStateType returns "markdown" for .md files or "script" for the
-// platform-appropriate script extension (.sh on Unix, .bat on Windows).
+// platform-appropriate script extension (.sh on Unix; .ps1 or .bat on Windows).
 // Any other extension (including the wrong-platform script) returns an error.
 func GetStateType(filename string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == "" {
 		return "", fmt.Errorf(
 			"Unsupported state file %q: no extension. "+
-				"State files must have .md, .sh, or .bat extension.", filename)
+				"State files must have .md, .sh, .ps1, or .bat extension.", filename)
 	}
 	if ext == ".md" {
 		return "markdown", nil
@@ -271,11 +384,11 @@ func GetStateType(filename string) (string, error) {
 	if ext == ".sh" {
 		if platform.IsWindows() {
 			return "", fmt.Errorf(
-				"Cannot use Unix script %q on Windows. Use a .bat file instead.", filename)
+				"Cannot use Unix script %q on Windows. Use a .ps1 or .bat file instead.", filename)
 		}
 		return "script", nil
 	}
-	if ext == ".bat" {
+	if ext == ".ps1" || ext == ".bat" {
 		if platform.IsUnix() {
 			return "", fmt.Errorf(
 				"Cannot use Windows script %q on Unix. Use a .sh file instead.", filename)
@@ -284,20 +397,12 @@ func GetStateType(filename string) (string, error) {
 	}
 	return "", fmt.Errorf(
 		"Unsupported state file extension %q in %q. "+
-			"Supported extensions: .md, .sh (Unix), .bat (Windows).", ext, filename)
+			"Supported extensions: .md, .sh (Unix), .ps1/.bat (Windows).", ext, filename)
 }
 
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
-
-// scriptExts returns (platformExt, otherExt) for the current OS.
-func scriptExts() (string, string) {
-	if platform.IsWindows() {
-		return ".bat", ".sh"
-	}
-	return ".sh", ".bat"
-}
 
 // pathExists reports whether path exists on the filesystem.
 func pathExists(path string) bool {

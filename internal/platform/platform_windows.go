@@ -22,14 +22,16 @@ func IsUnix() bool { return false }
 const createNewProcessGroup uint32 = 0x00000200
 
 // buildScriptCmd returns the command+args to execute the given script.
-// On Windows, .bat files are run with cmd.exe /c. .sh files are rejected.
-// TODO: add .ps1 → powershell.exe -File support here when ready.
+// On Windows, .bat files are run with cmd.exe /c and .ps1 files are run with
+// powershell.exe -ExecutionPolicy Bypass -File. .sh files are rejected.
 func buildScriptCmd(scriptPath, ext string) ([]string, error) {
 	switch ext {
 	case ".bat":
 		return []string{"cmd.exe", "/c", scriptPath}, nil
+	case ".ps1":
+		return []string{"powershell.exe", "-ExecutionPolicy", "Bypass", "-File", scriptPath}, nil
 	case ".sh":
-		return nil, platformError("Cannot execute .sh file on Windows: %s. Use .bat files on Windows.", scriptPath)
+		return nil, platformError("Cannot execute .sh file on Windows: %s. Use .ps1 or .bat files on Windows.", scriptPath)
 	default:
 		return nil, unsupportedExt(ext)
 	}

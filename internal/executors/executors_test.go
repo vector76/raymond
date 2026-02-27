@@ -239,11 +239,20 @@ func TestExtractStateName_Bat(t *testing.T) {
 	}
 }
 
+func TestExtractStateName_Ps1(t *testing.T) {
+	if got := executors.ExtractStateName("SCRIPT.ps1"); got != "SCRIPT" {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestExtractStateName_CaseInsensitive(t *testing.T) {
 	if got := executors.ExtractStateName("START.MD"); got != "START" {
 		t.Errorf("got %q", got)
 	}
 	if got := executors.ExtractStateName("CHECK.SH"); got != "CHECK" {
+		t.Errorf("got %q", got)
+	}
+	if got := executors.ExtractStateName("SCRIPT.PS1"); got != "SCRIPT" {
 		t.Errorf("got %q", got)
 	}
 }
@@ -349,10 +358,32 @@ func TestGetExecutor_Shell(t *testing.T) {
 	}
 }
 
+func TestGetExecutor_Bat(t *testing.T) {
+	ex := executors.GetExecutor("CHECK.bat")
+	if _, ok := ex.(*executors.ScriptExecutor); !ok {
+		t.Errorf("expected *ScriptExecutor, got %T", ex)
+	}
+}
+
+func TestGetExecutor_Ps1(t *testing.T) {
+	ex := executors.GetExecutor("CHECK.ps1")
+	if _, ok := ex.(*executors.ScriptExecutor); !ok {
+		t.Errorf("expected *ScriptExecutor, got %T", ex)
+	}
+}
+
 func TestGetExecutor_CaseInsensitive(t *testing.T) {
 	ex := executors.GetExecutor("START.MD")
 	if _, ok := ex.(*executors.MarkdownExecutor); !ok {
 		t.Errorf("expected *MarkdownExecutor, got %T", ex)
+	}
+	ex = executors.GetExecutor("CHECK.BAT")
+	if _, ok := ex.(*executors.ScriptExecutor); !ok {
+		t.Errorf("expected *ScriptExecutor for .BAT, got %T", ex)
+	}
+	ex = executors.GetExecutor("CHECK.PS1")
+	if _, ok := ex.(*executors.ScriptExecutor); !ok {
+		t.Errorf("expected *ScriptExecutor for .PS1, got %T", ex)
 	}
 }
 
@@ -367,6 +398,16 @@ func TestGetExecutor_Singletons(t *testing.T) {
 	sh2 := executors.GetExecutor("B.sh")
 	if sh1 != sh2 {
 		t.Error("script executors should be the same singleton")
+	}
+
+	// .bat and .ps1 share the same ScriptExecutor singleton as .sh
+	bat := executors.GetExecutor("A.bat")
+	ps1 := executors.GetExecutor("A.ps1")
+	if bat != sh1 {
+		t.Error(".bat should return the same ScriptExecutor singleton as .sh")
+	}
+	if ps1 != sh1 {
+		t.Error(".ps1 should return the same ScriptExecutor singleton as .sh")
 	}
 }
 

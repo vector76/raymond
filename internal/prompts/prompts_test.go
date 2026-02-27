@@ -407,6 +407,21 @@ func TestResolveState_RaisesWhenOnlyBatExists(t *testing.T) {
 	}
 }
 
+func TestResolveState_RaisesWhenBatAndPs1BothExistOnUnix(t *testing.T) {
+	skipWindows(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.bat"), []byte("echo"), 0o644)
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	_, err := ResolveState(dir, "NEXT")
+	if err == nil {
+		t.Fatal("expected error (only Windows scripts, no .md or .sh)")
+	}
+	// Error should mention both files, not just one.
+	if !strings.Contains(err.Error(), ".bat") || !strings.Contains(err.Error(), ".ps1") {
+		t.Errorf("error should mention both .bat and .ps1, got: %v", err)
+	}
+}
+
 func TestResolveState_RaisesWhenMdAndShBothExist(t *testing.T) {
 	skipWindows(t)
 	dir := t.TempDir()
@@ -700,5 +715,237 @@ func TestGetStateType_ShRaisesOnWindows(t *testing.T) {
 	errLow := strings.ToLower(err.Error())
 	if !strings.Contains(errLow, "platform") && !strings.Contains(errLow, "windows") && !strings.Contains(errLow, "unix") {
 		t.Errorf("error should mention platform/windows/unix, got: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ResolveState — Unix-only, .ps1
+// --------------------------------------------------------------------------
+
+func TestResolveState_RaisesWhenOnlyPs1Exists(t *testing.T) {
+	skipWindows(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	_, err := ResolveState(dir, "NEXT")
+	if err == nil {
+		t.Fatal("expected error (only .ps1, no .md or .sh on Unix)")
+	}
+}
+
+func TestResolveState_ExplicitPs1RaisesWrongPlatformOnUnix(t *testing.T) {
+	skipWindows(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	_, err := ResolveState(dir, "NEXT.ps1")
+	if err == nil {
+		t.Fatal("expected platform error for .ps1 on Unix")
+	}
+	errLow := strings.ToLower(err.Error())
+	if !strings.Contains(errLow, "platform") && !strings.Contains(errLow, "windows") && !strings.Contains(errLow, "unix") {
+		t.Errorf("error should mention platform/windows/unix, got: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ResolveState — Windows-only, .ps1
+// --------------------------------------------------------------------------
+
+func TestResolveState_FindsPs1WhenMdMissing(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	got, err := ResolveState(dir, "NEXT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "NEXT.ps1" {
+		t.Errorf("got %q, want NEXT.ps1", got)
+	}
+}
+
+func TestResolveState_ExplicitPs1ExtensionOnWindows(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	got, err := ResolveState(dir, "NEXT.ps1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "NEXT.ps1" {
+		t.Errorf("got %q, want NEXT.ps1", got)
+	}
+}
+
+func TestResolveState_RaisesWhenPs1AndBatBothExist(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	os.WriteFile(filepath.Join(dir, "NEXT.bat"), []byte("echo"), 0o644)
+	_, err := ResolveState(dir, "NEXT")
+	if err == nil {
+		t.Fatal("expected ambiguity error when both .ps1 and .bat exist")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
+		t.Errorf("error should mention 'ambiguous', got: %v", err)
+	}
+}
+
+func TestResolveState_RaisesWhenMdAndPs1BothExist(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.md"), []byte("# Next"), 0o644)
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	_, err := ResolveState(dir, "NEXT")
+	if err == nil {
+		t.Fatal("expected ambiguity error when both .md and .ps1 exist")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
+		t.Errorf("error should mention 'ambiguous', got: %v", err)
+	}
+}
+
+func TestResolveState_RaisesWhenMdAndPs1AndBatAllExist(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.md"), []byte("# Next"), 0o644)
+	os.WriteFile(filepath.Join(dir, "NEXT.ps1"), []byte("echo"), 0o644)
+	os.WriteFile(filepath.Join(dir, "NEXT.bat"), []byte("echo"), 0o644)
+	_, err := ResolveState(dir, "NEXT")
+	if err == nil {
+		t.Fatal("expected ambiguity error when .md, .ps1, and .bat all exist")
+	}
+	errLow := strings.ToLower(err.Error())
+	if !strings.Contains(errLow, "ambiguous") {
+		t.Errorf("error should mention 'ambiguous', got: %v", err)
+	}
+	// Error should mention all three files, not just two.
+	if !strings.Contains(err.Error(), ".md") || !strings.Contains(err.Error(), ".ps1") || !strings.Contains(err.Error(), ".bat") {
+		t.Errorf("error should mention all three conflicting files, got: %v", err)
+	}
+}
+
+func TestResolveState_ExplicitShRaisesPs1SuggestionOnWindows(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "NEXT.sh"), []byte("echo"), 0o644)
+	_, err := ResolveState(dir, "NEXT.sh")
+	if err == nil {
+		t.Fatal("expected platform error for .sh on Windows")
+	}
+	// Error should suggest .ps1 (not just .bat)
+	if !strings.Contains(err.Error(), ".ps1") {
+		t.Errorf("error should suggest .ps1, got: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ResolveState — zip scope, .ps1
+// --------------------------------------------------------------------------
+
+func TestResolveState_ZipFindsPs1OnWindows(t *testing.T) {
+	skipUnix(t)
+	zp := makeZip(t, map[string]string{"NEXT.ps1": "echo"})
+	got, err := ResolveState(zp, "NEXT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "NEXT.ps1" {
+		t.Errorf("got %q, want NEXT.ps1", got)
+	}
+}
+
+func TestResolveState_ZipPs1AndBatAmbiguousOnWindows(t *testing.T) {
+	skipUnix(t)
+	zp := makeZip(t, map[string]string{"NEXT.ps1": "echo", "NEXT.bat": "echo"})
+	_, err := ResolveState(zp, "NEXT")
+	if err == nil {
+		t.Fatal("expected ambiguity error when both .ps1 and .bat exist in zip")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
+		t.Errorf("error should mention 'ambiguous', got: %v", err)
+	}
+}
+
+func TestResolveState_ZipMdAndPs1AndBatAllExistOnWindows(t *testing.T) {
+	skipUnix(t)
+	zp := makeZip(t, map[string]string{"NEXT.md": "x", "NEXT.ps1": "echo", "NEXT.bat": "echo"})
+	_, err := ResolveState(zp, "NEXT")
+	if err == nil {
+		t.Fatal("expected ambiguity error when .md, .ps1, and .bat all exist in zip")
+	}
+	errLow := strings.ToLower(err.Error())
+	if !strings.Contains(errLow, "ambiguous") {
+		t.Errorf("error should mention 'ambiguous', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), ".md") || !strings.Contains(err.Error(), ".ps1") || !strings.Contains(err.Error(), ".bat") {
+		t.Errorf("error should mention all three conflicting files, got: %v", err)
+	}
+}
+
+func TestResolveState_ZipExplicitPs1RaisesOnUnix(t *testing.T) {
+	skipWindows(t)
+	zp := makeZip(t, map[string]string{"NEXT.ps1": "echo"})
+	_, err := ResolveState(zp, "NEXT.ps1")
+	if err == nil {
+		t.Fatal("expected platform error for .ps1 in zip on Unix")
+	}
+	errLow := strings.ToLower(err.Error())
+	if !strings.Contains(errLow, "platform") && !strings.Contains(errLow, "windows") && !strings.Contains(errLow, "unix") {
+		t.Errorf("error should mention platform/windows/unix, got: %v", err)
+	}
+}
+
+func TestResolveState_ZipBatAndPs1BothExistOnUnix(t *testing.T) {
+	skipWindows(t)
+	zp := makeZip(t, map[string]string{"NEXT.bat": "echo", "NEXT.ps1": "echo"})
+	_, err := ResolveState(zp, "NEXT")
+	if err == nil {
+		t.Fatal("expected error (only Windows scripts in zip, no .md or .sh)")
+	}
+	// Error should mention both files, not just one.
+	if !strings.Contains(err.Error(), ".bat") || !strings.Contains(err.Error(), ".ps1") {
+		t.Errorf("error should mention both .bat and .ps1, got: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// GetStateType — Unix-only, .ps1
+// --------------------------------------------------------------------------
+
+func TestGetStateType_Ps1RaisesOnUnix(t *testing.T) {
+	skipWindows(t)
+	_, err := GetStateType("NEXT.ps1")
+	if err == nil {
+		t.Fatal("expected error for .ps1 on Unix")
+	}
+	errLow := strings.ToLower(err.Error())
+	if !strings.Contains(errLow, "platform") && !strings.Contains(errLow, "windows") && !strings.Contains(errLow, "unix") {
+		t.Errorf("error should mention platform/windows/unix, got: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// GetStateType — Windows-only, .ps1
+// --------------------------------------------------------------------------
+
+func TestGetStateType_Ps1OnWindows(t *testing.T) {
+	skipUnix(t)
+	got, err := GetStateType("NEXT.ps1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "script" {
+		t.Errorf("got %q, want script", got)
+	}
+}
+
+func TestGetStateType_Ps1UppercaseOnWindows(t *testing.T) {
+	skipUnix(t)
+	got, err := GetStateType("SCRIPT.PS1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "script" {
+		t.Errorf("got %q, want script", got)
 	}
 }

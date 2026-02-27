@@ -17,6 +17,7 @@ var stateExtensions = map[string]bool{
 	".md":  true,
 	".sh":  true,
 	".bat": true,
+	".ps1": true,
 }
 
 // Frontmatter delimiter patterns anchored to the start of content.
@@ -123,7 +124,7 @@ func parseYAML(yamlContent string) (*Policy, error) {
 //
 // If policyTarget has a file extension, only an exact match is accepted.
 // If policyTarget has no extension (abstract), it matches any transitionTarget
-// that has the same stem and a recognized state extension (.md, .sh, .bat).
+// that has the same stem and a recognized state extension (.md, .sh, .bat, .ps1).
 func TargetsMatch(policyTarget, transitionTarget string) bool {
 	if policyTarget == transitionTarget {
 		return true

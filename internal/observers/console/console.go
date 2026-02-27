@@ -13,8 +13,9 @@
 // Quiet mode suppresses assistant text progress messages and tool invocations,
 // showing only state headers, transitions, errors, done lines, and results.
 //
-// Unicode symbols are selected automatically based on whether the writer is a
-// terminal; the NewWithWriter constructor accepts an explicit unicode flag for
+// Unicode symbols and ANSI colors are selected automatically based on whether
+// the writer is a terminal. Colors are suppressed when the NO_COLOR environment
+// variable is set. NewWithWriter accepts explicit unicode and color flags for
 // tests and non-terminal use cases.
 package console
 
@@ -27,6 +28,23 @@ import (
 
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
+)
+
+// agentColors is the cycling palette for agent ID labels, matching the Python
+// reference implementation order: cyan, yellow, magenta, green, blue, red.
+var agentColors = []string{
+	"\x1b[36m", // cyan
+	"\x1b[33m", // yellow
+	"\x1b[35m", // magenta
+	"\x1b[32m", // green
+	"\x1b[34m", // blue
+	"\x1b[31m", // red
+}
+
+const (
+	colorReset   = "\x1b[0m"
+	colorError   = "\x1b[31m" // red
+	colorWarning = "\x1b[33m" // yellow
 )
 
 // symbols holds the display characters used in console output.
@@ -72,18 +90,21 @@ type ConsoleReporter struct {
 	w   io.Writer
 	sym symbols
 
-	// quiet and verbose are immutable after construction; safe to read without
-	// the lock.
+	// quiet, verbose, and color are immutable after construction; safe to read
+	// without the lock.
 	quiet   bool
 	verbose bool // show transition type labels and extra tool detail
+	color   bool // emit ANSI color codes
 
 	// Per-agent tracking — protected by mu.
 	lastStateType map[string]string // agentID → "markdown" or "script"
 	lastExitCode  map[string]int    // agentID → script exit code
 	lastTool      map[string]string // agentID → last tool name (for error ctx)
+	agentColorMap map[string]string // agentID → assigned ANSI color code
+	agentCounter  int               // number of unique agents seen (for cycling)
 }
 
-func newReporter(w io.Writer, quiet, verbose, unicode bool) *ConsoleReporter {
+func newReporter(w io.Writer, quiet, verbose, unicode, color bool) *ConsoleReporter {
 	sym := asciiSyms
 	if unicode {
 		sym = unicodeSyms
@@ -93,10 +114,37 @@ func newReporter(w io.Writer, quiet, verbose, unicode bool) *ConsoleReporter {
 		sym:           sym,
 		quiet:         quiet,
 		verbose:       verbose,
+		color:         color,
 		lastStateType: make(map[string]string),
 		lastExitCode:  make(map[string]int),
 		lastTool:      make(map[string]string),
+		agentColorMap: make(map[string]string),
 	}
+}
+
+// agentColor returns the ANSI color code assigned to agentID, assigning one
+// on first use by cycling through agentColors. Must be called with r.mu held.
+func (r *ConsoleReporter) agentColor(agentID string) string {
+	if !r.color {
+		return ""
+	}
+	if c, ok := r.agentColorMap[agentID]; ok {
+		return c
+	}
+	c := agentColors[r.agentCounter%len(agentColors)]
+	r.agentColorMap[agentID] = c
+	r.agentCounter++
+	return c
+}
+
+// formatAgentID returns "[agentID]" wrapped in the agent's assigned color when
+// color output is enabled. Must be called with r.mu held.
+func (r *ConsoleReporter) formatAgentID(agentID string) string {
+	c := r.agentColor(agentID)
+	if c == "" {
+		return "[" + agentID + "]"
+	}
+	return c + "[" + agentID + "]" + colorReset
 }
 
 // --- event handlers (called from ConsoleObserver subscriptions) ---
@@ -128,7 +176,12 @@ func (r *ConsoleReporter) onWorkflowPaused(e events.WorkflowPaused) {
 func (r *ConsoleReporter) onWorkflowWaiting(e events.WorkflowWaiting) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	fmt.Fprintf(r.w, "Usage limit reached. Waiting %.0f seconds before resuming.\n", e.WaitSeconds)
+	if r.color {
+		fmt.Fprintf(r.w, "%sUsage limit reached. Waiting %.0f seconds before resuming.%s\n",
+			colorWarning, e.WaitSeconds, colorReset)
+	} else {
+		fmt.Fprintf(r.w, "Usage limit reached. Waiting %.0f seconds before resuming.\n", e.WaitSeconds)
+	}
 }
 
 func (r *ConsoleReporter) onWorkflowResuming(e events.WorkflowResuming) {
@@ -141,7 +194,7 @@ func (r *ConsoleReporter) onStateStarted(e events.StateStarted) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastStateType[e.AgentID] = e.StateType
-	fmt.Fprintf(r.w, "[%s] %s\n", e.AgentID, e.StateName)
+	fmt.Fprintf(r.w, "%s %s\n", r.formatAgentID(e.AgentID), e.StateName)
 	if e.StateType == events.StateTypeScript && !r.quiet {
 		fmt.Fprintf(r.w, "  %s Executing script...\n", r.sym.progress)
 	}
@@ -246,18 +299,26 @@ func (r *ConsoleReporter) onAgentTerminated(e events.AgentTerminated) {
 func (r *ConsoleReporter) onErrorOccurred(e events.ErrorOccurred) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	msg := e.ErrorMessage
+	if r.color {
+		msg = colorError + msg + colorReset
+	}
 	if e.IsRetryable {
 		fmt.Fprintf(r.w, "  %s %s - retrying (%d/%d)\n",
-			r.sym.warn, e.ErrorMessage, e.RetryCount, e.MaxRetries)
+			r.sym.warn, msg, e.RetryCount, e.MaxRetries)
 	} else {
-		fmt.Fprintf(r.w, "  %s %s\n", r.sym.warn, e.ErrorMessage)
+		fmt.Fprintf(r.w, "  %s %s\n", r.sym.warn, msg)
 	}
 }
 
 func (r *ConsoleReporter) onAgentPaused(e events.AgentPaused) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	fmt.Fprintf(r.w, "[%s] Agent paused (%s)\n", e.AgentID, e.Reason)
+	reason := e.Reason
+	if r.color {
+		reason = colorWarning + reason + colorReset
+	}
+	fmt.Fprintf(r.w, "%s Agent paused (%s)\n", r.formatAgentID(e.AgentID), reason)
 }
 
 // returnSnippet extracts a short display snippet from a return-transition
@@ -295,17 +356,19 @@ type ConsoleObserver struct {
 	cancels  []func()
 }
 
-// New creates a ConsoleObserver writing to os.Stdout. Unicode symbols are
-// used automatically when os.Stdout is a character device (terminal).
+// New creates a ConsoleObserver writing to os.Stdout. Unicode symbols and ANSI
+// colors are enabled automatically when os.Stdout is a terminal. Colors are
+// suppressed when the NO_COLOR environment variable is set.
 func New(b *bus.Bus, quiet, verbose bool, width int) *ConsoleObserver {
-	unicode := isCharDevice(os.Stdout)
-	return NewWithWriter(b, quiet, verbose, width, os.Stdout, unicode)
+	isTTY := isCharDevice(os.Stdout)
+	color := isTTY && os.Getenv("NO_COLOR") == ""
+	return NewWithWriter(b, quiet, verbose, width, os.Stdout, isTTY, color)
 }
 
-// NewWithWriter creates a ConsoleObserver writing to w with an explicit
-// unicode setting. Use this in tests to capture output predictably.
-func NewWithWriter(b *bus.Bus, quiet, verbose bool, _ int, w io.Writer, unicode bool) *ConsoleObserver {
-	r := newReporter(w, quiet, verbose, unicode)
+// NewWithWriter creates a ConsoleObserver writing to w with explicit unicode
+// and color settings. Use this in tests to capture output predictably.
+func NewWithWriter(b *bus.Bus, quiet, verbose bool, _ int, w io.Writer, unicode, color bool) *ConsoleObserver {
+	r := newReporter(w, quiet, verbose, unicode, color)
 	o := &ConsoleObserver{reporter: r}
 	o.cancels = []func(){
 		bus.Subscribe(b, r.onWorkflowStarted),

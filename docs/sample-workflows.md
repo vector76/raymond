@@ -15,7 +15,7 @@ All sample workflows are consolidated in one location:
 ```
 workflows/test_cases/
   CLASSIFY.md           # Test 1: Pure function workflow
-  START.md              # Test 2: Goto/resume workflow
+  1_START.md            # Test 2: Goto/resume workflow
   CONFLICT.md           # Test 2: Goto/resume workflow
   RESOLUTION.md         # Test 2: Goto/resume workflow
   MAIN.md               # Test 3: Call workflow
@@ -94,7 +94,7 @@ captured by the orchestrator, not written to files.)
 
 **Files:**
 
-`workflows/test_cases/START.md`:
+`workflows/test_cases/1_START.md`:
 ```markdown
 We're going to write a short story together. I'll guide you through three
 phases.
@@ -127,7 +127,7 @@ When done, write the complete mini-story to workflows/test_cases/test_outputs/st
 ```
 
 **Test procedure:**
-1. Start workflow: `raymond workflows/test_cases/START.md`
+1. Start workflow: `raymond workflows/test_cases/1_START.md`
 2. Verify it transitions to CONFLICT.md
 3. Verify CONFLICT.md references the character by name (context preserved)
 4. Verify it transitions to RESOLUTION.md
@@ -684,7 +684,7 @@ workflow file path. Raymond accepts a plain `.md` file, a directory (uses
 raymond workflows/test_cases/CLASSIFY.md
 
 # Test 2: Goto/resume
-raymond workflows/test_cases/START.md
+raymond workflows/test_cases/1_START.md
 
 # Test 3: Call (child workflow with return)
 raymond workflows/test_cases/MAIN.md
@@ -724,7 +724,7 @@ raymond workflows/test_cases/POLL_EXAMPLE.bat   # Windows
 
 Since all workflow markdown files coexist in `workflows/test_cases/`, each file
 must have a unique name. The examples above use descriptive names that indicate
-their purpose (CLASSIFY.md, START.md, CONFLICT.md, etc.).
+their purpose (CLASSIFY.md, 1_START.md, CONFLICT.md, etc.).
 
 Test data files in `test_files/` (inputs) and `test_outputs/` (outputs) should
 also use distinct names to avoid collisions between workflows. Examples:

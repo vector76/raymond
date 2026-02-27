@@ -95,7 +95,7 @@ on higher-level orchestration code.
 | `bus` | Typed publish/subscribe event bus with panic recovery |
 | `ccwrap` | Spawn and stream `claude` CLI output; parse JSONL; handle timeouts |
 | `cli` | Parse CLI flags, load config, wire observers, call orchestrator |
-| `config` | Load and merge `.raymond.toml` configuration files |
+| `config` | Load and merge `.raymond/config.toml` configuration files |
 | `events` | All event struct definitions shared across the codebase |
 | `executors` | `MarkdownExecutor` (LLM) and `ScriptExecutor` (.sh/.bat); `ExecutionContext` |
 | `observers/console` | Print workflow progress to the terminal |
@@ -164,8 +164,8 @@ raymond path/to/workflow/START.md
 # Resume a paused workflow
 raymond --resume workflow-id
 
-# Run with debug output
-raymond --debug path/to/workflow/START.md
+# Run without debug logging
+raymond --no-debug path/to/workflow/START.md
 
 # Run quietly (suppress progress output)
 raymond --quiet path/to/workflow/START.md

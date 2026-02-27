@@ -131,7 +131,7 @@ The LLM returns the completed prompt. Benefits:
 This is deferred to avoid debugging complexity during initial implementation.
 
 **Alternative considered:** Environment variables, separate config files,
-runtime prompt construction in Python.
+runtime prompt construction in the host language.
 
 ## Session ID Format
 
@@ -180,13 +180,15 @@ recovery prompts.
 
 ## Workflow ID Generation
 
-**Assumption:** Generate workflow IDs as `{descriptive-prefix}-{uuid4-short}`,
-e.g., `issue-195-a1b2c3d4`.
+**Assumption:** Generate workflow IDs as `workflow_YYYY-MM-DD_HH-MM-SS-ffffff`
+(timestamp with microseconds), e.g., `workflow_2026-02-27_14-30-22-123456`.
+If a collision is detected a numeric suffix is appended: `workflow_..._2`, etc.
 
-**Rationale:** Human-readable prefix aids debugging. UUID suffix ensures
-uniqueness.
+**Rationale:** Timestamp-based IDs are human-readable, sort chronologically,
+and are unique without a random component.
 
-**Alternative considered:** Pure UUID, timestamp-based, or sequential numbers.
+**Alternative considered:** `{descriptive-prefix}-{uuid4-short}` (e.g.
+`issue-195-a1b2c3d4`), pure UUID, or sequential numbers.
 
 ## Concurrent Workflow Limit
 

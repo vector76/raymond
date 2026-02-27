@@ -228,6 +228,44 @@ func TestStartDirectory(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStartDirectoryEntryPoint(t *testing.T) {
+	stateDir := makeStateDir(t)
+	workflowDir := t.TempDir()
+
+	// --no-run writes the state file without invoking the runner, so we can
+	// inspect the resolved initial state.
+	_, _, err := run(t, workflowDir, "--no-run", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, listErr := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, listErr)
+	require.Len(t, ids, 1)
+
+	ws, readErr := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "1_START.md", ws.Agents[0].CurrentState)
+}
+
+func TestStartZipFileEntryPoint(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	zipFile := filepath.Join(dir, "workflow.zip")
+	writeTestZip(t, zipFile, map[string]string{"1_START.md": "# Start"})
+
+	_, _, err := run(t, zipFile, "--no-run", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, listErr := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, listErr)
+	require.Len(t, ids, 1)
+
+	ws, readErr := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "1_START.md", ws.Agents[0].CurrentState)
+}
+
 func TestStartFile(t *testing.T) {
 	stateDir := makeStateDir(t)
 
@@ -246,7 +284,7 @@ func TestStartZipFile(t *testing.T) {
 	// Create a valid zip file so hash/layout validation passes.
 	dir := t.TempDir()
 	zipFile := filepath.Join(dir, "workflow.zip")
-	writeTestZip(t, zipFile, map[string]string{"START.md": "# Start"})
+	writeTestZip(t, zipFile, map[string]string{"1_START.md": "# Start"})
 
 	_, _, err := run(t, zipFile, "--state-dir", stateDir)
 	// The no-op runner returns nil regardless of scope type.

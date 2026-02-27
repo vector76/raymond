@@ -284,7 +284,7 @@ func TestStoryWorkflow(t *testing.T) {
 	tc := testCasesDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(tc, "test_outputs"), 0o755))
 
-	completed, err := runWorkflow(t, tc, "START.md", 10.0)
+	completed, err := runWorkflow(t, tc, "1_START.md", 10.0)
 	require.NoError(t, err)
 	assert.True(t, completed, "3-step story workflow (START→CONFLICT→RESOLUTION) should complete")
 }
@@ -328,7 +328,7 @@ func TestZIPScopeLLMWorkflow(t *testing.T) {
 	zipPath := filepath.Join(t.TempDir(), "test_cases.zip")
 	require.NoError(t, buildZipFromDir(tc, zipPath))
 
-	completed, err := runWorkflow(t, zipPath, "START.md", 10.0)
+	completed, err := runWorkflow(t, zipPath, "1_START.md", 10.0)
 	require.NoError(t, err)
 	assert.True(t, completed, "ZIP-scope story workflow should complete")
 }

@@ -517,6 +517,7 @@ path. There is no re-prompting for scripts.
 
 ### CLI Flags
 
+**Starting a workflow:**
 ```bash
 raymond workflow.md                          # Start from a specific .md file
 raymond workflows/coding/                    # Start from a directory (uses 1_START.md)
@@ -524,28 +525,45 @@ raymond workflow.zip                         # Start from a zip archive (uses 1_
 raymond workflow.md --budget 5.0             # Cost limit ($5.00)
 raymond workflow.md --model sonnet           # Default model for all states
 raymond workflow.md --effort high            # Default effort level for all states
+raymond workflow.md --timeout 300            # Idle timeout per invocation in seconds (default: 600, 0=none)
 raymond workflow.md --dangerously-skip-permissions  # No permission prompts
 raymond workflow.md --input "data"           # Initial {{result}} value
 raymond workflow.md --no-debug               # Disable debug logging
 raymond workflow.md --verbose                # Verbose output
 raymond workflow.md --quiet                  # Suppress progress/tool output lines
-raymond workflow.md --no-wait               # Do not auto-wait when limit is reached
+raymond workflow.md --no-wait                # Do not auto-wait when limit is reached
+raymond workflow.md --workflow-id my-run     # Assign a custom workflow ID
+raymond workflow.md --no-run                 # Create state file without running
 ```
+
+**Managing workflows:**
+```bash
+raymond --resume <id>                        # Resume a paused or interrupted workflow
+raymond --list                               # List all workflow IDs
+raymond --status <id>                        # Show status (state, budget, agents) for a workflow
+raymond --recover                            # List in-progress (resumable) workflows
+```
+
+On `--resume`, the original `--model`, `--effort`, `--timeout`, and
+`--dangerously-skip-permissions` values are automatically restored from the
+saved workflow. Pass any of those flags explicitly to override them.
 
 ### Config File
 
-Create `.raymond/config.toml` to avoid repeating CLI flags:
-
-```bash
-raymond --init-config  # Generates config with all options commented out
-```
+Create `.raymond/config.toml` to avoid repeating CLI flags. Run
+`raymond --init-config` to generate a template with all options commented out,
+then uncomment and set only the values you want to override:
 
 ```toml
 [raymond]
 budget = 50.0
 model = "sonnet"
 effort = "medium"
+# timeout = 600.0
 # dangerously_skip_permissions = false
+# no_debug = false
+# no_wait = false
+# verbose = false
 ```
 
 CLI arguments override config file values. See

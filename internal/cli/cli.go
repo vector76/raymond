@@ -464,8 +464,8 @@ func (c *CLI) cmdInitConfig(cmd *cobra.Command) error {
 
 // parseScopeAndState resolves a CLI argument to (scopeDir, initialState).
 //
-//   - Directory  → scope=arg, state="START.md"
-//   - .zip file  → scope=arg, state="START.md"
+//   - Directory  → scope=arg, state="1_START.md"
+//   - .zip file  → scope=arg, state="1_START.md"
 //   - Other file → scope=dirname(arg), state=basename(arg)
 func parseScopeAndState(arg string) (scopeDir, initialState string, err error) {
 	info, statErr := os.Stat(arg)
@@ -474,11 +474,11 @@ func parseScopeAndState(arg string) (scopeDir, initialState string, err error) {
 	}
 
 	if info.IsDir() {
-		return arg, "START.md", nil
+		return arg, "1_START.md", nil
 	}
 
 	if strings.ToLower(filepath.Ext(arg)) == ".zip" {
-		return arg, "START.md", nil
+		return arg, "1_START.md", nil
 	}
 
 	// Regular state file.

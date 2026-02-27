@@ -30,13 +30,13 @@ where `<stem>` is the state filename with its last extension stripped. For examp
 
 ## Architecture
 
-`TitleBarObserver` lives in `src/orchestrator/observers/titlebar.py` and follows the same observer pattern as `ConsoleObserver` and `DebugObserver`. It subscribes to `StateStarted` events on the `EventBus` and writes the OSC 2 sequence on each event.
+`TitleBarObserver` lives in `internal/observers/titlebar/` and follows the same observer pattern as `ConsoleObserver` and `DebugObserver`. It subscribes to `StateStarted` events on the event bus and writes the OSC 2 sequence on each event.
 
 `StateStarted` is the right trigger because it fires at the moment a state begins executing — before Claude is invoked for markdown states, or before a script is run for script states. This gives the user immediate feedback the instant execution shifts to a new state.
 
-Extension stripping uses `pathlib.Path(state_name).stem`, which removes only the last extension generically. This avoids hardcoding `.md`, `.sh`, `.bat`, or any other specific extension, and handles edge cases correctly: a name with no extension passes through unchanged, and a name with multiple dots (e.g. `foo.bar.md`) has only the final extension removed.
+Extension stripping removes only the last extension (e.g. `strings.TrimSuffix` on the last `.`-delimited suffix). This avoids hardcoding `.md`, `.sh`, `.bat`, or any other specific extension, and handles edge cases correctly: a name with no extension passes through unchanged, and a name with multiple dots (e.g. `foo.bar.md`) has only the final extension removed.
 
-`TitleBarObserver` is registered unconditionally in `run_all_agents()` in `src/orchestrator/workflow.py`, immediately after `ConsoleObserver` is set up. It is closed in the `finally` block alongside the other observers.
+`TitleBarObserver` is registered unconditionally in `internal/cli/cli.go` as part of the observer setup, alongside `ConsoleObserver` and `DebugObserver`.
 
 Handler exceptions are caught and logged as warnings using the same pattern as all other observers. Exceptions in handlers are never propagated to the orchestration loop.
 

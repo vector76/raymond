@@ -61,7 +61,7 @@ Review the code for issues. If you find problems, fix them. If everything
 looks good, end your response with <goto>COMMIT.md</goto>
 ```
 
-The Python orchestrator:
+The orchestrator:
 1. Parses transition tags (`<goto>`, `<reset>`, `<call>`, `<fork>`, `<function>`) from output
 2. Reads the referenced file to get the next prompt
 3. Launches the next Claude Code session with that prompt
@@ -161,7 +161,7 @@ The child context is like a function's stack frame:
 When a called child task completes:
 1. The child's prompt instructs it to end with a `<result>` tag containing a
    summary of what was accomplished
-2. Python extracts this result from the child's final output
+2. The orchestrator extracts this result from the child's final output
 3. Resumes the parent context with `--resume`
 4. Injects the result into the return state's prompt via `{{result}}` template
 
@@ -280,7 +280,7 @@ stack and fresh session. The parent continues at `next` via resume (like
 
 ## Persistent State and Crash Recovery
 
-The Python orchestrator should be mostly stateless, keeping critical workflow
+The orchestrator should be mostly stateless, keeping critical workflow
 state in the filesystem rather than in memory. This shares a virtue with the
 Ralph loop: if the process crashes, minimal context is lost.
 

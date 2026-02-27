@@ -111,87 +111,16 @@ This change to `.raymond` directory location is a **breaking change** for existi
 **Windows Considerations:**
 - Handle both `C:\` and UNC paths (`\\server\share`)
 - Case-insensitive filesystem (but preserve case in code)
-- Path separators: use `pathlib.Path` for cross-platform handling
+- Path separators: use `filepath.Join` (Go standard library) for cross-platform handling
 
 **Linux Considerations:**
 - Case-sensitive filesystem
 - Home directory could be project root (unlikely but possible)
 - Path separators: standard `/`
 
-**Implementation:**
-```python
-from pathlib import Path
-from typing import Optional
+**Implementation:** `internal/config/config.go` — `FindProjectRoot`, `FindRaymondDir`, `FindConfigFile`
 
-def find_raymond_dir(cwd: Path, create_if_missing: bool = False) -> Optional[Path]:
-    """Find .raymond directory by searching upward from cwd.
-    
-    Stops at .git directory (project boundary) or filesystem root.
-    Uses resolve() to handle symlinks and normalize paths.
-    
-    Args:
-        cwd: Current working directory to start search from
-        create_if_missing: If True, create .raymond directory at project root if not found
-    
-    Returns:
-        The .raymond directory path if found or created, None otherwise
-    """
-    current = Path(cwd).resolve()  # Resolve symlinks and normalize
-    root = Path(current.anchor)  # Filesystem root
-    project_root = None
-    
-    # First, search for existing .raymond directory
-    while current != root:
-        raymond_dir = current / ".raymond"
-        if raymond_dir.is_dir():
-            return raymond_dir
-        # Note: If .raymond exists but is a file (not directory), is_dir() returns False
-        # and we continue searching - this is correct behavior
-        
-        # Track project root (where .git is)
-        if (current / ".git").exists():
-            project_root = current
-            break
-            
-        current = current.parent
-    
-    # If not found and create_if_missing, create at project root (or cwd if no .git)
-    if create_if_missing:
-        target_dir = project_root if project_root is not None else Path(cwd).resolve()
-        raymond_dir = target_dir / ".raymond"
-        raymond_dir.mkdir(parents=True, exist_ok=True)
-        return raymond_dir
-    
-    return None
-
-def find_project_root(cwd: Path) -> Path:
-    """Find project root (directory containing .git) or return cwd if not found."""
-    current = Path(cwd).resolve()
-    root = Path(current.anchor)
-    
-    while current != root:
-        if (current / ".git").exists():
-            return current
-        current = current.parent
-    
-    # No .git found, return original cwd
-    return Path(cwd).resolve()
-
-def find_config_file(cwd: Path) -> Optional[Path]:
-    """Find .raymond/config.toml config file by searching upward from cwd.
-    
-    Stops at .git directory (project boundary) or filesystem root.
-    """
-    raymond_dir = find_raymond_dir(cwd)
-    if raymond_dir is None:
-        return None
-    
-    config_file = raymond_dir / "config.toml"
-    if config_file.is_file():
-        return config_file
-    
-    return None
-```
+The algorithm walks upward from `cwd`, checking each directory for `.raymond/` (returning it immediately if found) and for `.git/` (recording it as the project-root boundary). If no `.raymond/` is found before the boundary, the search stops. When creating a new `.raymond/` directory (e.g. for `--init-config`), it is placed at the project root (the directory containing `.git/`), or at `cwd` if no `.git/` is found.
 
 ## Precedence Order
 
@@ -245,75 +174,15 @@ This provides a starting point that users can customize by uncommenting only the
 
 ### Loading Config
 
-```python
-from pathlib import Path
-from typing import Optional, Dict, Any
-import tomllib  # Python 3.11+ (required)
+**Implementation:** `internal/config/config.go` — `LoadConfig`
 
-def load_config(cwd: Optional[Path] = None) -> Dict[str, Any]:
-    """Load configuration from .raymond/config.toml file, returning empty dict if not found.
-    
-    Raises an exception if the config file exists but cannot be parsed, so users can fix errors.
-    
-    Returns:
-        Dictionary with configuration values, or empty dict if config file doesn't exist
-        
-    Raises:
-        TOMLDecodeError: If config file exists but contains invalid TOML
-        OSError: If config file exists but cannot be read
-    """
-    if cwd is None:
-        cwd = Path.cwd()
-    
-    config_file = find_config_file(cwd)
-    if config_file is None:
-        return {}
-    
-    # If config file exists, it must be valid - raise on parse errors
-    with open(config_file, "rb") as f:
-        data = tomllib.load(f)
-        config = data.get("raymond", {})
-        
-        # Note: Type and value validation should be performed after loading
-        # (see Validation section for details on what to validate)
-        
-        return config
-```
+Locates `.raymond/config.toml` via `FindConfigFile`, then parses the `[raymond]` TOML section using `github.com/BurntSushi/toml`. Returns an empty map when no config file is found. Raises a parse error (with the file path) if the file exists but is invalid TOML, so users can fix mistakes.
 
 ### Merging with CLI Args
 
-```python
-def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> argparse.Namespace:
-    """Merge config file values into args namespace, CLI args take precedence."""
-    # Budget: only set if CLI didn't specify
-    if args.budget is None and "budget" in config:
-        args.budget = config["budget"]
-    
-    # Boolean flags: only set if CLI didn't specify (CLI defaults to False for store_true)
-    if not args.dangerously_skip_permissions and config.get("dangerously_skip_permissions", False):
-        args.dangerously_skip_permissions = True
-    
-    # No-debug: matches CLI --no-debug semantics directly
-    if not args.no_debug and config.get("no_debug", False):
-        args.no_debug = True
-    
-    # Verbose: similar to dangerously_skip_permissions
-    if not args.verbose and config.get("verbose", False):
-        args.verbose = True
-    
-    # Model: only set if CLI didn't specify
-    if args.model is None and "model" in config:
-        args.model = config["model"]
-    
-    # Timeout: only set if CLI didn't specify
-    if args.timeout is None and "timeout" in config:
-        args.timeout = config["timeout"]
-    
-    # Note: state_dir is not merged from config - CLI --state-dir is primarily for testing
-    # With project-based .raymond directory, all workflows use .raymond/state by default
-    
-    return args
-```
+**Implementation:** `internal/config/config.go` — `MergeConfig`
+
+CLI-supplied values take precedence over config-file values. For boolean flags (`dangerously_skip_permissions`, `no_debug`, `no_wait`, `verbose`), the config value is only applied when the CLI flag was not explicitly set. For string values (`model`, `effort`) and numeric values (`budget`, `timeout`), the config value is used only when the CLI left the field at its zero value. `state_dir` is never read from the config file — it is a test-only flag.
 
 ### Validation
 
@@ -334,18 +203,14 @@ def merge_config_and_args(config: Dict[str, Any], args: argparse.Namespace) -> a
 **Format**: TOML (`.raymond/config.toml`)
 
 **Rationale:**
-- Already familiar from `pyproject.toml`
+- Human-readable, supports comments (using `#`)
 - Good balance of readability and tooling support
-- Supports comments (using `#`)
-- Standard library support in Python 3.11+ via `tomllib`
-- Common in Python ecosystem
+- Parsed via `github.com/BurntSushi/toml` in Go
 - Natural location alongside other `.raymond` directory contents
 
 **Location**: Per-project, search upward from CWD until `.git` directory is found
 
 **Naming**: `.raymond/config.toml` (config file within `.raymond` directory)
-
-**Python Requirement**: Python 3.11 or greater (uses `tomllib` from standard library)
 
 **Precedence**: CLI args > Config file > Defaults
 

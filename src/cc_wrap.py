@@ -50,6 +50,8 @@ def _build_claude_command(
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
+            - effort (str): Effort level for the model (e.g., "low", "medium", "high")
+            - timeout: Ignored here (handled by the caller, not passed to CLI)
             - Any other kwargs are converted to --key value CLI arguments
         
     Returns:
@@ -78,9 +80,9 @@ def _build_claude_command(
     # Unconditionally disallow orchestrator-level tools from managed agents
     cmd.extend(["--disallowed-tools", ",".join(DISALLOWED_TOOLS)])
 
-    cmd.extend(["--", prompt])
-
-    # Add any additional kwargs as command-line arguments
+    # Add any additional kwargs as command-line arguments.
+    # IMPORTANT: these must come before the "--" separator so the claude CLI
+    # interprets them as flags rather than as part of the prompt text.
     for key, value in kwargs.items():
         if key == "timeout":
             # timeout is handled separately, not passed to CLI
@@ -95,7 +97,9 @@ def _build_claude_command(
         elif value is not False and value is not None:
             cmd.append(f"--{key.replace('_', '-')}")
             cmd.append(str(value))
-    
+
+    cmd.extend(["--", prompt])
+
     return cmd
 
 
@@ -135,6 +139,7 @@ async def wrap_claude_code(
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
+            - effort (str): Effort level for the model (e.g., "low", "medium", "high")
 
     Returns:
         Tuple of (list of parsed JSON objects from the stream, extracted session_id or None)
@@ -307,6 +312,7 @@ async def wrap_claude_code_stream(
         **kwargs: Additional arguments to pass to claude command.
             Supported kwargs include:
             - fork (bool): If True, passes --fork-session flag to branch from session_id
+            - effort (str): Effort level for the model (e.g., "low", "medium", "high")
 
     Yields:
         Parsed JSON objects from the stream as they arrive

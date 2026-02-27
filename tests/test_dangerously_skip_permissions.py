@@ -22,8 +22,29 @@ class MockStreamReader:
         return chunk
 
 
+def _separator_index(cmd):
+    """Return the index of the '--' separator in a command list."""
+    return cmd.index("--")
+
+
 class TestBuildClaudeCommandPermissions:
     """Tests for _build_claude_command permission handling."""
+
+    def test_fork_session_flag_appears_before_separator(self):
+        """--fork-session must be before '--' so the claude CLI sees it as a flag."""
+        cmd = _build_claude_command("test prompt", session_id="sess-abc", fork=True)
+
+        assert "--fork-session" in cmd
+        assert cmd.index("--fork-session") < _separator_index(cmd)
+
+    def test_effort_flag_appears_before_separator(self):
+        """--effort must be before '--' so the claude CLI sees it as a flag."""
+        cmd = _build_claude_command("test prompt", effort="low")
+
+        assert "--effort" in cmd
+        effort_idx = cmd.index("--effort")
+        assert effort_idx < _separator_index(cmd)
+        assert cmd[effort_idx + 1] == "low"
 
     def test_default_uses_permission_mode_accept_edits(self):
         """Test that default behavior uses --permission-mode acceptEdits."""
@@ -138,5 +159,6 @@ class TestWrapClaudeCodePermissions:
             
             assert "--dangerously-skip-permissions" in cmd
             assert "--fork-session" in cmd
+            assert cmd.index("--fork-session") < _separator_index(cmd)
             assert "--resume" in cmd
             assert "--permission-mode" not in cmd

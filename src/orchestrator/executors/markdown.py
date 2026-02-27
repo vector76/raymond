@@ -176,7 +176,7 @@ class MarkdownExecutor:
         base_prompt = orchestrator.render_prompt(prompt_template, variables)
 
         # Determine which model to use
-        model_to_use = None
+        model_to_use = "sonnet"  # default when nothing else specifies
         if policy and policy.model:
             model_to_use = policy.model
         elif context.default_model:

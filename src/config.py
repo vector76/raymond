@@ -368,7 +368,7 @@ def init_config(cwd: Optional[Path] = None) -> int:
 # Skip permission prompts (WARNING: allows any action without prompting) (default: false)
 # dangerously_skip_permissions = false
 
-# Default model: "opus", "sonnet", or "haiku" (default: None)
+# Default model: "opus", "sonnet", or "haiku" (default: "sonnet")
 # model = "sonnet"
 
 # Default effort level: "low", "medium", or "high" (default: None)

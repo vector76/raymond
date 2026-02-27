@@ -949,8 +949,8 @@ This is the start.""")
         )
 
     @pytest.mark.asyncio
-    async def test_no_model_passed_when_neither_specified(self, tmp_path):
-        """Test 5.3.1.11: no model passed when neither frontmatter nor CLI specify."""
+    async def test_sonnet_default_when_neither_specified(self, tmp_path):
+        """Test 5.3.1.11: sonnet used as default when neither frontmatter nor CLI specify."""
         state_dir = tmp_path / ".raymond" / "state"
         state_dir.mkdir(parents=True)
         
@@ -985,10 +985,9 @@ This is the start.""")
             # Run with no CLI default model (None)
             await run_all_agents(workflow_id, state_dir=str(state_dir), default_model=None)
             
-            # Verify wrap_claude_code_stream was called with model=None (or not passed)
+            # Verify wrap_claude_code_stream was called with model="sonnet" (the default)
             assert captured_kwargs[0] is not None
-            # Model should be None or not in kwargs
-            assert captured_kwargs[0].get("model") is None or "model" not in captured_kwargs[0]
+            assert captured_kwargs[0].get("model") == "sonnet"
 
 
 class TestTransitionStateResolution:

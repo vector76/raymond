@@ -12,9 +12,11 @@
 //   - Invoke is a convenience wrapper that collects all objects and extracts the
 //     session ID; it uses a total timeout via context cancellation.
 //
-// The subprocess is started without a controlling terminal (setsid on Unix) so
-// that claude's Node.js/Ink TUI cannot open /dev/tty and emit terminal control
-// sequences that would interfere with raymond's console output.
+// The subprocess is isolated from the controlling terminal so that claude's
+// Node.js/Ink TUI cannot emit terminal control sequences (e.g. alternate screen
+// buffer, SetConsoleTitleW) that would interfere with raymond's console output.
+// On Unix this is achieved with setsid (new session, no controlling tty); on
+// Windows with DETACHED_PROCESS (no inherited console handle).
 package ccwrap
 
 import (

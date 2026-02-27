@@ -16,7 +16,7 @@ Raymond uses OSC 2 (Operating System Command 2) escape sequences to set the term
 \x1b]2;<title>\x07
 ```
 
-This is `ESC` + `]2;` + the title string + `BEL` (`\x07`). The sequence is written to `sys.stdout` and flushed immediately. There is no trailing newline — the sequence is invisible to the user and does not affect the displayed output.
+This is `ESC` + `]2;` + the title string + `BEL` (`\x07`). The sequence is written to `os.Stdout` and flushed immediately. There is no trailing newline — the sequence is invisible to the user and does not affect the displayed output.
 
 OSC 2 is the standard mechanism for setting terminal window and tab titles. It is recognized by virtually all modern terminal emulators — iTerm2, GNOME Terminal, Windows Terminal, Konsole, tmux (forwarded to the outer terminal), and others. Terminals that do not support OSC 2 silently ignore the byte sequence. There is no error output and no fallback needed.
 
@@ -38,7 +38,7 @@ Extension stripping removes only the last extension (e.g. `strings.TrimSuffix` o
 
 `TitleBarObserver` is registered unconditionally in `internal/cli/cli.go` as part of the observer setup, alongside `ConsoleObserver` and `DebugObserver`.
 
-Handler exceptions are caught and logged as warnings using the same pattern as all other observers. Exceptions in handlers are never propagated to the orchestration loop.
+Handler panics are recovered and logged by the event bus so that a misbehaving observer cannot crash the orchestration loop.
 
 ## Multiple Agents
 

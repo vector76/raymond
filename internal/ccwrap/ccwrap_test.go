@@ -108,14 +108,15 @@ func TestBuildClaudeCommand_PermissionModeAcceptEdits(t *testing.T) {
 
 func TestBuildClaudeCommand_Fork(t *testing.T) {
 	got := BuildClaudeCommand("prompt", "", "", "sess-xyz", false, true)
-	// --fork-session must appear after --
+	// --fork-session must appear BEFORE -- so the claude CLI sees it as a flag,
+	// not as part of the prompt text.
 	sepIdx := indexOf(got, "--")
 	forkIdx := indexOf(got, "--fork-session")
 	if forkIdx < 0 {
 		t.Fatalf("expected --fork-session in %v", got)
 	}
-	if forkIdx <= sepIdx {
-		t.Errorf("--fork-session (idx %d) should come after -- (idx %d)", forkIdx, sepIdx)
+	if forkIdx >= sepIdx {
+		t.Errorf("--fork-session (idx %d) should come before -- (idx %d)", forkIdx, sepIdx)
 	}
 }
 
@@ -142,7 +143,7 @@ func TestBuildClaudeCommand_AllOptions(t *testing.T) {
 		{"--resume sid123", func() bool { return containsSeq(got, "--resume", "sid123") }},
 		{"--disallowed-tools", func() bool { return contains(got, "--disallowed-tools") }},
 		{"prompt after --", func() bool { return afterSep(got, "my prompt") }},
-		{"--fork-session after --", func() bool { return afterSep(got, "--fork-session") }},
+		{"--fork-session before --", func() bool { return beforeSep(got, "--fork-session") }},
 	}
 	for _, c := range checks {
 		if !c.fn() {
@@ -625,4 +626,46 @@ func afterSep(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// beforeSep returns true if s appears in slice before the "--" separator.
+func beforeSep(slice []string, s string) bool {
+	sepIdx := indexOf(slice, "--")
+	if sepIdx < 0 {
+		return false
+	}
+	for _, v := range slice[:sepIdx] {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBuildClaudeCommand_ForkBeforeSeparator is a position-assertion regression
+// test: --fork-session must appear before "--" so the claude CLI treats it as a
+// flag and not as part of the prompt text.
+func TestBuildClaudeCommand_ForkBeforeSeparator(t *testing.T) {
+	cmd := BuildClaudeCommand("test prompt", "", "", "", false, true)
+
+	if !contains(cmd, "--fork-session") {
+		t.Fatal("--fork-session not found in command")
+	}
+	if !beforeSep(cmd, "--fork-session") {
+		t.Errorf("--fork-session must come before '--' separator; got: %v", cmd)
+	}
+}
+
+// TestBuildClaudeCommand_EffortBeforeSeparator is a position-assertion regression
+// test: --effort must appear before "--" so the claude CLI treats it as a flag.
+func TestBuildClaudeCommand_EffortBeforeSeparator(t *testing.T) {
+	cmd := BuildClaudeCommand("test prompt", "", "low", "", false, false)
+
+	effortIdx := indexOf(cmd, "--effort")
+	if effortIdx < 0 {
+		t.Fatal("--effort not found in command")
+	}
+	if !beforeSep(cmd, "--effort") {
+		t.Errorf("--effort must come before '--' separator; got: %v", cmd)
+	}
 }

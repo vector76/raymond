@@ -80,6 +80,16 @@ type AgentState struct {
 	ForkAttributes map[string]string `json:"-"` // template variables from fork
 }
 
+// LaunchParams holds the runtime parameters that were used when a workflow was
+// started. They are persisted in the state file so that --resume can restore
+// them as defaults for any flag not explicitly specified on the CLI.
+type LaunchParams struct {
+	DangerouslySkipPermissions bool    `json:"dangerously_skip_permissions"`
+	Model                      string  `json:"model,omitempty"`
+	Effort                     string  `json:"effort,omitempty"`
+	Timeout                    float64 `json:"timeout,omitempty"`
+}
+
 // WorkflowState is the top-level structure persisted for each workflow.
 type WorkflowState struct {
 	WorkflowID   string         `json:"workflow_id"`
@@ -88,6 +98,7 @@ type WorkflowState struct {
 	BudgetUSD    float64        `json:"budget_usd"`
 	Agents       []AgentState   `json:"agents"`
 	ForkCounters map[string]int `json:"fork_counters,omitempty"` // per-parent agent fork counters
+	LaunchParams *LaunchParams  `json:"launch_params,omitempty"` // persisted for --resume restoration
 
 	// Transient: populated by HandleResult when an agent terminates; consumed by orchestrator.
 	AgentTerminationResults map[string]string `json:"-"`
@@ -223,7 +234,7 @@ func ListWorkflows(stateDir string) ([]string, error) {
 // If initialInput is non-nil, the agent's PendingResult is set to its value
 // (even if the value is an empty string), making it available as {{result}}
 // when the first state's prompt is rendered.
-func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD float64, initialInput *string) *WorkflowState {
+func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD float64, initialInput *string, launchParams ...*LaunchParams) *WorkflowState {
 	agent := AgentState{
 		ID:           "main",
 		CurrentState: initialState,
@@ -234,13 +245,17 @@ func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD flo
 		agent.PendingResult = initialInput
 	}
 
-	return &WorkflowState{
+	ws := &WorkflowState{
 		WorkflowID:   workflowID,
 		ScopeDir:     scopeDir,
 		TotalCostUSD: 0.0,
 		BudgetUSD:    budgetUSD,
 		Agents:       []AgentState{agent},
 	}
+	if len(launchParams) > 0 && launchParams[0] != nil {
+		ws.LaunchParams = launchParams[0]
+	}
+	return ws
 }
 
 // GenerateWorkflowID generates a unique workflow ID of the form

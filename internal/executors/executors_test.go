@@ -1329,6 +1329,69 @@ func TestMarkdownExecutor_ReminderSuccessOnThirdAttempt(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Default model regression tests
+// --------------------------------------------------------------------------
+
+// TestMarkdownExecutor_DefaultModelIsSonnet verifies that when no model is
+// specified in frontmatter or the execution context, the MarkdownExecutor
+// passes "sonnet" to InvokeStream rather than leaving the model empty.
+func TestMarkdownExecutor_DefaultModelIsSonnet(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	// No DefaultModel in the context (simulates no --model CLI flag and no config).
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	var capturedModel string
+	executors.SetInvokeStreamFn(func(_ context.Context, _ string, model, _, _ string, _ float64, _, _ bool, _ string) <-chan ccwrap.StreamItem {
+		capturedModel = model
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"session_id": "sess-1", "total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if capturedModel != "sonnet" {
+		t.Errorf("expected default model to be \"sonnet\", got %q", capturedModel)
+	}
+}
+
+// TestMarkdownExecutor_CLIModelOverridesDefault verifies that DefaultModel in
+// the ExecutionContext takes precedence over the built-in "sonnet" default.
+func TestMarkdownExecutor_CLIModelOverridesDefault(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	execCtx := &executors.ExecutionContext{
+		Bus:          newBus(),
+		WorkflowID:   wfState.WorkflowID,
+		ScopeDir:     wfState.ScopeDir,
+		DefaultModel: "opus",
+	}
+
+	var capturedModel string
+	executors.SetInvokeStreamFn(func(_ context.Context, _ string, model, _, _ string, _ float64, _, _ bool, _ string) <-chan ccwrap.StreamItem {
+		capturedModel = model
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"session_id": "sess-1", "total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if capturedModel != "opus" {
+		t.Errorf("expected model to be \"opus\" (from DefaultModel), got %q", capturedModel)
+	}
+}
+
+// --------------------------------------------------------------------------
 // asError is errors.As without the import (keeps test file self-contained).
 // --------------------------------------------------------------------------
 

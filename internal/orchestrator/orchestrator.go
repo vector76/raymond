@@ -237,7 +237,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 //
 // It:
 //  1. Invokes the executor for the agent's current state.
-//  2. Applies the executor's session_id to the transition result agent.
+//  2. Updates session_id on the agent from the execution result (BEFORE transition).
 //  3. Calls transitions.ApplyTransition.
 //  4. Accumulates cost into ws.TotalCostUSD.
 //  5. Emits transition-related events (TransitionOccurred, AgentSpawned, AgentTerminated).
@@ -258,15 +258,22 @@ func stepAgent(
 		return transitions.TransitionResult{}, err
 	}
 
+	// Apply the session_id from the execution result to the agent BEFORE handling
+	// the transition. Transition handlers need to see the post-execution session_id:
+	//   - function/call: save it in the return-stack frame (caller's session to
+	//     restore later), so it must reflect what was actually used during execution.
+	//   - reset/function: then replace it with nil for a fresh start.
+	//   - result (return): pops the saved caller session from the stack.
+	// Script states return the agent's existing session_id unchanged (they have no
+	// Claude session of their own), so this update is a no-op for script states.
+	if execResult.SessionID != nil {
+		agent.SessionID = execResult.SessionID
+	}
+
 	// Apply transition (deep-copies agent, clears transients).
 	tr, err := transitions.ApplyTransition(agent, execResult.Transition, ws)
 	if err != nil {
 		return transitions.TransitionResult{}, err
-	}
-
-	// Propagate the session_id returned by the executor onto the updated agent.
-	if execResult.SessionID != nil && tr.Agent != nil {
-		tr.Agent.SessionID = execResult.SessionID
 	}
 
 	// Note: cost is already accumulated into ws.TotalCostUSD by the executor

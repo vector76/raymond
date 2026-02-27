@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vector76/raymond/internal/cli"
+	"github.com/vector76/raymond/internal/orchestrator"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
 
@@ -373,4 +374,125 @@ func TestValidEffortFlagValues(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// --------------------------------------------------------------------------
+// Launch params persistence: --start saves params; --resume restores them
+// --------------------------------------------------------------------------
+
+// runCapturing executes the CLI with a capturing runner and returns captured RunOptions.
+func runCapturing(t *testing.T, args ...string) ([]orchestrator.RunOptions, error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	var captured []orchestrator.RunOptions
+	c := cli.NewTestCLICapturing(&out, &errOut, &captured)
+	cmd := c.NewRootCmd()
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return captured, err
+}
+
+func TestStartSavesLaunchParamsToStateFile(t *testing.T) {
+	stateDir := makeStateDir(t)
+	scope := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
+
+	_, _, err := run(t, filepath.Join(scope, "START.md"),
+		"--model", "opus",
+		"--effort", "high",
+		"--dangerously-skip-permissions",
+		"--state-dir", stateDir,
+	)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	require.NotNil(t, ws.LaunchParams, "launch_params should be saved in state file")
+	assert.Equal(t, "opus", ws.LaunchParams.Model)
+	assert.Equal(t, "high", ws.LaunchParams.Effort)
+	assert.True(t, ws.LaunchParams.DangerouslySkipPermissions)
+}
+
+func TestStartSavesDefaultLaunchParamsWhenFlagsUnspecified(t *testing.T) {
+	stateDir := makeStateDir(t)
+	scope := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
+
+	_, _, err := run(t, filepath.Join(scope, "START.md"), "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	// launch_params must exist even when no explicit flags are passed.
+	require.NotNil(t, ws.LaunchParams)
+	// Model and Effort should be empty when not specified (config.toml doesn't set them).
+	assert.Equal(t, "", ws.LaunchParams.Model)
+	assert.Equal(t, "", ws.LaunchParams.Effort)
+	// Note: DangerouslySkipPermissions is intentionally not checked here because
+	// the project's .raymond/config.toml may set it, making the value environment-dependent.
+}
+
+func TestResumeRestoresSavedModel(t *testing.T) {
+	stateDir := makeStateDir(t)
+	lp := &wfstate.LaunchParams{Model: "haiku", Effort: "low", DangerouslySkipPermissions: false}
+	ws := wfstate.CreateInitialState("wf-restore-model", "scope", "START.md", 10.0, nil, lp)
+	require.NoError(t, wfstate.WriteState("wf-restore-model", ws, stateDir))
+
+	captured, err := runCapturing(t, "--resume", "wf-restore-model", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "haiku", captured[0].DefaultModel,
+		"resume should restore saved model when --model not specified on CLI")
+	assert.Equal(t, "low", captured[0].DefaultEffort,
+		"resume should restore saved effort when --effort not specified on CLI")
+}
+
+func TestResumeCLIModelOverridesSavedModel(t *testing.T) {
+	stateDir := makeStateDir(t)
+	lp := &wfstate.LaunchParams{Model: "haiku", Effort: "low"}
+	ws := wfstate.CreateInitialState("wf-override-model", "scope", "START.md", 10.0, nil, lp)
+	require.NoError(t, wfstate.WriteState("wf-override-model", ws, stateDir))
+
+	// CLI explicitly passes --model opus; should override saved haiku.
+	captured, err := runCapturing(t, "--resume", "wf-override-model", "--model", "opus", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "opus", captured[0].DefaultModel,
+		"CLI --model should override saved model on resume")
+}
+
+func TestResumeDangerouslySkipPermissionsRestored(t *testing.T) {
+	stateDir := makeStateDir(t)
+	lp := &wfstate.LaunchParams{DangerouslySkipPermissions: true}
+	ws := wfstate.CreateInitialState("wf-dsp-restore", "scope", "START.md", 10.0, nil, lp)
+	require.NoError(t, wfstate.WriteState("wf-dsp-restore", ws, stateDir))
+
+	captured, err := runCapturing(t, "--resume", "wf-dsp-restore", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.True(t, captured[0].DangerouslySkipPermissions,
+		"resume should restore dangerously-skip-permissions=true from launch_params")
+}
+
+func TestResumeNoLaunchParamsUsesDefaults(t *testing.T) {
+	stateDir := makeStateDir(t)
+	// Old-style state file with no launch_params.
+	ws := wfstate.CreateInitialState("wf-no-lp", "scope", "START.md", 10.0, nil)
+	require.NoError(t, wfstate.WriteState("wf-no-lp", ws, stateDir))
+
+	captured, err := runCapturing(t, "--resume", "wf-no-lp", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	// With no launch_params, model should be empty (the .raymond/config.toml doesn't set it).
+	assert.Equal(t, "", captured[0].DefaultModel)
+	// Note: DangerouslySkipPermissions is intentionally not checked here because
+	// the project's .raymond/config.toml may set it, making the value environment-dependent.
 }

@@ -62,6 +62,20 @@ func NewTestCLI(stdout, stderr io.Writer) *CLI {
 	}
 }
 
+// NewTestCLICapturing creates a CLI that records the RunOptions passed to the
+// runner on each invocation. The captured values are appended to *captured.
+// Exported for use in cli_test tests that need to inspect resolved opts.
+func NewTestCLICapturing(stdout, stderr io.Writer, captured *[]orchestrator.RunOptions) *CLI {
+	return &CLI{
+		runner: func(_ context.Context, _ string, opts orchestrator.RunOptions) error {
+			*captured = append(*captured, opts)
+			return nil
+		},
+		stdout: stdout,
+		stderr: stderr,
+	}
+}
+
 // Run is the main entry point for both the raymond and ray binaries.
 func Run() {
 	c := newCLI()
@@ -111,6 +125,28 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			}
 			if statusID != "" {
 				return c.cmdStatus(cmd, statusID, stateDir)
+			}
+
+			// ---- For resume: apply saved launch params for flags not set on CLI ----
+			// Load the saved LaunchParams before config merging so that any
+			// restored values are treated identically to CLI-specified values.
+			if resume != "" {
+				resolvedDir := wfstate.GetStateDir(stateDir)
+				if ws, err := wfstate.ReadState(resume, resolvedDir); err == nil && ws.LaunchParams != nil {
+					lp := ws.LaunchParams
+					if !cmd.Flags().Changed("dangerously-skip-permissions") && lp.DangerouslySkipPermissions {
+						dangerouslySkipPermissions = lp.DangerouslySkipPermissions
+					}
+					if !cmd.Flags().Changed("model") && lp.Model != "" {
+						model = lp.Model
+					}
+					if !cmd.Flags().Changed("effort") && lp.Effort != "" {
+						effort = lp.Effort
+					}
+					if !cmd.Flags().Changed("timeout") && lp.Timeout > 0 {
+						timeout = lp.Timeout
+					}
+				}
 			}
 
 			// ---- load and merge config file ----
@@ -187,7 +223,15 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				s := input
 				initialInput = &s
 			}
-			return c.cmdStart(args[0], effectiveBudget, initialInput, opts)
+
+			// Build launch params to persist so they can be restored on --resume.
+			lp := &wfstate.LaunchParams{
+				DangerouslySkipPermissions: merged.DangerouslySkipPermissions,
+				Model:                      merged.Model,
+				Effort:                     merged.Effort,
+				Timeout:                    effectiveTimeout,
+			}
+			return c.cmdStart(args[0], effectiveBudget, initialInput, opts, lp)
 		},
 	}
 
@@ -223,7 +267,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 // --------------------------------------------------------------------------
 
 // cmdStart creates initial workflow state and invokes the runner.
-func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts orchestrator.RunOptions) error {
+func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts orchestrator.RunOptions, lp *wfstate.LaunchParams) error {
 	scopeDir, initialState, err := parseScopeAndState(arg)
 	if err != nil {
 		return err
@@ -236,7 +280,7 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		return fmt.Errorf("generate workflow ID: %w", err)
 	}
 
-	ws := wfstate.CreateInitialState(workflowID, scopeDir, initialState, budgetUSD, initialInput)
+	ws := wfstate.CreateInitialState(workflowID, scopeDir, initialState, budgetUSD, initialInput, lp)
 	if err := wfstate.WriteState(workflowID, ws, resolvedStateDir); err != nil {
 		return fmt.Errorf("write initial state: %w", err)
 	}

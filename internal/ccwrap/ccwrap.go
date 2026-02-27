@@ -85,7 +85,7 @@ func BuildClaudeEnv() map[string]string {
 //   - model == ""     → omit --model
 //   - effort == ""    → omit --effort
 //   - sessionID == "" → omit --resume
-//   - fork == true    → append --fork-session after the prompt separator
+//   - fork == true    → prepend --fork-session before the prompt separator
 func BuildClaudeCommand(
 	prompt, model, effort, sessionID string,
 	dangerouslySkipPermissions, fork bool,
@@ -119,11 +119,13 @@ func BuildClaudeCommand(
 	// managed agents.
 	cmd = append(cmd, "--disallowed-tools", strings.Join(DisallowedTools, ","))
 
-	cmd = append(cmd, "--", prompt)
-
+	// IMPORTANT: --fork-session must come before the "--" separator so the
+	// claude CLI interprets it as a flag rather than as part of the prompt text.
 	if fork {
 		cmd = append(cmd, "--fork-session")
 	}
+
+	cmd = append(cmd, "--", prompt)
 
 	return cmd
 }

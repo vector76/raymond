@@ -403,3 +403,64 @@ func TestSessionIDNonNullRoundTrip(t *testing.T) {
 	require.NotNil(t, got.Agents[0].SessionID)
 	assert.Equal(t, "ses-xyz", *got.Agents[0].SessionID)
 }
+
+// ----------------------------------------------------------------------------
+// LaunchParams persistence
+// ----------------------------------------------------------------------------
+
+func TestCreateInitialState_WithLaunchParams(t *testing.T) {
+	lp := &state.LaunchParams{
+		DangerouslySkipPermissions: true,
+		Model:                      "opus",
+		Effort:                     "high",
+		Timeout:                    300.0,
+	}
+	ws := state.CreateInitialState("lp-test", "scope", "START.md", 10.0, nil, lp)
+
+	require.NotNil(t, ws.LaunchParams)
+	assert.Equal(t, true, ws.LaunchParams.DangerouslySkipPermissions)
+	assert.Equal(t, "opus", ws.LaunchParams.Model)
+	assert.Equal(t, "high", ws.LaunchParams.Effort)
+	assert.Equal(t, 300.0, ws.LaunchParams.Timeout)
+}
+
+func TestCreateInitialState_WithoutLaunchParams(t *testing.T) {
+	ws := state.CreateInitialState("lp-nil", "scope", "START.md", 10.0, nil)
+	assert.Nil(t, ws.LaunchParams, "LaunchParams should be nil when not provided")
+}
+
+func TestCreateInitialState_NilLaunchParamsOmitted(t *testing.T) {
+	ws := state.CreateInitialState("lp-explicit-nil", "scope", "START.md", 10.0, nil, nil)
+	assert.Nil(t, ws.LaunchParams, "LaunchParams should be nil when explicitly nil is passed")
+}
+
+func TestLaunchParamsRoundTrip(t *testing.T) {
+	dir := stateDir(t)
+	lp := &state.LaunchParams{
+		DangerouslySkipPermissions: true,
+		Model:                      "haiku",
+		Effort:                     "low",
+		Timeout:                    120.0,
+	}
+	ws := state.CreateInitialState("lp-rtrip", "scope", "START.md", 10.0, nil, lp)
+	require.NoError(t, state.WriteState("lp-rtrip", ws, dir))
+
+	got, err := state.ReadState("lp-rtrip", dir)
+	require.NoError(t, err)
+	require.NotNil(t, got.LaunchParams)
+	assert.Equal(t, true, got.LaunchParams.DangerouslySkipPermissions)
+	assert.Equal(t, "haiku", got.LaunchParams.Model)
+	assert.Equal(t, "low", got.LaunchParams.Effort)
+	assert.Equal(t, 120.0, got.LaunchParams.Timeout)
+}
+
+func TestLaunchParamsAbsentInOldStateFiles(t *testing.T) {
+	// Simulate an old state file that has no launch_params field.
+	dir := stateDir(t)
+	raw := `{"workflow_id":"old-wf","scope_dir":"scope","total_cost_usd":0,"budget_usd":10,"agents":[]}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "old-wf.json"), []byte(raw), 0o644))
+
+	got, err := state.ReadState("old-wf", dir)
+	require.NoError(t, err)
+	assert.Nil(t, got.LaunchParams, "LaunchParams should be nil for old state files without the field")
+}

@@ -838,3 +838,235 @@ func TestTimeoutErrorRetriesAndPauses(t *testing.T) {
 	require.Len(t, paused, 1)
 	assert.Equal(t, "timeout", paused[0].Reason)
 }
+
+// ----------------------------------------------------------------------------
+// Session ID management across transitions
+//
+// Regression tests for the bug where execResult.SessionID was applied to the
+// agent AFTER ApplyTransition(), overwriting what transition handlers had done:
+//   - <reset>: handler clears SessionID=nil, but loop restored the old session.
+//   - <function>: handler clears SessionID=nil, but loop restored the caller's session.
+//   - <result> (return): handler restores caller's session from the stack, but
+//     loop overwrote it with the callee's session.
+// ----------------------------------------------------------------------------
+
+// sessionCapturingMock is a StateExecutor that records the session_id on the
+// agent at each Execute call, then returns pre-programmed results.
+type sessionCapturingMock struct {
+	mu               sync.Mutex
+	results          []executors.ExecutionResult
+	idx              int
+	capturedSessions []*string // deep-copied at call time to avoid aliasing
+}
+
+func (m *sessionCapturingMock) Execute(
+	_ context.Context,
+	agent *wfstate.AgentState,
+	wfState *wfstate.WorkflowState,
+	_ *executors.ExecutionContext,
+) (executors.ExecutionResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := m.idx
+	m.idx++
+
+	// Deep-copy the session_id to avoid pointer aliasing after the call.
+	var capturedID *string
+	if agent.SessionID != nil {
+		s := *agent.SessionID
+		capturedID = &s
+	}
+	m.capturedSessions = append(m.capturedSessions, capturedID)
+
+	if i < len(m.results) {
+		res := m.results[i]
+		if res.CostUSD > 0 {
+			wfState.TotalCostUSD += res.CostUSD
+		}
+		return res, nil
+	}
+	return executors.ExecutionResult{}, errors.New("sessionCapturingMock: no more results configured")
+}
+
+// sidPtr returns a pointer to s, for constructing ExecutionResult.SessionID.
+func sidPtr(s string) *string { return &s }
+
+// resetExecResult returns an ExecutionResult with a <reset> transition and a session ID.
+func resetExecResult(target, sessionID string) executors.ExecutionResult {
+	return executors.ExecutionResult{
+		SessionID: sidPtr(sessionID),
+		Transition: parsing.Transition{
+			Tag:        "reset",
+			Target:     target,
+			Attributes: map[string]string{},
+		},
+	}
+}
+
+// functionExecResult returns an ExecutionResult with a <function> transition and a session ID.
+func functionExecResult(target, returnState, sessionID string) executors.ExecutionResult {
+	return executors.ExecutionResult{
+		SessionID: sidPtr(sessionID),
+		Transition: parsing.Transition{
+			Tag:        "function",
+			Target:     target,
+			Attributes: map[string]string{"return": returnState},
+		},
+	}
+}
+
+// callExecResult returns an ExecutionResult with a <call> transition and a session ID.
+func callExecResult(target, returnState, sessionID string) executors.ExecutionResult {
+	return executors.ExecutionResult{
+		SessionID: sidPtr(sessionID),
+		Transition: parsing.Transition{
+			Tag:        "call",
+			Target:     target,
+			Attributes: map[string]string{"return": returnState},
+		},
+	}
+}
+
+// resultWithSID returns an ExecutionResult with a <result> transition and a session ID.
+func resultWithSID(payload, sessionID string) executors.ExecutionResult {
+	return executors.ExecutionResult{
+		SessionID: sidPtr(sessionID),
+		Transition: parsing.Transition{
+			Tag:        "result",
+			Payload:    payload,
+			Attributes: map[string]string{},
+		},
+	}
+}
+
+// TestResetClearsSessionIDForNextInvocation verifies that after a <reset>
+// transition the next state is invoked with no session (SessionID==nil),
+// not with the session that was active before the reset.
+func TestResetClearsSessionIDForNextInvocation(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	startMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// START.md: establishes a session; emits <reset>FRESH.md</reset>
+			resetExecResult("FRESH.md", "old-session-abc"),
+		},
+	}
+	freshMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// FRESH.md: must run with a fresh session (no --resume); terminates
+			resultExecResult("done"),
+		},
+	}
+
+	factory := map[string]*sessionCapturingMock{
+		"START.md": startMock,
+		"FRESH.md": freshMock,
+	}
+	orchestrator.SetExecutorFactory(func(state string) executors.StateExecutor {
+		return factory[state]
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+
+	// START.md should have been called with nil (first invocation, no session yet).
+	require.Len(t, startMock.capturedSessions, 1)
+	assert.Nil(t, startMock.capturedSessions[0], "START.md should start with no session")
+
+	// FRESH.md must be called with nil session: <reset> must clear it.
+	require.Len(t, freshMock.capturedSessions, 1)
+	assert.Nil(t, freshMock.capturedSessions[0],
+		"after <reset>, next invocation must have no session; got %v", freshMock.capturedSessions[0])
+}
+
+// TestResultReturnRestoresCallerSession verifies that after a <function> +
+// <result> pair, the return state resumes the *caller's* session, not the
+// function body's session.
+func TestResultReturnRestoresCallerSession(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "CALLER.md")
+
+	callerMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// CALLER.md: establishes a session; calls a function
+			functionExecResult("EVAL.md", "RETURN.md", "caller-session-xyz"),
+		},
+	}
+	evalMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// EVAL.md: runs in a fresh context; returns a result
+			resultWithSID("eval done", "eval-session-abc"),
+		},
+	}
+	returnMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// RETURN.md: should resume the caller's session
+			resultExecResult("all done"),
+		},
+	}
+
+	factory := map[string]*sessionCapturingMock{
+		"CALLER.md": callerMock,
+		"EVAL.md":   evalMock,
+		"RETURN.md": returnMock,
+	}
+	orchestrator.SetExecutorFactory(func(state string) executors.StateExecutor {
+		return factory[state]
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+
+	// EVAL.md (function body) must start with a nil session — <function> clears it.
+	require.Len(t, evalMock.capturedSessions, 1)
+	assert.Nil(t, evalMock.capturedSessions[0],
+		"EVAL.md (function body) should start with no session; got %v", evalMock.capturedSessions[0])
+
+	// RETURN.md must resume the caller's session, not the eval function's.
+	require.Len(t, returnMock.capturedSessions, 1)
+	require.NotNil(t, returnMock.capturedSessions[0], "RETURN.md should have a session")
+	assert.Equal(t, "caller-session-xyz", *returnMock.capturedSessions[0],
+		"RETURN.md must resume caller-session-xyz, not the eval session")
+}
+
+// TestCallResultRestoresCallerSession verifies that after a <call> + <result>
+// pair, the return state resumes the *caller's* session, not the child's forked session.
+func TestCallResultRestoresCallerSession(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "CALLER.md")
+
+	callerMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// CALLER.md: establishes a session; issues a <call>
+			callExecResult("CHILD.md", "RETURN.md", "caller-session-xyz"),
+		},
+	}
+	childMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// CHILD.md: runs via --fork-session; establishes its own session
+			resultWithSID("child done", "child-session-abc"),
+		},
+	}
+	returnMock := &sessionCapturingMock{
+		results: []executors.ExecutionResult{
+			// RETURN.md: should resume the caller's session
+			resultExecResult("all done"),
+		},
+	}
+
+	factory := map[string]*sessionCapturingMock{
+		"CALLER.md": callerMock,
+		"CHILD.md":  childMock,
+		"RETURN.md": returnMock,
+	}
+	orchestrator.SetExecutorFactory(func(state string) executors.StateExecutor {
+		return factory[state]
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+
+	// RETURN.md must resume the *caller's* session, not the child's forked session.
+	require.Len(t, returnMock.capturedSessions, 1)
+	require.NotNil(t, returnMock.capturedSessions[0], "RETURN.md should have a session")
+	assert.Equal(t, "caller-session-xyz", *returnMock.capturedSessions[0],
+		"RETURN.md must resume caller-session-xyz, not child-session-abc")
+}

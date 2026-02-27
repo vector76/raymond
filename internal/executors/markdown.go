@@ -86,7 +86,9 @@ func (e *MarkdownExecutor) Execute(
 	basePrompt := prompts.RenderPrompt(body, variables)
 
 	// Determine model and effort (frontmatter takes precedence over defaults).
-	model := ""
+	// Default to "sonnet" when nothing else specifies, for a predictable
+	// baseline instead of relying on ~/.claude/settings.json.
+	model := "sonnet"
 	if pol != nil && pol.Model != "" {
 		model = pol.Model
 	} else if execCtx.DefaultModel != "" {

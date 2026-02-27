@@ -85,9 +85,9 @@ async def _step_agent(
     This helper function:
     1. Gets the appropriate executor for the agent's current state
     2. Executes the state via the executor
-    3. Applies the transition using apply_transition()
-    4. Emits transition-related events
-    5. Updates session_id from the result
+    3. Updates session_id on the agent from the execution result
+    4. Applies the transition using apply_transition()
+    5. Emits transition-related events
 
     Args:
         agent: Agent state dictionary
@@ -112,6 +112,17 @@ async def _step_agent(
 
     # Execute the state
     result = await executor.execute(agent, state, context)
+
+    # Apply the session_id from the execution result to the agent BEFORE handling
+    # the transition.  Transition handlers need to see the post-execution session_id:
+    # - function/call save it in the return-stack frame (the caller's session to
+    #   restore later), so it must reflect what was actually used during execution
+    # - reset/function then replace it with None for a fresh start
+    # - result (return) pops the saved caller session from the stack
+    # Scripts return the agent's existing session_id unchanged (they have no Claude
+    # session of their own), so this update is a no-op for script states.
+    if result.session_id is not None:
+        agent["session_id"] = result.session_id
 
     # Apply the transition
     transition = result.transition
@@ -147,10 +158,6 @@ async def _step_agent(
         # Fork transition - (updated parent, new worker)
         updated_agent, new_agent = transition_result
 
-        # Update session_id from execution result
-        if result.session_id is not None:
-            updated_agent["session_id"] = result.session_id
-
         # Add new agent to state
         state["agents"].append(new_agent)
 
@@ -175,10 +182,6 @@ async def _step_agent(
     else:
         # Normal transition - updated agent dict
         updated_agent = transition_result
-
-        # Update session_id from execution result
-        if result.session_id is not None:
-            updated_agent["session_id"] = result.session_id
 
         # Emit TransitionOccurred event
         if transition.tag == "result":

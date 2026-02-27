@@ -3303,3 +3303,187 @@ class TestScriptTransitionTypes:
         # Verify workflow completed
         state_file = state_dir / f"{workflow_id}.json"
         assert not state_file.exists(), "State file should be deleted after successful completion"
+
+
+class TestTransitionSessionManagement:
+    """Tests that transitions correctly manage session_id across state boundaries.
+
+    The workflow loop applies the post-execution session_id to the agent before
+    calling apply_transition(), so that transition handlers see the correct
+    (post-execution) session when saving or restoring it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reset_clears_session_id_for_next_invocation(self, tmp_path):
+        """<reset> must cause the next Claude invocation to start a fresh session.
+
+        Regression test: the workflow loop was overwriting session_id=None (set by
+        handle_reset_transition) with the session ID captured from the just-completed
+        invocation, so the next state would incorrectly resume the old session.
+        """
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-reset-session-clear"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        state = create_initial_state(workflow_id, scope_dir, "START.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        (Path(scope_dir) / "START.md").write_text("START_PROMPT")
+        (Path(scope_dir) / "FRESH.md").write_text("FRESH_PROMPT")
+
+        call_kwargs = []
+
+        def mock_wrap_stream(prompt, **kwargs):
+            call_kwargs.append(kwargs)
+            if len(call_kwargs) == 1:
+                # First state: stream establishes a session; emits <reset>
+                output = [{"type": "result", "result": "<reset>FRESH.md</reset>", "session_id": "old-session-abc"}]
+            else:
+                # Second state: must be fresh (no resume)
+                output = [{"type": "result", "result": "<result>done</result>"}]
+
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        assert len(call_kwargs) == 2, "Expected exactly two Claude invocations"
+        # The second invocation must not resume the old session
+        assert call_kwargs[1].get("session_id") is None, (
+            f"Expected session_id=None for post-reset invocation, "
+            f"got {call_kwargs[1].get('session_id')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_result_return_restores_caller_session(self, tmp_path):
+        """<result> returning from a function must resume the caller's session, not the callee's.
+
+        Regression test: the workflow loop was overwriting session_id (restored to
+        caller's session by handle_result_transition) with the session ID from the
+        callee invocation, so the return state would incorrectly resume the callee's
+        session instead of the caller's.
+        """
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-result-session-restore"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        state = create_initial_state(workflow_id, scope_dir, "CALLER.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        (Path(scope_dir) / "CALLER.md").write_text("CALLER_PROMPT")
+        (Path(scope_dir) / "EVAL.md").write_text("EVAL_PROMPT")
+        (Path(scope_dir) / "RETURN.md").write_text("RETURN_PROMPT")
+
+        call_kwargs = []
+
+        def mock_wrap_stream(prompt, **kwargs):
+            call_kwargs.append(kwargs)
+            n = len(call_kwargs)
+            if n == 1:
+                # CALLER.md: stream establishes a session; calls a function
+                output = [{"type": "result",
+                           "result": '<function return="RETURN.md">EVAL.md</function>',
+                           "session_id": "caller-session-xyz"}]
+            elif n == 2:
+                # EVAL.md: runs in fresh context; returns a result
+                output = [{"type": "result",
+                           "result": "<result>eval done</result>",
+                           "session_id": "eval-session-abc"}]
+            else:
+                # RETURN.md: should resume the caller's session
+                output = [{"type": "result", "result": "<result>all done</result>"}]
+
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        assert len(call_kwargs) == 3, "Expected CALLER, EVAL, and RETURN invocations"
+        # The function body must run in a fresh session (no --resume)
+        assert call_kwargs[1].get("session_id") is None, (
+            f"Expected EVAL.md (function body) to start a fresh session, "
+            f"got {call_kwargs[1].get('session_id')!r}"
+        )
+        # RETURN.md must resume the *caller's* session, not the eval function's
+        assert call_kwargs[2].get("session_id") == "caller-session-xyz", (
+            f"Expected RETURN.md to resume caller-session-xyz, "
+            f"got {call_kwargs[2].get('session_id')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_call_result_restores_caller_session(self, tmp_path):
+        """<result> returning from a <call> must resume the caller's session.
+
+        <call> differs from <function>: the callee runs via --fork-session rather
+        than a fresh session.  This test verifies the return-stack frame correctly
+        captures the caller's session and that the return state resumes it, not the
+        callee's forked session.
+        """
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+
+        workflow_id = "test-call-session-restore"
+        scope_dir = str(tmp_path / "workflows" / "test")
+        Path(scope_dir).mkdir(parents=True)
+
+        state = create_initial_state(workflow_id, scope_dir, "CALLER.md")
+        write_state(workflow_id, state, state_dir=str(state_dir))
+
+        (Path(scope_dir) / "CALLER.md").write_text("CALLER_PROMPT")
+        (Path(scope_dir) / "CHILD.md").write_text("CHILD_PROMPT")
+        (Path(scope_dir) / "RETURN.md").write_text("RETURN_PROMPT")
+
+        call_kwargs = []
+
+        def mock_wrap_stream(prompt, **kwargs):
+            call_kwargs.append(kwargs)
+            n = len(call_kwargs)
+            if n == 1:
+                # CALLER.md: stream establishes a session; issues a <call>
+                output = [{"type": "result",
+                           "result": '<call return="RETURN.md">CHILD.md</call>',
+                           "session_id": "caller-session-xyz"}]
+            elif n == 2:
+                # CHILD.md: runs via --fork-session; establishes its own session
+                output = [{"type": "result",
+                           "result": "<result>child done</result>",
+                           "session_id": "child-session-abc"}]
+            else:
+                # RETURN.md: should resume the caller's session
+                output = [{"type": "result", "result": "<result>all done</result>"}]
+
+            async def gen():
+                for obj in output:
+                    yield obj
+            return gen()
+
+        with patch('src.orchestrator.wrap_claude_code_stream', side_effect=mock_wrap_stream):
+            await run_all_agents(workflow_id, state_dir=str(state_dir))
+
+        assert len(call_kwargs) == 3, "Expected CALLER, CHILD, and RETURN invocations"
+        # CHILD.md must use --fork-session from the caller's session
+        assert call_kwargs[1].get("fork") is True, (
+            f"Expected CHILD.md to use fork=True (--fork-session), "
+            f"got {call_kwargs[1].get('fork')!r}"
+        )
+        assert call_kwargs[1].get("session_id") == "caller-session-xyz", (
+            f"Expected CHILD.md fork source to be caller-session-xyz, "
+            f"got {call_kwargs[1].get('session_id')!r}"
+        )
+        # RETURN.md must resume the *caller's* session, not the child's
+        assert call_kwargs[2].get("session_id") == "caller-session-xyz", (
+            f"Expected RETURN.md to resume caller-session-xyz, "
+            f"got {call_kwargs[2].get('session_id')!r}"
+        )

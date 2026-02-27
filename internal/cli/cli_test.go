@@ -1,9 +1,11 @@
 package cli_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +42,22 @@ func makeStateDir(t *testing.T) string {
 	dir := filepath.Join(t.TempDir(), ".raymond", "state")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	return dir
+}
+
+// writeTestZip creates a valid zip file at path with the given files.
+func writeTestZip(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	w := zip.NewWriter(f)
+	for name, content := range files {
+		fw, err := w.Create(name)
+		require.NoError(t, err)
+		_, err = fw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+	require.NoError(t, w.Close())
+	require.NoError(t, f.Close())
 }
 
 // writeWorkflow writes a workflow state file to stateDir and returns the ID.
@@ -225,14 +243,105 @@ func TestStartFile(t *testing.T) {
 func TestStartZipFile(t *testing.T) {
 	stateDir := makeStateDir(t)
 
-	// Create a minimal fake .zip file (just needs to exist).
+	// Create a valid zip file so hash/layout validation passes.
 	dir := t.TempDir()
 	zipFile := filepath.Join(dir, "workflow.zip")
-	require.NoError(t, os.WriteFile(zipFile, []byte("PK"), 0o644))
+	writeTestZip(t, zipFile, map[string]string{"START.md": "# Start"})
 
 	_, _, err := run(t, zipFile, "--state-dir", stateDir)
 	// The no-op runner returns nil regardless of scope type.
 	require.NoError(t, err)
+}
+
+func TestStartZipFileWithHashMismatch(t *testing.T) {
+	stateDir := makeStateDir(t)
+
+	dir := t.TempDir()
+	badHash := "0000000000000000000000000000000000000000000000000000000000000000"
+	zipFile := filepath.Join(dir, "workflow-"+badHash+".zip")
+	writeTestZip(t, zipFile, map[string]string{"START.md": "# Start"})
+
+	_, _, err := run(t, zipFile, "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hash")
+}
+
+func TestStartZipFileWithInvalidLayout(t *testing.T) {
+	stateDir := makeStateDir(t)
+
+	// Empty zip archive — layout validation will fail.
+	dir := t.TempDir()
+	zipFile := filepath.Join(dir, "workflow.zip")
+	writeTestZip(t, zipFile, map[string]string{}) // empty zip → ZipLayoutError
+
+	_, _, err := run(t, zipFile, "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "layout")
+}
+
+func TestResumeZipNotFound(t *testing.T) {
+	stateDir := makeStateDir(t)
+
+	// Create a workflow state whose scope points to a zip that does not exist.
+	dir := t.TempDir()
+	missingZip := filepath.Join(dir, "gone.zip")
+	ws := wfstate.CreateInitialState("wf-zip-gone", missingZip, "START.md", 10.0, nil)
+	require.NoError(t, wfstate.WriteState("wf-zip-gone", ws, stateDir))
+
+	_, _, err := run(t, "--resume", "wf-zip-gone", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestResumeZipWithHashInNameNotFound(t *testing.T) {
+	stateDir := makeStateDir(t)
+
+	// Zip whose filename contains a 64-char hex hash but the file itself is absent.
+	// VerifyZipHash sees the hash, tries os.Open, gets ErrNotExist — must still
+	// report "not found" rather than "hash validation failed".
+	dir := t.TempDir()
+	fakeHash := strings.Repeat("a", 64)
+	missingZip := filepath.Join(dir, "workflow-"+fakeHash+".zip")
+	ws := wfstate.CreateInitialState("wf-zip-hash-gone", missingZip, "START.md", 10.0, nil)
+	require.NoError(t, wfstate.WriteState("wf-zip-hash-gone", ws, stateDir))
+
+	_, _, err := run(t, "--resume", "wf-zip-hash-gone", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	assert.NotContains(t, err.Error(), "hash validation failed")
+}
+
+func TestResumeZipHashMismatch(t *testing.T) {
+	stateDir := makeStateDir(t)
+
+	// Zip file exists but its content hash doesn't match the hash in the filename.
+	dir := t.TempDir()
+	badHash := strings.Repeat("0", 64)
+	zipFile := filepath.Join(dir, "workflow-"+badHash+".zip")
+	writeTestZip(t, zipFile, map[string]string{"START.md": "# Start"})
+
+	ws := wfstate.CreateInitialState("wf-zip-hash-mismatch", zipFile, "START.md", 10.0, nil)
+	require.NoError(t, wfstate.WriteState("wf-zip-hash-mismatch", ws, stateDir))
+
+	_, _, err := run(t, "--resume", "wf-zip-hash-mismatch", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hash")
+}
+
+func TestResumeZipInvalidLayout(t *testing.T) {
+	stateDir := makeStateDir(t)
+
+	// Zip file exists but is empty — layout validation fails.
+	dir := t.TempDir()
+	zipFile := filepath.Join(dir, "workflow.zip")
+	writeTestZip(t, zipFile, map[string]string{}) // empty zip → ZipLayoutError
+
+	ws := wfstate.CreateInitialState("wf-zip-bad-layout", zipFile, "START.md", 10.0, nil)
+	require.NoError(t, wfstate.WriteState("wf-zip-bad-layout", ws, stateDir))
+
+	_, _, err := run(t, "--resume", "wf-zip-bad-layout", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "layout")
 }
 
 // --------------------------------------------------------------------------

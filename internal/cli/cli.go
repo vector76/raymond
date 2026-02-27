@@ -7,6 +7,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/vector76/raymond/internal/observers/titlebar"
 	"github.com/vector76/raymond/internal/orchestrator"
 	wfstate "github.com/vector76/raymond/internal/state"
+	"github.com/vector76/raymond/internal/zipscope"
 )
 
 const (
@@ -273,6 +275,16 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		return err
 	}
 
+	// For zip scopes, validate the hash and layout before creating state.
+	if zipscope.IsZipScope(scopeDir) {
+		if err := zipscope.VerifyZipHash(scopeDir); err != nil {
+			return fmt.Errorf("zip archive hash validation failed: %w", err)
+		}
+		if _, err := zipscope.DetectLayout(scopeDir); err != nil {
+			return fmt.Errorf("zip archive layout invalid: %w", err)
+		}
+	}
+
 	resolvedStateDir := wfstate.GetStateDir(opts.StateDir)
 
 	workflowID, err := wfstate.GenerateWorkflowID(resolvedStateDir)
@@ -296,8 +308,25 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 func (c *CLI) cmdResume(workflowID string, opts orchestrator.RunOptions) error {
 	resolvedStateDir := wfstate.GetStateDir(opts.StateDir)
 
-	if _, err := wfstate.ReadState(workflowID, resolvedStateDir); err != nil {
+	ws, err := wfstate.ReadState(workflowID, resolvedStateDir)
+	if err != nil {
 		return fmt.Errorf("workflow %q not found", workflowID)
+	}
+
+	// For zip scopes, re-validate hash and layout on resume.
+	if zipscope.IsZipScope(ws.ScopeDir) {
+		if err := zipscope.VerifyZipHash(ws.ScopeDir); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("zip archive not found for workflow %q: %s", workflowID, ws.ScopeDir)
+			}
+			return fmt.Errorf("zip archive hash validation failed for workflow %q: %w", workflowID, err)
+		}
+		if _, err := zipscope.DetectLayout(ws.ScopeDir); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("zip archive not found for workflow %q: %s", workflowID, ws.ScopeDir)
+			}
+			return fmt.Errorf("zip archive layout invalid for workflow %q: %w", workflowID, err)
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -254,6 +254,12 @@ func (r *ConsoleReporter) onErrorOccurred(e events.ErrorOccurred) {
 	}
 }
 
+func (r *ConsoleReporter) onAgentPaused(e events.AgentPaused) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fmt.Fprintf(r.w, "[%s] Agent paused (%s)\n", e.AgentID, e.Reason)
+}
+
 // returnSnippet extracts a short display snippet from a return-transition
 // result payload, applying these rules in order:
 //
@@ -316,6 +322,7 @@ func NewWithWriter(b *bus.Bus, quiet, verbose bool, _ int, w io.Writer, unicode 
 		bus.Subscribe(b, r.onAgentSpawned),
 		bus.Subscribe(b, r.onAgentTerminated),
 		bus.Subscribe(b, r.onErrorOccurred),
+		bus.Subscribe(b, r.onAgentPaused),
 	}
 	return o
 }

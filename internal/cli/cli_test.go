@@ -605,3 +605,117 @@ func TestResumeNoLaunchParamsUsesDefaults(t *testing.T) {
 	// Note: DangerouslySkipPermissions is intentionally not checked here because
 	// the project's .raymond/config.toml may set it, making the value environment-dependent.
 }
+
+// --------------------------------------------------------------------------
+// --workflow-id flag
+// --------------------------------------------------------------------------
+
+func TestWorkflowIDFlagCreatesWorkflowWithSpecifiedID(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	_, _, err := run(t, startFile, "--workflow-id", "my-custom-wf", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	// The workflow should exist with the specified ID.
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+	assert.Equal(t, "my-custom-wf", ids[0])
+}
+
+func TestWorkflowIDFlagWithHyphensAndUnderscores(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	_, _, err := run(t, startFile, "--workflow-id", "my_wf-001", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+	assert.Equal(t, "my_wf-001", ids[0])
+}
+
+func TestWorkflowIDFlagInvalidCharactersReturnsError(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	_, _, err := run(t, startFile, "--workflow-id", "invalid/id", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestWorkflowIDFlagTooLongReturnsError(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	longID := strings.Repeat("a", 256)
+	_, _, err := run(t, startFile, "--workflow-id", longID, "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "too long")
+}
+
+func TestWorkflowIDFlagDuplicateIDReturnsError(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	// Create an existing workflow with the target ID.
+	writeWorkflow(t, "taken-id", dir, "START.md", stateDir)
+
+	// Attempting to start a new workflow with the same ID must fail.
+	_, _, err := run(t, startFile, "--workflow-id", "taken-id", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+	assert.Contains(t, err.Error(), "--resume")
+}
+
+// --------------------------------------------------------------------------
+// --no-run flag
+// --------------------------------------------------------------------------
+
+func TestNoRunFlagCreatesStateWithoutRunning(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	out, _, err := run(t, startFile, "--no-run", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	// A state file should have been created.
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	assert.Len(t, ids, 1)
+
+	// Output should show the workflow ID and a resume hint.
+	assert.Contains(t, out, "Created workflow")
+	assert.Contains(t, out, "--resume")
+}
+
+func TestNoRunFlagWithWorkflowID(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	out, _, err := run(t, startFile, "--no-run", "--workflow-id", "preset-wf", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "preset-wf")
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+	assert.Equal(t, "preset-wf", ids[0])
+}

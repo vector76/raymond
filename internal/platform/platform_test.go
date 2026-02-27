@@ -454,3 +454,27 @@ func TestRunScriptShRaisesOnWindows(t *testing.T) {
 		"error should mention platform or extension: %s", err.Error(),
 	)
 }
+
+// ----------------------------------------------------------------------------
+// RunScript — CLAUDECODE env var stripping
+// ----------------------------------------------------------------------------
+
+// TestRunScriptStripsClaudeCodeFromEnv verifies that the CLAUDECODE environment
+// variable is stripped from the child process environment even when set in the
+// parent process. This prevents child processes from behaving as nested Claude
+// sessions unexpectedly.
+func TestRunScriptStripsClaudeCodeFromEnv(t *testing.T) {
+	skipUnix(t)
+	// Set CLAUDECODE in the parent environment.
+	t.Setenv("CLAUDECODE", "1")
+
+	dir := t.TempDir()
+	// Print the value of CLAUDECODE; if stripped it will be empty.
+	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho \"CC=${CLAUDECODE}\"\n")
+
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	require.NoError(t, err)
+	// CLAUDECODE must not appear in the child environment.
+	assert.Equal(t, "CC=\n", result.Stdout,
+		"CLAUDECODE should be stripped from the child process environment")
+}

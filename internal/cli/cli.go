@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 
@@ -32,6 +33,23 @@ const (
 	defaultBudgetUSD  = 10.0
 	defaultTimeoutSec = 600.0
 )
+
+// workflowIDPattern matches valid workflow IDs: alphanumeric, hyphens, underscores only.
+var workflowIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// validateWorkflowID returns an error if the given workflow ID is invalid.
+func validateWorkflowID(id string) error {
+	if id == "" {
+		return fmt.Errorf("workflow ID cannot be empty")
+	}
+	if len(id) > 255 {
+		return fmt.Errorf("workflow ID too long (max 255 characters)")
+	}
+	if !workflowIDPattern.MatchString(id) {
+		return fmt.Errorf("workflow ID %q contains invalid characters: only letters, numbers, hyphens, and underscores are allowed", id)
+	}
+	return nil
+}
 
 // CLI holds injectable dependencies. Use newCLI() for production binaries and
 // NewTestCLI() in tests.
@@ -107,6 +125,8 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		recover                    bool
 		initCfg                    bool
 		stateDir                   string // hidden; for testing
+		workflowID                 string
+		noRun                      bool
 	)
 
 	root := &cobra.Command{
@@ -233,7 +253,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				Effort:                     merged.Effort,
 				Timeout:                    effectiveTimeout,
 			}
-			return c.cmdStart(args[0], effectiveBudget, initialInput, opts, lp)
+			return c.cmdStart(args[0], effectiveBudget, initialInput, opts, lp, workflowID, noRun)
 		},
 	}
 
@@ -254,6 +274,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.BoolVar(&recover, "recover", false, "list in-progress (non-completed) workflows")
 	f.BoolVar(&initCfg, "init-config", false, "create a template .raymond/config.toml")
 
+	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
+	f.BoolVar(&noRun, "no-run", false, "create workflow without running it")
+
 	// Hidden flag: allows tests to control the state directory without
 	// requiring a real .raymond directory structure.
 	f.StringVar(&stateDir, "state-dir", "", "")
@@ -268,8 +291,10 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 // Command implementations
 // --------------------------------------------------------------------------
 
-// cmdStart creates initial workflow state and invokes the runner.
-func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts orchestrator.RunOptions, lp *wfstate.LaunchParams) error {
+// cmdStart creates initial workflow state and optionally invokes the runner.
+// workflowIDOverride is the user-specified workflow ID; when empty, one is generated.
+// When noRun is true the state is written but the runner is not invoked.
+func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts orchestrator.RunOptions, lp *wfstate.LaunchParams, workflowIDOverride string, noRun bool) error {
 	scopeDir, initialState, err := parseScopeAndState(arg)
 	if err != nil {
 		return err
@@ -287,14 +312,33 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 
 	resolvedStateDir := wfstate.GetStateDir(opts.StateDir)
 
-	workflowID, err := wfstate.GenerateWorkflowID(resolvedStateDir)
-	if err != nil {
-		return fmt.Errorf("generate workflow ID: %w", err)
+	var workflowID string
+	if workflowIDOverride != "" {
+		if err := validateWorkflowID(workflowIDOverride); err != nil {
+			return err
+		}
+		// Reject duplicate IDs: Python raises an explicit error rather than silently overwriting.
+		if _, readErr := wfstate.ReadState(workflowIDOverride, resolvedStateDir); readErr == nil {
+			return fmt.Errorf("workflow %q already exists; use --resume to continue it", workflowIDOverride)
+		}
+		workflowID = workflowIDOverride
+	} else {
+		var genErr error
+		workflowID, genErr = wfstate.GenerateWorkflowID(resolvedStateDir)
+		if genErr != nil {
+			return fmt.Errorf("generate workflow ID: %w", genErr)
+		}
 	}
 
 	ws := wfstate.CreateInitialState(workflowID, scopeDir, initialState, budgetUSD, initialInput, lp)
 	if err := wfstate.WriteState(workflowID, ws, resolvedStateDir); err != nil {
 		return fmt.Errorf("write initial state: %w", err)
+	}
+
+	if noRun {
+		fmt.Fprintf(c.stdout, "Created workflow '%s'\n", workflowID)
+		fmt.Fprintf(c.stdout, "Run with: raymond --resume %s\n", workflowID)
+		return nil
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

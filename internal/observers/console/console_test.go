@@ -556,6 +556,37 @@ func TestConsoleUnicodeFork(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// AgentPaused
+// ----------------------------------------------------------------------------
+
+func TestConsoleAgentPausedShowsAgentAndReason(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentPaused{AgentID: "main", Reason: events.PauseReasonUsageLimit, Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.Contains(t, out, "[main]")
+	assert.Contains(t, out, "paused")
+	assert.Contains(t, out, events.PauseReasonUsageLimit)
+}
+
+func TestConsoleAgentPausedTimeoutReason(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentPaused{AgentID: "worker1", Reason: events.PauseReasonTimeout, Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.Contains(t, out, "[worker1]")
+	assert.Contains(t, out, events.PauseReasonTimeout)
+}
+
+// ----------------------------------------------------------------------------
 // Close
 // ----------------------------------------------------------------------------
 

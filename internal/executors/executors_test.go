@@ -1392,6 +1392,187 @@ func TestMarkdownExecutor_CLIModelOverridesDefault(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// "user" message tool error tests (Gap 1 parity)
+// --------------------------------------------------------------------------
+
+// TestMarkdownExecutor_EmitsErrorEventOnToolError verifies that when the
+// Claude stream contains a "user" message with a tool_result item that has
+// is_error=true, an ErrorOccurred event with ErrorType=="ToolError" is emitted.
+func TestMarkdownExecutor_EmitsErrorEventOnToolError(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	b := newBus()
+	errorEvents, cancel := collectEvents[events.ErrorOccurred](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			// "user" message with a failing tool_result
+			{
+				"type": "user",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{
+							"type":     "tool_result",
+							"is_error": true,
+							"content":  "Permission denied: cannot write to /etc/hosts",
+						},
+					},
+				},
+			},
+			// Still need a valid transition for Execute to succeed.
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*errorEvents) != 1 {
+		t.Fatalf("got %d ErrorOccurred events, want 1", len(*errorEvents))
+	}
+	ev := (*errorEvents)[0]
+	if ev.ErrorType != "ToolError" {
+		t.Errorf("ErrorType = %q, want ToolError", ev.ErrorType)
+	}
+	if ev.IsRetryable {
+		t.Error("tool error should not be retryable")
+	}
+	if !strings.Contains(ev.ErrorMessage, "Permission denied") {
+		t.Errorf("error message should contain tool error text, got %q", ev.ErrorMessage)
+	}
+}
+
+// TestMarkdownExecutor_ExtractsToolUseErrorTags verifies that <tool_use_error>
+// XML tags are stripped from the tool error message, matching Python behaviour.
+func TestMarkdownExecutor_ExtractsToolUseErrorTags(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	b := newBus()
+	errorEvents, cancel := collectEvents[events.ErrorOccurred](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{
+				"type": "user",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{
+							"type":     "tool_result",
+							"is_error": true,
+							"content":  "Error: <tool_use_error>file not found</tool_use_error>",
+						},
+					},
+				},
+			},
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*errorEvents) != 1 {
+		t.Fatalf("got %d ErrorOccurred events, want 1", len(*errorEvents))
+	}
+	// The message should be extracted from between the tags.
+	if (*errorEvents)[0].ErrorMessage != "file not found" {
+		t.Errorf("expected extracted message %q, got %q", "file not found", (*errorEvents)[0].ErrorMessage)
+	}
+}
+
+// TestMarkdownExecutor_NonErrorToolResultIgnored verifies that "user" messages
+// with tool_result items where is_error=false do NOT emit ErrorOccurred events.
+func TestMarkdownExecutor_NonErrorToolResultIgnored(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	b := newBus()
+	errorEvents, cancel := collectEvents[events.ErrorOccurred](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{
+				"type": "user",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{
+							"type":     "tool_result",
+							"is_error": false,
+							"content":  "File written successfully",
+						},
+					},
+				},
+			},
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*errorEvents) != 0 {
+		t.Errorf("got %d ErrorOccurred events, want 0 for non-error tool result", len(*errorEvents))
+	}
+}
+
+// --------------------------------------------------------------------------
+// Budget exceeded termination test
+// --------------------------------------------------------------------------
+
+// TestMarkdownExecutor_BudgetExceededTerminatesWorkflow verifies that when
+// TotalCostUSD exceeds BudgetUSD after an invocation, the executor returns
+// a "result" transition containing a budget-exceeded message rather than
+// continuing the workflow.
+func TestMarkdownExecutor_BudgetExceededTerminatesWorkflow(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+	wfState.BudgetUSD = 0.01 // tiny budget
+	wfState.TotalCostUSD = 0.0
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "Working..."},
+			{"total_cost_usd": 0.05}, // cost exceeds 0.01 budget
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// A budget-exceeded workflow must return a "result" transition.
+	if result.Transition.Tag != "result" {
+		t.Errorf("expected result transition on budget exceeded, got tag=%q", result.Transition.Tag)
+	}
+	if !strings.Contains(strings.ToLower(result.Transition.Payload), "budget") {
+		t.Errorf("expected budget mention in payload, got %q", result.Transition.Payload)
+	}
+}
+
+// --------------------------------------------------------------------------
 // asError is errors.As without the import (keeps test file self-contained).
 // --------------------------------------------------------------------------
 

@@ -413,10 +413,57 @@ func (e *MarkdownExecutor) parseAndValidate(
 	return &resolved, false, nil
 }
 
-// processStreamForConsole emits ProgressMessage and ToolInvocation events
-// for assistant messages in the Claude stream.
+// processStreamForConsole emits ProgressMessage, ToolInvocation, and ErrorOccurred
+// events for assistant and user messages in the Claude stream.
 func (e *MarkdownExecutor) processStreamForConsole(obj map[string]any, agentID string, execCtx *ExecutionContext) {
 	objType, _ := obj["type"].(string)
+
+	// "user" messages carry tool_result items when a tool call fails.
+	// Extract those errors and emit ErrorOccurred so observers can display them.
+	if objType == "user" {
+		message, ok := obj["message"].(map[string]any)
+		if !ok {
+			return
+		}
+		content, ok := message["content"].([]any)
+		if !ok {
+			return
+		}
+		for _, rawItem := range content {
+			item, ok := rawItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			itemType, _ := item["type"].(string)
+			if itemType != "tool_result" {
+				continue
+			}
+			isErr, _ := item["is_error"].(bool)
+			if !isErr {
+				continue
+			}
+			errMsg, _ := item["content"].(string)
+			if errMsg == "" {
+				errMsg = "Tool error"
+			}
+			// Extract content between <tool_use_error> tags when present.
+			if start := strings.Index(errMsg, "<tool_use_error>"); start >= 0 {
+				start += len("<tool_use_error>")
+				if end := strings.Index(errMsg[start:], "</tool_use_error>"); end >= 0 {
+					errMsg = errMsg[start : start+end]
+				}
+			}
+			execCtx.Bus.Emit(events.ErrorOccurred{
+				AgentID:      agentID,
+				ErrorType:    "ToolError",
+				ErrorMessage: errMsg,
+				IsRetryable:  false,
+				Timestamp:    time.Now(),
+			})
+		}
+		return
+	}
+
 	if objType != "assistant" {
 		return
 	}

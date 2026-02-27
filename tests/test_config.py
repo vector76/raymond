@@ -381,7 +381,7 @@ class TestMergeConfigAndArgs:
             budget=None,  # Not specified, use config
             model=None,  # Not specified, use config
             timeout=None,  # Not specified, use config
-            dangerously_skip_permissions=False,  # Not specified, use config
+            dangerously_skip_permissions=None,  # Not specified, use config
             no_debug=False,  # Not specified, use config
             verbose=False,  # Not specified, use config
         )
@@ -394,12 +394,12 @@ class TestMergeConfigAndArgs:
         assert result.no_debug is True  # From config
         assert result.verbose is True  # From config
 
-    def test_boolean_flags_only_set_if_false(self):
-        """Test that boolean flags are only set from config if CLI value is False."""
+    def test_boolean_flags_only_set_if_not_explicitly_true(self):
+        """Test that boolean flags are only set from config when CLI did not set them."""
         import argparse
-        
+
         config = {"dangerously_skip_permissions": True, "verbose": True}
-        
+
         # CLI explicitly set to True - should not be overridden
         args = argparse.Namespace(
             dangerously_skip_permissions=True,
@@ -409,10 +409,10 @@ class TestMergeConfigAndArgs:
         result = merge_config_and_args(config, args)
         assert result.dangerously_skip_permissions is True
         assert result.verbose is True
-        
-        # CLI set to False - should be overridden by config
+
+        # CLI not specified (None) - config should apply
         args = argparse.Namespace(
-            dangerously_skip_permissions=False,
+            dangerously_skip_permissions=None,
             no_debug=False,
             verbose=False,
         )

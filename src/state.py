@@ -167,7 +167,7 @@ def list_workflows(state_dir: Optional[str] = None) -> List[str]:
     return workflows
 
 
-def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str, budget_usd: float = 10.0, initial_input: Optional[str] = None) -> Dict[str, Any]:
+def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str, budget_usd: float = 10.0, initial_input: Optional[str] = None, launch_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Create initial state structure for a new workflow.
 
     Args:
@@ -176,6 +176,8 @@ def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str, b
         initial_state: Initial prompt filename to start from
         budget_usd: Cost budget limit in USD (default: 10.0)
         initial_input: Optional initial input passed to first state as {{result}}
+        launch_params: Optional dict of runtime parameters to persist for resume
+            (dangerously_skip_permissions, model, effort, timeout)
 
     Returns:
         Dictionary containing initial workflow state
@@ -192,13 +194,18 @@ def create_initial_state(workflow_id: str, scope_dir: str, initial_state: str, b
     if initial_input is not None:
         main_agent["pending_result"] = initial_input
 
-    return {
+    state = {
         "workflow_id": workflow_id,
         "scope_dir": scope_dir,
         "total_cost_usd": 0.0,
         "budget_usd": budget_usd,
         "agents": [main_agent]
     }
+
+    if launch_params is not None:
+        state["launch_params"] = launch_params
+
+    return state
 
 
 def recover_workflows(state_dir: Optional[str] = None) -> List[str]:

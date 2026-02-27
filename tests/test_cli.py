@@ -4,8 +4,8 @@ import argparse
 import pytest
 from pathlib import Path
 from unittest.mock import patch
-from src.cli import cmd_start, validate_workflow_id
-from src.state import generate_workflow_id, list_workflows, read_state
+from src.cli import cmd_start, cmd_resume, validate_workflow_id
+from src.state import generate_workflow_id, list_workflows, read_state, write_state, create_initial_state
 
 
 class TestCLIStart:
@@ -32,26 +32,27 @@ class TestCLIStart:
             budget=None,
             no_debug=False,
             model=None,
+            effort=None,
             timeout=None,
             initial_input=None,
             dangerously_skip_permissions=False
         )
-        
+
         # Run start command
         result = cmd_start(args)
-        
+
         # Should succeed
         assert result == 0
-        
+
         # Should have created a workflow with auto-generated ID
         workflows = list_workflows(state_dir=str(state_dir))
         assert len(workflows) == 1
-        
+
         # Generated ID should match pattern
         workflow_id = workflows[0]
         assert workflow_id.startswith("workflow_")
         assert "_" in workflow_id  # Should have timestamp separator
-        
+
         # Verify state was created correctly
         state = read_state(workflow_id, state_dir=str(state_dir))
         assert state["workflow_id"] == workflow_id
@@ -79,6 +80,7 @@ class TestCLIStart:
             budget=None,
             no_debug=False,
             model=None,
+            effort=None,
             timeout=None,
             initial_input=None,
             dangerously_skip_permissions=False
@@ -127,6 +129,7 @@ class TestCLIStart:
             budget=None,
             no_debug=False,
             model=None,
+            effort=None,
             timeout=None,
             initial_input=None,
             dangerously_skip_permissions=False
@@ -152,6 +155,7 @@ class TestCLIStart:
             budget=None,
             no_debug=False,
             model=None,
+            effort=None,
             timeout=None,
             initial_input=None,
             dangerously_skip_permissions=False
@@ -183,6 +187,7 @@ class TestCLIStart:
             budget=None,
             no_debug=False,
             model=None,
+            effort=None,
             timeout=None,
             initial_input="hello, there",
             dangerously_skip_permissions=False
@@ -218,6 +223,7 @@ class TestCLIStart:
             budget=None,
             no_debug=False,
             model=None,
+            effort=None,
             timeout=None,
             initial_input=None,
             dangerously_skip_permissions=False
@@ -462,6 +468,253 @@ class TestWorkflowIDValidation:
         error = validate_workflow_id("CON")
         assert error is not None
         assert "reserved" in error.lower()
-        
+
         error = validate_workflow_id("com1")
         assert error is not None
+
+
+class TestCLIStartSavesLaunchParams:
+    """Tests that cmd_start persists launch_params in the state file."""
+
+    def _make_args(self, tmp_path, **kwargs):
+        scope_dir = tmp_path / "scope"
+        scope_dir.mkdir(parents=True)
+        (scope_dir / "1_START.md").write_text("start")
+        state_dir = tmp_path / ".raymond" / "state"
+        defaults = dict(
+            workflow_id="test-launch",
+            initial_file=str(scope_dir / "1_START.md"),
+            state_dir=str(state_dir),
+            no_run=True,
+            verbose=False,
+            budget=None,
+            no_debug=False,
+            model=None,
+            effort=None,
+            timeout=None,
+            initial_input=None,
+            dangerously_skip_permissions=None,  # None = not specified on CLI
+        )
+        defaults.update(kwargs)
+        return argparse.Namespace(**defaults)
+
+    def test_start_saves_launch_params(self, tmp_path):
+        """cmd_start saves launch_params with defaults to state file."""
+        args = self._make_args(tmp_path)
+        result = cmd_start(args)
+        assert result == 0
+
+        state = read_state("test-launch", state_dir=args.state_dir)
+        assert "launch_params" in state
+        lp = state["launch_params"]
+        assert lp["dangerously_skip_permissions"] == False
+        assert lp["model"] is None
+        assert lp["effort"] is None
+        assert lp["timeout"] is None
+
+    def test_start_saves_dangerously_skip_permissions_true(self, tmp_path):
+        """cmd_start saves dangerously_skip_permissions=True when flag is set."""
+        args = self._make_args(tmp_path, dangerously_skip_permissions=True)
+        result = cmd_start(args)
+        assert result == 0
+
+        state = read_state("test-launch", state_dir=args.state_dir)
+        assert state["launch_params"]["dangerously_skip_permissions"] == True
+
+    def test_start_saves_dangerously_skip_permissions_none_as_false(self, tmp_path):
+        """cmd_start resolves dangerously_skip_permissions=None (not specified) to False."""
+        args = self._make_args(tmp_path, dangerously_skip_permissions=None)
+        result = cmd_start(args)
+        assert result == 0
+
+        state = read_state("test-launch", state_dir=args.state_dir)
+        assert state["launch_params"]["dangerously_skip_permissions"] == False
+
+    def test_start_saves_model(self, tmp_path):
+        """cmd_start saves specified model to launch_params."""
+        args = self._make_args(tmp_path, model="opus")
+        result = cmd_start(args)
+        assert result == 0
+
+        state = read_state("test-launch", state_dir=args.state_dir)
+        assert state["launch_params"]["model"] == "opus"
+
+    def test_start_saves_effort_and_timeout(self, tmp_path):
+        """cmd_start saves effort and timeout to launch_params."""
+        args = self._make_args(tmp_path, effort="high", timeout=120.0)
+        result = cmd_start(args)
+        assert result == 0
+
+        state = read_state("test-launch", state_dir=args.state_dir)
+        assert state["launch_params"]["effort"] == "high"
+        assert state["launch_params"]["timeout"] == 120.0
+
+
+class TestCLIResumeRestoresLaunchParams:
+    """Tests that cmd_resume restores saved launch_params when CLI args are absent."""
+
+    def _make_state(self, tmp_path, workflow_id="wf-resume", launch_params=None):
+        """Create a workflow state file with optional launch_params."""
+        scope_dir = tmp_path / "scope"
+        scope_dir.mkdir(parents=True)
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        state = create_initial_state(
+            workflow_id, str(scope_dir), "1_START.md",
+            launch_params=launch_params,
+        )
+        write_state(workflow_id, state, state_dir=str(state_dir))
+        return str(state_dir)
+
+    def _make_resume_args(self, workflow_id, state_dir, **kwargs):
+        defaults = dict(
+            resume=workflow_id,
+            state_dir=state_dir,
+            verbose=False,
+            no_debug=False,
+            dangerously_skip_permissions=None,  # not specified on CLI
+            model=None,
+            effort=None,
+            timeout=None,
+            quiet=False,
+            no_wait=False,
+        )
+        defaults.update(kwargs)
+        return argparse.Namespace(**defaults)
+
+    def test_resume_restores_dangerously_skip_permissions(self, tmp_path):
+        """Resume uses saved dangerously_skip_permissions=True when not specified on CLI."""
+        state_dir = self._make_state(tmp_path, launch_params={
+            "dangerously_skip_permissions": True,
+            "model": None,
+            "effort": None,
+            "timeout": None,
+        })
+        args = self._make_resume_args("wf-resume", state_dir)
+
+        with patch("src.cli.cmd_run_workflow") as mock_run:
+            mock_run.return_value = 0
+            result = cmd_resume(args)
+
+        assert result == 0
+        # cmd_run_workflow is called positionally; dangerously_skip_permissions is 8th arg (index 7)
+        positional = mock_run.call_args[0]
+        assert positional[7] == True
+
+    def test_resume_cli_overrides_saved_dangerously_skip_permissions(self, tmp_path):
+        """CLI --dangerously-skip-permissions=True takes precedence even if saved is False."""
+        state_dir = self._make_state(tmp_path, launch_params={
+            "dangerously_skip_permissions": False,
+            "model": None,
+            "effort": None,
+            "timeout": None,
+        })
+        # CLI explicitly sets True
+        args = self._make_resume_args("wf-resume", state_dir, dangerously_skip_permissions=True)
+
+        with patch("src.cli.cmd_run_workflow") as mock_run:
+            mock_run.return_value = 0
+            cmd_resume(args)
+
+        positional = mock_run.call_args[0]
+        assert positional[7] == True
+
+    def test_resume_restores_multiple_params_when_cli_unspecified(self, tmp_path):
+        """Resume restores both dangerously_skip_permissions and model when CLI is None."""
+        state_dir = self._make_state(tmp_path, launch_params={
+            "dangerously_skip_permissions": True,
+            "model": "opus",
+            "effort": None,
+            "timeout": None,
+        })
+        # CLI specifies nothing (None = not specified)
+        args = self._make_resume_args("wf-resume", state_dir, dangerously_skip_permissions=None)
+
+        with patch("src.cli.cmd_run_workflow") as mock_run:
+            mock_run.return_value = 0
+            cmd_resume(args)
+
+        positional = mock_run.call_args[0]
+        assert positional[7] == True   # dangerously_skip_permissions
+        assert positional[4] == "opus"  # model
+
+    def test_resume_restores_model(self, tmp_path):
+        """Resume uses saved model when not specified on CLI."""
+        state_dir = self._make_state(tmp_path, launch_params={
+            "dangerously_skip_permissions": False,
+            "model": "haiku",
+            "effort": None,
+            "timeout": None,
+        })
+        args = self._make_resume_args("wf-resume", state_dir)
+
+        with patch("src.cli.cmd_run_workflow") as mock_run:
+            mock_run.return_value = 0
+            cmd_resume(args)
+
+        positional = mock_run.call_args[0]
+        assert positional[4] == "haiku"  # model
+
+    def test_resume_cli_model_overrides_saved(self, tmp_path):
+        """CLI --model takes precedence over saved model."""
+        state_dir = self._make_state(tmp_path, launch_params={
+            "dangerously_skip_permissions": False,
+            "model": "haiku",
+            "effort": None,
+            "timeout": None,
+        })
+        args = self._make_resume_args("wf-resume", state_dir, model="opus")
+
+        with patch("src.cli.cmd_run_workflow") as mock_run:
+            mock_run.return_value = 0
+            cmd_resume(args)
+
+        positional = mock_run.call_args[0]
+        assert positional[4] == "opus"  # CLI model wins
+
+    def test_resume_restores_effort_and_timeout(self, tmp_path):
+        """Resume uses saved effort and timeout when not specified on CLI."""
+        state_dir = self._make_state(tmp_path, launch_params={
+            "dangerously_skip_permissions": False,
+            "model": None,
+            "effort": "high",
+            "timeout": 300.0,
+        })
+        args = self._make_resume_args("wf-resume", state_dir)
+
+        with patch("src.cli.cmd_run_workflow") as mock_run:
+            mock_run.return_value = 0
+            cmd_resume(args)
+
+        positional = mock_run.call_args[0]
+        assert positional[5] == "high"   # effort
+        assert positional[6] == 300.0    # timeout
+
+    def test_resume_backward_compat_no_launch_params(self, tmp_path):
+        """Resume works correctly when state has no launch_params (old state files)."""
+        # State without launch_params (simulates pre-feature state files)
+        state_dir = self._make_state(tmp_path, launch_params=None)
+        args = self._make_resume_args("wf-resume", state_dir)
+
+        with patch("src.cli.cmd_run_workflow") as mock_run:
+            mock_run.return_value = 0
+            result = cmd_resume(args)
+
+        assert result == 0
+        positional = mock_run.call_args[0]
+        # Should default to False for dangerously_skip_permissions
+        assert positional[7] == False
+        # model, effort, timeout should be None
+        assert positional[4] is None
+        assert positional[5] is None
+        assert positional[6] is None
+
+    def test_resume_nonexistent_workflow_returns_error(self, tmp_path):
+        """Resume returns error code 1 for non-existent workflow."""
+        state_dir = tmp_path / ".raymond" / "state"
+        state_dir.mkdir(parents=True)
+        args = self._make_resume_args("does-not-exist", str(state_dir))
+
+        result = cmd_resume(args)
+
+        assert result == 1

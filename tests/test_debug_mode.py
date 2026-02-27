@@ -421,8 +421,10 @@ class TestCLIDebugFlag:
             budget=None,
             no_debug=False,
             model=None,
+            effort=None,
             timeout=None,
-            initial_input=None
+            initial_input=None,
+            dangerously_skip_permissions=False,
         )
         
         # Should not raise

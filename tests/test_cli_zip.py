@@ -36,6 +36,7 @@ def make_args(initial_file: str, state_dir: str, workflow_id: str = "test-wf") -
         budget=None,
         no_debug=False,
         model=None,
+        effort=None,
         timeout=None,
         initial_input=None,
         dangerously_skip_permissions=False,
@@ -213,7 +214,7 @@ def make_resume_args(workflow_id: str, state_dir: str) -> argparse.Namespace:
         model=None,
         effort=None,
         timeout=None,
-        dangerously_skip_permissions=False,
+        dangerously_skip_permissions=None,  # None = not specified on CLI
         quiet=False,
     )
 

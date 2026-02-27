@@ -158,3 +158,40 @@ class TestCreateInitialState:
 
         # Empty string is a valid input
         assert state["agents"][0]["pending_result"] == ""
+
+    def test_create_initial_state_with_launch_params(self):
+        """Test that create_initial_state() stores launch_params when provided."""
+        workflow_id = "test-launch-params"
+        scope_dir = "workflows/test"
+        initial_state = "START.md"
+        launch_params = {
+            "dangerously_skip_permissions": True,
+            "model": "opus",
+            "effort": "high",
+            "timeout": 300.0,
+        }
+
+        state = create_initial_state(workflow_id, scope_dir, initial_state, launch_params=launch_params)
+
+        assert "launch_params" in state
+        assert state["launch_params"] == launch_params
+
+    def test_create_initial_state_without_launch_params(self):
+        """Test that create_initial_state() omits launch_params key when not provided."""
+        workflow_id = "test-no-launch-params"
+        scope_dir = "workflows/test"
+        initial_state = "START.md"
+
+        state = create_initial_state(workflow_id, scope_dir, initial_state)
+
+        assert "launch_params" not in state
+
+    def test_create_initial_state_launch_params_none_omitted(self):
+        """Test that create_initial_state() omits launch_params key when explicitly None."""
+        workflow_id = "test-launch-params-none"
+        scope_dir = "workflows/test"
+        initial_state = "START.md"
+
+        state = create_initial_state(workflow_id, scope_dir, initial_state, launch_params=None)
+
+        assert "launch_params" not in state

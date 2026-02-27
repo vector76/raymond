@@ -207,11 +207,22 @@ def cmd_start(args: argparse.Namespace) -> int:
     
     # Get budget from args or use default
     budget_usd = args.budget if args.budget is not None else 10.0
-    
+
+    # Resolve dangerously_skip_permissions: None means "not specified by CLI", treat as False
+    dangerously_skip_permissions = bool(args.dangerously_skip_permissions)
+
+    # Build launch params to persist so they are restored on --resume
+    launch_params = {
+        "dangerously_skip_permissions": dangerously_skip_permissions,
+        "model": args.model,
+        "effort": args.effort,
+        "timeout": args.timeout,
+    }
+
     # Create and write initial state
-    state = create_initial_state(workflow_id, scope_dir, initial_state, budget_usd=budget_usd, initial_input=args.initial_input)
+    state = create_initial_state(workflow_id, scope_dir, initial_state, budget_usd=budget_usd, initial_input=args.initial_input, launch_params=launch_params)
     write_state(workflow_id, state, state_dir=state_dir)
-    
+
     print(f"Created workflow '{workflow_id}'")
     print(f"  Workflow scope: {scope_dir}")
     print(f"  Initial state: {initial_state}")
@@ -219,12 +230,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         # Truncate long inputs for display
         display_input = args.initial_input if len(args.initial_input) <= 50 else args.initial_input[:50] + "..."
         print(f"  Initial input: {display_input}")
-    
+
     if not args.no_run:
         print("\nStarting orchestrator...")
         debug = not args.no_debug
         no_wait = getattr(args, 'no_wait', False)
-        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.effort, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
+        return cmd_run_workflow(workflow_id, state_dir, args.verbose, debug, args.model, args.effort, args.timeout, dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
 
     print(f"\nRun with: raymond --resume {workflow_id}")
     return 0
@@ -278,9 +289,21 @@ def cmd_resume(args: argparse.Namespace) -> int:
             print(f"Error: Cannot open zip archive for workflow '{workflow_id}': {scope_dir}\n{e}", file=sys.stderr)
             return 1
 
+    # Load saved launch params and apply as defaults for any param not set by CLI/config
+    saved_params = state.get("launch_params", {})
+    if args.dangerously_skip_permissions is None:
+        args.dangerously_skip_permissions = saved_params.get("dangerously_skip_permissions", False)
+    if args.model is None:
+        args.model = saved_params.get("model")
+    if args.effort is None:
+        args.effort = saved_params.get("effort")
+    if args.timeout is None:
+        args.timeout = saved_params.get("timeout")
+
+    dangerously_skip_permissions = bool(args.dangerously_skip_permissions)
     debug = not args.no_debug
     no_wait = getattr(args, 'no_wait', False)
-    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.effort, args.timeout, args.dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
+    return cmd_run_workflow(workflow_id, args.state_dir, args.verbose, debug, args.model, args.effort, args.timeout, dangerously_skip_permissions, args.quiet, getattr(args, 'width', None), no_wait)
 
 
 def cmd_run_workflow(workflow_id: str, state_dir: Optional[str], verbose: bool, debug: bool = True, default_model: Optional[str] = None, default_effort: Optional[str] = None, timeout: Optional[float] = None, dangerously_skip_permissions: bool = False, quiet: bool = False, width: Optional[int] = None, no_wait: bool = False) -> int:
@@ -492,6 +515,7 @@ Examples:
         "--dangerously-skip-permissions",
         dest="dangerously_skip_permissions",
         action="store_true",
+        default=None,
         help="Pass --dangerously-skip-permissions to Claude instead of --permission-mode acceptEdits. "
              "WARNING: This allows Claude to execute any action without prompting for permission.",
     )

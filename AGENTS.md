@@ -1,6 +1,6 @@
 # Agent Instructions
 
-## Test-Driven Development (TDD)
+# Test-Driven Development (TDD)
 
 This project follows Test-Driven Development principles, where **tests are central to the validation of the application**. 
 
@@ -20,7 +20,11 @@ When implementing features or making changes:
 
 **Shell commands:** Don't use `cd` in commands. Use `pwd` to check the current directory if unsure.
 
-## Documentation
+# Git tips
+- When committing, NEVER mention Claude Code as a coauthor or contributor
+- AVOID `git -C ...` in commands. Instead, use `pwd` to check the current directory if unsure.
+
+# Documentation
 
 The `docs/` folder contains topic-oriented markdown documents organized in a **flat structure** (no subfolders). These documents serve as timeless knowledge base for the project.
 
@@ -35,8 +39,3 @@ The `docs/` folder contains topic-oriented markdown documents organized in a **f
 - ✅ Prefer timeless documents; it's also OK to include design/implementation plans when they are useful context for the project
 - ✅ Use descriptive filenames (e.g., `application-purpose.md`, `data-model.md`)
 - ❌ Do NOT create subfolders (keep structure flat)
-
-## AGENTS.md vs CLAUDE.md
-
-- **Source of truth**: `AGENTS.md` is the authoritative copy.
-- **Synchronization**: `CLAUDE.md` is intended to be a copy for tooling compatibility. If they ever differ, update `CLAUDE.md` to match `AGENTS.md`.

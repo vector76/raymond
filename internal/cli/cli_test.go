@@ -204,6 +204,12 @@ func TestResumeExisting(t *testing.T) {
 // Start mode (positional arg)
 // --------------------------------------------------------------------------
 
+func TestVersionFlag(t *testing.T) {
+	out, _, err := run(t, "--version")
+	require.NoError(t, err)
+	assert.Equal(t, "raymond version dev\n", out)
+}
+
 func TestNoArgsError(t *testing.T) {
 	stateDir := makeStateDir(t)
 	_, _, err := run(t, "--state-dir", stateDir)

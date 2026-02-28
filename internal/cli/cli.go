@@ -26,6 +26,7 @@ import (
 	"github.com/vector76/raymond/internal/observers/titlebar"
 	"github.com/vector76/raymond/internal/orchestrator"
 	wfstate "github.com/vector76/raymond/internal/state"
+	"github.com/vector76/raymond/internal/version"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -132,6 +133,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "raymond [WORKFLOW.md]",
 		Short:         "raymond workflow orchestrator",
+		Version:       version.Version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {

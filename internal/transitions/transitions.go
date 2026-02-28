@@ -3,7 +3,7 @@
 //
 // Each transition tag produced by an agent state has a corresponding handler:
 //   - goto:     simple state change; session preserved
-//   - reset:    fresh start; session cleared, stack cleared
+//   - reset:    fresh start; session cleared, stack preserved
 //   - function: stateless sub-call; caller session pushed, fresh session
 //   - call:     context-branching sub-call; caller session forked
 //   - fork:     spawn independent worker agent while parent continues
@@ -147,12 +147,10 @@ func HandleGoto(agent wfstate.AgentState, transition parsing.Transition) Transit
 // Starts a fresh session at the target state:
 //   - Sets current_state to target
 //   - Clears session_id (fresh start)
-//   - Clears the return stack
 //   - Applies cd attribute if present
 func HandleReset(agent wfstate.AgentState, transition parsing.Transition) TransitionResult {
 	agent.CurrentState = transition.Target
 	agent.SessionID = nil
-	agent.Stack = []wfstate.StackFrame{}
 
 	if cd, ok := transition.Attributes["cd"]; ok {
 		agent.Cwd = ResolveCd(cd, agent.Cwd)

@@ -107,7 +107,10 @@ func TestApplyTransitionDispatchesReset(t *testing.T) {
 	require.NotNil(t, result.Agent)
 	assert.Equal(t, "FRESH.md", result.Agent.CurrentState)
 	assert.Nil(t, result.Agent.SessionID)             // cleared
-	assert.Empty(t, result.Agent.Stack)               // cleared
+	require.Len(t, result.Agent.Stack, 1)             // preserved
+	assert.Equal(t, "OLD.md", result.Agent.Stack[0].State)
+	require.NotNil(t, result.Agent.Stack[0].Session)
+	assert.Equal(t, "old", *result.Agent.Stack[0].Session)
 }
 
 func TestApplyTransitionDispatchesFunction(t *testing.T) {

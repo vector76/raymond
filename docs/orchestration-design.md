@@ -248,7 +248,7 @@ Raymond supports five transition types, each with different context semantics:
 | Tag | Context behavior | Session | Programming analogy |
 |-----|-----------------|---------|-------------------|
 | `<goto>` | Preserved | Resume current | Sequential code in same scope |
-| `<reset>` | Discarded (stack cleared) | Fresh | New function after writing results to disk |
+| `<reset>` | Session discarded, stack preserved | Fresh | New function after writing results to disk |
 | `<call>` | Child branches from caller | Branched, caller resumed on return | Function call with stack frame |
 | `<function>` | Child starts fresh | Fresh, caller resumed on return | Pure function `f(x) → y` |
 | `<fork>` | Worker starts fresh | Fresh (independent lifecycle) | Unix `fork()` — independent process |
@@ -264,7 +264,7 @@ For detailed guidance on when to use each pattern and complete examples, see
 **Goto:** Resumes the existing Claude Code session via `--resume`.
 
 **Reset:** Creates a new session. Updates the session ID in the state file for
-future `<goto>` transitions. Clears the return stack.
+future `<goto>` transitions. Preserves the return stack.
 
 **Call:** Pushes a return frame (caller's session + return state) onto the
 stack, then starts the child via `--fork-session` (branching from the caller's

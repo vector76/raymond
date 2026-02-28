@@ -242,7 +242,7 @@ elif obj.get("type") == "result":
 
 **Note on cost display:** The "Done" line shows `Done ($X.XXXX, total: $Y.YYYY)` where `$X.XXXX` is the cost for this specific invocation/state and `$Y.YYYY` is the workflow-wide accumulated total cost across all agents and invocations. Costs are displayed with four decimal places.
 
-**Note on transition types:** All non-fork, non-result transitions (goto, reset, function, call) use the same `→` symbol. The distinction is internal to the orchestrator (e.g., function/call push to return stack, reset clears it) but doesn't need to be shown in console output for clarity.
+**Note on transition types:** All non-fork, non-result transitions (goto, reset, function, call) use the same `→` symbol. The distinction is internal to the orchestrator (e.g., function/call push to return stack, reset clears the session but preserves the stack) but doesn't need to be shown in console output for clarity.
 
 ## Implementation Approach
 

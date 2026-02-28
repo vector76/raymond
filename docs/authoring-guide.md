@@ -297,7 +297,7 @@ Create a plan in plan.md. When done, emit <reset>IMPLEMENT.md</reset>
 **Use when:** Prior work is captured in files, not needed in context. Useful at
 phase boundaries (planning → implementation) to keep context clean.
 
-**Context:** Discarded. The return stack is also cleared.
+**Context:** Discarded. The return stack is preserved.
 
 **Working directory:** Supports an optional `cd` attribute to change the
 agent's working directory:

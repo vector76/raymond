@@ -224,15 +224,11 @@ S5 --result--> (pop) resume caller session and continue at S3
 ### `<reset>FILE.md</reset>`
 
 - **Meaning**: Start a fresh session and continue at `FILE.md`.
-- **Return stack**: Cleared (discard all pending returns).
+- **Return stack**: Preserved unchanged.
 - **Session behavior**: Start a new session with `FILE.md` (fresh context).
 - **Optional attribute**: `cd="/path/to/dir"` — changes the agent's working
   directory for all subsequent state executions. See
   [Working Directory](#working-directory-cd-attribute) below.
-
-**Warning behavior:** A `<reset>` with a non-empty return stack is usually a
-logic error (it discards the caller's pending return). The orchestrator should
-log a warning when this occurs.
 
 ### `<call return="NEXT.md">CHILD.md</call>`
 

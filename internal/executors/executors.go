@@ -28,7 +28,6 @@ type ExecutionResult struct {
 type ExecutionContext struct {
 	Bus                        *bus.Bus
 	WorkflowID                 string
-	ScopeDir                   string
 	DebugDir                   string  // empty string = debug disabled
 	StateDir                   string  // empty string = use default
 	DefaultModel               string  // empty = no override; policy takes precedence

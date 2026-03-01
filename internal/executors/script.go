@@ -37,7 +37,7 @@ func (e *ScriptExecutor) Execute(
 ) (ExecutionResult, error) {
 	agentID := agent.ID
 	currentState := agent.CurrentState
-	scopeDir := wfState.ScopeDir
+	scopeDir := agent.ScopeDir
 	workflowID := wfState.WorkflowID
 	sessionID := agent.SessionID // preserved; scripts do not modify it
 

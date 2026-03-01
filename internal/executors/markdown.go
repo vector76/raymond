@@ -56,7 +56,7 @@ func (e *MarkdownExecutor) Execute(
 
 	agentID := agent.ID
 	currentState := agent.CurrentState
-	scopeDir := wfState.ScopeDir
+	scopeDir := agent.ScopeDir
 	sessionID := agent.SessionID
 
 	// Emit StateStarted.

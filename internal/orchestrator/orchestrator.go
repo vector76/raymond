@@ -129,7 +129,6 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	execCtx := &executors.ExecutionContext{
 		Bus:                        b,
 		WorkflowID:                 workflowID,
-		ScopeDir:                   ws.ScopeDir,
 		DebugDir:                   debugDir,
 		StateDir:                   stateDir,
 		DefaultModel:               opts.DefaultModel,
@@ -210,9 +209,6 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 		// Copy the agent before stepping so we have the fromState for events.
 		agentBefore := ws.Agents[agentIdx]
-
-		// Use the current agent's ScopeDir for this step.
-		execCtx.ScopeDir = ws.Agents[agentIdx].ScopeDir
 
 		// --- Execute one step ---
 		tr, stepErr := stepAgent(ctx, &ws.Agents[agentIdx], ws, execCtx, b)

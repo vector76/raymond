@@ -49,7 +49,7 @@ func makeWorkflow(t *testing.T) (scopeDir string, wfState *wfstate.WorkflowState
 		ScopeDir:     dir,
 		TotalCostUSD: 0.0,
 		BudgetUSD:    10.0,
-		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []wfstate.StackFrame{}}},
+		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
 	}
 	return dir, ws
 }
@@ -88,7 +88,6 @@ func TestExecutionContext_Creation(t *testing.T) {
 	ctx := &executors.ExecutionContext{
 		Bus:        b,
 		WorkflowID: "test-001",
-		ScopeDir:   "/path/to/workflow",
 	}
 
 	if ctx.Bus != b {
@@ -124,10 +123,10 @@ func TestExecutionContext_WithAllFields(t *testing.T) {
 	ctx := &executors.ExecutionContext{
 		Bus:                        b,
 		WorkflowID:                 "test-002",
-		ScopeDir:                   "/path/to/workflow",
 		DebugDir:                   debugDir,
 		StateDir:                   "/path/to/state",
 		DefaultModel:               "sonnet",
+		DefaultEffort:              "high",
 		Timeout:                    300.0,
 		DangerouslySkipPermissions: true,
 		StepCounters:               map[string]int{"main": 5},
@@ -141,6 +140,9 @@ func TestExecutionContext_WithAllFields(t *testing.T) {
 	}
 	if ctx.DefaultModel != "sonnet" {
 		t.Errorf("DefaultModel = %q", ctx.DefaultModel)
+	}
+	if ctx.DefaultEffort != "high" {
+		t.Errorf("DefaultEffort = %q", ctx.DefaultEffort)
 	}
 	if ctx.Timeout != 300.0 {
 		t.Errorf("Timeout = %v", ctx.Timeout)
@@ -444,6 +446,34 @@ func TestGetExecutor_Singletons(t *testing.T) {
 	}
 }
 
+// TestScriptExecutor_UsesAgentScopeDir verifies that the executor loads the
+// script from agent.ScopeDir, not wfState.ScopeDir.
+func TestScriptExecutor_UsesAgentScopeDir(t *testing.T) {
+	workflowDir := t.TempDir()
+	agentDir := t.TempDir()
+	// Place CHECK.sh only in agentDir — if executor uses workflowDir it will fail.
+	write(t, filepath.Join(agentDir, "CHECK.sh"), "#!/bin/sh\necho '<goto>NEXT.md</goto>'")
+	write(t, filepath.Join(agentDir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-scope",
+		ScopeDir:   workflowDir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "CHECK.sh", ScopeDir: agentDir, Stack: []wfstate.StackFrame{}}},
+	}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+
+	executors.SetRunScriptFn(makeMockRunScript(
+		&platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>\n", ExitCode: 0}, nil,
+	))
+	defer executors.ResetRunScriptFn()
+
+	_, err := executors.NewScriptExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("expected executor to load from agent.ScopeDir, got error: %v", err)
+	}
+}
+
 // --------------------------------------------------------------------------
 // ScriptExecutor tests
 // --------------------------------------------------------------------------
@@ -457,7 +487,7 @@ func makeScriptWorkflow(t *testing.T) (scopeDir string, wfState *wfstate.Workflo
 		ScopeDir:     dir,
 		TotalCostUSD: 0.0,
 		BudgetUSD:    10.0,
-		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "CHECK.sh", Stack: []wfstate.StackFrame{}}},
+		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "CHECK.sh", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
 	}
 	return dir, ws
 }
@@ -472,7 +502,7 @@ func TestScriptExecutor_EmitsStateStarted(t *testing.T) {
 	started, cancel := collectEvents[events.StateStarted](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 	agent := &wfState.Agents[0]
 
 	executors.SetRunScriptFn(makeMockRunScript(
@@ -503,7 +533,7 @@ func TestScriptExecutor_EmitsStateCompleted(t *testing.T) {
 	completed, cancel := collectEvents[events.StateCompleted](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 	agent := &wfState.Agents[0]
 
 	executors.SetRunScriptFn(makeMockRunScript(
@@ -533,7 +563,7 @@ func TestScriptExecutor_PreservesSessionID(t *testing.T) {
 	sid := "existing-sess"
 	wfState.Agents[0].SessionID = &sid
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 	agent := &wfState.Agents[0]
 
 	executors.SetRunScriptFn(makeMockRunScript(
@@ -555,7 +585,7 @@ func TestScriptExecutor_ReturnsZeroCost(t *testing.T) {
 	dir, wfState := makeScriptWorkflow(t)
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>", ExitCode: 0},
@@ -576,7 +606,7 @@ func TestScriptExecutor_ParsesTransitionFromStdout(t *testing.T) {
 	dir, wfState := makeScriptWorkflow(t)
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{
@@ -600,7 +630,7 @@ func TestScriptExecutor_RaisesErrorOnNonzeroExit(t *testing.T) {
 	dir, wfState := makeScriptWorkflow(t)
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{Stdout: "", Stderr: "Error occurred", ExitCode: 1},
@@ -625,7 +655,7 @@ func TestScriptExecutor_RaisesErrorOnNoTransition(t *testing.T) {
 	dir, wfState := makeScriptWorkflow(t)
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{Stdout: "Just some output without transition", ExitCode: 0},
@@ -647,7 +677,7 @@ func TestScriptExecutor_RaisesErrorOnMultipleTransitions(t *testing.T) {
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
 	write(t, filepath.Join(dir, "OTHER.md"), "other")
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{
@@ -679,7 +709,6 @@ func TestScriptExecutor_EmitsScriptOutputEventWithDebug(t *testing.T) {
 	execCtx := &executors.ExecutionContext{
 		Bus:        b,
 		WorkflowID: wfState.WorkflowID,
-		ScopeDir:   dir,
 		DebugDir:   debugDir,
 	}
 
@@ -717,7 +746,7 @@ func TestScriptExecutor_HandlesResultTransition(t *testing.T) {
 	dir, wfState := makeScriptWorkflow(t)
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: dir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{
@@ -747,7 +776,6 @@ func TestScriptExecutor_WritesDebugFiles(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{
 		Bus:      newBus(),
-		ScopeDir: dir,
 		DebugDir: debugDir,
 	}
 
@@ -794,6 +822,38 @@ func TestScriptExecutor_WritesDebugFiles(t *testing.T) {
 	}
 }
 
+// TestMarkdownExecutor_UsesAgentScopeDir verifies that the executor loads the
+// prompt from agent.ScopeDir, not wfState.ScopeDir. This matters for
+// cross-workflow transitions where the two differ.
+func TestMarkdownExecutor_UsesAgentScopeDir(t *testing.T) {
+	workflowDir := t.TempDir()
+	agentDir := t.TempDir()
+	// Place START.md only in agentDir — if executor uses workflowDir it will fail.
+	write(t, filepath.Join(agentDir, "START.md"), "prompt")
+	write(t, filepath.Join(agentDir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-scope",
+		ScopeDir:   workflowDir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: agentDir, Stack: []wfstate.StackFrame{}}},
+	}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"session_id": "s1", "total_cost_usd": 0.0},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("expected executor to load from agent.ScopeDir, got error: %v", err)
+	}
+}
+
 // --------------------------------------------------------------------------
 // MarkdownExecutor tests
 // --------------------------------------------------------------------------
@@ -805,7 +865,7 @@ func TestMarkdownExecutor_EmitsStateStarted(t *testing.T) {
 	started, cancel := collectEvents[events.StateStarted](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 	agent := &wfState.Agents[0]
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
@@ -837,7 +897,7 @@ func TestMarkdownExecutor_EmitsStateCompleted(t *testing.T) {
 	completed, cancel := collectEvents[events.StateCompleted](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -864,7 +924,7 @@ func TestMarkdownExecutor_EmitsStateCompleted(t *testing.T) {
 func TestMarkdownExecutor_ReturnsResultWithTransition(t *testing.T) {
 	_, wfState := makeWorkflow(t)
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -892,7 +952,7 @@ func TestMarkdownExecutor_ReturnsResultWithTransition(t *testing.T) {
 func TestMarkdownExecutor_ExtractsSessionID(t *testing.T) {
 	_, wfState := makeWorkflow(t)
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -915,7 +975,7 @@ func TestMarkdownExecutor_AccumulatesCost(t *testing.T) {
 	_, wfState := makeWorkflow(t)
 	wfState.TotalCostUSD = 1.00
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -943,10 +1003,10 @@ func TestMarkdownExecutor_RaisesPromptFileError(t *testing.T) {
 		WorkflowID: "test",
 		ScopeDir:   emptyDir,
 		BudgetUSD:  10.0,
-		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []wfstate.StackFrame{}}},
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: emptyDir, Stack: []wfstate.StackFrame{}}},
 	}
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: emptyDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
 	if err == nil {
@@ -961,7 +1021,7 @@ func TestMarkdownExecutor_RaisesPromptFileError(t *testing.T) {
 func TestMarkdownExecutor_RaisesLimitError(t *testing.T) {
 	_, wfState := makeWorkflow(t)
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -990,7 +1050,6 @@ func TestMarkdownExecutor_EmitsClaudeStreamOutputWithDebug(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{
 		Bus:      b,
-		ScopeDir: wfState.ScopeDir,
 		DebugDir: debugDir,
 	}
 
@@ -1015,7 +1074,7 @@ func TestMarkdownExecutor_EmitsClaudeStreamOutputWithDebug(t *testing.T) {
 func TestMarkdownExecutor_HandlesResultTransition(t *testing.T) {
 	_, wfState := makeWorkflow(t)
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -1040,7 +1099,6 @@ func TestMarkdownExecutor_WritesJSONLDebugFile(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{
 		Bus:      newBus(),
-		ScopeDir: wfState.ScopeDir,
 		DebugDir: debugDir,
 	}
 
@@ -1093,7 +1151,7 @@ func makeWorkflowWithPolicy(t *testing.T) (string, *wfstate.WorkflowState) {
 		ScopeDir:     dir,
 		TotalCostUSD: 0.0,
 		BudgetUSD:    10.0,
-		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", Stack: []wfstate.StackFrame{}}},
+		Agents:       []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
 	}
 	return dir, ws
 }
@@ -1105,7 +1163,7 @@ func TestMarkdownExecutor_EmitsErrorEventOnRetry(t *testing.T) {
 	errorEvents, cancel := collectEvents[events.ErrorOccurred](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
@@ -1143,7 +1201,7 @@ func TestMarkdownExecutor_EmitsErrorEventOnRetry(t *testing.T) {
 func TestMarkdownExecutor_RaisesAfterMaxRetries(t *testing.T) {
 	_, wfState := makeWorkflowWithPolicy(t)
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -1173,7 +1231,7 @@ func TestStateStarted_HasTimestamp(t *testing.T) {
 	started, cancel := collectEvents[events.StateStarted](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -1269,7 +1327,7 @@ func TestMarkdownExecutor_ReminderEmitsIsReminderFlag(t *testing.T) {
 	invocations, cancel := collectEvents[events.ClaudeInvocationStarted](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
@@ -1325,7 +1383,7 @@ func TestMarkdownExecutor_CostAccumulatesAcrossReminders(t *testing.T) {
 	completed, cancel := collectEvents[events.StateCompleted](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
@@ -1372,7 +1430,7 @@ func TestMarkdownExecutor_CostAccumulatesAcrossReminders(t *testing.T) {
 // succeeds when the transition is found on the third (final allowed) attempt.
 func TestMarkdownExecutor_ReminderSuccessOnThirdAttempt(t *testing.T) {
 	_, wfState := makeWorkflowWithPolicy(t)
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
@@ -1413,7 +1471,7 @@ func TestMarkdownExecutor_DefaultModelIsSonnet(t *testing.T) {
 	_, wfState := makeWorkflow(t)
 
 	// No DefaultModel in the context (simulates no --model CLI flag and no config).
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	var capturedModel string
 	executors.SetInvokeStreamFn(func(_ context.Context, _ string, model, _, _ string, _ float64, _, _ bool, _ string) <-chan ccwrap.StreamItem {
@@ -1442,7 +1500,6 @@ func TestMarkdownExecutor_CLIModelOverridesDefault(t *testing.T) {
 	execCtx := &executors.ExecutionContext{
 		Bus:          newBus(),
 		WorkflowID:   wfState.WorkflowID,
-		ScopeDir:     wfState.ScopeDir,
 		DefaultModel: "opus",
 	}
 
@@ -1479,7 +1536,7 @@ func TestMarkdownExecutor_EmitsErrorEventOnToolError(t *testing.T) {
 	errorEvents, cancel := collectEvents[events.ErrorOccurred](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -1532,7 +1589,7 @@ func TestMarkdownExecutor_ExtractsToolUseErrorTags(t *testing.T) {
 	errorEvents, cancel := collectEvents[events.ErrorOccurred](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -1577,7 +1634,7 @@ func TestMarkdownExecutor_NonErrorToolResultIgnored(t *testing.T) {
 	errorEvents, cancel := collectEvents[events.ErrorOccurred](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -1622,7 +1679,7 @@ func TestMarkdownExecutor_BudgetExceededTerminatesWorkflow(t *testing.T) {
 	wfState.BudgetUSD = 0.01 // tiny budget
 	wfState.TotalCostUSD = 0.0
 
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, ScopeDir: wfState.ScopeDir}
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{

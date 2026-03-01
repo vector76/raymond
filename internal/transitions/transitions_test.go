@@ -998,3 +998,307 @@ func TestForkWorkflowInitialisesNilForkCounters(t *testing.T) {
 	assert.NotNil(t, wfState.ForkCounters)
 }
 
+// ----------------------------------------------------------------------------
+// HandleCallWorkflow
+// ----------------------------------------------------------------------------
+
+func callWorkflowTransition(attrs map[string]string) parsing.Transition {
+	return parsing.Transition{
+		Tag:        "call-workflow",
+		Attributes: attrs,
+	}
+}
+
+func functionWorkflowTransition(attrs map[string]string) parsing.Transition {
+	return parsing.Transition{
+		Tag:        "function-workflow",
+		Attributes: attrs,
+	}
+}
+
+func TestCallWorkflowHappyPath(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/workflows/caller"
+	agent.Cwd = "/repo/caller"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "/workflows/child", result.Agent.ScopeDir)
+	assert.Equal(t, "1_START.md", result.Agent.CurrentState)
+	assert.Nil(t, result.Agent.SessionID)
+	require.NotNil(t, result.Agent.ForkSessionID)
+	assert.Equal(t, "session_123", *result.Agent.ForkSessionID)
+}
+
+func TestCallWorkflowPushesStackFrame(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/workflows/caller"
+	agent.Cwd = "/repo/caller"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	frame := result.Agent.Stack[0]
+	require.NotNil(t, frame.Session)
+	assert.Equal(t, "session_123", *frame.Session)
+	assert.Equal(t, "AFTER.md", frame.State)
+	assert.Equal(t, "/workflows/caller", frame.ScopeDir)
+	assert.Equal(t, "/repo/caller", frame.Cwd)
+	assert.Equal(t, 0, frame.NestingDepth)
+}
+
+func TestCallWorkflowMissingReturnErrors(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{})
+
+	_, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "return")
+}
+
+func TestCallWorkflowCwdAttributeForbidden(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md", "cwd": "/some/path"})
+
+	_, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cwd")
+}
+
+func TestCallWorkflowSetsForkSessionID(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("caller_session"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent.ForkSessionID)
+	assert.Equal(t, "caller_session", *result.Agent.ForkSessionID)
+	assert.Nil(t, result.Agent.SessionID)
+}
+
+func TestCallWorkflowInputAttributeSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md", "input": "task data"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "task data", *result.Agent.PendingResult)
+}
+
+func TestCallWorkflowAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestCallWorkflowEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md", "input": ""})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestCallWorkflowNoWorkerReturned(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Worker)
+}
+
+// ----------------------------------------------------------------------------
+// HandleFunctionWorkflow
+// ----------------------------------------------------------------------------
+
+func TestFunctionWorkflowHappyPath(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/workflows/caller"
+	agent.Cwd = "/repo/caller"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "/workflows/child", result.Agent.ScopeDir)
+	assert.Equal(t, "1_START.md", result.Agent.CurrentState)
+	assert.Nil(t, result.Agent.SessionID)
+	assert.Nil(t, result.Agent.ForkSessionID) // no context inheritance
+}
+
+func TestFunctionWorkflowPushesStackFrame(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/workflows/caller"
+	agent.Cwd = "/repo/caller"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	frame := result.Agent.Stack[0]
+	require.NotNil(t, frame.Session)
+	assert.Equal(t, "session_123", *frame.Session)
+	assert.Equal(t, "AFTER.md", frame.State)
+	assert.Equal(t, "/workflows/caller", frame.ScopeDir)
+	assert.Equal(t, "/repo/caller", frame.Cwd)
+	assert.Equal(t, 0, frame.NestingDepth)
+}
+
+func TestFunctionWorkflowMissingReturnErrors(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{})
+
+	_, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "return")
+}
+
+func TestFunctionWorkflowCwdAttributeUpdatesCwd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/old/path"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md", "cwd": "/new/path"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/new/path", result.Agent.Cwd)
+}
+
+func TestFunctionWorkflowAbsentCwdPreservesAgentCwd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/existing/path"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/existing/path", result.Agent.Cwd)
+}
+
+func TestFunctionWorkflowDoesNotSetForkSessionID(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Agent.ForkSessionID)
+}
+
+func TestFunctionWorkflowInputAttributeSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md", "input": "my input"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "my input", *result.Agent.PendingResult)
+}
+
+func TestFunctionWorkflowAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestFunctionWorkflowEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md", "input": ""})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestFunctionWorkflowNoWorkerReturned(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Worker)
+}
+
+func TestCallWorkflowVsFunctionWorkflowForkSessionDifference(t *testing.T) {
+	// call-workflow sets ForkSessionID; function-workflow does not.
+	agent := makeAgent("main", "START.md", strPtr("sess"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	retAttr := map[string]string{"return": "AFTER.md"}
+
+	callResult, err := transitions.HandleCallWorkflow(agent, callWorkflowTransition(retAttr), wfState, resolution)
+	require.NoError(t, err)
+
+	funcResult, err := transitions.HandleFunctionWorkflow(agent, functionWorkflowTransition(retAttr), wfState, resolution)
+	require.NoError(t, err)
+
+	assert.NotNil(t, callResult.Agent.ForkSessionID, "call-workflow must set ForkSessionID")
+	assert.Nil(t, funcResult.Agent.ForkSessionID, "function-workflow must NOT set ForkSessionID")
+}
+

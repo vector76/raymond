@@ -90,6 +90,18 @@ func ApplyTransition(
 			return TransitionResult{}, fmt.Errorf("fork-workflow: %w", err)
 		}
 		return HandleForkWorkflow(copy, transition, wfState, res)
+	case "call-workflow":
+		res, err := specifier.Resolve(transition.Target, copy.ScopeDir)
+		if err != nil {
+			return TransitionResult{}, fmt.Errorf("call-workflow: %w", err)
+		}
+		return HandleCallWorkflow(copy, transition, wfState, res)
+	case "function-workflow":
+		res, err := specifier.Resolve(transition.Target, copy.ScopeDir)
+		if err != nil {
+			return TransitionResult{}, fmt.Errorf("function-workflow: %w", err)
+		}
+		return HandleFunctionWorkflow(copy, transition, wfState, res)
 	case "result":
 		return HandleResult(copy, transition, wfState), nil
 	default:
@@ -409,6 +421,110 @@ func HandleForkWorkflow(
 	}
 
 	return TransitionResult{Agent: &agent, Worker: &worker}, nil
+}
+
+// HandleCallWorkflow handles the <call-workflow> transition tag.
+//
+// Enters an external workflow that inherits the caller's context via session
+// forking:
+//   - Validates that "return" attribute is present; errors if absent.
+//   - Validates that "cwd" attribute is absent; errors if present (forbidden
+//     because the session-binding constraint makes this unsafe).
+//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth=0}
+//     frame onto the stack.
+//   - Sets ForkSessionID to caller's session (sub-workflow inherits context).
+//   - Clears SessionID (fresh Claude session for sub-workflow).
+//   - Updates ScopeDir and CurrentState from the resolution.
+//   - Sets PendingResult from "input" attribute if non-empty.
+func HandleCallWorkflow(
+	agent wfstate.AgentState,
+	transition parsing.Transition,
+	ws *wfstate.WorkflowState,
+	resolution specifier.Resolution,
+) (TransitionResult, error) {
+	returnState, ok := transition.Attributes["return"]
+	if !ok || returnState == "" {
+		return TransitionResult{}, fmt.Errorf(
+			"<call-workflow> tag requires 'return' attribute. " +
+				"Example: <call-workflow return=\"NEXT.md\">./child-workflow</call-workflow>",
+		)
+	}
+
+	if _, hasCwd := transition.Attributes["cwd"]; hasCwd {
+		return TransitionResult{}, fmt.Errorf(
+			"<call-workflow> does not support 'cwd' attribute: " +
+				"the session-binding constraint makes setting cwd unsafe for call-workflow transitions",
+		)
+	}
+
+	callerSession := agent.SessionID
+
+	frame := wfstate.StackFrame{
+		Session:      callerSession,
+		State:        returnState,
+		ScopeDir:     agent.ScopeDir,
+		Cwd:          agent.Cwd,
+		NestingDepth: 0,
+	}
+	agent.Stack = append(agent.Stack, frame)
+	agent.ForkSessionID = callerSession
+	agent.SessionID = nil
+	agent.ScopeDir = resolution.ScopeDir
+	agent.CurrentState = resolution.EntryPoint
+
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		agent.PendingResult = &input
+	}
+
+	return TransitionResult{Agent: &agent}, nil
+}
+
+// HandleFunctionWorkflow handles the <function-workflow> transition tag.
+//
+// Enters an external workflow with a fresh session (no conversation context
+// inheritance):
+//   - Validates that "return" attribute is present; errors if absent.
+//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth=0}
+//     frame onto the stack.
+//   - Clears SessionID (fresh Claude session; no ForkSessionID set).
+//   - Updates ScopeDir and CurrentState from the resolution.
+//   - Updates Cwd from "cwd" attribute if present.
+//   - Sets PendingResult from "input" attribute if non-empty.
+func HandleFunctionWorkflow(
+	agent wfstate.AgentState,
+	transition parsing.Transition,
+	ws *wfstate.WorkflowState,
+	resolution specifier.Resolution,
+) (TransitionResult, error) {
+	returnState, ok := transition.Attributes["return"]
+	if !ok || returnState == "" {
+		return TransitionResult{}, fmt.Errorf(
+			"<function-workflow> tag requires 'return' attribute. " +
+				"Example: <function-workflow return=\"NEXT.md\">./child-workflow</function-workflow>",
+		)
+	}
+
+	frame := wfstate.StackFrame{
+		Session:      agent.SessionID,
+		State:        returnState,
+		ScopeDir:     agent.ScopeDir,
+		Cwd:          agent.Cwd,
+		NestingDepth: 0,
+	}
+	agent.Stack = append(agent.Stack, frame)
+	agent.SessionID = nil
+	agent.ScopeDir = resolution.ScopeDir
+	agent.CurrentState = resolution.EntryPoint
+
+	if cwd, ok := transition.Attributes["cwd"]; ok {
+		agent.Cwd = cwd
+	}
+
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		agent.PendingResult = &input
+	}
+
+	return TransitionResult{Agent: &agent}, nil
 }
 
 // HandleResult handles the <result> transition tag.

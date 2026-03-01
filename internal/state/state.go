@@ -60,7 +60,7 @@ type StackFrame struct {
 	State        string  `json:"state"`                   // return state filename
 	ScopeDir     string  `json:"scope_dir,omitempty"`     // caller's scope directory
 	Cwd          string  `json:"cwd,omitempty"`           // caller's working directory
-	NestingDepth int     `json:"nesting_depth,omitempty"` // caller's nesting depth (placeholder; always 0 until depth tracking is added)
+	NestingDepth int     `json:"nesting_depth,omitempty"` // caller's cross-workflow nesting depth at the time of the call
 }
 
 // AgentState holds the persisted state of a single agent within a workflow.
@@ -73,7 +73,8 @@ type AgentState struct {
 	Cwd           string       `json:"cwd,omitempty"`            // per-agent working directory; empty = inherit
 	ScopeDir      string       `json:"scope_dir,omitempty"`      // per-agent scope directory; empty = use workflow ScopeDir
 
-	// Call-stack depth tracking (placeholder; always 0 until a later bead adds real tracking).
+	// Cross-workflow nesting depth. Incremented by call-workflow/function-workflow,
+	// restored by result. Capped at 4 to prevent runaway recursion.
 	NestingDepth int `json:"nesting_depth,omitempty"`
 
 	// Orchestrator-managed lifecycle fields.

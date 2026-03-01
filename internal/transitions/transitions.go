@@ -277,10 +277,11 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 	}
 
 	frame := wfstate.StackFrame{
-		Session:  agent.SessionID,
-		State:    returnState,
-		ScopeDir: agent.ScopeDir,
-		Cwd:      agent.Cwd,
+		Session:      agent.SessionID,
+		State:        returnState,
+		ScopeDir:     agent.ScopeDir,
+		Cwd:          agent.Cwd,
+		NestingDepth: agent.NestingDepth,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.SessionID = nil
@@ -309,10 +310,11 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 	callerSession := agent.SessionID
 
 	frame := wfstate.StackFrame{
-		Session:  callerSession,
-		State:    returnState,
-		ScopeDir: agent.ScopeDir,
-		Cwd:      agent.Cwd,
+		Session:      callerSession,
+		State:        returnState,
+		ScopeDir:     agent.ScopeDir,
+		Cwd:          agent.Cwd,
+		NestingDepth: agent.NestingDepth,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.ForkSessionID = callerSession
@@ -506,8 +508,9 @@ func HandleForkWorkflow(
 //   - Validates that "return" attribute is present; errors if absent.
 //   - Validates that "cwd" attribute is absent; errors if present (forbidden
 //     because the session-binding constraint makes this unsafe).
-//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth=0}
-//     frame onto the stack.
+//   - Returns an error when agent.NestingDepth >= 4 (depth limit enforced).
+//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth}
+//     frame onto the stack, then increments agent.NestingDepth.
 //   - Sets ForkSessionID to caller's session (sub-workflow inherits context).
 //   - Clears SessionID (fresh Claude session for sub-workflow).
 //   - Updates ScopeDir and CurrentState from the resolution.
@@ -533,6 +536,12 @@ func HandleCallWorkflow(
 		)
 	}
 
+	if agent.NestingDepth >= 4 {
+		return TransitionResult{}, fmt.Errorf(
+			"maximum cross-workflow nesting depth (4) exceeded",
+		)
+	}
+
 	callerSession := agent.SessionID
 
 	frame := wfstate.StackFrame{
@@ -540,9 +549,10 @@ func HandleCallWorkflow(
 		State:        returnState,
 		ScopeDir:     agent.ScopeDir,
 		Cwd:          agent.Cwd,
-		NestingDepth: 0,
+		NestingDepth: agent.NestingDepth,
 	}
 	agent.Stack = append(agent.Stack, frame)
+	agent.NestingDepth = agent.NestingDepth + 1
 	agent.ForkSessionID = callerSession
 	agent.SessionID = nil
 	agent.ScopeDir = resolution.ScopeDir
@@ -560,8 +570,9 @@ func HandleCallWorkflow(
 // Enters an external workflow with a fresh session (no conversation context
 // inheritance):
 //   - Validates that "return" attribute is present; errors if absent.
-//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth=0}
-//     frame onto the stack.
+//   - Returns an error when agent.NestingDepth >= 4 (depth limit enforced).
+//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth}
+//     frame onto the stack, then increments agent.NestingDepth.
 //   - Clears SessionID (fresh Claude session; no ForkSessionID set).
 //   - Updates ScopeDir and CurrentState from the resolution.
 //   - Updates Cwd from "cwd" attribute if present.
@@ -580,14 +591,21 @@ func HandleFunctionWorkflow(
 		)
 	}
 
+	if agent.NestingDepth >= 4 {
+		return TransitionResult{}, fmt.Errorf(
+			"maximum cross-workflow nesting depth (4) exceeded",
+		)
+	}
+
 	frame := wfstate.StackFrame{
 		Session:      agent.SessionID,
 		State:        returnState,
 		ScopeDir:     agent.ScopeDir,
 		Cwd:          agent.Cwd,
-		NestingDepth: 0,
+		NestingDepth: agent.NestingDepth,
 	}
 	agent.Stack = append(agent.Stack, frame)
+	agent.NestingDepth = agent.NestingDepth + 1
 	agent.SessionID = nil
 	agent.ScopeDir = resolution.ScopeDir
 	agent.CurrentState = resolution.EntryPoint

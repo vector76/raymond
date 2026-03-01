@@ -1448,3 +1448,265 @@ func TestApplyTransitionFunctionWorkflowInputTemplateRenderedFromForkAttrs(t *te
 	assert.Equal(t, "Build: widget", *result.Agent.PendingResult)
 }
 
+// ----------------------------------------------------------------------------
+// Nesting depth tracking
+// ----------------------------------------------------------------------------
+
+func TestCallWorkflowDepth3IncrementsTo4AndSavesFrameDepth(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 3
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, 4, result.Agent.NestingDepth)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, 3, result.Agent.Stack[0].NestingDepth)
+}
+
+func TestFunctionWorkflowDepth3IncrementsTo4AndSavesFrameDepth(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 3
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, 4, result.Agent.NestingDepth)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, 3, result.Agent.Stack[0].NestingDepth)
+}
+
+func TestCallWorkflowDepth4ReturnsError(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 4
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	_, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nesting depth")
+}
+
+func TestFunctionWorkflowDepth4ReturnsError(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 4
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	_, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nesting depth")
+}
+
+func TestCallWorkflowDepth4PausesAgentViaApplyTransition(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.NestingDepth = 4
+	tr := parsing.Transition{
+		Tag:        "call-workflow",
+		Target:     childDir,
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "nesting depth")
+}
+
+func TestFunctionWorkflowDepth4PausesAgentViaApplyTransition(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.NestingDepth = 4
+	tr := parsing.Transition{
+		Tag:        "function-workflow",
+		Target:     childDir,
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "nesting depth")
+}
+
+func TestForkWorkflowWorkerInheritsDepthNotIncremented(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 3
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	// Worker inherits caller's depth (not incremented).
+	assert.Equal(t, 3, result.Worker.NestingDepth)
+	// Caller's own depth is unchanged.
+	assert.Equal(t, 3, result.Agent.NestingDepth)
+}
+
+func TestResultRestoresDepthToPreCallValue(t *testing.T) {
+	// Simulate agent at depth 1 (after a cross-workflow call), with frame saving depth 0.
+	frame := wfstate.StackFrame{
+		Session:      strPtr("caller_session"),
+		State:        "RETURN.md",
+		NestingDepth: 0,
+	}
+	agent := makeAgent("main", "EVAL.md", nil)
+	agent.NestingDepth = 1
+	agent.Stack = []wfstate.StackFrame{frame}
+	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, 0, result.Agent.NestingDepth)
+}
+
+func TestSequentialCallsDoNotAccumulateDepth(t *testing.T) {
+	// Call at depth 0 → depth 1 → result restores to 0 → call again → depth 1 (not 2).
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+
+	agent := makeAgent("main", "START.md", strPtr("session_a"))
+	agent.NestingDepth = 0
+
+	// First call: depth 0 → 1.
+	r1, err := transitions.HandleCallWorkflow(agent, callWorkflowTransition(map[string]string{"return": "AFTER.md"}), wfState, resolution)
+	require.NoError(t, err)
+	assert.Equal(t, 1, r1.Agent.NestingDepth)
+
+	// Simulate result: pop frame, restore depth to 0.
+	r1.Agent.Stack[0].NestingDepth = 0
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState)
+	require.NoError(t, err)
+	assert.Equal(t, 0, r2.Agent.NestingDepth)
+
+	// Second call: depth 0 → 1 (not 2).
+	r3, err := transitions.HandleCallWorkflow(*r2.Agent, callWorkflowTransition(map[string]string{"return": "AFTER.md"}), wfState, resolution)
+	require.NoError(t, err)
+	assert.Equal(t, 1, r3.Agent.NestingDepth)
+}
+
+func TestIntraScopeForkDoesNotChangeDepth(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 2
+	tr := parsing.Transition{
+		Tag:        "fork",
+		Target:     "WORKER.md",
+		Attributes: map[string]string{"next": "NEXT.md"},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Agent.NestingDepth)
+	assert.Equal(t, 0, result.Worker.NestingDepth) // intra-scope worker is independent
+}
+
+func TestIntraScopeCallDoesNotChangeDepth(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 2
+	tr := parsing.Transition{
+		Tag:        "call",
+		Target:     "CHILD.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Agent.NestingDepth)
+}
+
+func TestIntraScopeFunctionDoesNotChangeDepth(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 2
+	tr := parsing.Transition{
+		Tag:        "function",
+		Target:     "EVAL.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Agent.NestingDepth)
+}
+
+func TestIntraScopeFunctionResultPreservesDepth(t *testing.T) {
+	// Agent at depth 2 makes an intra-scope function call; after result, depth must remain 2.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 2
+	wfState := &wfstate.WorkflowState{}
+
+	// Intra-scope function call.
+	callTr := parsing.Transition{
+		Tag:        "function",
+		Target:     "EVAL.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	r1, err := transitions.ApplyTransition(&agent, callTr, wfState)
+	require.NoError(t, err)
+	assert.Equal(t, 2, r1.Agent.NestingDepth) // unchanged during call
+
+	// Intra-scope result.
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, 2, r2.Agent.NestingDepth) // must be preserved, not reset to 0
+}
+
+func TestIntraScopeCallResultPreservesDepth(t *testing.T) {
+	// Agent at depth 2 makes an intra-scope call; after result, depth must remain 2.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 2
+	wfState := &wfstate.WorkflowState{}
+
+	// Intra-scope call.
+	callTr := parsing.Transition{
+		Tag:        "call",
+		Target:     "CHILD.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	r1, err := transitions.ApplyTransition(&agent, callTr, wfState)
+	require.NoError(t, err)
+	assert.Equal(t, 2, r1.Agent.NestingDepth) // unchanged during call
+
+	// Intra-scope result.
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, 2, r2.Agent.NestingDepth) // must be preserved, not reset to 0
+}
+

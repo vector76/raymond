@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/prompts"
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
@@ -67,6 +68,11 @@ func ApplyTransition(
 	// Deep copy — handlers must not mutate the original agent.
 	copy := deepCopyAgent(*agent)
 
+	// Save transient fields before clearing — used for input template rendering
+	// in the cross-workflow transition cases below.
+	origPendingResult := copy.PendingResult
+	origForkAttributes := copy.ForkAttributes
+
 	// Clear transient fields before the handler runs so handlers can set
 	// fresh values without accidentally inheriting stale ones.
 	copy.PendingResult = nil
@@ -85,23 +91,50 @@ func ApplyTransition(
 	case "fork":
 		return HandleFork(copy, transition, wfState)
 	case "fork-workflow":
-		res, err := specifier.Resolve(transition.Target, copy.ScopeDir)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
 		if err != nil {
-			return TransitionResult{}, fmt.Errorf("fork-workflow: %w", err)
+			copy.Status = wfstate.AgentStatusPaused
+			copy.Error = fmt.Sprintf("fork-workflow: %s", err.Error())
+			return TransitionResult{Agent: &copy}, nil
 		}
-		return HandleForkWorkflow(copy, transition, wfState, res)
+		result, handlerErr := HandleForkWorkflow(copy, tr, wfState, res)
+		if handlerErr != nil {
+			copy.Status = wfstate.AgentStatusPaused
+			copy.Error = handlerErr.Error()
+			return TransitionResult{Agent: &copy}, nil
+		}
+		return result, nil
 	case "call-workflow":
-		res, err := specifier.Resolve(transition.Target, copy.ScopeDir)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
 		if err != nil {
-			return TransitionResult{}, fmt.Errorf("call-workflow: %w", err)
+			copy.Status = wfstate.AgentStatusPaused
+			copy.Error = fmt.Sprintf("call-workflow: %s", err.Error())
+			return TransitionResult{Agent: &copy}, nil
 		}
-		return HandleCallWorkflow(copy, transition, wfState, res)
+		result, handlerErr := HandleCallWorkflow(copy, tr, wfState, res)
+		if handlerErr != nil {
+			copy.Status = wfstate.AgentStatusPaused
+			copy.Error = handlerErr.Error()
+			return TransitionResult{Agent: &copy}, nil
+		}
+		return result, nil
 	case "function-workflow":
-		res, err := specifier.Resolve(transition.Target, copy.ScopeDir)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
 		if err != nil {
-			return TransitionResult{}, fmt.Errorf("function-workflow: %w", err)
+			copy.Status = wfstate.AgentStatusPaused
+			copy.Error = fmt.Sprintf("function-workflow: %s", err.Error())
+			return TransitionResult{Agent: &copy}, nil
 		}
-		return HandleFunctionWorkflow(copy, transition, wfState, res)
+		result, handlerErr := HandleFunctionWorkflow(copy, tr, wfState, res)
+		if handlerErr != nil {
+			copy.Status = wfstate.AgentStatusPaused
+			copy.Error = handlerErr.Error()
+			return TransitionResult{Agent: &copy}, nil
+		}
+		return result, nil
 	case "result":
 		return HandleResult(copy, transition, wfState), nil
 	default:
@@ -155,6 +188,49 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 	c.Stack = newStack
 
 	return c
+}
+
+// withRenderedInput returns transition unchanged when the "input" attribute is
+// absent or empty. Otherwise it renders the input value through
+// prompts.RenderPrompt with variables built from pendingResult (as "result")
+// and all forkAttributes entries — the same pattern used in
+// MarkdownExecutor.Execute. A shallow copy of the attributes map is made only
+// when rendering actually changes the value.
+func withRenderedInput(
+	transition parsing.Transition,
+	pendingResult *string,
+	forkAttributes map[string]string,
+) parsing.Transition {
+	input, ok := transition.Attributes["input"]
+	if !ok || input == "" {
+		return transition
+	}
+
+	variables := make(map[string]any)
+	if pendingResult != nil {
+		variables["result"] = *pendingResult
+	}
+	for k, v := range forkAttributes {
+		variables[k] = v
+	}
+
+	rendered := prompts.RenderPrompt(input, variables)
+	if rendered == input {
+		return transition
+	}
+
+	attrs := make(map[string]string, len(transition.Attributes))
+	for k, v := range transition.Attributes {
+		attrs[k] = v
+	}
+	attrs["input"] = rendered
+
+	return parsing.Transition{
+		Tag:        transition.Tag,
+		Target:     transition.Target,
+		Payload:    transition.Payload,
+		Attributes: attrs,
+	}
 }
 
 // HandleGoto handles the <goto> transition tag.

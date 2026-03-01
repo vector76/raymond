@@ -1302,3 +1302,149 @@ func TestCallWorkflowVsFunctionWorkflowForkSessionDifference(t *testing.T) {
 	assert.Nil(t, funcResult.Agent.ForkSessionID, "function-workflow must NOT set ForkSessionID")
 }
 
+// ----------------------------------------------------------------------------
+// ApplyTransition: cross-workflow dispatch via specifier.Resolve
+// ----------------------------------------------------------------------------
+
+// makeChildWorkflow creates a temporary directory containing 1_START.md and
+// returns its absolute path. The directory is removed after the test completes.
+func makeChildWorkflow(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("# start"), 0o644))
+	return dir
+}
+
+func TestApplyTransitionDispatchesCallWorkflow(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	tr := parsing.Transition{
+		Tag:    "call-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Empty(t, result.Agent.Status) // active, not paused
+	assert.Equal(t, childDir, result.Agent.ScopeDir)
+	assert.Equal(t, "1_START.md", result.Agent.CurrentState)
+	assert.NotNil(t, result.Agent.ForkSessionID, "call-workflow sets ForkSessionID")
+}
+
+func TestApplyTransitionCallWorkflowResolverErrorPausesAgent(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/some/scope"
+	tr := parsing.Transition{
+		Tag:    "call-workflow",
+		Target: "/nonexistent/no/such/path",
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err) // error is converted to a paused agent, not propagated
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.NotEmpty(t, result.Agent.Error)
+	assert.Contains(t, result.Agent.Error, "call-workflow")
+}
+
+func TestApplyTransitionFunctionWorkflowResolverErrorPausesAgent(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/some/scope"
+	tr := parsing.Transition{
+		Tag:    "function-workflow",
+		Target: "/nonexistent/no/such/path",
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "function-workflow")
+}
+
+func TestApplyTransitionForkWorkflowResolverErrorPausesAgent(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/some/scope"
+	tr := parsing.Transition{
+		Tag:    "fork-workflow",
+		Target: "/nonexistent/no/such/path",
+		Attributes: map[string]string{
+			"next": "AFTER.md",
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "fork-workflow")
+}
+
+func TestApplyTransitionCallWorkflowInputTemplateRendered(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.PendingResult = strPtr("computed-value")
+	tr := parsing.Transition{
+		Tag:    "call-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+			"input":  "Process: {{result}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "Process: computed-value", *result.Agent.PendingResult)
+}
+
+func TestApplyTransitionFunctionWorkflowInputTemplateRenderedFromForkAttrs(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.ForkAttributes = map[string]string{"item": "widget"}
+	tr := parsing.Transition{
+		Tag:    "function-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+			"input":  "Build: {{item}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "Build: widget", *result.Agent.PendingResult)
+}
+

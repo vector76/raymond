@@ -115,7 +115,8 @@ func resolveDir(dirPath string) (Resolution, error) {
 }
 
 // abbrev derives a short identifier: lowercased base name capped at 6 characters.
-// This mirrors the state abbreviation logic used by HandleFork in transitions.
+// The same truncation rule (lowercase + 6-char limit) is used by HandleFork in
+// transitions, but applied there to state filenames rather than workflow names.
 func abbrev(baseName string) string {
 	lower := strings.ToLower(baseName)
 	if len(lower) > 6 {

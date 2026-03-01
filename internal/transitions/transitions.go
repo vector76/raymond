@@ -176,15 +176,17 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 	if len(a.Stack) > 0 {
 		newStack = make([]wfstate.StackFrame, len(a.Stack))
 		for i, frame := range a.Stack {
+			var session *string
+			if frame.Session != nil {
+				s := *frame.Session
+				session = &s
+			}
 			newStack[i] = wfstate.StackFrame{
+				Session:      session,
 				State:        frame.State,
 				ScopeDir:     frame.ScopeDir,
 				Cwd:          frame.Cwd,
 				NestingDepth: frame.NestingDepth,
-			}
-			if frame.Session != nil {
-				s := *frame.Session
-				newStack[i].Session = &s
 			}
 		}
 	}
@@ -544,7 +546,7 @@ func HandleCallWorkflow(
 
 	if agent.NestingDepth >= 4 {
 		return TransitionResult{}, fmt.Errorf(
-			"maximum cross-workflow nesting depth (4) exceeded",
+			"<call-workflow> maximum cross-workflow nesting depth (4) exceeded",
 		)
 	}
 
@@ -599,7 +601,7 @@ func HandleFunctionWorkflow(
 
 	if agent.NestingDepth >= 4 {
 		return TransitionResult{}, fmt.Errorf(
-			"maximum cross-workflow nesting depth (4) exceeded",
+			"<function-workflow> maximum cross-workflow nesting depth (4) exceeded",
 		)
 	}
 

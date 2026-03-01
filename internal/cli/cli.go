@@ -220,12 +220,11 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				Timeout:                    effectiveTimeout,
 				DangerouslySkipPermissions: merged.DangerouslySkipPermissions,
 				Quiet:                      quiet,
-				Verbose:                    merged.Verbose,
 				Debug:                      !merged.NoDebug,
 				NoWait:                     merged.NoWait,
 			}
 			opts.ObserverSetup = func(b *bus.Bus) {
-				console.New(b, quiet, merged.Verbose, 0)
+				console.New(b, quiet, 0)
 				if !merged.NoDebug {
 					debug.New(b)
 				}

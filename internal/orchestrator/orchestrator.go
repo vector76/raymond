@@ -66,9 +66,6 @@ type RunOptions struct {
 	// Quiet suppresses console observer output.
 	Quiet bool
 
-	// Verbose enables more detailed console output (e.g. full tool details).
-	Verbose bool
-
 	// NoWait disables automatic waiting for usage-limit reset; the workflow
 	// is paused and exits immediately instead.
 	NoWait bool

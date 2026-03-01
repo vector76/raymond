@@ -90,11 +90,9 @@ type ConsoleReporter struct {
 	w   io.Writer
 	sym symbols
 
-	// quiet, verbose, and color are immutable after construction; safe to read
-	// without the lock.
-	quiet   bool
-	verbose bool // show transition type labels and extra tool detail
-	color   bool // emit ANSI color codes
+	// quiet and color are immutable after construction; safe to read without the lock.
+	quiet bool
+	color bool // emit ANSI color codes
 
 	// Per-agent tracking — protected by mu.
 	lastStateType map[string]string // agentID → "markdown" or "script"
@@ -104,17 +102,16 @@ type ConsoleReporter struct {
 	agentCounter  int               // number of unique agents seen (for cycling)
 }
 
-func newReporter(w io.Writer, quiet, verbose, unicode, color bool) *ConsoleReporter {
+func newReporter(w io.Writer, quiet, unicode, color bool) *ConsoleReporter {
 	sym := asciiSyms
 	if unicode {
 		sym = unicodeSyms
 	}
 	return &ConsoleReporter{
-		w:             w,
-		sym:           sym,
-		quiet:         quiet,
-		verbose:       verbose,
-		color:         color,
+		w:     w,
+		sym:   sym,
+		quiet: quiet,
+		color: color,
 		lastStateType: make(map[string]string),
 		lastExitCode:  make(map[string]int),
 		lastTool:      make(map[string]string),
@@ -269,12 +266,8 @@ func (r *ConsoleReporter) onTransitionOccurred(e events.TransitionOccurred) {
 		}
 
 	default:
-		// goto, reset, call, function — all use the same arrow.
-		if r.verbose {
-			fmt.Fprintf(r.w, "  %s (%s) %s\n", r.sym.arrow, e.TransitionType, e.ToState)
-		} else {
-			fmt.Fprintf(r.w, "  %s %s\n", r.sym.arrow, e.ToState)
-		}
+		// goto, reset, call, function — prefix with transition type.
+		fmt.Fprintf(r.w, "  %s %s %s\n", e.TransitionType, r.sym.arrow, e.ToState)
 	}
 }
 
@@ -360,16 +353,16 @@ type ConsoleObserver struct {
 // New creates a ConsoleObserver writing to os.Stdout. Unicode symbols and ANSI
 // colors are enabled automatically when os.Stdout is a terminal. Colors are
 // suppressed when the NO_COLOR environment variable is set.
-func New(b *bus.Bus, quiet, verbose bool, width int) *ConsoleObserver {
+func New(b *bus.Bus, quiet bool, width int) *ConsoleObserver {
 	isTTY := isCharDevice(os.Stdout)
 	color := isTTY && os.Getenv("NO_COLOR") == ""
-	return NewWithWriter(b, quiet, verbose, width, os.Stdout, isTTY, color)
+	return NewWithWriter(b, quiet, width, os.Stdout, isTTY, color)
 }
 
 // NewWithWriter creates a ConsoleObserver writing to w with explicit unicode
 // and color settings. Use this in tests to capture output predictably.
-func NewWithWriter(b *bus.Bus, quiet, verbose bool, _ int, w io.Writer, unicode, color bool) *ConsoleObserver {
-	r := newReporter(w, quiet, verbose, unicode, color)
+func NewWithWriter(b *bus.Bus, quiet bool, _ int, w io.Writer, unicode, color bool) *ConsoleObserver {
+	r := newReporter(w, quiet, unicode, color)
 	o := &ConsoleObserver{reporter: r}
 	o.cancels = []func(){
 		bus.Subscribe(b, r.onWorkflowStarted),

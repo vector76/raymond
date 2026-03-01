@@ -15,7 +15,7 @@ import (
 
 // newObs creates a ConsoleObserver backed by buf using ASCII symbols, no color.
 func newObs(b *bus.Bus, buf *bytes.Buffer, quiet bool) *console.ConsoleObserver {
-	return console.NewWithWriter(b, quiet, false, 0, buf, false, false)
+	return console.NewWithWriter(b, quiet, 0, buf, false, false)
 }
 
 // ----------------------------------------------------------------------------
@@ -250,7 +250,7 @@ func TestConsoleGotoTransition(t *testing.T) {
 	})
 
 	out := buf.String()
-	assert.Contains(t, out, "-> NEXT.md")
+	assert.Contains(t, out, "goto -> NEXT.md")
 }
 
 func TestConsoleResetTransition(t *testing.T) {
@@ -267,7 +267,41 @@ func TestConsoleResetTransition(t *testing.T) {
 		Metadata:       map[string]any{},
 	})
 
-	assert.Contains(t, buf.String(), "-> START.md")
+	assert.Contains(t, buf.String(), "reset -> START.md")
+}
+
+func TestConsoleCallTransition(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.TransitionOccurred{
+		AgentID:        "main",
+		FromState:      "A.md",
+		ToState:        "FUNC.md",
+		TransitionType: "call",
+		Metadata:       map[string]any{},
+	})
+
+	assert.Contains(t, buf.String(), "call -> FUNC.md")
+}
+
+func TestConsoleFunctionTransition(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.TransitionOccurred{
+		AgentID:        "main",
+		FromState:      "A.md",
+		ToState:        "FUNC.md",
+		TransitionType: "function",
+		Metadata:       map[string]any{},
+	})
+
+	assert.Contains(t, buf.String(), "function -> FUNC.md")
 }
 
 func TestConsoleReturnTransitionWithSnippet(t *testing.T) {
@@ -533,7 +567,7 @@ func TestConsoleErrorFatalMessage(t *testing.T) {
 func TestConsoleUnicodeArrow(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := console.NewWithWriter(b, false, false, 0, &buf, true, false) // unicode=true
+	obs := console.NewWithWriter(b, false, 0, &buf, true, false) // unicode=true
 	defer obs.Close()
 
 	b.Emit(events.TransitionOccurred{
@@ -544,7 +578,7 @@ func TestConsoleUnicodeArrow(t *testing.T) {
 		Metadata:       map[string]any{},
 	})
 
-	assert.Contains(t, buf.String(), "→ B.md")
+	assert.Contains(t, buf.String(), "goto → B.md")
 	assert.NotContains(t, buf.String(), "->")
 }
 
@@ -562,14 +596,14 @@ func TestConsoleASCIIArrow(t *testing.T) {
 		Metadata:       map[string]any{},
 	})
 
-	assert.Contains(t, buf.String(), "-> B.md")
+	assert.Contains(t, buf.String(), "goto -> B.md")
 	assert.NotContains(t, buf.String(), "→")
 }
 
 func TestConsoleUnicodeFork(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := console.NewWithWriter(b, false, false, 0, &buf, true, false)
+	obs := console.NewWithWriter(b, false, 0, &buf, true, false)
 	defer obs.Close()
 
 	b.Emit(events.AgentSpawned{
@@ -639,7 +673,7 @@ func TestConsoleCloseUnsubscribes(t *testing.T) {
 
 // newColorObs creates a ConsoleObserver with color=true and unicode=false.
 func newColorObs(b *bus.Bus, buf *bytes.Buffer) *console.ConsoleObserver {
-	return console.NewWithWriter(b, false, false, 0, buf, false, true)
+	return console.NewWithWriter(b, false, 0, buf, false, true)
 }
 
 func TestConsoleColorAgentIDWrappedInEscapes(t *testing.T) {

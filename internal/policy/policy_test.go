@@ -618,3 +618,183 @@ func TestGenerateReminderWithAttributes(t *testing.T) {
 	assert.Contains(t, out, "return=")
 	assert.Contains(t, out, "SUMMARIZE.md")
 }
+
+// ----------------------------------------------------------------------------
+// Cross-workflow tag name distinctness (call-workflow, function-workflow, fork-workflow)
+// ----------------------------------------------------------------------------
+
+// TestCallTagDoesNotAllowCallWorkflow verifies that "call" and "call-workflow"
+// are distinct tag names — allowing "call" does not permit "call-workflow".
+func TestCallTagDoesNotAllowCallWorkflow(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "call", "target": "RESEARCH.md", "return": "SUMMARIZE.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "call-workflow",
+		Target:     "RESEARCH.md",
+		Attributes: map[string]string{"return": "SUMMARIZE.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+// TestForkTagDoesNotAllowForkWorkflow verifies that "fork" and "fork-workflow"
+// are distinct tag names.
+func TestForkTagDoesNotAllowForkWorkflow(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "fork", "target": "WORKER.md", "next": "CONTINUE.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "fork-workflow",
+		Target:     "WORKER.md",
+		Attributes: map[string]string{"next": "CONTINUE.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+// TestCallWorkflowReturnMatchAllows verifies that a call-workflow policy rule
+// with a matching return attribute passes validation.
+func TestCallWorkflowReturnMatchAllows(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "call-workflow", "return": "NEXT.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "call-workflow",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+// TestCallWorkflowReturnMismatchErrors verifies that a call-workflow transition
+// with a non-matching return attribute is rejected.
+func TestCallWorkflowReturnMismatchErrors(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "call-workflow", "return": "NEXT.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "call-workflow",
+		Attributes: map[string]string{"return": "OTHER.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+// TestFunctionWorkflowReturnMatchAllows verifies that a function-workflow policy
+// rule with a matching return attribute passes validation.
+func TestFunctionWorkflowReturnMatchAllows(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "function-workflow", "return": "DONE.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "function-workflow",
+		Attributes: map[string]string{"return": "DONE.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+// TestFunctionWorkflowReturnMismatchErrors verifies that a function-workflow
+// transition with a non-matching return attribute is rejected.
+func TestFunctionWorkflowReturnMismatchErrors(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "function-workflow", "return": "DONE.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "function-workflow",
+		Attributes: map[string]string{"return": "WRONG.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+// TestForkWorkflowNextMatchAllows verifies that a fork-workflow policy rule
+// with a matching next attribute passes validation.
+func TestForkWorkflowNextMatchAllows(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "fork-workflow", "next": "CONTINUE.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "fork-workflow",
+		Attributes: map[string]string{"next": "CONTINUE.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+// TestForkWorkflowNextMismatchErrors verifies that a fork-workflow transition
+// with a non-matching next attribute is rejected.
+func TestForkWorkflowNextMismatchErrors(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "fork-workflow", "next": "CONTINUE.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "fork-workflow",
+		Attributes: map[string]string{"next": "WRONG.md"},
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+// TestNilPolicyAllowsNewTagTypes verifies that a nil policy permits all three
+// new cross-workflow tag types.
+func TestNilPolicyAllowsNewTagTypes(t *testing.T) {
+	tags := []string{"call-workflow", "function-workflow", "fork-workflow"}
+	for _, tag := range tags {
+		tr := parsing.Transition{Tag: tag, Target: "WORKFLOW.md"}
+		err := policy.ValidateTransitionPolicy(tr, nil)
+		assert.NoError(t, err, "nil policy should allow %q", tag)
+	}
+}
+
+// TestEmptyAllowedTransitionsAllowsNewTagTypes verifies that a policy with an
+// empty AllowedTransitions list (no restrictions) permits the new tag types.
+func TestEmptyAllowedTransitionsAllowsNewTagTypes(t *testing.T) {
+	p := &policy.Policy{AllowedTransitions: []map[string]string{}}
+	tags := []string{"call-workflow", "function-workflow", "fork-workflow"}
+	for _, tag := range tags {
+		tr := parsing.Transition{Tag: tag, Target: "WORKFLOW.md"}
+		err := policy.ValidateTransitionPolicy(tr, p)
+		assert.NoError(t, err, "empty policy should allow %q", tag)
+	}
+}
+
+// TestMultiForkWorkflowAllAllowed verifies that a policy allowing fork-workflow
+// permits multiple fork-workflow transitions (policy check is per-transition).
+func TestMultiForkWorkflowAllAllowed(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "fork-workflow"},
+		},
+	}
+	transitions := []parsing.Transition{
+		{Tag: "fork-workflow", Target: "WORKER_A.md"},
+		{Tag: "fork-workflow", Target: "WORKER_B.md"},
+	}
+	for _, tr := range transitions {
+		err := policy.ValidateTransitionPolicy(tr, p)
+		assert.NoError(t, err, "fork-workflow transition %+v should be allowed", tr)
+	}
+}

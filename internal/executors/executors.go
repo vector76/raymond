@@ -106,15 +106,26 @@ func ExtractStateName(filename string) string {
 // filenames using prompts.ResolveState.
 //
 //   - result tags pass through unchanged (no state references to resolve).
-//   - The main target and the "return" / "next" attributes are all resolved.
+//   - Workflow tags (call-workflow, function-workflow, fork-workflow) have a
+//     target that is a path to another workflow, resolved later by
+//     specifier.Resolve; the target is passed through unchanged. Their
+//     "return" and "next" attributes (which reference states in the current
+//     workflow) are still resolved.
+//   - For all other tags the main target is also resolved.
 func ResolveTransitionTargets(t parsing.Transition, scopeDir string) (parsing.Transition, error) {
 	if t.Tag == "result" {
 		return t, nil
 	}
 
-	resolvedTarget, err := prompts.ResolveState(scopeDir, t.Target)
-	if err != nil {
-		return parsing.Transition{}, err
+	isWorkflowTag := t.Tag == "call-workflow" || t.Tag == "function-workflow" || t.Tag == "fork-workflow"
+
+	resolvedTarget := t.Target
+	if !isWorkflowTag {
+		var err error
+		resolvedTarget, err = prompts.ResolveState(scopeDir, t.Target)
+		if err != nil {
+			return parsing.Transition{}, err
+		}
 	}
 
 	resolvedAttrs := make(map[string]string, len(t.Attributes))

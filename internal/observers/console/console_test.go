@@ -458,6 +458,33 @@ func TestConsoleAgentTerminatedEmptyPayload(t *testing.T) {
 	assert.Contains(t, buf.String(), "(terminated)")
 }
 
+func TestConsoleAgentTerminatedWhitespacePaddedPayload(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentTerminated{AgentID: "main", ResultPayload: "  \nStory complete\n  "})
+
+	out := buf.String()
+	assert.Contains(t, out, "Story complete")
+	assert.NotContains(t, out, "Result: \"  ")
+	assert.NotContains(t, out, "Result: \"\\n")
+}
+
+func TestConsoleAgentTerminatedWhitespaceOnlyPayload(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentTerminated{AgentID: "main", ResultPayload: "   \n  "})
+
+	out := buf.String()
+	assert.Contains(t, out, "(terminated)")
+	assert.NotContains(t, out, "Result:")
+}
+
 // ----------------------------------------------------------------------------
 // Errors
 // ----------------------------------------------------------------------------

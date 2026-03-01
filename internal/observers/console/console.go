@@ -289,8 +289,9 @@ func (r *ConsoleReporter) onAgentSpawned(e events.AgentSpawned) {
 func (r *ConsoleReporter) onAgentTerminated(e events.AgentTerminated) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if e.ResultPayload != "" {
-		fmt.Fprintf(r.w, "  %s Result: %q\n", r.sym.result, e.ResultPayload)
+	payload := strings.TrimSpace(e.ResultPayload)
+	if payload != "" {
+		fmt.Fprintf(r.w, "  %s Result: %q\n", r.sym.result, payload)
 	} else {
 		fmt.Fprintf(r.w, "  %s (terminated)\n", r.sym.result)
 	}

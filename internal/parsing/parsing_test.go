@@ -255,3 +255,108 @@ func TestParseForkWithEmptyAttribute(t *testing.T) {
 	assert.Equal(t, "NEXT.md", tr.Attributes["next"])
 	assert.Equal(t, "", tr.Attributes["item"])
 }
+
+// ----------------------------------------------------------------------------
+// Cross-workflow tags: call-workflow, function-workflow, fork-workflow
+// ----------------------------------------------------------------------------
+
+func TestParseCallWorkflow(t *testing.T) {
+	out := `<call-workflow return="RESUME.md" input="data.json">other-workflow/start.md</call-workflow>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "call-workflow", tr.Tag)
+	assert.Equal(t, "other-workflow/start.md", tr.Target)
+	assert.Equal(t, "RESUME.md", tr.Attributes["return"])
+	assert.Equal(t, "data.json", tr.Attributes["input"])
+	assert.Empty(t, tr.Payload)
+}
+
+func TestParseFunctionWorkflow(t *testing.T) {
+	out := `<function-workflow return="BACK.md" cwd="/tmp/mydir">project/init.md</function-workflow>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "function-workflow", tr.Tag)
+	assert.Equal(t, "project/init.md", tr.Target)
+	assert.Equal(t, "BACK.md", tr.Attributes["return"])
+	assert.Equal(t, "/tmp/mydir", tr.Attributes["cwd"])
+	assert.Empty(t, tr.Payload)
+}
+
+func TestParseForkWorkflow(t *testing.T) {
+	out := `<fork-workflow next="COLLECT.md" input="items.json">parallel/worker.md</fork-workflow>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "fork-workflow", tr.Tag)
+	assert.Equal(t, "parallel/worker.md", tr.Target)
+	assert.Equal(t, "COLLECT.md", tr.Attributes["next"])
+	assert.Equal(t, "items.json", tr.Attributes["input"])
+	assert.Empty(t, tr.Payload)
+}
+
+func TestWorkflowTagAcceptsForwardSlash(t *testing.T) {
+	// Path separators are valid in workflow specifiers.
+	out := `<call-workflow return="R.md">some/nested/workflow.md</call-workflow>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	assert.Equal(t, "some/nested/workflow.md", transitions[0].Target)
+}
+
+func TestWorkflowTagAcceptsBackslash(t *testing.T) {
+	out := `<function-workflow return="R.md">some\nested\workflow.md</function-workflow>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	assert.Equal(t, `some\nested\workflow.md`, transitions[0].Target)
+}
+
+func TestWorkflowTagAcceptsRelativePathSpecifier(t *testing.T) {
+	out := `<fork-workflow next="N.md">../other/start.md</fork-workflow>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	assert.Equal(t, "../other/start.md", transitions[0].Target)
+}
+
+// Regression: existing tags must still reject path separators.
+
+func TestGotoStillRejectsPathSeparator(t *testing.T) {
+	out := "<goto>subdir/file.md</goto>"
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains path separator")
+}
+
+func TestResetStillRejectsPathSeparator(t *testing.T) {
+	out := "<reset>subdir/file.md</reset>"
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains path separator")
+}
+
+func TestCallStillRejectsPathSeparator(t *testing.T) {
+	out := `<call return="R.md">subdir/file.md</call>`
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains path separator")
+}
+
+func TestFunctionStillRejectsPathSeparator(t *testing.T) {
+	out := `<function return="R.md">subdir/file.md</function>`
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains path separator")
+}
+
+func TestForkStillRejectsPathSeparator(t *testing.T) {
+	out := `<fork next="N.md">subdir/file.md</fork>`
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains path separator")
+}

@@ -107,13 +107,13 @@ PHASE3.md does final step, emits <result>summary</result>   → returns to DONE.
 ## Abandoning the Entire Call Chain
 
 The original "clear everything" behavior — abandoning the return stack
-intentionally — has no documented use case, but if a workflow genuinely needs
-it, the equivalent is to emit `<result>` repeatedly (once per frame on the
-stack) until the stack is empty, or to design the workflow to avoid deep stacks
-when a full abort is needed.
-
-There is no dedicated "abort" primitive. This is acceptable: the scenario is
-rare and the workaround is explicit.
+intentionally — has no documented use case. There is no dedicated "abort"
+primitive. If a workflow genuinely needs to unwind early, each return state in
+the call chain must propagate the abort by itself emitting `<result>`, so the
+unwind happens one frame at a time as each return state executes. The cleaner
+approach is to design workflows that don't need mid-chain aborts, or to use
+`<fork-workflow>` for work that may need to be abandoned without affecting a
+caller.
 
 ## Implementation Change
 
@@ -138,34 +138,11 @@ if cd, ok := transition.Attributes["cd"]; ok {
 
 This is a one-line deletion. No other orchestrator logic requires changes.
 
-## Documents Requiring Updates
+## Documents Updated
 
-The following documents describe `<reset>` as clearing the return stack and
-must be corrected:
+The following documents were corrected to reflect the new semantics:
 
-### `docs/workflow-protocol.md`
-
-Under `### <reset>FILE.md</reset>`:
-- Change `Return stack: Cleared (discard all pending returns)` →
-  `Return stack: Preserved unchanged`
-- Remove the warning block: *"A `<reset>` with a non-empty return stack is
-  usually a logic error..."* — this warning is no longer valid; resetting with
-  a non-empty stack is now the normal pattern for iterative sub-workflows.
-
-### `docs/authoring-guide.md`
-
-Under `### <reset>FILE</reset> — Fresh Start`:
-- Change `Context: Discarded. The return stack is also cleared.` →
-  `Context: Discarded. The return stack is preserved.`
-
-### `docs/orchestration-design.md`
-
-In the invocation patterns table:
-- Change `<reset>` row from `Discarded (stack cleared)` →
-  `Session discarded, stack preserved`
-
-### `docs/console-output.md`
-
-Two references describe `<reset>` as clearing the stack as an aside. These
-can be simplified to remove the stack-clearing claim, or updated to say
-"reset clears the session but preserves the stack."
+- **`docs/workflow-protocol.md`**: `Return stack: Cleared` → `Return stack: Preserved unchanged`; warning block about non-empty stack removed.
+- **`docs/authoring-guide.md`**: `The return stack is also cleared` → `The return stack is preserved`.
+- **`docs/orchestration-design.md`**: `<reset>` row changed from `Discarded (stack cleared)` → `Session discarded, stack preserved`.
+- **`docs/console-output.md`**: Updated to say "reset clears the session but preserves the stack."

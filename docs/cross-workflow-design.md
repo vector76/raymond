@@ -33,9 +33,12 @@ raymond orchestrator instance** — not as child processes. This means:
 
 - **Shared budget**: All workflows debit the same `total_cost_usd` counter.
   No inter-process coordination needed.
-- **Shared state file**: All agents (from all workflows) live in the same JSON
-  state file. Crash recovery via `raymond --resume` restores the entire
-  composition automatically.
+- **Shared state file**: All agent state lives in the same JSON state file.
+  `<fork-workflow>` adds new agent entries (like `<fork>`); `<call-workflow>`
+  and `<function-workflow>` transition the existing agent into the sub-workflow
+  scope (like `<call>` and `<function>`) without creating new agent entries.
+  Crash recovery via `raymond --resume` restores the entire composition
+  automatically.
 - **Shared event bus**: All events (cost, state transitions, agent lifecycle)
   are visible to a single console observer.
 - **No IPC**: No pipes, no stdout parsing between processes, no exit code
@@ -50,7 +53,7 @@ Cross-workflow support is implemented as three new transition tags, designed as
 analogues to the existing `<call>`, `<function>`, and `<fork>` tags. The
 `-workflow` suffix marks the cross-scope boundary explicitly.
 
-| Tag | Blocks parent? | CWD override | Session | Analogue |
+| Tag | Blocks parent? | `cd` override | Session | Analogue |
 |-----|---------------|--------------|---------|---------|
 | `<call-workflow>` | yes | no | fork caller's | `<call>` |
 | `<function-workflow>` | yes | yes | fresh | `<function>` |
@@ -155,21 +158,24 @@ not exist, the invocation is an error at dispatch time.
 
 ### `<call-workflow return="NEXT.md">../other-wf/</call-workflow>`
 
-Blocking invocation of a sub-workflow. The calling agent suspends until the
-sub-workflow's main agent terminates with `<result>`. The result payload is
-injected as `{{result}}` into `NEXT.md`.
+Blocking invocation of a sub-workflow. The current agent transitions its scope
+into the sub-workflow — it runs the sub-workflow's states directly, within the
+same agent thread. When `<result>` is emitted from within the sub-workflow, the
+agent's scope is restored to the caller via the stack frame, and the result
+payload is injected as `{{result}}` into `NEXT.md`. No new agent entry is
+created.
 
 **Attributes:**
 - `return` (required): State in the **caller's** scope to resume after the
   sub-workflow completes.
 - `input` (optional): String injected as `{{result}}` into the sub-workflow's
   entry state, equivalent to `raymond --input "..."`.
-- `cwd` attribute: **Not permitted.** See
+- `cd` attribute: **Not permitted — a dispatch-time error.** See
   [Session Constraints on `call-workflow`](#session-constraints-on-call-workflow).
 
 **Stack behavior:** Pushes a frame containing the caller's session ID, caller's
-scope directory, caller's `cwd`, and the return state. When the sub-workflow's
-main agent emits `<result>`, the frame is popped and all caller context is
+scope directory, caller's `cwd`, and the return state. When `<result>` is
+emitted within the sub-workflow, the frame is popped and all caller context is
 restored.
 
 **Session behavior:** The sub-workflow's first state runs via `--fork-session`
@@ -179,13 +185,15 @@ from the caller's session, giving it access to the caller's conversation context
 ### `<function-workflow return="NEXT.md">../other-wf/</function-workflow>`
 
 Blocking invocation of a sub-workflow, with a fresh session (no context
-inheritance). The calling agent suspends until the sub-workflow terminates.
+inheritance). The current agent transitions its scope into the sub-workflow,
+running its states directly within the same agent thread until `<result>` is
+emitted. No new agent entry is created.
 
 **Attributes:**
 - `return` (required): State in the caller's scope to resume after completion.
 - `input` (optional): String injected as `{{result}}` into the sub-workflow's
   entry state.
-- `cwd` (optional): Working directory for the sub-workflow's agents. If
+- `cd` (optional): Working directory for the sub-workflow's agents. If
   omitted, inherits the caller's `cwd`.
 
 **Stack behavior:** Same as `<call-workflow>` — pushes a frame, pops on result.
@@ -210,7 +218,7 @@ calling agent to observe or receive it.
   [Multi-tag Outputs](#multi-tag-outputs)).
 - `input` (optional): String injected as `{{result}}` into the spawned
   workflow's entry state.
-- `cwd` (optional): Working directory for the spawned workflow. If omitted,
+- `cd` (optional): Working directory for the spawned workflow. If omitted,
   inherits the caller's `cwd`.
 
 **Stack behavior:** The spawned agent starts with an empty stack. The calling
@@ -225,7 +233,7 @@ agent proceeds to a monitoring loop.
 
 ## Session Constraints on `call-workflow`
 
-`<call-workflow>` does not permit a `cwd` attribute. This constraint is
+`<call-workflow>` does not permit a `cd` attribute. This constraint is
 fundamental, not arbitrary.
 
 Claude Code session IDs are bound to a working directory. When raymond invokes
@@ -240,7 +248,7 @@ caller's conversation context. Allowing a different `cwd` would break this
 invariant silently.
 
 `<function-workflow>` and `<fork-workflow>` start with fresh sessions
-(`session_id = nil`), so they are immune to this constraint. The `cwd`
+(`session_id = nil`), so they are immune to this constraint. The `cd`
 attribute is permitted on both.
 
 **Consequence for workflow authors:** If you need a blocking call to a
@@ -265,9 +273,10 @@ first state executes, then cleared after the first state runs — exactly as
 **Use cases:**
 - Pass a file path the sub-workflow should process.
 - Pass a task ID or configuration string.
-- Pass data from the calling agent's `{{result}}` into the sub-workflow:
-  `input="{{result}}"` (template variables in tag attributes are resolved
-  before dispatch).
+- Pass data from the calling agent's prior result: an LLM state that received
+  `{{result}}` in its prompt can include that content directly as the `input`
+  attribute value. A script state can similarly construct the tag dynamically
+  with shell variable expansion.
 
 ## Multi-tag Outputs
 
@@ -281,7 +290,7 @@ per entry:
 ```bash
 #!/bin/bash
 while IFS= read -r worktree; do
-  echo "<fork-workflow cwd=\"$worktree\" input=\"$worktree\">../bs_work/</fork-workflow>"
+  echo "<fork-workflow cd=\"$worktree\" input=\"$worktree\">../bs_work/</fork-workflow>"
 done < worktrees.txt
 echo "<goto>MONITOR.sh</goto>"
 ```
@@ -293,20 +302,20 @@ spawned. There are two equivalent ways to specify it:
 
 **Via `next` attribute on fork tags:**
 ```xml
-<fork-workflow next="MONITOR.sh" cwd="/wt/A">../bs_work/</fork-workflow>
-<fork-workflow next="MONITOR.sh" cwd="/wt/B">../bs_work/</fork-workflow>
+<fork-workflow next="MONITOR.sh" cd="/wt/A">../bs_work/</fork-workflow>
+<fork-workflow next="MONITOR.sh" cd="/wt/B">../bs_work/</fork-workflow>
 ```
 
 **Via a `<goto>` tag:**
 ```xml
-<fork-workflow cwd="/wt/A">../bs_work/</fork-workflow>
-<fork-workflow cwd="/wt/B">../bs_work/</fork-workflow>
+<fork-workflow cd="/wt/A">../bs_work/</fork-workflow>
+<fork-workflow cd="/wt/B">../bs_work/</fork-workflow>
 <goto>MONITOR.sh</goto>
 ```
 
 **Both mechanisms together (allowed if they agree):**
 ```xml
-<fork-workflow next="MONITOR.sh" cwd="/wt/A">../bs_work/</fork-workflow>
+<fork-workflow next="MONITOR.sh" cd="/wt/A">../bs_work/</fork-workflow>
 <goto>MONITOR.sh</goto>
 ```
 This is redundant but permitted — an LLM or script author who specifies both
@@ -361,14 +370,14 @@ would require significant orchestrator machinery and introduce race conditions.
 ## Working Directories for Parallel Workers
 
 For the parallel worktree case (each `bs_work` instance in a separate git
-worktree), the `cwd` attribute sets the worker's working directory:
+worktree), the `cd` attribute sets the worker's working directory:
 
 ```xml
-<fork-workflow next="MONITOR.sh" cwd="/repo/worktrees/feature-a" input="feature-a">../bs_work/</fork-workflow>
-<fork-workflow next="MONITOR.sh" cwd="/repo/worktrees/feature-b" input="feature-b">../bs_work/</fork-workflow>
+<fork-workflow next="MONITOR.sh" cd="/repo/worktrees/feature-a" input="feature-a">../bs_work/</fork-workflow>
+<fork-workflow next="MONITOR.sh" cd="/repo/worktrees/feature-b" input="feature-b">../bs_work/</fork-workflow>
 ```
 
-**Dynamic CWDs (run-time determined paths):** The `cwd` value in a tag
+**Dynamic `cd` values (run-time determined paths):** The `cd` value in a tag
 attribute is a static string at parse time. For cases where the CWD is
 determined at runtime (e.g., from a config file listing available worktrees), a
 shell script state should compute the fork tags dynamically:
@@ -378,7 +387,7 @@ shell script state should compute the fork tags dynamically:
 while IFS= read -r entry; do
   worktree_path=$(echo "$entry" | jq -r '.path')
   task_input=$(echo "$entry" | jq -r '.input')
-  echo "<fork-workflow next=\"MONITOR.sh\" cwd=\"$worktree_path\" input=\"$task_input\">../bs_work/</fork-workflow>"
+  echo "<fork-workflow next=\"MONITOR.sh\" cd=\"$worktree_path\" input=\"$task_input\">../bs_work/</fork-workflow>"
 done < worktree_config.json
 ```
 
@@ -430,39 +439,36 @@ Cycle detection (workflow A calls workflow B which calls workflow A) is
 implicitly handled by the nesting limit in practice, though implementors may
 add explicit cycle detection as an improvement.
 
-## Implementation Requirements
+## Implementation Notes
 
 ### Per-agent scope directory
 
-Currently, `scope_dir` is stored at the workflow level (`wfState.ScopeDir`),
-shared by all agents. Cross-workflow support requires this to become
-**per-agent**, since different agents may be executing in different workflow
-directories simultaneously.
+`scope_dir` is stored per-agent on `AgentState`, not at the workflow level.
+This allows different agents to execute in different workflow scopes
+simultaneously. The initial (main) agent is assigned `scope_dir` from the
+launch parameters; forked and called agents inherit or override it per their
+tag. State files written before this field existed are migrated on load by
+copying the workflow-level `scope_dir` to each agent.
 
-The migration:
-- Move `scope_dir` from `WorkflowState` to `AgentState`.
-- The initial (main) agent is assigned `scope_dir` from the launch parameters.
-- Forked and called agents inherit or override `scope_dir` per their tag.
-- Existing state files are migrated by copying the workflow-level `scope_dir`
-  to each agent's state on load.
-
-### Stack frame changes
+### Stack frames
 
 Stack frames (pushed by `<call>`, `<function>`, `<call-workflow>`,
-`<function-workflow>`) must save and restore both `scope_dir` and `cwd`:
+`<function-workflow>`) save and restore `scope_dir`, `cwd`, and the
+cross-workflow nesting depth:
 
 ```go
 type StackFrame struct {
-    Session  *string  // caller's Claude Code session ID
-    State    string   // return state (filename in caller's scope)
-    ScopeDir string   // caller's scope directory (restored on result)
-    Cwd      string   // caller's working directory (restored on result)
+    Session      *string  // caller's Claude Code session ID
+    State        string   // return state (filename in caller's scope)
+    ScopeDir     string   // caller's scope directory (restored on result)
+    Cwd          string   // caller's working directory (restored on result)
+    NestingDepth int      // caller's nesting depth (restored on result)
 }
 ```
 
-When `<result>` pops a frame, both `ScopeDir` and `Cwd` are restored to the
-calling agent, so it resumes in exactly the context it was in before the
-sub-workflow was invoked.
+When `<result>` pops a frame, `ScopeDir`, `Cwd`, and `NestingDepth` are all
+restored, so the calling agent resumes in exactly the context it was in before
+the sub-workflow was invoked.
 
 ### Workflow specifier parsing
 
@@ -481,7 +487,7 @@ The workflow specifier (tag content) is parsed at transition dispatch time:
 
 `<call-workflow>` uses `--fork-session` from the caller's session, identical to
 `<call>`. The `ForkSessionID` transient field on `AgentState` signals this to
-the executor. Because `call-workflow` does not permit a `cwd` change, the
+the executor. Because `call-workflow` does not permit a `cd` attribute, the
 session remains valid in the sub-workflow's execution environment.
 
 ### Agent naming for cross-workflow agents
@@ -490,9 +496,9 @@ Agents spawned by cross-workflow tags follow the existing naming convention
 (parent ID + state abbreviation + counter), but the state abbreviation is
 derived from the **workflow specifier** rather than a filename:
 
-- `../bs_work/` → abbreviation `bswork` (directory name, first 6 chars)
-- `../feat-to-beads/` → abbreviation `featto`
-- `../wf.zip` → abbreviation `wf`
+- `../bs_work/` → abbreviation `bs_wor` (directory base name, lowercased, capped at 6)
+- `../feat-to-beads/` → abbreviation `feat-t`
+- `../wf.zip` → abbreviation `wf` (stem only, no truncation needed)
 
 This keeps agent IDs readable and traceable in logs.
 
@@ -549,7 +555,7 @@ Three `bs_work` instances in separate worktrees, main thread monitors:
 #!/bin/bash
 # SPAWN.sh - reads worktrees.txt and spawns one worker per line
 while IFS= read -r wt_path; do
-  echo "<fork-workflow cwd=\"$wt_path\">../bs_work/</fork-workflow>"
+  echo "<fork-workflow cd=\"$wt_path\">../bs_work/</fork-workflow>"
 done < worktrees.txt
 echo "<goto>MONITOR.sh</goto>"
 ```
@@ -577,9 +583,9 @@ The new tags are additive. All existing tags (`<goto>`, `<reset>`, `<call>`,
 
 | Existing tag | Cross-workflow analogue | Key difference |
 |---|---|---|
-| `<call>` | `<call-workflow>` | Content is workflow spec, not state filename; no `cwd` |
-| `<function>` | `<function-workflow>` | Content is workflow spec; `cwd` permitted |
-| `<fork>` | `<fork-workflow>` | Content is workflow spec; `cwd` permitted |
+| `<call>` | `<call-workflow>` | Content is workflow spec, not state filename; no `cd` |
+| `<function>` | `<function-workflow>` | Content is workflow spec; `cd` permitted |
+| `<fork>` | `<fork-workflow>` | Content is workflow spec; `cd` permitted |
 
 There is no `<goto-workflow>` or `<reset-workflow>`: these transitions are
 intra-agent by nature. Crossing a workflow boundary always involves either

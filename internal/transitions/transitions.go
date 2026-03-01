@@ -1,13 +1,16 @@
-// Package transitions implements the six transition handlers for the raymond
+// Package transitions implements the transition handlers for the raymond
 // workflow orchestrator.
 //
 // Each transition tag produced by an agent state has a corresponding handler:
-//   - goto:     simple state change; session preserved
-//   - reset:    fresh start; session cleared, stack preserved
-//   - function: stateless sub-call; caller session pushed, fresh session
-//   - call:     context-branching sub-call; caller session forked
-//   - fork:     spawn independent worker agent while parent continues
-//   - result:   return from function/call, or terminate if stack is empty
+//   - goto:              simple state change; session preserved
+//   - reset:             fresh start; session cleared, stack preserved
+//   - function:          stateless sub-call; caller session pushed, fresh session
+//   - call:              context-branching sub-call; caller session forked
+//   - fork:              spawn independent worker agent while parent continues
+//   - result:            return from function/call, or terminate if stack is empty
+//   - call-workflow:     blocking cross-workflow call; forks caller session
+//   - function-workflow: blocking cross-workflow call; fresh session, cd allowed
+//   - fork-workflow:     non-blocking cross-workflow spawn; fresh session, cd allowed
 //
 // The primary entry point is ApplyTransition, which deep-copies the agent,
 // clears transient fields, and dispatches to the appropriate handler.
@@ -438,10 +441,10 @@ func CreateForkWorkflowWorker(
 	counter := ws.ForkCounters[counterKey]
 	workerID := fmt.Sprintf("%s_%s%d", agent.ID, resolution.Abbrev, counter)
 
-	// Determine worker Cwd: inherit caller's unless overridden by "cwd" attribute.
+	// Determine worker Cwd: inherit caller's unless overridden by "cd" attribute.
 	workerCwd := agent.Cwd
-	if cwd, ok := transition.Attributes["cwd"]; ok {
-		workerCwd = cwd
+	if cd, ok := transition.Attributes["cd"]; ok {
+		workerCwd = ResolveCd(cd, agent.Cwd)
 	}
 
 	// Build the worker agent.
@@ -452,6 +455,9 @@ func CreateForkWorkflowWorker(
 		Cwd:          workerCwd,
 		SessionID:    nil,
 		Stack:        []wfstate.StackFrame{},
+		// Workers inherit the caller's depth but do not increment it.
+		// Only blocking cross-workflow calls (call-workflow / function-workflow)
+		// consume a depth slot; non-blocking spawns do not add to the call tree.
 		NestingDepth: agent.NestingDepth,
 	}
 
@@ -479,7 +485,7 @@ func CreateForkWorkflowWorker(
 //   - With "next": caller advances to that state.
 //   - Without "next": caller remains at its current state (multi-fork dispatch).
 //
-// The "cwd" attribute sets the worker's working directory; when absent the
+// The "cd" attribute sets the worker's working directory; when absent the
 // caller's Cwd is inherited. The "input" attribute, if non-empty, sets the
 // worker's PendingResult.
 func HandleForkWorkflow(
@@ -506,8 +512,8 @@ func HandleForkWorkflow(
 // Enters an external workflow that inherits the caller's context via session
 // forking:
 //   - Validates that "return" attribute is present; errors if absent.
-//   - Validates that "cwd" attribute is absent; errors if present (forbidden
-//     because the session-binding constraint makes this unsafe).
+//   - Validates that "cd" attribute is absent; errors if present (forbidden
+//     because the session-binding constraint makes changing directory unsafe).
 //   - Returns an error when agent.NestingDepth >= 4 (depth limit enforced).
 //   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth}
 //     frame onto the stack, then increments agent.NestingDepth.
@@ -529,10 +535,10 @@ func HandleCallWorkflow(
 		)
 	}
 
-	if _, hasCwd := transition.Attributes["cwd"]; hasCwd {
+	if _, hasCd := transition.Attributes["cd"]; hasCd {
 		return TransitionResult{}, fmt.Errorf(
-			"<call-workflow> does not support 'cwd' attribute: " +
-				"the session-binding constraint makes setting cwd unsafe for call-workflow transitions",
+			"<call-workflow> does not support 'cd' attribute: " +
+				"the session-binding constraint makes changing directory unsafe for call-workflow transitions",
 		)
 	}
 
@@ -575,7 +581,7 @@ func HandleCallWorkflow(
 //     frame onto the stack, then increments agent.NestingDepth.
 //   - Clears SessionID (fresh Claude session; no ForkSessionID set).
 //   - Updates ScopeDir and CurrentState from the resolution.
-//   - Updates Cwd from "cwd" attribute if present.
+//   - Updates Cwd from "cd" attribute if present.
 //   - Sets PendingResult from "input" attribute if non-empty.
 func HandleFunctionWorkflow(
 	agent wfstate.AgentState,
@@ -610,8 +616,8 @@ func HandleFunctionWorkflow(
 	agent.ScopeDir = resolution.ScopeDir
 	agent.CurrentState = resolution.EntryPoint
 
-	if cwd, ok := transition.Attributes["cwd"]; ok {
-		agent.Cwd = cwd
+	if cd, ok := transition.Attributes["cd"]; ok {
+		agent.Cwd = ResolveCd(cd, agent.Cwd)
 	}
 
 	if input, ok := transition.Attributes["input"]; ok && input != "" {

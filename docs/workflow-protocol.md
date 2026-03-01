@@ -143,7 +143,9 @@ if it is missing or corrupt.
 **Path safety rule (applies to all scope types):** Tag targets are treated as
 *filenames*, not paths. The referenced filename must not contain `/` or `\`
 anywhere (no forward/backward slashes), which prevents `../` and
-absolute/drive-root style references by construction.
+absolute/drive-root style references by construction. Cross-workflow tags
+(`<call-workflow>`, `<function-workflow>`, `<fork-workflow>`) are exempt: their
+content is a filesystem path by design.
 
 This allows having multiple workflow collections in separate subdirectories (or
 separate archives) without name collisions.
@@ -187,8 +189,8 @@ state in a structure like:
     {
       "id": "abc123",
       "stack": [
-        {"session": "session_...", "state": "RETURN-STATE.md"},
-        {"session": "session_...", "state": "RETURN-STATE-2.md"}
+        {"session": "session_...", "state": "RETURN-STATE.md", "scope_dir": "/wf/scope/", "cwd": "/project/"},
+        {"session": "session_...", "state": "RETURN-STATE-2.md", "scope_dir": "/wf/scope/", "cwd": "/project/"}
       ]
     }
   ]
@@ -197,8 +199,10 @@ state in a structure like:
 
 - Each agent has a stable `id`.
 - Each agent has its own return `stack` (possibly empty).
-- Each frame has (at minimum) a `session` id to resume and a `state` (a prompt
-  filename within the scope directory).
+- Each frame has a `session` id to resume, a `state` (a prompt filename within
+  the scope directory), and `scope_dir` / `cwd` fields that are restored when
+  the frame is popped (used by cross-workflow calls to return the agent to its
+  original scope and directory).
 
 ### Why this helps
 
@@ -327,10 +331,14 @@ passed as a template variable or fork attribute.
 
 ## Multi-tag Outputs
 
-Multi-tag semantics (multiple transition tags in a single Claude Code output) are
-**not supported initially**. The initial rule is:
+A state output may contain **multiple `<fork>` tags, multiple `<fork-workflow>`
+tags, or a mix of both** — each tag spawns one independent agent. All other
+transition tags must appear at most once per output, and may not be combined
+with fork tags (except for a single `<goto>` specifying the parent's
+continuation). See [Per-State Policy](#per-state-policy-allowed-transitions)
+for how to declare multi-fork in frontmatter.
 
-- A run must end with **exactly one** of the six tags above.
+For all non-fork transitions, a run must end with **exactly one** tag.
 
 ## Error Handling (Protocol Level)
 
@@ -343,8 +351,9 @@ defined `allowed_transitions` in its YAML frontmatter:
   allowed transitions and re-prompts the agent.
 - The reminder prompt is automatically generated from the `allowed_transitions`
   YAML definition, showing the agent exactly which transitions are permitted.
-- After a small number of reminder attempts (default: 3), persistent failures
-  mark the workflow as failed.
+- After a small number of attempts (default: 3), persistent failures mark the
+  workflow as failed. The same limit applies to transient invocation errors
+  (network timeouts, Claude Code crashes) in addition to reminder re-prompts.
 
 **If `allowed_transitions` are NOT defined (no frontmatter or empty list):**
 - Parse failures (no tag, multiple tags) are treated as errors and the agent
@@ -455,7 +464,7 @@ raymond workflows/example/START.md --model sonnet
 
 1. Frontmatter `model` field (highest priority) — overrides CLI default
 2. CLI `--model` parameter — used if no frontmatter model specified
-3. None — Claude Code uses its default when no `--model` flag is passed
+3. None — defaults to `sonnet`
 
 This allows workflows to specify expensive models (opus) for complex reasoning
 states while using cheaper models (haiku) for simple evaluations, with a

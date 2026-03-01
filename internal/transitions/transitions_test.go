@@ -885,13 +885,26 @@ func TestForkWorkflowCwdAttributeOverridesInheritance(t *testing.T) {
 	agent.Cwd = "/parent/dir"
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	wfState := &wfstate.WorkflowState{}
-	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "cwd": "/worker/dir"})
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "cd": "/worker/dir"})
 
 	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/worker/dir", result.Worker.Cwd)
 	assert.Equal(t, "/parent/dir", result.Agent.Cwd) // parent unchanged
+}
+
+func TestForkWorkflowRelativeCdResolved(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/parent/dir"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "cd": "../sibling"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/parent/sibling", result.Worker.Cwd)
 }
 
 func TestForkWorkflowAbsentCwdInheritsCallerCwd(t *testing.T) {
@@ -1072,12 +1085,12 @@ func TestCallWorkflowCwdAttributeForbidden(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	wfState := &wfstate.WorkflowState{}
-	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md", "cwd": "/some/path"})
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md", "cd": "/some/path"})
 
 	_, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cwd")
+	assert.Contains(t, err.Error(), "cd")
 }
 
 func TestCallWorkflowSetsForkSessionID(t *testing.T) {
@@ -1203,12 +1216,25 @@ func TestFunctionWorkflowCwdAttributeUpdatesCwd(t *testing.T) {
 	agent.Cwd = "/old/path"
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	wfState := &wfstate.WorkflowState{}
-	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md", "cwd": "/new/path"})
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md", "cd": "/new/path"})
 
 	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/new/path", result.Agent.Cwd)
+}
+
+func TestFunctionWorkflowRelativeCdResolved(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/old/path"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md", "cd": "../sibling"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/old/sibling", result.Agent.Cwd)
 }
 
 func TestFunctionWorkflowAbsentCwdPreservesAgentCwd(t *testing.T) {

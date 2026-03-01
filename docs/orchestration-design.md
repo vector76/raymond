@@ -443,7 +443,7 @@ See `docs/workflow-protocol.md` for full details.
 
 **Agent Naming Strategy:**
 
-Forked agents are named using a compact hierarchical dot notation with
+Forked agents are named using a compact hierarchical underscore notation with
 state-based abbreviations. Names use persistent counters stored in the state
 file's `fork_counters` dictionary. Each parent agent maintains its own counter
 that increments for each fork, ensuring unique names even if previous workers

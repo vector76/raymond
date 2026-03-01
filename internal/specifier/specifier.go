@@ -7,7 +7,8 @@
 //   - An explicit .md file: ScopeDir = parent dir, EntryPoint = filename
 //
 // Relative specifiers are resolved against the caller's scope directory.
-// For zip callers the effective base is filepath.Dir(callerScopeDir).
+// For zip callers the effective base is the zip stem path (zip filename minus
+// extension), treating the zip as a virtual directory at its own location.
 package specifier
 
 import (
@@ -31,7 +32,8 @@ type Resolution struct {
 // Steps:
 //  1. Normalize path separators to OS-native (filepath.FromSlash).
 //  2. If not absolute, resolve relative to callerScopeDir. For zip callers
-//     the effective base directory is filepath.Dir(callerScopeDir).
+//     the effective base is the zip stem path (zip filename minus extension),
+//     so "../sibling/" from caller.zip navigates to the zip's parent directory.
 //  3. Classify by extension and validate:
 //     - .zip: verify hash, layout, and presence of 1_START.md
 //     - .md:  verify the file exists
@@ -45,7 +47,10 @@ func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	if !filepath.IsAbs(spec) {
 		base := callerScopeDir
 		if zipscope.IsZipScope(callerScopeDir) {
-			base = filepath.Dir(callerScopeDir)
+			// Treat the zip as a virtual directory at its stem path, so that
+			// "../sibling/" works the same way for zip callers as for directory
+			// callers.  E.g. /wf/workflow1.zip → virtual base /wf/workflow1/.
+			base = strings.TrimSuffix(callerScopeDir, filepath.Ext(callerScopeDir))
 		}
 		spec = filepath.Join(base, spec)
 	}

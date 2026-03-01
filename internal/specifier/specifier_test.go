@@ -195,13 +195,16 @@ func TestResolveZip_NonExistent(t *testing.T) {
 
 func TestResolveDir_RelativeFromZipCaller(t *testing.T) {
 	// Layout: /base/caller.zip (the caller) and /base/sibling/ (the target).
+	// The zip is treated as a virtual directory at its stem (/base/caller/),
+	// so "../sibling" navigates up to /base/ and then into sibling/ — matching
+	// the behaviour of a non-zip caller at /base/caller/.
 	base := t.TempDir()
 	sibling := filepath.Join(base, "sibling")
 	require.NoError(t, os.MkdirAll(sibling, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(sibling, "1_START.md"), []byte("start"), 0600))
 	callerZip := filepath.Join(base, "caller.zip") // need not exist; only used as path
 
-	res, err := specifier.Resolve("sibling", callerZip)
+	res, err := specifier.Resolve("../sibling", callerZip)
 
 	require.NoError(t, err)
 	assert.Equal(t, sibling, res.ScopeDir)
@@ -210,16 +213,34 @@ func TestResolveDir_RelativeFromZipCaller(t *testing.T) {
 
 func TestResolveZip_RelativeFromZipCaller(t *testing.T) {
 	// Layout: /base/caller.zip (the caller) and /base/target.zip (the target).
+	// "../target.zip" from the virtual stem /base/caller/ resolves to /base/target.zip.
 	base := t.TempDir()
 	targetZip := filepath.Join(base, "target.zip")
 	writeZip(t, targetZip, map[string]string{"1_START.md": "start"})
 	callerZip := filepath.Join(base, "caller.zip") // path only, need not exist
 
-	res, err := specifier.Resolve("target.zip", callerZip)
+	res, err := specifier.Resolve("../target.zip", callerZip)
 
 	require.NoError(t, err)
 	assert.Equal(t, targetZip, res.ScopeDir)
 	assert.Equal(t, "1_START.md", res.EntryPoint)
+}
+
+func TestResolveMd_RelativeFromZipCaller(t *testing.T) {
+	// Layout: /base/caller.zip (the caller) and /base/sibling/STATE.md (the target).
+	// "../sibling/STATE.md" from virtual stem /base/caller/ resolves to /base/sibling/STATE.md.
+	base := t.TempDir()
+	sibling := filepath.Join(base, "sibling")
+	require.NoError(t, os.MkdirAll(sibling, 0700))
+	mdPath := filepath.Join(sibling, "STATE.md")
+	require.NoError(t, os.WriteFile(mdPath, []byte("state"), 0600))
+	callerZip := filepath.Join(base, "caller.zip") // path only, need not exist
+
+	res, err := specifier.Resolve("../sibling/STATE.md", callerZip)
+
+	require.NoError(t, err)
+	assert.Equal(t, sibling, res.ScopeDir)
+	assert.Equal(t, "STATE.md", res.EntryPoint)
 }
 
 // --------------------------------------------------------------------------

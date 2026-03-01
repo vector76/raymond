@@ -56,8 +56,11 @@ func (e *StateFileError) Error() string { return e.msg }
 // It records the caller's session and the state to return to after the
 // current function/call completes.
 type StackFrame struct {
-	Session *string `json:"session"` // caller session_id; null when the caller had no session
-	State   string  `json:"state"`   // return state filename
+	Session      *string `json:"session"`                 // caller session_id; null when the caller had no session
+	State        string  `json:"state"`                   // return state filename
+	ScopeDir     string  `json:"scope_dir,omitempty"`     // caller's scope directory
+	Cwd          string  `json:"cwd,omitempty"`           // caller's working directory
+	NestingDepth int     `json:"nesting_depth,omitempty"` // caller's nesting depth (placeholder; always 0 until depth tracking is added)
 }
 
 // AgentState holds the persisted state of a single agent within a workflow.
@@ -69,6 +72,9 @@ type AgentState struct {
 	PendingResult *string      `json:"pending_result,omitempty"` // absent from JSON when nil
 	Cwd           string       `json:"cwd,omitempty"`            // per-agent working directory; empty = inherit
 	ScopeDir      string       `json:"scope_dir,omitempty"`      // per-agent scope directory; empty = use workflow ScopeDir
+
+	// Call-stack depth tracking (placeholder; always 0 until a later bead adds real tracking).
+	NestingDepth int `json:"nesting_depth,omitempty"`
 
 	// Orchestrator-managed lifecycle fields.
 	Status     string `json:"status,omitempty"`      // "paused", "failed", or "" (active)

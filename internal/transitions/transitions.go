@@ -121,7 +121,12 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 	if len(a.Stack) > 0 {
 		newStack = make([]wfstate.StackFrame, len(a.Stack))
 		for i, frame := range a.Stack {
-			newStack[i] = wfstate.StackFrame{State: frame.State}
+			newStack[i] = wfstate.StackFrame{
+				State:        frame.State,
+				ScopeDir:     frame.ScopeDir,
+				Cwd:          frame.Cwd,
+				NestingDepth: frame.NestingDepth,
+			}
 			if frame.Session != nil {
 				s := *frame.Session
 				newStack[i].Session = &s
@@ -177,8 +182,10 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 	}
 
 	frame := wfstate.StackFrame{
-		Session: agent.SessionID,
-		State:   returnState,
+		Session:  agent.SessionID,
+		State:    returnState,
+		ScopeDir: agent.ScopeDir,
+		Cwd:      agent.Cwd,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.SessionID = nil
@@ -207,8 +214,10 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 	callerSession := agent.SessionID
 
 	frame := wfstate.StackFrame{
-		Session: callerSession,
-		State:   returnState,
+		Session:  callerSession,
+		State:    returnState,
+		ScopeDir: agent.ScopeDir,
+		Cwd:      agent.Cwd,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.ForkSessionID = callerSession
@@ -321,6 +330,19 @@ func HandleResult(
 	agent.CurrentState = frame.State
 	payload := transition.Payload
 	agent.PendingResult = &payload
+
+	// Restore ScopeDir and Cwd only if the frame has non-empty values.
+	// Empty means the frame came from an old state file that predates these fields;
+	// in that case we must not overwrite the agent's existing values.
+	if frame.ScopeDir != "" {
+		agent.ScopeDir = frame.ScopeDir
+	}
+	if frame.Cwd != "" {
+		agent.Cwd = frame.Cwd
+	}
+	// NestingDepth is always restored; 0 is the correct default for both old frames
+	// and frames saved from a depth-0 agent.
+	agent.NestingDepth = frame.NestingDepth
 
 	return TransitionResult{Agent: &agent}
 }

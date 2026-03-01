@@ -694,3 +694,102 @@ func TestResultPopsOnlyTopFrame(t *testing.T) {
 	require.Len(t, result.Agent.Stack, 1)
 	assert.Equal(t, "OUTER.md", result.Agent.Stack[0].State) // bottom frame remains
 }
+
+// ----------------------------------------------------------------------------
+// StackFrame ScopeDir/Cwd/NestingDepth: push saves, pop restores
+// ----------------------------------------------------------------------------
+
+func TestFunctionPushSavesScopeDirAndCwd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "workflows/myapp"
+	agent.Cwd = "/repo/myapp"
+	tr := parsing.Transition{
+		Tag: "function", Target: "EVAL.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "workflows/myapp", result.Agent.Stack[0].ScopeDir)
+	assert.Equal(t, "/repo/myapp", result.Agent.Stack[0].Cwd)
+}
+
+func TestCallPushSavesScopeDirAndCwd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "workflows/service"
+	agent.Cwd = "/repo/service"
+	tr := parsing.Transition{
+		Tag: "call", Target: "CHILD.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "workflows/service", result.Agent.Stack[0].ScopeDir)
+	assert.Equal(t, "/repo/service", result.Agent.Stack[0].Cwd)
+}
+
+func TestResultRestoresScopeDirAndCwdFromFrame(t *testing.T) {
+	frame := wfstate.StackFrame{
+		Session:  strPtr("caller_session"),
+		State:    "RETURN.md",
+		ScopeDir: "workflows/caller",
+		Cwd:      "/repo/caller",
+	}
+	agent := makeAgent("main", "EVAL.md", nil)
+	agent.ScopeDir = "workflows/callee"
+	agent.Cwd = "/repo/callee"
+	agent.Stack = []wfstate.StackFrame{frame}
+	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "workflows/caller", result.Agent.ScopeDir)
+	assert.Equal(t, "/repo/caller", result.Agent.Cwd)
+}
+
+func TestResultDoesNotOverwriteScopeDirCwdFromOldFrame(t *testing.T) {
+	// Old frame has empty ScopeDir and Cwd (loaded from pre-existing state file).
+	frame := wfstate.StackFrame{
+		Session:  strPtr("caller_session"),
+		State:    "RETURN.md",
+		ScopeDir: "", // old frame — field absent
+		Cwd:      "", // old frame — field absent
+	}
+	agent := makeAgent("main", "EVAL.md", nil)
+	agent.ScopeDir = "workflows/current"
+	agent.Cwd = "/repo/current"
+	agent.Stack = []wfstate.StackFrame{frame}
+	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	// Old frame must not overwrite existing agent values.
+	assert.Equal(t, "workflows/current", result.Agent.ScopeDir)
+	assert.Equal(t, "/repo/current", result.Agent.Cwd)
+}
+
+func TestResultAlwaysRestoresNestingDepth(t *testing.T) {
+	frame := wfstate.StackFrame{
+		Session:      strPtr("caller_session"),
+		State:        "RETURN.md",
+		NestingDepth: 0,
+	}
+	agent := makeAgent("main", "EVAL.md", nil)
+	agent.Stack = []wfstate.StackFrame{frame}
+	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, 0, result.Agent.NestingDepth)
+}

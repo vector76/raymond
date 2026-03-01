@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
 
@@ -296,6 +297,70 @@ func HandleFork(
 
 	// Advance parent to next state; session and stack are preserved.
 	agent.CurrentState = nextState
+
+	return TransitionResult{Agent: &agent, Worker: &worker}, nil
+}
+
+// HandleForkWorkflow handles the <fork-workflow> transition tag.
+//
+// Similar to HandleFork but targets an external workflow specifier. The
+// resolution provides the ScopeDir, EntryPoint, and Abbrev for the worker.
+//
+// Worker IDs use the same hierarchical notation as HandleFork:
+//
+//	{parent_id}_{abbrev}{counter}
+//
+// where abbrev comes from resolution.Abbrev and counter is a per-parent+abbrev
+// persistent integer keyed by agent.ID + "_" + resolution.Abbrev.
+//
+// Unlike HandleFork, the "next" attribute is optional:
+//   - With "next": caller advances to that state.
+//   - Without "next": caller remains at its current state (multi-fork dispatch).
+//
+// The "cwd" attribute sets the worker's working directory; when absent the
+// caller's Cwd is inherited. The "input" attribute, if non-empty, sets the
+// worker's PendingResult.
+func HandleForkWorkflow(
+	agent wfstate.AgentState,
+	transition parsing.Transition,
+	ws *wfstate.WorkflowState,
+	resolution specifier.Resolution,
+) (TransitionResult, error) {
+	// Allocate a unique worker ID using persistent per-parent+abbrev counters.
+	if ws.ForkCounters == nil {
+		ws.ForkCounters = make(map[string]int)
+	}
+	counterKey := agent.ID + "_" + resolution.Abbrev
+	ws.ForkCounters[counterKey]++
+	counter := ws.ForkCounters[counterKey]
+	workerID := fmt.Sprintf("%s_%s%d", agent.ID, resolution.Abbrev, counter)
+
+	// Determine worker Cwd: inherit caller's unless overridden by "cwd" attribute.
+	workerCwd := agent.Cwd
+	if cwd, ok := transition.Attributes["cwd"]; ok {
+		workerCwd = cwd
+	}
+
+	// Build the worker agent.
+	worker := wfstate.AgentState{
+		ID:           workerID,
+		CurrentState: resolution.EntryPoint,
+		ScopeDir:     resolution.ScopeDir,
+		Cwd:          workerCwd,
+		SessionID:    nil,
+		Stack:        []wfstate.StackFrame{},
+		NestingDepth: agent.NestingDepth,
+	}
+
+	// Set PendingResult from "input" attribute if present and non-empty.
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		worker.PendingResult = &input
+	}
+
+	// Advance caller to "next" state when present; otherwise leave it unchanged.
+	if next, ok := transition.Attributes["next"]; ok {
+		agent.CurrentState = next
+	}
 
 	return TransitionResult{Agent: &agent, Worker: &worker}, nil
 }

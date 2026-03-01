@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/transitions"
 )
@@ -793,3 +794,207 @@ func TestResultAlwaysRestoresNestingDepth(t *testing.T) {
 	require.NotNil(t, result.Agent)
 	assert.Equal(t, 0, result.Agent.NestingDepth)
 }
+
+// ----------------------------------------------------------------------------
+// HandleForkWorkflow
+// ----------------------------------------------------------------------------
+
+func makeResolution(scopeDir, entryPoint, abbrev string) specifier.Resolution {
+	return specifier.Resolution{
+		ScopeDir:   scopeDir,
+		EntryPoint: entryPoint,
+		Abbrev:     abbrev,
+	}
+}
+
+func forkWorkflowTransition(attrs map[string]string) parsing.Transition {
+	return parsing.Transition{
+		Tag:        "fork-workflow",
+		Attributes: attrs,
+	}
+}
+
+func TestForkWorkflowWorkerFieldsSetCorrectly(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/repo"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Worker)
+	assert.Equal(t, "/workflows/child", result.Worker.ScopeDir)
+	assert.Equal(t, "1_START.md", result.Worker.CurrentState)
+	assert.Nil(t, result.Worker.SessionID)
+	assert.Nil(t, result.Worker.ForkSessionID)
+	assert.Empty(t, result.Worker.Stack)
+}
+
+func TestForkWorkflowWorkerIDFormat(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/myapp", "1_START.md", "myapp")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "main_myapp1", result.Worker.ID)
+}
+
+func TestForkWorkflowCounterIncrementsPerAbbrev(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result1, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+	require.NoError(t, err)
+
+	// Use updated caller for second fork.
+	result2, err := transitions.HandleForkWorkflow(*result1.Agent, tr, wfState, resolution)
+	require.NoError(t, err)
+
+	assert.Equal(t, "main_child1", result1.Worker.ID)
+	assert.Equal(t, "main_child2", result2.Worker.ID)
+}
+
+func TestForkWorkflowCounterKeyIncludesAbbrev(t *testing.T) {
+	// Two different abbrevs under the same parent get independent counters.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	res1 := makeResolution("/workflows/alpha", "1_START.md", "alpha")
+	res2 := makeResolution("/workflows/beta", "1_START.md", "beta")
+
+	r1, err := transitions.HandleForkWorkflow(agent, tr, wfState, res1)
+	require.NoError(t, err)
+	r2, err := transitions.HandleForkWorkflow(*r1.Agent, tr, wfState, res2)
+	require.NoError(t, err)
+
+	// Each abbrev starts at counter 1 independently.
+	assert.Equal(t, "main_alpha1", r1.Worker.ID)
+	assert.Equal(t, "main_beta1", r2.Worker.ID)
+}
+
+func TestForkWorkflowCwdAttributeOverridesInheritance(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/parent/dir"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "cwd": "/worker/dir"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/worker/dir", result.Worker.Cwd)
+	assert.Equal(t, "/parent/dir", result.Agent.Cwd) // parent unchanged
+}
+
+func TestForkWorkflowAbsentCwdInheritsCallerCwd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/parent/dir"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/parent/dir", result.Worker.Cwd)
+}
+
+func TestForkWorkflowInputAttributeSetsWorkerPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "input": "task data"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Worker.PendingResult)
+	assert.Equal(t, "task data", *result.Worker.PendingResult)
+}
+
+func TestForkWorkflowAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Worker.PendingResult)
+}
+
+func TestForkWorkflowEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "input": ""})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Worker.PendingResult)
+}
+
+func TestForkWorkflowWithNextCallerAdvances(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "AFTER.md", result.Agent.CurrentState)
+	require.NotNil(t, result.Worker)
+}
+
+func TestForkWorkflowWithoutNextCallerNotAdvanced(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "START.md", result.Agent.CurrentState) // unchanged
+	require.NotNil(t, result.Worker)
+}
+
+func TestForkWorkflowWorkerInheritsNestingDepth(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 2
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.Worker.NestingDepth)
+}
+
+func TestForkWorkflowInitialisesNilForkCounters(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{} // ForkCounters is nil
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "main_child1", result.Worker.ID)
+	assert.NotNil(t, wfState.ForkCounters)
+}
+

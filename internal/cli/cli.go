@@ -469,22 +469,29 @@ func (c *CLI) cmdInitConfig(cmd *cobra.Command) error {
 //   - Directory  → scope=arg, state="1_START.md"
 //   - .zip file  → scope=arg, state="1_START.md"
 //   - Other file → scope=dirname(arg), state=basename(arg)
+//
+// The returned scopeDir is always an absolute path.
 func parseScopeAndState(arg string) (scopeDir, initialState string, err error) {
+	absArg, absErr := filepath.Abs(arg)
+	if absErr != nil {
+		return "", "", fmt.Errorf("cannot resolve absolute path for %q: %w", arg, absErr)
+	}
+
 	info, statErr := os.Stat(arg)
 	if statErr != nil {
 		return "", "", fmt.Errorf("cannot access %q: %w", arg, statErr)
 	}
 
 	if info.IsDir() {
-		return arg, "1_START.md", nil
+		return absArg, "1_START.md", nil
 	}
 
 	if strings.ToLower(filepath.Ext(arg)) == ".zip" {
-		return arg, "1_START.md", nil
+		return absArg, "1_START.md", nil
 	}
 
 	// Regular state file.
-	return filepath.Dir(arg), filepath.Base(arg), nil
+	return filepath.Dir(absArg), filepath.Base(absArg), nil
 }
 
 // truncate returns s capped at maxLen characters with "..." appended if cut.

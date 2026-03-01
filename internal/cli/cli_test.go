@@ -253,6 +253,35 @@ func TestStartDirectoryEntryPoint(t *testing.T) {
 	assert.Equal(t, "1_START.md", ws.Agents[0].CurrentState)
 }
 
+func TestStartDirectoryScopeDirIsAbsolute(t *testing.T) {
+	stateDir := makeStateDir(t)
+	workflowDir := t.TempDir()
+
+	// Change to the parent of workflowDir and pass a relative path so that
+	// parseScopeAndState must absolutize it.
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	require.NoError(t, os.Chdir(filepath.Dir(workflowDir)))
+	relDir := filepath.Base(workflowDir)
+
+	_, _, err := run(t, relDir, "--no-run", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, listErr := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, listErr)
+	require.Len(t, ids, 1)
+
+	ws, readErr := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, readErr)
+	assert.True(t, filepath.IsAbs(ws.ScopeDir),
+		"workflow ScopeDir should be absolute, got: %s", ws.ScopeDir)
+	require.Len(t, ws.Agents, 1)
+	assert.True(t, filepath.IsAbs(ws.Agents[0].ScopeDir),
+		"agent ScopeDir should be absolute, got: %s", ws.Agents[0].ScopeDir)
+	assert.Equal(t, ws.ScopeDir, ws.Agents[0].ScopeDir,
+		"agent ScopeDir should match workflow ScopeDir")
+}
+
 func TestStartZipFileEntryPoint(t *testing.T) {
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()

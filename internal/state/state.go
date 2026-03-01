@@ -258,6 +258,7 @@ func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD flo
 		CurrentState: initialState,
 		SessionID:    nil,
 		Stack:        []StackFrame{},
+		ScopeDir:     scopeDir,
 	}
 	if initialInput != nil {
 		agent.PendingResult = initialInput

@@ -214,6 +214,13 @@ func TestCreateInitialStateBasic(t *testing.T) {
 	assert.Nil(t, agent.PendingResult)
 }
 
+func TestCreateInitialStatePopulatesAgentScopeDir(t *testing.T) {
+	ws := state.CreateInitialState("wf-scopedir", "workflows/myapp", "START.md", 10.0, nil)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "workflows/myapp", ws.Agents[0].ScopeDir,
+		"agent ScopeDir should be populated from the scopeDir argument")
+}
+
 func TestCreateInitialStateWithInitialInput(t *testing.T) {
 	input := "hello there"
 	ws := state.CreateInitialState("wf-002", "workflows/test", "START.md", 10.0, &input)

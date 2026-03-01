@@ -24,6 +24,8 @@ import (
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
+	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/transitions"
 )
@@ -241,8 +243,9 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 // It:
 //  1. Invokes the executor for the agent's current state.
 //  2. Updates session_id on the agent from the execution result (BEFORE transition).
-//  3. Calls transitions.ApplyTransition.
-//  4. Accumulates cost into ws.TotalCostUSD.
+//  3. Checks for multi-fork (multiple fork-family tags or fork+goto). If detected,
+//     dispatches to applyMultiFork which directly appends workers to ws.Agents.
+//  4. Otherwise calls transitions.ApplyTransition for the single-transition path.
 //  5. Emits transition-related events (TransitionOccurred, AgentSpawned, AgentTerminated).
 //
 // Returns the TransitionResult (describing the new agent state) or an error.
@@ -273,7 +276,12 @@ func stepAgent(
 		agent.SessionID = execResult.SessionID
 	}
 
-	// Apply transition (deep-copies agent, clears transients).
+	// Multi-fork path: multiple fork-family tags or fork-family alongside goto.
+	if isMultiForkTransitions(execResult.Transitions) {
+		return applyMultiFork(agent, execResult.Transitions, ws, b, fromState)
+	}
+
+	// Single-transition path: apply transition (deep-copies agent, clears transients).
 	tr, err := transitions.ApplyTransition(agent, execResult.Transition, ws)
 	if err != nil {
 		return transitions.TransitionResult{}, err
@@ -327,6 +335,221 @@ func stepAgent(
 	}
 
 	return tr, nil
+}
+
+// isMultiForkTransitions reports whether the transition list should be handled
+// by the multi-fork path. Triggered when:
+//   - There are 2+ fork-family tags (fork or fork-workflow), OR
+//   - Any fork-family tag appears alongside a goto tag.
+func isMultiForkTransitions(trs []parsing.Transition) bool {
+	if len(trs) == 0 {
+		return false
+	}
+	forkCount := 0
+	hasGoto := false
+	for _, t := range trs {
+		switch t.Tag {
+		case "fork", "fork-workflow":
+			forkCount++
+		case "goto":
+			hasGoto = true
+		}
+	}
+	return forkCount >= 2 || (forkCount >= 1 && hasGoto)
+}
+
+// validateMultiFork checks the multi-fork transition list for consistency and
+// returns the single agreed continuation target, or an error describing the violation.
+//
+// Validation rules:
+//  1. At least one continuation: a fork tag has "next" OR a goto is present.
+//  2. All "next" values across fork tags are identical.
+//  3. If both goto and "next" are present, their targets agree.
+//  4. At most one goto tag.
+//  5. No non-fork-family, non-goto tags.
+func validateMultiFork(trs []parsing.Transition) (continuation string, err error) {
+	var nextValues []string
+	var gotoTargets []string
+	gotoCount := 0
+
+	for _, t := range trs {
+		switch t.Tag {
+		case "fork", "fork-workflow":
+			if next, ok := t.Attributes["next"]; ok {
+				nextValues = append(nextValues, next)
+			}
+		case "goto":
+			gotoCount++
+			gotoTargets = append(gotoTargets, t.Target)
+		default:
+			return "", fmt.Errorf(
+				"multi-fork: non-fork transition %q mixed with fork tags; "+
+					"only fork, fork-workflow, and goto are allowed alongside fork tags",
+				t.Tag,
+			)
+		}
+	}
+
+	// Rule 4: at most one goto.
+	if gotoCount > 1 {
+		return "", fmt.Errorf("multi-fork: at most one <goto> tag allowed, found %d", gotoCount)
+	}
+
+	// Gather all continuation targets.
+	allTargets := append(nextValues, gotoTargets...) //nolint:gocritic
+
+	// Rule 1: at least one continuation.
+	if len(allTargets) == 0 {
+		return "", fmt.Errorf(
+			"multi-fork: no continuation target; " +
+				"at least one fork tag must have a 'next' attribute or a <goto> tag must be present",
+		)
+	}
+
+	// Rules 2 & 3: all targets must agree.
+	first := allTargets[0]
+	for _, target := range allTargets[1:] {
+		if target != first {
+			return "", fmt.Errorf(
+				"multi-fork: conflicting continuation targets %q and %q; "+
+					"all fork 'next' attributes and any <goto> must agree",
+				first, target,
+			)
+		}
+	}
+
+	return first, nil
+}
+
+// applyMultiFork handles multi-fork outputs: validates, creates workers, advances
+// the caller, appends workers to ws.Agents, and emits events.
+//
+// On validation failure the caller is paused and a TransitionResult with the
+// paused agent is returned (no error). Workers are appended to ws.Agents before
+// returning so applyResult only needs to update the caller in-place.
+func applyMultiFork(
+	agent *wfstate.AgentState,
+	trs []parsing.Transition,
+	ws *wfstate.WorkflowState,
+	b *bus.Bus,
+	fromState string,
+) (transitions.TransitionResult, error) {
+	continuation, valErr := validateMultiFork(trs)
+	if valErr != nil {
+		// Pause the caller with a descriptive error.
+		agentCopy := *agent
+		agentCopy.Status = wfstate.AgentStatusPaused
+		agentCopy.Error = valErr.Error()
+		b.Emit(events.AgentPaused{
+			AgentID:   agent.ID,
+			Reason:    "validation_error",
+			Timestamp: time.Now(),
+		})
+		return transitions.TransitionResult{Agent: &agentCopy}, nil
+	}
+
+	// Deep-copy the caller to use as the basis for worker creation and advancement.
+	callerCopy := deepCopyOrchestratorAgent(*agent)
+
+	// Create workers for each fork-family tag.
+	var workers []wfstate.AgentState
+	for _, tr := range trs {
+		switch tr.Tag {
+		case "fork":
+			w, err := transitions.CreateForkWorker(callerCopy, tr, ws)
+			if err != nil {
+				return transitions.TransitionResult{}, err
+			}
+			workers = append(workers, w)
+		case "fork-workflow":
+			res, err := specifier.Resolve(tr.Target, callerCopy.ScopeDir)
+			if err != nil {
+				agentCopy := *agent
+				agentCopy.Status = wfstate.AgentStatusPaused
+				agentCopy.Error = fmt.Sprintf("fork-workflow: %v", err)
+				b.Emit(events.AgentPaused{
+					AgentID:   agent.ID,
+					Reason:    "validation_error",
+					Timestamp: time.Now(),
+				})
+				return transitions.TransitionResult{Agent: &agentCopy}, nil
+			}
+			w, err := transitions.CreateForkWorkflowWorker(callerCopy, tr, ws, res)
+			if err != nil {
+				return transitions.TransitionResult{}, err
+			}
+			workers = append(workers, w)
+		}
+		// goto tags are skipped here; they only set the continuation target.
+	}
+
+	// Advance the caller to the continuation state.
+	callerCopy.CurrentState = continuation
+	callerCopy.PendingResult = nil
+	callerCopy.ForkSessionID = nil
+	callerCopy.ForkAttributes = nil
+
+	// Append all workers to ws.Agents.
+	for i := range workers {
+		ws.Agents = append(ws.Agents, workers[i])
+	}
+
+	// Emit TransitionOccurred for the multi-fork.
+	b.Emit(events.TransitionOccurred{
+		AgentID:        agent.ID,
+		FromState:      fromState,
+		ToState:        continuation,
+		TransitionType: "multi-fork",
+		Metadata: map[string]any{
+			"state_type":  stateType(fromState),
+			"fork_count":  len(workers),
+		},
+		Timestamp: time.Now(),
+	})
+
+	// Emit AgentSpawned for each worker.
+	for i := range workers {
+		b.Emit(events.AgentSpawned{
+			ParentAgentID: agent.ID,
+			NewAgentID:    workers[i].ID,
+			InitialState:  workers[i].CurrentState,
+			Timestamp:     time.Now(),
+		})
+	}
+
+	return transitions.TransitionResult{Agent: &callerCopy}, nil
+}
+
+// deepCopyOrchestratorAgent returns a deep copy of a for safe mutation in the
+// orchestrator's multi-fork dispatch path.
+func deepCopyOrchestratorAgent(a wfstate.AgentState) wfstate.AgentState {
+	c := a // copies all value-type fields
+
+	if a.SessionID != nil {
+		s := *a.SessionID
+		c.SessionID = &s
+	}
+	if a.PendingResult != nil {
+		p := *a.PendingResult
+		c.PendingResult = &p
+	}
+	if a.ForkSessionID != nil {
+		fs := *a.ForkSessionID
+		c.ForkSessionID = &fs
+	}
+	if len(a.ForkAttributes) > 0 {
+		m := make(map[string]string, len(a.ForkAttributes))
+		for k, v := range a.ForkAttributes {
+			m[k] = v
+		}
+		c.ForkAttributes = m
+	}
+	if len(a.Stack) > 0 {
+		newStack := make([]wfstate.StackFrame, len(a.Stack))
+		copy(newStack, a.Stack)
+		c.Stack = newStack
+	}
+	return c
 }
 
 // applyResult applies a successful TransitionResult to the workflow state.

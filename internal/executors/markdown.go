@@ -247,15 +247,15 @@ func (e *MarkdownExecutor) Execute(
 		}
 
 		// Parse and validate transitions.
-		t, retry, err := e.parseAndValidate(
+		allTrs, singleTr, doRetry, parseErr := e.parseAndValidate(
 			results, pol, scopeDir,
 			agentID, currentState, newSessionID,
 			execCtx, reminderAttempt,
 		)
-		if err != nil {
-			return ExecutionResult{}, err
+		if parseErr != nil {
+			return ExecutionResult{}, parseErr
 		}
-		if retry {
+		if doRetry {
 			reminderAttempt++
 			if reminderAttempt >= maxReminderAttempts {
 				return ExecutionResult{}, fmt.Errorf(
@@ -265,7 +265,15 @@ func (e *MarkdownExecutor) Execute(
 			}
 			continue
 		}
-		transition = t
+		if allTrs != nil {
+			// Multi-fork: return full list without selecting a single transition.
+			return ExecutionResult{
+				Transitions: allTrs,
+				SessionID:   newSessionID,
+				CostUSD:     stateTotalCost,
+			}, nil
+		}
+		transition = singleTr
 	}
 
 	durationMS := float64(time.Since(startTime).Milliseconds())
@@ -287,10 +295,29 @@ func (e *MarkdownExecutor) Execute(
 	}, nil
 }
 
+// isMultiFork reports whether a transition list should be dispatched via the
+// multi-fork path: multiple fork-family tags, or fork-family + goto together.
+func isMultiFork(trs []parsing.Transition) bool {
+	forkCount := 0
+	hasGoto := false
+	for _, t := range trs {
+		switch t.Tag {
+		case "fork", "fork-workflow":
+			forkCount++
+		case "goto":
+			hasGoto = true
+		}
+	}
+	return forkCount >= 2 || (forkCount >= 1 && hasGoto)
+}
+
 // parseAndValidate parses and validates transitions from stream results.
-// Returns (transition, false, nil) on success.
-// Returns (nil, true, nil) when a reminder retry is needed.
-// Returns (nil, false, err) on a fatal error.
+//
+// Returns:
+//   - (all, nil, false, nil) when multi-fork is detected (all is the full list).
+//   - (nil, single, false, nil) on single-transition success.
+//   - (nil, nil, true, nil) when a reminder retry is needed.
+//   - (nil, nil, false, err) on a fatal error.
 func (e *MarkdownExecutor) parseAndValidate(
 	results []map[string]any,
 	pol *policy.Policy,
@@ -299,32 +326,37 @@ func (e *MarkdownExecutor) parseAndValidate(
 	sessionID *string,
 	execCtx *ExecutionContext,
 	reminderAttempt int,
-) (*parsing.Transition, bool, error) {
+) (all []parsing.Transition, single *parsing.Transition, retry bool, err error) {
 	outputText := extractOutputText(results)
 
-	transitions, err := parsing.ParseTransitions(outputText)
-	if err != nil {
-		return nil, false, fmt.Errorf("transition parse error: %w", err)
+	transitions, parseErr := parsing.ParseTransitions(outputText)
+	if parseErr != nil {
+		return nil, nil, false, fmt.Errorf("transition parse error: %w", parseErr)
+	}
+
+	// Multi-fork: pass the full list through without single-transition validation.
+	if isMultiFork(transitions) {
+		return transitions, nil, false, nil
 	}
 
 	// Implicit transition (no tag, policy has exactly one allowed non-result transition with target).
 	if len(transitions) == 0 && policy.CanUseImplicitTransition(pol) {
-		implicit, err := policy.GetImplicitTransition(pol)
-		if err != nil {
-			return nil, false, err
+		implicit, implicitErr := policy.GetImplicitTransition(pol)
+		if implicitErr != nil {
+			return nil, nil, false, implicitErr
 		}
-		resolved, err := ResolveTransitionTargets(implicit, scopeDir)
-		if err != nil {
-			return nil, false, err
+		resolved, resolveErr := ResolveTransitionTargets(implicit, scopeDir)
+		if resolveErr != nil {
+			return nil, nil, false, resolveErr
 		}
-		return &resolved, false, nil
+		return nil, &resolved, false, nil
 	}
 
 	// No tag and no implicit transition.
 	if len(transitions) == 0 {
 		if policy.ShouldUseReminderPrompt(pol) {
 			if reminderAttempt+1 >= maxReminderAttempts {
-				return nil, false, fmt.Errorf(
+				return nil, nil, false, fmt.Errorf(
 					"Expected exactly one transition, found 0 after %d reminder attempts",
 					maxReminderAttempts,
 				)
@@ -339,30 +371,30 @@ func (e *MarkdownExecutor) parseAndValidate(
 				MaxRetries:   maxReminderAttempts,
 				Timestamp:    time.Now(),
 			})
-			return nil, true, nil // retry
+			return nil, nil, true, nil // retry
 		}
-		return nil, false, fmt.Errorf("Expected exactly one transition, found 0")
+		return nil, nil, false, fmt.Errorf("Expected exactly one transition, found 0")
 	}
 
 	// Validate exactly one transition.
-	if err := parsing.ValidateSingleTransition(transitions); err != nil {
+	if singleErr := parsing.ValidateSingleTransition(transitions); singleErr != nil {
 		if policy.ShouldUseReminderPrompt(pol) {
 			if reminderAttempt+1 >= maxReminderAttempts {
-				return nil, false, err
+				return nil, nil, false, singleErr
 			}
 			execCtx.Bus.Emit(events.ErrorOccurred{
 				AgentID:      agentID,
 				ErrorType:    "MultipleTransitions",
-				ErrorMessage: err.Error(),
+				ErrorMessage: singleErr.Error(),
 				CurrentState: currentState,
 				IsRetryable:  true,
 				RetryCount:   reminderAttempt + 1,
 				MaxRetries:   maxReminderAttempts,
 				Timestamp:    time.Now(),
 			})
-			return nil, true, nil // retry
+			return nil, nil, true, nil // retry
 		}
-		return nil, false, err
+		return nil, nil, false, singleErr
 	}
 
 	transition := transitions[0]
@@ -372,7 +404,7 @@ func (e *MarkdownExecutor) parseAndValidate(
 	if resolveErr != nil {
 		if policy.ShouldUseReminderPrompt(pol) {
 			if reminderAttempt+1 >= maxReminderAttempts {
-				return nil, false, resolveErr
+				return nil, nil, false, resolveErr
 			}
 			execCtx.Bus.Emit(events.ErrorOccurred{
 				AgentID:      agentID,
@@ -384,16 +416,16 @@ func (e *MarkdownExecutor) parseAndValidate(
 				MaxRetries:   maxReminderAttempts,
 				Timestamp:    time.Now(),
 			})
-			return nil, true, nil // retry
+			return nil, nil, true, nil // retry
 		}
-		return nil, false, resolveErr
+		return nil, nil, false, resolveErr
 	}
 
 	// Validate against policy.
 	if polErr := policy.ValidateTransitionPolicy(resolved, pol); polErr != nil {
 		if policy.ShouldUseReminderPrompt(pol) {
 			if reminderAttempt+1 >= maxReminderAttempts {
-				return nil, false, polErr
+				return nil, nil, false, polErr
 			}
 			execCtx.Bus.Emit(events.ErrorOccurred{
 				AgentID:      agentID,
@@ -405,12 +437,12 @@ func (e *MarkdownExecutor) parseAndValidate(
 				MaxRetries:   maxReminderAttempts,
 				Timestamp:    time.Now(),
 			})
-			return nil, true, nil // retry
+			return nil, nil, true, nil // retry
 		}
-		return nil, false, polErr
+		return nil, nil, false, polErr
 	}
 
-	return &resolved, false, nil
+	return nil, &resolved, false, nil
 }
 
 // processStreamForConsole emits ProgressMessage, ToolInvocation, and ErrorOccurred

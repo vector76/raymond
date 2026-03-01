@@ -84,6 +84,12 @@ func ApplyTransition(
 		return HandleCall(copy, transition)
 	case "fork":
 		return HandleFork(copy, transition, wfState)
+	case "fork-workflow":
+		res, err := specifier.Resolve(transition.Target, copy.ScopeDir)
+		if err != nil {
+			return TransitionResult{}, fmt.Errorf("fork-workflow: %w", err)
+		}
+		return HandleForkWorkflow(copy, transition, wfState, res)
 	case "result":
 		return HandleResult(copy, transition, wfState), nil
 	default:
@@ -227,36 +233,17 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 	return TransitionResult{Agent: &agent}, nil
 }
 
-// HandleFork handles the <fork> transition tag.
+// CreateForkWorker builds a new worker agent for a <fork> transition without
+// advancing the calling agent. This is the worker-construction core used by
+// both HandleFork (single-fork path) and the multi-fork orchestrator dispatch.
 //
-// Spawns an independent worker agent while the parent continues:
-//   - Creates a new worker with a unique ID, empty stack, fresh session
-//   - Worker's current_state is the fork target
-//   - Applies cd attribute to worker if present
-//   - Attributes other than "next" and "cd" become the worker's ForkAttributes
-//   - Parent advances to the "next" state; its session and stack are preserved
-//
-// Worker IDs use compact hierarchical notation:
-//
-//	{parent_id}_{state_abbrev}{counter}
-//
-// where state_abbrev is the first 6 lowercase characters of the target state
-// name (without extension) and counter is a per-parent persistent integer.
-//
-// Returns an error when the required "next" attribute is absent.
-func HandleFork(
+// The "next" attribute is intentionally not required here — caller advancement
+// is the responsibility of the caller (HandleFork or the orchestrator).
+func CreateForkWorker(
 	agent wfstate.AgentState,
 	transition parsing.Transition,
 	wfState *wfstate.WorkflowState,
-) (TransitionResult, error) {
-	nextState, ok := transition.Attributes["next"]
-	if !ok {
-		return TransitionResult{}, fmt.Errorf(
-			"<fork> tag requires 'next' attribute. "+
-				"Example: <fork next=\"NEXT.md\">WORKER.md</fork>",
-		)
-	}
-
+) (wfstate.AgentState, error) {
 	// Derive state abbreviation from the fork target filename.
 	stateName := strings.ToLower(parsing.ExtractStateName(transition.Target))
 	stateAbbrev := stateName
@@ -295,37 +282,63 @@ func HandleFork(
 		worker.ForkAttributes = forkAttrs
 	}
 
+	return worker, nil
+}
+
+// HandleFork handles the <fork> transition tag.
+//
+// Spawns an independent worker agent while the parent continues:
+//   - Creates a new worker with a unique ID, empty stack, fresh session
+//   - Worker's current_state is the fork target
+//   - Applies cd attribute to worker if present
+//   - Attributes other than "next" and "cd" become the worker's ForkAttributes
+//   - Parent advances to the "next" state; its session and stack are preserved
+//
+// Worker IDs use compact hierarchical notation:
+//
+//	{parent_id}_{state_abbrev}{counter}
+//
+// where state_abbrev is the first 6 lowercase characters of the target state
+// name (without extension) and counter is a per-parent persistent integer.
+//
+// Returns an error when the required "next" attribute is absent.
+func HandleFork(
+	agent wfstate.AgentState,
+	transition parsing.Transition,
+	wfState *wfstate.WorkflowState,
+) (TransitionResult, error) {
+	nextState, ok := transition.Attributes["next"]
+	if !ok {
+		return TransitionResult{}, fmt.Errorf(
+			"<fork> tag requires 'next' attribute. "+
+				"Example: <fork next=\"NEXT.md\">WORKER.md</fork>",
+		)
+	}
+
+	worker, err := CreateForkWorker(agent, transition, wfState)
+	if err != nil {
+		return TransitionResult{}, err
+	}
+
 	// Advance parent to next state; session and stack are preserved.
 	agent.CurrentState = nextState
 
 	return TransitionResult{Agent: &agent, Worker: &worker}, nil
 }
 
-// HandleForkWorkflow handles the <fork-workflow> transition tag.
+// CreateForkWorkflowWorker builds a new worker agent for a <fork-workflow>
+// transition without advancing the calling agent. This is the worker-
+// construction core used by both HandleForkWorkflow (single-fork path) and the
+// multi-fork orchestrator dispatch.
 //
-// Similar to HandleFork but targets an external workflow specifier. The
-// resolution provides the ScopeDir, EntryPoint, and Abbrev for the worker.
-//
-// Worker IDs use the same hierarchical notation as HandleFork:
-//
-//	{parent_id}_{abbrev}{counter}
-//
-// where abbrev comes from resolution.Abbrev and counter is a per-parent+abbrev
-// persistent integer keyed by agent.ID + "_" + resolution.Abbrev.
-//
-// Unlike HandleFork, the "next" attribute is optional:
-//   - With "next": caller advances to that state.
-//   - Without "next": caller remains at its current state (multi-fork dispatch).
-//
-// The "cwd" attribute sets the worker's working directory; when absent the
-// caller's Cwd is inherited. The "input" attribute, if non-empty, sets the
-// worker's PendingResult.
-func HandleForkWorkflow(
+// The "next" attribute is intentionally not required here — caller advancement
+// is the responsibility of HandleForkWorkflow or the orchestrator.
+func CreateForkWorkflowWorker(
 	agent wfstate.AgentState,
 	transition parsing.Transition,
 	ws *wfstate.WorkflowState,
 	resolution specifier.Resolution,
-) (TransitionResult, error) {
+) (wfstate.AgentState, error) {
 	// Allocate a unique worker ID using persistent per-parent+abbrev counters.
 	if ws.ForkCounters == nil {
 		ws.ForkCounters = make(map[string]int)
@@ -355,6 +368,39 @@ func HandleForkWorkflow(
 	// Set PendingResult from "input" attribute if present and non-empty.
 	if input, ok := transition.Attributes["input"]; ok && input != "" {
 		worker.PendingResult = &input
+	}
+
+	return worker, nil
+}
+
+// HandleForkWorkflow handles the <fork-workflow> transition tag.
+//
+// Similar to HandleFork but targets an external workflow specifier. The
+// resolution provides the ScopeDir, EntryPoint, and Abbrev for the worker.
+//
+// Worker IDs use the same hierarchical notation as HandleFork:
+//
+//	{parent_id}_{abbrev}{counter}
+//
+// where abbrev comes from resolution.Abbrev and counter is a per-parent+abbrev
+// persistent integer keyed by agent.ID + "_" + resolution.Abbrev.
+//
+// Unlike HandleFork, the "next" attribute is optional:
+//   - With "next": caller advances to that state.
+//   - Without "next": caller remains at its current state (multi-fork dispatch).
+//
+// The "cwd" attribute sets the worker's working directory; when absent the
+// caller's Cwd is inherited. The "input" attribute, if non-empty, sets the
+// worker's PendingResult.
+func HandleForkWorkflow(
+	agent wfstate.AgentState,
+	transition parsing.Transition,
+	ws *wfstate.WorkflowState,
+	resolution specifier.Resolution,
+) (TransitionResult, error) {
+	worker, err := CreateForkWorkflowWorker(agent, transition, ws, resolution)
+	if err != nil {
+		return TransitionResult{}, err
 	}
 
 	// Advance caller to "next" state when present; otherwise leave it unchanged.

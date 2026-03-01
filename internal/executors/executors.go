@@ -17,9 +17,10 @@ import (
 
 // ExecutionResult holds the outcome of executing a single state.
 type ExecutionResult struct {
-	Transition parsing.Transition
-	SessionID  *string // nil for script states (session preserved externally)
-	CostUSD    float64 // 0.0 for script states
+	Transition  parsing.Transition   // selected single transition (zero value when Transitions is set)
+	Transitions []parsing.Transition // full list for multi-fork outputs; nil for single-transition outputs
+	SessionID   *string              // nil for script states (session preserved externally)
+	CostUSD     float64              // 0.0 for script states
 }
 
 // ExecutionContext holds shared configuration and mutable step-counters passed

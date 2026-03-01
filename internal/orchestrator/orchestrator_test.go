@@ -1070,3 +1070,368 @@ func TestCallResultRestoresCallerSession(t *testing.T) {
 	assert.Equal(t, "caller-session-xyz", *returnMock.capturedSessions[0],
 		"RETURN.md must resume caller-session-xyz, not child-session-abc")
 }
+
+// ----------------------------------------------------------------------------
+// Multi-fork dispatch
+// ----------------------------------------------------------------------------
+
+// multiForkResult returns an ExecutionResult with a multi-transition Transitions
+// field (the multi-fork path). The Transition field is intentionally left zero.
+func multiForkResult(trs ...parsing.Transition) executors.ExecutionResult {
+	return executors.ExecutionResult{Transitions: trs}
+}
+
+// forkWorkflowTransitionFor builds a fork-workflow Transition pointing at target
+// with the given attributes.
+func forkWorkflowTransitionFor(target string, attrs map[string]string) parsing.Transition {
+	return parsing.Transition{
+		Tag:        "fork-workflow",
+		Target:     target,
+		Attributes: attrs,
+	}
+}
+
+// gotoTransition builds a goto Transition.
+func gotoTransition(target string) parsing.Transition {
+	return parsing.Transition{
+		Tag:        "goto",
+		Target:     target,
+		Attributes: map[string]string{},
+	}
+}
+
+// forkTransitionWith builds an intra-scope fork Transition.
+func forkTransitionWith(target string, attrs map[string]string) parsing.Transition {
+	return parsing.Transition{
+		Tag:        "fork",
+		Target:     target,
+		Attributes: attrs,
+	}
+}
+
+// setupMultiForkWorkflow creates workflow state with an initial agent whose
+// ScopeDir is set to scopeDir (used for fork-workflow resolution).
+func setupMultiForkWorkflow(t *testing.T, scopeDir string) (stateDir, workflowID string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), ".raymond", "state")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	workflowID = "test-wf"
+	ws := wfstate.CreateInitialState(workflowID, scopeDir, "START.md", 0, nil)
+	require.NoError(t, wfstate.WriteState(workflowID, ws, dir))
+	return dir, workflowID
+}
+
+// TestMultiForkTwoForkWorkflowTagsSpawnTwoWorkers verifies that an output with
+// two fork-workflow tags and a shared "next" attribute spawns two workers and
+// advances the caller.
+func TestMultiForkTwoForkWorkflowTagsSpawnTwoWorkers(t *testing.T) {
+	// Create two real sub-workflow directories that specifier.Resolve can validate.
+	tmp := t.TempDir()
+	wf1Dir := filepath.Join(tmp, "wf1")
+	wf2Dir := filepath.Join(tmp, "wf2")
+	require.NoError(t, os.MkdirAll(wf1Dir, 0o755))
+	require.NoError(t, os.MkdirAll(wf2Dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wf1Dir, "1_START.md"), []byte("# wf1"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wf2Dir, "1_START.md"), []byte("# wf2"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	shared := newMock(
+		// START.md: two fork-workflow tags with shared next
+		multiForkResult(
+			forkWorkflowTransitionFor(wf1Dir, map[string]string{"next": "CONT.md"}),
+			forkWorkflowTransitionFor(wf2Dir, map[string]string{"next": "CONT.md"}),
+		),
+		// CONT.md (caller continues here): terminates
+		resultExecResult("caller done"),
+		// wf1 worker at 1_START.md: terminates
+		resultExecResult("wf1 done"),
+		// wf2 worker at 1_START.md: terminates
+		resultExecResult("wf2 done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return shared })
+	defer orchestrator.ResetExecutorFactory()
+
+	var spawned []events.AgentSpawned
+	var terminated []events.AgentTerminated
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentSpawned) { spawned = append(spawned, e) })
+		bus.Subscribe(b, func(e events.AgentTerminated) { terminated = append(terminated, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+
+	require.Len(t, spawned, 2, "two workers should be spawned")
+	assert.Equal(t, "main", spawned[0].ParentAgentID)
+	assert.Equal(t, "main", spawned[1].ParentAgentID)
+
+	// Caller + 2 workers all terminate.
+	assert.Len(t, terminated, 3)
+}
+
+// TestMultiForkMixedForkAndForkWorkflow verifies that a mix of fork and
+// fork-workflow tags in a multi-fork output spawns workers for each.
+func TestMultiForkMixedForkAndForkWorkflow(t *testing.T) {
+	tmp := t.TempDir()
+	wfDir := filepath.Join(tmp, "child-wf")
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.md"), []byte("# child"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	shared := newMock(
+		// START.md: one fork (intra-scope) + one fork-workflow, shared next
+		multiForkResult(
+			forkTransitionWith("WORKER.md", map[string]string{"next": "CONT.md"}),
+			forkWorkflowTransitionFor(wfDir, map[string]string{"next": "CONT.md"}),
+		),
+		// CONT.md (caller): terminates
+		resultExecResult("caller done"),
+		// WORKER.md (intra-scope worker): terminates
+		resultExecResult("worker done"),
+		// 1_START.md (fork-workflow worker): terminates
+		resultExecResult("child done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return shared })
+	defer orchestrator.ResetExecutorFactory()
+
+	var spawned []events.AgentSpawned
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentSpawned) { spawned = append(spawned, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	assert.Len(t, spawned, 2)
+}
+
+// TestMultiForkSingleForkWorkflowWithGotoSiblingDispatchesCorrectly verifies
+// that a single fork-workflow tag alongside a goto tag takes the multi-fork
+// path and advances the caller to the goto target.
+func TestMultiForkSingleForkWorkflowWithGotoSiblingDispatchesCorrectly(t *testing.T) {
+	tmp := t.TempDir()
+	wfDir := filepath.Join(tmp, "child-wf")
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.md"), []byte("# child"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	shared := newMock(
+		// START.md: fork-workflow (no next on tag) + goto
+		multiForkResult(
+			forkWorkflowTransitionFor(wfDir, map[string]string{}),
+			gotoTransition("CONT.md"),
+		),
+		// CONT.md (caller): terminates
+		resultExecResult("caller done"),
+		// 1_START.md (worker): terminates
+		resultExecResult("worker done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return shared })
+	defer orchestrator.ResetExecutorFactory()
+
+	var spawned []events.AgentSpawned
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentSpawned) { spawned = append(spawned, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Len(t, spawned, 1)
+	assert.Equal(t, "1_START.md", spawned[0].InitialState)
+}
+
+// TestMultiForkCallerAdvancesToContinuation verifies that after multi-fork
+// dispatch the caller agent's state is the agreed continuation target.
+func TestMultiForkCallerAdvancesToContinuation(t *testing.T) {
+	tmp := t.TempDir()
+	wf1Dir := filepath.Join(tmp, "wf1")
+	wf2Dir := filepath.Join(tmp, "wf2")
+	require.NoError(t, os.MkdirAll(wf1Dir, 0o755))
+	require.NoError(t, os.MkdirAll(wf2Dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wf1Dir, "1_START.md"), []byte("# wf1"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wf2Dir, "1_START.md"), []byte("# wf2"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	// The caller should advance to CONT.md after multi-fork.
+	var callerStateAfterFork string
+	firstFork := true
+
+	shared := &mockExec{
+		results: []executors.ExecutionResult{
+			multiForkResult(
+				forkWorkflowTransitionFor(wf1Dir, map[string]string{"next": "CONT.md"}),
+				forkWorkflowTransitionFor(wf2Dir, map[string]string{"next": "CONT.md"}),
+			),
+			resultExecResult("caller done"),
+			resultExecResult("wf1 done"),
+			resultExecResult("wf2 done"),
+		},
+	}
+
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.TransitionOccurred) {
+			if e.TransitionType == "multi-fork" && firstFork {
+				callerStateAfterFork = e.ToState
+				firstFork = false
+			}
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return shared })
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	assert.Equal(t, "CONT.md", callerStateAfterFork)
+}
+
+// TestMultiForkValidationMissingContinuationPausesAgent verifies that when no
+// continuation target is present the agent is paused with a descriptive error.
+func TestMultiForkValidationMissingContinuationPausesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	wf1Dir := filepath.Join(tmp, "wf1")
+	wf2Dir := filepath.Join(tmp, "wf2")
+	require.NoError(t, os.MkdirAll(wf1Dir, 0o755))
+	require.NoError(t, os.MkdirAll(wf2Dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wf1Dir, "1_START.md"), []byte("# wf1"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wf2Dir, "1_START.md"), []byte("# wf2"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	// No "next" on either fork tag, no goto → validation error.
+	mock := newMock(
+		multiForkResult(
+			forkWorkflowTransitionFor(wf1Dir, map[string]string{}),
+			forkWorkflowTransitionFor(wf2Dir, map[string]string{}),
+		),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	var paused []events.AgentPaused
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentPaused) { paused = append(paused, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Len(t, paused, 1)
+	assert.Equal(t, "main", paused[0].AgentID)
+
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "paused", ws.Agents[0].Status)
+	assert.Contains(t, ws.Agents[0].Error, "continuation")
+}
+
+// TestMultiForkValidationConflictingNextValuesPausesAgent verifies that
+// mismatched "next" values across fork tags pause the agent.
+func TestMultiForkValidationConflictingNextValuesPausesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	wf1Dir := filepath.Join(tmp, "wf1")
+	wf2Dir := filepath.Join(tmp, "wf2")
+	require.NoError(t, os.MkdirAll(wf1Dir, 0o755))
+	require.NoError(t, os.MkdirAll(wf2Dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wf1Dir, "1_START.md"), []byte("# wf1"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wf2Dir, "1_START.md"), []byte("# wf2"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	mock := newMock(
+		multiForkResult(
+			forkWorkflowTransitionFor(wf1Dir, map[string]string{"next": "CONT_A.md"}),
+			forkWorkflowTransitionFor(wf2Dir, map[string]string{"next": "CONT_B.md"}),
+		),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	var paused []events.AgentPaused
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentPaused) { paused = append(paused, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Len(t, paused, 1)
+	assert.Equal(t, "main", paused[0].AgentID)
+
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err)
+	assert.Equal(t, "paused", ws.Agents[0].Status)
+}
+
+// TestMultiForkValidationGotoNextMismatchPausesAgent verifies that a goto
+// target disagreeing with fork "next" values pauses the agent.
+func TestMultiForkValidationGotoNextMismatchPausesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	wfDir := filepath.Join(tmp, "child-wf")
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.md"), []byte("# child"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	mock := newMock(
+		multiForkResult(
+			forkWorkflowTransitionFor(wfDir, map[string]string{"next": "CONT_A.md"}),
+			gotoTransition("CONT_B.md"), // conflicts with CONT_A.md
+		),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	var paused []events.AgentPaused
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentPaused) { paused = append(paused, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Len(t, paused, 1)
+	assert.Equal(t, "main", paused[0].AgentID)
+}
+
+// TestMultiForkValidationNonForkTagMixedInPausesAgent verifies that a non-fork
+// tag (e.g. "result") alongside fork tags causes the agent to be paused.
+func TestMultiForkValidationNonForkTagMixedInPausesAgent(t *testing.T) {
+	tmp := t.TempDir()
+	wf1Dir := filepath.Join(tmp, "wf1")
+	wf2Dir := filepath.Join(tmp, "wf2")
+	require.NoError(t, os.MkdirAll(wf1Dir, 0o755))
+	require.NoError(t, os.MkdirAll(wf2Dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wf1Dir, "1_START.md"), []byte("# wf1"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wf2Dir, "1_START.md"), []byte("# wf2"), 0o644))
+
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	// Include a "result" tag alongside two fork-workflow tags.
+	mock := newMock(
+		multiForkResult(
+			forkWorkflowTransitionFor(wf1Dir, map[string]string{"next": "CONT.md"}),
+			forkWorkflowTransitionFor(wf2Dir, map[string]string{"next": "CONT.md"}),
+			parsing.Transition{Tag: "result", Payload: "oops", Attributes: map[string]string{}},
+		),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	var paused []events.AgentPaused
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentPaused) { paused = append(paused, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Len(t, paused, 1)
+	assert.Equal(t, "main", paused[0].AgentID)
+
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err)
+	assert.Equal(t, "paused", ws.Agents[0].Status)
+	assert.Contains(t, ws.Agents[0].Error, "result")
+}

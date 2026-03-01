@@ -68,6 +68,7 @@ type AgentState struct {
 	Stack         []StackFrame `json:"stack"`                    // call-return stack of frames
 	PendingResult *string      `json:"pending_result,omitempty"` // absent from JSON when nil
 	Cwd           string       `json:"cwd,omitempty"`            // per-agent working directory; empty = inherit
+	ScopeDir      string       `json:"scope_dir,omitempty"`      // per-agent scope directory; empty = use workflow ScopeDir
 
 	// Orchestrator-managed lifecycle fields.
 	Status     string `json:"status,omitempty"`      // "paused", "failed", or "" (active)
@@ -141,6 +142,17 @@ func ReadState(workflowID, stateDir string) (*WorkflowState, error) {
 	if err := json.Unmarshal(data, &ws); err != nil {
 		return nil, &StateFileError{msg: fmt.Sprintf("malformed state file %s: %v", path, err)}
 	}
+
+	// Migration: propagate workflow-level ScopeDir to agents that don't have their own.
+	// This handles state files written before ScopeDir was added to AgentState.
+	if ws.ScopeDir != "" {
+		for i := range ws.Agents {
+			if ws.Agents[i].ScopeDir == "" {
+				ws.Agents[i].ScopeDir = ws.ScopeDir
+			}
+		}
+	}
+
 	return &ws, nil
 }
 

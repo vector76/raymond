@@ -464,3 +464,69 @@ func TestLaunchParamsAbsentInOldStateFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got.LaunchParams, "LaunchParams should be nil for old state files without the field")
 }
+
+// ----------------------------------------------------------------------------
+// ScopeDir migration (workflow-level → per-agent)
+// ----------------------------------------------------------------------------
+
+func TestScopeDirMigrationPreMigrationJSON(t *testing.T) {
+	// Pre-migration: workflow has scope_dir, agents do not.
+	dir := stateDir(t)
+	raw := `{
+		"workflow_id": "pre-mig",
+		"scope_dir": "workflows/myapp",
+		"total_cost_usd": 0,
+		"budget_usd": 10,
+		"agents": [
+			{"id": "main", "current_state": "START.md", "session_id": null, "stack": []},
+			{"id": "worker", "current_state": "WORK.md", "session_id": null, "stack": []}
+		]
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pre-mig.json"), []byte(raw), 0o644))
+
+	got, err := state.ReadState("pre-mig", dir)
+	require.NoError(t, err)
+	require.Len(t, got.Agents, 2)
+	assert.Equal(t, "workflows/myapp", got.Agents[0].ScopeDir, "main agent should inherit workflow ScopeDir")
+	assert.Equal(t, "workflows/myapp", got.Agents[1].ScopeDir, "worker agent should inherit workflow ScopeDir")
+}
+
+func TestScopeDirMigrationPostMigrationJSON(t *testing.T) {
+	// Post-migration: agents already have their own scope_dir — round-trips cleanly.
+	dir := stateDir(t)
+	ws := &state.WorkflowState{
+		WorkflowID: "post-mig",
+		ScopeDir:   "workflows/myapp",
+		Agents: []state.AgentState{
+			{ID: "main", CurrentState: "START.md", Stack: []state.StackFrame{}, ScopeDir: "workflows/myapp"},
+		},
+	}
+	require.NoError(t, state.WriteState("post-mig", ws, dir))
+
+	got, err := state.ReadState("post-mig", dir)
+	require.NoError(t, err)
+	require.Len(t, got.Agents, 1)
+	assert.Equal(t, "workflows/myapp", got.Agents[0].ScopeDir, "agent ScopeDir should round-trip unchanged")
+}
+
+func TestScopeDirMigrationDoesNotOverwriteExistingAgentScopeDir(t *testing.T) {
+	// An agent with its own scope_dir must not be overwritten by the workflow-level value.
+	dir := stateDir(t)
+	raw := `{
+		"workflow_id": "no-overwrite",
+		"scope_dir": "workflows/default",
+		"total_cost_usd": 0,
+		"budget_usd": 10,
+		"agents": [
+			{"id": "main", "current_state": "START.md", "session_id": null, "stack": [], "scope_dir": "workflows/custom"},
+			{"id": "worker", "current_state": "WORK.md", "session_id": null, "stack": []}
+		]
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "no-overwrite.json"), []byte(raw), 0o644))
+
+	got, err := state.ReadState("no-overwrite", dir)
+	require.NoError(t, err)
+	require.Len(t, got.Agents, 2)
+	assert.Equal(t, "workflows/custom", got.Agents[0].ScopeDir, "agent with its own ScopeDir must not be overwritten")
+	assert.Equal(t, "workflows/default", got.Agents[1].ScopeDir, "agent without ScopeDir should inherit workflow value")
+}

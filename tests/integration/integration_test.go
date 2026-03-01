@@ -334,6 +334,46 @@ func TestZIPScopeLLMWorkflow(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Cross-workflow integration tests (require claude CLI)
+// --------------------------------------------------------------------------
+
+// TestCallWorkflowRoundTrip verifies the call-workflow round trip: the caller
+// emits <call-workflow> to invoke a sub-workflow, which returns a result, and
+// the caller resumes at the return state with {{result}} populated.
+func TestCallWorkflowRoundTrip(t *testing.T) {
+	skipIfNoClaude(t)
+
+	scopeDir := filepath.Join(testCasesDir(), "cross_workflow_call")
+	completed, err := runWorkflow(t, scopeDir, "1_START.md", 10.0)
+	require.NoError(t, err)
+	assert.True(t, completed, "call-workflow round-trip should complete cleanly")
+}
+
+// TestFunctionWorkflowWithCwd verifies the function-workflow transition: the
+// sub-workflow runs with the caller-specified cwd (/tmp) and the caller resumes
+// at the return state after the sub-workflow completes.
+func TestFunctionWorkflowWithCwd(t *testing.T) {
+	skipIfNoClaude(t)
+
+	scopeDir := filepath.Join(testCasesDir(), "cross_workflow_function")
+	completed, err := runWorkflow(t, scopeDir, "1_START.md", 10.0)
+	require.NoError(t, err)
+	assert.True(t, completed, "function-workflow with cwd=/tmp should complete cleanly")
+}
+
+// TestForkWorkflowParallel verifies that two fork-workflow tags spawn two
+// independent worker agents and the caller advances to the join state after
+// all workers complete.
+func TestForkWorkflowParallel(t *testing.T) {
+	skipIfNoClaude(t)
+
+	scopeDir := filepath.Join(testCasesDir(), "cross_workflow_fork")
+	completed, err := runWorkflow(t, scopeDir, "1_START.md", 10.0)
+	require.NoError(t, err)
+	assert.True(t, completed, "fork-workflow parallel dispatch should complete cleanly")
+}
+
+// --------------------------------------------------------------------------
 // ZIP helper
 // --------------------------------------------------------------------------
 

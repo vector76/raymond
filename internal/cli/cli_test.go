@@ -225,8 +225,8 @@ func TestStartFileNotFound(t *testing.T) {
 
 func TestStartDirectory(t *testing.T) {
 	stateDir := makeStateDir(t)
-	// Use a directory that actually exists (the stateDir itself works).
 	workflowDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workflowDir, "1_START.md"), []byte("# Start"), 0o644))
 
 	// The test runner is a no-op, so this just verifies the CLI dispatches
 	// to start mode and parses the directory correctly.
@@ -237,6 +237,7 @@ func TestStartDirectory(t *testing.T) {
 func TestStartDirectoryEntryPoint(t *testing.T) {
 	stateDir := makeStateDir(t)
 	workflowDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workflowDir, "1_START.md"), []byte("# Start"), 0o644))
 
 	// The test CLI has a no-op runner, so the state file is written and we can
 	// inspect the resolved initial state.
@@ -256,6 +257,7 @@ func TestStartDirectoryEntryPoint(t *testing.T) {
 func TestStartDirectoryScopeDirIsAbsolute(t *testing.T) {
 	stateDir := makeStateDir(t)
 	workflowDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workflowDir, "1_START.md"), []byte("# Start"), 0o644))
 
 	// Change to the parent of workflowDir and pass a relative path so that
 	// parseScopeAndState must absolutize it.

@@ -16,14 +16,18 @@ import (
 // Helpers
 // --------------------------------------------------------------------------
 
-// mkDir creates a named subdirectory inside a temp parent, writes 1_START.md,
-// and returns the subdirectory path.
-func mkDir(t *testing.T, name string) string {
+// mkDir creates a named subdirectory inside a temp parent, writes a 1_START
+// file with the given extension (default ".md"), and returns the subdirectory path.
+func mkDir(t *testing.T, name string, ext ...string) string {
 	t.Helper()
 	parent := t.TempDir()
 	dir := filepath.Join(parent, name)
 	require.NoError(t, os.MkdirAll(dir, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("# Start"), 0600))
+	e := ".md"
+	if len(ext) > 0 {
+		e = ext[0]
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START"+e), []byte("# Start"), 0600))
 	return dir
 }
 
@@ -81,12 +85,12 @@ func TestResolveDir_Relative(t *testing.T) {
 }
 
 func TestResolveDir_Missing1Start(t *testing.T) {
-	dir := t.TempDir() // no 1_START.md
+	dir := t.TempDir() // no 1_START file
 
 	_, err := specifier.Resolve(dir, "")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "1_START.md")
+	assert.Contains(t, err.Error(), "1_START")
 }
 
 func TestResolveDir_NonExistentPath(t *testing.T) {
@@ -161,7 +165,7 @@ func TestResolveZip_Missing1Start(t *testing.T) {
 	_, err := specifier.Resolve(zipPath, "")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "1_START.md")
+	assert.Contains(t, err.Error(), "1_START")
 }
 
 func TestResolveZip_BadLayout_Empty(t *testing.T) {
@@ -241,6 +245,43 @@ func TestResolveMd_RelativeFromZipCaller(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sibling, res.ScopeDir)
 	assert.Equal(t, "STATE.md", res.EntryPoint)
+}
+
+// --------------------------------------------------------------------------
+// Extension-agnostic 1_START resolution
+// --------------------------------------------------------------------------
+
+func TestResolveDir_ShellEntryPoint(t *testing.T) {
+	dir := mkDir(t, "shworkflow", ".sh")
+
+	res, err := specifier.Resolve(dir, "/caller/scope")
+
+	require.NoError(t, err)
+	assert.Equal(t, dir, res.ScopeDir)
+	assert.Equal(t, "1_START.sh", res.EntryPoint)
+}
+
+func TestResolveZip_ShellEntryPoint(t *testing.T) {
+	zipPath := mkZip(t, "workflow.zip", map[string]string{"1_START.sh": "#!/bin/sh\necho start"})
+
+	res, err := specifier.Resolve(zipPath, "/caller/scope")
+
+	require.NoError(t, err)
+	assert.Equal(t, zipPath, res.ScopeDir)
+	assert.Equal(t, "1_START.sh", res.EntryPoint)
+}
+
+func TestResolveDir_AmbiguousEntryPoint(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "ambig")
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("# Start"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.sh"), []byte("#!/bin/sh"), 0600))
+
+	_, err := specifier.Resolve(dir, "/caller/scope")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Ambiguous")
 }
 
 // --------------------------------------------------------------------------

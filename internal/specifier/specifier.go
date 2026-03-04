@@ -2,8 +2,8 @@
 // absolute scope directories and entry points.
 //
 // A specifier may point to one of three things:
-//   - A directory: ScopeDir = dir, EntryPoint = "1_START.md"
-//   - A .zip archive: ScopeDir = zip path, EntryPoint = "1_START.md"
+//   - A directory: ScopeDir = dir, EntryPoint = resolved 1_START (any extension)
+//   - A .zip archive: ScopeDir = zip path, EntryPoint = resolved 1_START (any extension)
 //   - An explicit .md file: ScopeDir = parent dir, EntryPoint = filename
 //
 // Relative specifiers are resolved against the caller's scope directory.
@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/vector76/raymond/internal/prompts"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -35,9 +36,9 @@ type Resolution struct {
 //     the effective base is the zip stem path (zip filename minus extension),
 //     so "../sibling/" from caller.zip navigates to the zip's parent directory.
 //  3. Classify by extension and validate:
-//     - .zip: verify hash, layout, and presence of 1_START.md
+//     - .zip: verify hash, layout, and resolve 1_START (any extension)
 //     - .md:  verify the file exists
-//     - other: verify filepath.Join(path, "1_START.md") exists
+//     - other: resolve 1_START (any extension) in the directory
 //  4. Derive Abbrev: base name (or zip stem), lowercased and capped at 6 chars.
 func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	// 1. Normalize separators.
@@ -73,18 +74,15 @@ func resolveZip(zipPath string) (Resolution, error) {
 	if _, err := zipscope.DetectLayout(zipPath); err != nil {
 		return Resolution{}, fmt.Errorf("invalid zip %q: %w", zipPath, err)
 	}
-	exists, err := zipscope.FileExists(zipPath, "1_START.md")
+	entryPoint, err := prompts.ResolveState(zipPath, "1_START")
 	if err != nil {
-		return Resolution{}, fmt.Errorf("error checking 1_START.md in %q: %w", zipPath, err)
-	}
-	if !exists {
-		return Resolution{}, fmt.Errorf("1_START.md not found in zip archive: %s", zipPath)
+		return Resolution{}, fmt.Errorf("1_START not found in zip archive %q: %w", zipPath, err)
 	}
 	base := filepath.Base(zipPath)
 	stem := base[:len(base)-len(filepath.Ext(base))]
 	return Resolution{
 		ScopeDir:   zipPath,
-		EntryPoint: "1_START.md",
+		EntryPoint: entryPoint,
 		Abbrev:     abbrev(stem),
 	}, nil
 }
@@ -103,13 +101,13 @@ func resolveMd(mdPath string) (Resolution, error) {
 }
 
 func resolveDir(dirPath string) (Resolution, error) {
-	startFile := filepath.Join(dirPath, "1_START.md")
-	if _, err := os.Stat(startFile); err != nil {
-		return Resolution{}, fmt.Errorf("1_START.md not found in directory: %s", dirPath)
+	entryPoint, err := prompts.ResolveState(dirPath, "1_START")
+	if err != nil {
+		return Resolution{}, fmt.Errorf("1_START not found in directory %s: %w", dirPath, err)
 	}
 	return Resolution{
 		ScopeDir:   dirPath,
-		EntryPoint: "1_START.md",
+		EntryPoint: entryPoint,
 		Abbrev:     abbrev(filepath.Base(dirPath)),
 	}, nil
 }

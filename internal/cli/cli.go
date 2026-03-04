@@ -25,6 +25,7 @@ import (
 	"github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/observers/titlebar"
 	"github.com/vector76/raymond/internal/orchestrator"
+	"github.com/vector76/raymond/internal/prompts"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/version"
 	"github.com/vector76/raymond/internal/zipscope"
@@ -304,7 +305,7 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		return err
 	}
 
-	// For zip scopes, validate the hash and layout before creating state.
+	// For zip scopes, validate the hash and layout, then resolve entry point.
 	if zipscope.IsZipScope(scopeDir) {
 		if err := zipscope.VerifyZipHash(scopeDir); err != nil {
 			return fmt.Errorf("zip archive hash validation failed: %w", err)
@@ -312,6 +313,11 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		if _, err := zipscope.DetectLayout(scopeDir); err != nil {
 			return fmt.Errorf("zip archive layout invalid: %w", err)
 		}
+		entry, resolveErr := prompts.ResolveState(scopeDir, "1_START")
+		if resolveErr != nil {
+			return fmt.Errorf("cannot resolve entry point in %q: %w", scopeDir, resolveErr)
+		}
+		initialState = entry
 	}
 
 	resolvedStateDir := wfstate.GetStateDir(opts.StateDir)
@@ -462,8 +468,8 @@ func (c *CLI) cmdInitConfig(cmd *cobra.Command) error {
 
 // parseScopeAndState resolves a CLI argument to (scopeDir, initialState).
 //
-//   - Directory  → scope=arg, state="1_START.md"
-//   - .zip file  → scope=arg, state="1_START.md"
+//   - Directory  → scope=arg, state=resolved 1_START (any extension)
+//   - .zip file  → scope=arg, state="" (resolved later after hash/layout validation)
 //   - Other file → scope=dirname(arg), state=basename(arg)
 //
 // The returned scopeDir is always an absolute path.
@@ -479,11 +485,17 @@ func parseScopeAndState(arg string) (scopeDir, initialState string, err error) {
 	}
 
 	if info.IsDir() {
-		return absArg, "1_START.md", nil
+		entry, resolveErr := prompts.ResolveState(absArg, "1_START")
+		if resolveErr != nil {
+			return "", "", fmt.Errorf("cannot resolve entry point in %q: %w", absArg, resolveErr)
+		}
+		return absArg, entry, nil
 	}
 
 	if strings.ToLower(filepath.Ext(arg)) == ".zip" {
-		return absArg, "1_START.md", nil
+		// Entry point resolution for zips is deferred to cmdStart, after
+		// hash and layout validation.
+		return absArg, "", nil
 	}
 
 	// Regular state file.

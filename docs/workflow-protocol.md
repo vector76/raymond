@@ -87,7 +87,7 @@ A workflow is started from one of three input forms:
 1. **A prompt file path** — e.g. `workflows/coding/START.md`. The directory
    containing that file becomes the workflow scope.
 2. **A directory path** — e.g. `workflows/coding/`. The directory itself is the
-   scope; Raymond looks for `1_START.md` inside it.
+   scope; Raymond looks for `1_START` (any supported extension) inside it.
 3. **A zip archive path** — e.g. `workflows/coding.zip`. The archive *is* the
    scope; file access goes through the zip abstraction layer.
 
@@ -132,9 +132,9 @@ addressed by their bare names (e.g. `REVIEW.md`, not `mywf/REVIEW.md`).
 - Files nested more than one level deep
 - Empty archive
 
-**Entry point requirement:** The archive must contain `1_START.md` (after
-prefix stripping). Raymond uses this file as the initial state when a zip
-archive is given as input.
+**Entry point requirement:** The archive must contain a `1_START` file with a
+supported extension (`.md`, `.sh`, etc.) after prefix stripping. Raymond uses
+this file as the initial state when a zip archive is given as input.
 
 **Resume behaviour:** The zip file must remain at the same path when a workflow
 is resumed. Raymond validates the archive at resume time and reports an error

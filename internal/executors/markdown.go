@@ -215,12 +215,19 @@ func (e *MarkdownExecutor) Execute(
 					Msg: fmt.Sprintf("Claude Code timeout: %v", te),
 				}
 			}
-			if strings.Contains(streamErr.Error(), "claude command failed") {
+			// When claude exits with a non-zero code and the error text
+			// contains a known limit message, treat it as a limit error
+			// so the orchestrator pauses immediately instead of retrying.
+			errText := streamErr.Error()
+			if isLimitMessage(errText) {
+				return ExecutionResult{}, &ClaudeCodeLimitError{Msg: errText}
+			}
+			if strings.Contains(errText, "claude command failed") {
 				return ExecutionResult{}, &ClaudeCodeError{
 					Msg: fmt.Sprintf("Claude Code execution failed: %v", streamErr),
 				}
 			}
-			return ExecutionResult{}, &ClaudeCodeError{Msg: streamErr.Error()}
+			return ExecutionResult{}, &ClaudeCodeError{Msg: errText}
 		}
 
 		// Extract and accumulate cost.
@@ -627,6 +634,25 @@ func extractOutputText(results []map[string]any) string {
 	return sb.String()
 }
 
+// limitPatterns lists substrings (lowercase) that identify a Claude usage-limit
+// error. The stream result and stderr fallback paths both use this list.
+var limitPatterns = []string{
+	"hit your limit",
+	"out of extra usage",
+}
+
+// isLimitMessage returns true when msg (case-insensitive) matches any known
+// Claude usage-limit pattern.
+func isLimitMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, pat := range limitPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
 // isLimitError returns true when obj is a Claude usage-limit result object.
 func isLimitError(obj map[string]any) bool {
 	if t, _ := obj["type"].(string); t != "result" {
@@ -637,5 +663,5 @@ func isLimitError(obj map[string]any) bool {
 		return false
 	}
 	result, _ := obj["result"].(string)
-	return strings.Contains(strings.ToLower(result), "hit your limit")
+	return isLimitMessage(result)
 }

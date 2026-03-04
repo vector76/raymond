@@ -3,6 +3,7 @@ package executors_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1027,6 +1028,52 @@ func TestMarkdownExecutor_RaisesLimitError(t *testing.T) {
 		return makeMockStream([]map[string]any{
 			{"type": "result", "is_error": true, "result": "You've hit your limit for today"},
 		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err == nil {
+		t.Fatal("expected ClaudeCodeLimitError")
+	}
+	var le *executors.ClaudeCodeLimitError
+	if !asError(err, &le) {
+		t.Errorf("expected *ClaudeCodeLimitError, got %T: %v", err, err)
+	}
+}
+
+func TestMarkdownExecutor_RaisesLimitError_OutOfExtraUsage(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "result", "is_error": true, "result": "You're out of extra usage · resets 1pm (America/Chicago)"},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err == nil {
+		t.Fatal("expected ClaudeCodeLimitError")
+	}
+	var le *executors.ClaudeCodeLimitError
+	if !asError(err, &le) {
+		t.Errorf("expected *ClaudeCodeLimitError, got %T: %v", err, err)
+	}
+}
+
+func TestMarkdownExecutor_RaisesLimitErrorFromExitCode(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
+
+	// Simulate claude exiting with code 1 and a limit message in stderr.
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+		ch := make(chan ccwrap.StreamItem, 1)
+		ch <- ccwrap.StreamItem{Err: fmt.Errorf("claude command failed with return code 1\nStderr: You're out of extra usage · resets 1pm (America/Chicago)")}
+		close(ch)
+		return ch
 	})
 	defer executors.ResetInvokeStreamFn()
 

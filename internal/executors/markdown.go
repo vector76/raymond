@@ -557,9 +557,6 @@ func (e *MarkdownExecutor) processStreamForConsole(obj map[string]any, agentID s
 				case "Bash":
 					if cmd, ok := input["command"].(string); ok {
 						detail = cmd
-						if len(detail) > 40 {
-							detail = detail[:37] + "..."
-						}
 					}
 				}
 			}

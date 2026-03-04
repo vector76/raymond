@@ -784,3 +784,74 @@ func TestConsoleColorCycleWrapsAfterSix(t *testing.T) {
 	assert.Contains(t, out, "\x1b[36m[a]\x1b[0m")
 	assert.Contains(t, out, "\x1b[36m[g]\x1b[0m")
 }
+
+// ----------------------------------------------------------------------------
+// Terminal-width-aware truncation
+// ----------------------------------------------------------------------------
+
+// newObsWithWidth creates a ConsoleObserver with an explicit terminal width.
+func newObsWithWidth(b *bus.Bus, buf *bytes.Buffer, width int) *console.ConsoleObserver {
+	return console.NewWithWriter(b, false, width, buf, false, false)
+}
+
+func TestConsoleProgressMessageTruncatedToTerminalWidth(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObsWithWidth(b, &buf, 60)
+	defer obs.Close()
+
+	// "  |- " = 5 chars prefix, 2 safety margin = 53 chars available
+	longMsg := strings.Repeat("x", 80)
+	b.Emit(events.ProgressMessage{AgentID: "main", Message: longMsg, Timestamp: time.Now()})
+
+	out := buf.String()
+	// Should be truncated with "..."
+	assert.Contains(t, out, "...")
+	// Total line should not exceed terminal width (prefix + content + newline)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	assert.LessOrEqual(t, len(lines[0]), 60)
+}
+
+func TestConsoleProgressMessageShortNotTruncated(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObsWithWidth(b, &buf, 80)
+	defer obs.Close()
+
+	b.Emit(events.ProgressMessage{AgentID: "main", Message: "short msg", Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.Contains(t, out, "short msg")
+	assert.NotContains(t, out, "...")
+}
+
+func TestConsoleToolInvocationDetailTruncatedToTerminalWidth(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObsWithWidth(b, &buf, 60)
+	defer obs.Close()
+
+	longCmd := strings.Repeat("a", 100)
+	b.Emit(events.ToolInvocation{AgentID: "main", ToolName: "Bash", Detail: longCmd, Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.Contains(t, out, "...")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	assert.LessOrEqual(t, len(lines[0]), 60)
+}
+
+func TestConsoleMinContentWidthFloor(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	// Very narrow terminal — content should still get at least 40 chars
+	obs := newObsWithWidth(b, &buf, 20)
+	defer obs.Close()
+
+	msg := strings.Repeat("z", 50)
+	b.Emit(events.ProgressMessage{AgentID: "main", Message: msg, Timestamp: time.Now()})
+
+	out := buf.String()
+	// With min width 40 and message of 50, it should truncate to 40
+	// (37 chars + "...") rather than some tiny number
+	assert.Contains(t, out, strings.Repeat("z", 37)+"...")
+}

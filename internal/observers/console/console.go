@@ -23,11 +23,24 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
+	"golang.org/x/term"
+
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
+)
+
+const (
+	minContentWidth     = 40  // Minimum characters for truncated content
+	maxContentWidth     = 160 // Maximum characters for truncated content
+	defaultTerminalWidth = 80  // Default when detection fails
+
+	// Prefix lengths for width calculation (character counts including indentation).
+	prefixTreeBranch = 5 // "  ├─ "
+	prefixResult     = 15 // `  ⇒ Result: "` plus closing quote
 )
 
 // agentColors is the cycling palette for agent ID labels, matching the Python
@@ -90,9 +103,10 @@ type ConsoleReporter struct {
 	w   io.Writer
 	sym symbols
 
-	// quiet and color are immutable after construction; safe to read without the lock.
-	quiet bool
-	color bool // emit ANSI color codes
+	// quiet, color, and widthOverride are immutable after construction; safe to read without the lock.
+	quiet         bool
+	color         bool // emit ANSI color codes
+	widthOverride int  // explicit terminal width; 0 = auto-detect
 
 	// Per-agent tracking — protected by mu.
 	lastStateType map[string]string // agentID → "markdown" or "script"
@@ -102,21 +116,69 @@ type ConsoleReporter struct {
 	agentCounter  int               // number of unique agents seen (for cycling)
 }
 
-func newReporter(w io.Writer, quiet, unicode, color bool) *ConsoleReporter {
+func newReporter(w io.Writer, quiet, unicode, color bool, width int) *ConsoleReporter {
 	sym := asciiSyms
 	if unicode {
 		sym = unicodeSyms
 	}
 	return &ConsoleReporter{
-		w:     w,
-		sym:   sym,
-		quiet: quiet,
-		color: color,
+		w:             w,
+		sym:           sym,
+		quiet:         quiet,
+		color:         color,
+		widthOverride: width,
 		lastStateType: make(map[string]string),
 		lastExitCode:  make(map[string]int),
 		lastTool:      make(map[string]string),
 		agentColorMap: make(map[string]string),
 	}
+}
+
+// detectTerminalWidth returns the current terminal width using the same
+// priority as the Python reference: explicit override → COLUMNS env var →
+// terminal query → default 80.
+func (r *ConsoleReporter) detectTerminalWidth() int {
+	if r.widthOverride > 0 {
+		return r.widthOverride
+	}
+	if s := os.Getenv("COLUMNS"); s != "" {
+		if w, err := strconv.Atoi(s); err == nil && w > 0 {
+			return w
+		}
+	}
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		return w
+	}
+	return defaultTerminalWidth
+}
+
+// availableWidth calculates the number of characters available for message
+// content after accounting for the prefix and a 2-character safety margin.
+// The result is clamped to [minContentWidth, maxContentWidth].
+func (r *ConsoleReporter) availableWidth(prefixLen int) int {
+	tw := r.detectTerminalWidth()
+	avail := tw - prefixLen - 2
+	if avail < minContentWidth {
+		return minContentWidth
+	}
+	if avail > maxContentWidth {
+		return maxContentWidth
+	}
+	return avail
+}
+
+// truncateMessage truncates msg to maxWidth runes, appending "..." if
+// truncated.  It operates on runes (not bytes) so that multi-byte UTF-8
+// characters are never split.
+func truncateMessage(msg string, maxWidth int) string {
+	runes := []rune(msg)
+	if len(runes) <= maxWidth {
+		return msg
+	}
+	if maxWidth <= 3 {
+		return string(runes[:maxWidth])
+	}
+	return string(runes[:maxWidth-3]) + "..."
 }
 
 // agentColor returns the ANSI color code assigned to agentID, assigning one
@@ -216,7 +278,8 @@ func (r *ConsoleReporter) onProgressMessage(e events.ProgressMessage) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	fmt.Fprintf(r.w, "  %s %s\n", r.sym.progress, e.Message)
+	msg := truncateMessage(e.Message, r.availableWidth(prefixTreeBranch))
+	fmt.Fprintf(r.w, "  %s %s\n", r.sym.progress, msg)
 }
 
 func (r *ConsoleReporter) onToolInvocation(e events.ToolInvocation) {
@@ -227,7 +290,10 @@ func (r *ConsoleReporter) onToolInvocation(e events.ToolInvocation) {
 		return
 	}
 	if e.Detail != "" {
-		fmt.Fprintf(r.w, "  %s [%s] %s\n", r.sym.progress, e.ToolName, e.Detail)
+		// Prefix: "  ├─ [ToolName] " = 8 + len(tool_name)
+		prefixLen := 8 + len(e.ToolName)
+		detail := truncateMessage(e.Detail, r.availableWidth(prefixLen))
+		fmt.Fprintf(r.w, "  %s [%s] %s\n", r.sym.progress, e.ToolName, detail)
 	} else {
 		fmt.Fprintf(r.w, "  %s [%s]\n", r.sym.progress, e.ToolName)
 	}
@@ -284,7 +350,8 @@ func (r *ConsoleReporter) onAgentTerminated(e events.AgentTerminated) {
 	defer r.mu.Unlock()
 	payload := strings.TrimSpace(e.ResultPayload)
 	if payload != "" {
-		fmt.Fprintf(r.w, "  %s Result: %q\n", r.sym.result, payload)
+		truncated := truncateMessage(payload, r.availableWidth(prefixResult))
+		fmt.Fprintf(r.w, "  %s Result: %q\n", r.sym.result, truncated)
 	} else {
 		fmt.Fprintf(r.w, "  %s (terminated)\n", r.sym.result)
 	}
@@ -293,7 +360,8 @@ func (r *ConsoleReporter) onAgentTerminated(e events.AgentTerminated) {
 func (r *ConsoleReporter) onErrorOccurred(e events.ErrorOccurred) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	msg := e.ErrorMessage
+	// Prefix: "  ! " = 4 chars (before color codes, which are zero-width)
+	msg := truncateMessage(e.ErrorMessage, r.availableWidth(4))
 	if r.color {
 		msg = colorError + msg + colorReset
 	}
@@ -361,8 +429,8 @@ func New(b *bus.Bus, quiet bool, width int) *ConsoleObserver {
 
 // NewWithWriter creates a ConsoleObserver writing to w with explicit unicode
 // and color settings. Use this in tests to capture output predictably.
-func NewWithWriter(b *bus.Bus, quiet bool, _ int, w io.Writer, unicode, color bool) *ConsoleObserver {
-	r := newReporter(w, quiet, unicode, color)
+func NewWithWriter(b *bus.Bus, quiet bool, width int, w io.Writer, unicode, color bool) *ConsoleObserver {
+	r := newReporter(w, quiet, unicode, color, width)
 	o := &ConsoleObserver{reporter: r}
 	o.cancels = []func(){
 		bus.Subscribe(b, r.onWorkflowStarted),

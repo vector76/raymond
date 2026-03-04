@@ -82,6 +82,11 @@ type AgentState struct {
 	RetryCount int    `json:"retry_count,omitempty"` // transient error retry counter
 	Error      string `json:"error,omitempty"`       // last error message when paused/failed
 
+	// ContinueAndFork, when true, tells the executor to use `-c --fork-session`
+	// on the very first invocation (continuing from the user's most recent
+	// interactive Claude session). Cleared after first successful use.
+	ContinueAndFork bool `json:"continue_and_fork,omitempty"`
+
 	// Transient execution fields — not persisted to JSON.
 	// Set by the orchestrator / transition handlers; consumed by the next executor step.
 	ForkSessionID  *string           `json:"-"` // session to fork from (call transitions)
@@ -96,6 +101,7 @@ type LaunchParams struct {
 	Model                      string  `json:"model,omitempty"`
 	Effort                     string  `json:"effort,omitempty"`
 	Timeout                    float64 `json:"timeout,omitempty"`
+	ContinueAndFork            bool    `json:"continue_and_fork,omitempty"`
 }
 
 // WorkflowState is the top-level structure persisted for each workflow.
@@ -263,6 +269,9 @@ func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD flo
 	}
 	if initialInput != nil {
 		agent.PendingResult = initialInput
+	}
+	if len(launchParams) > 0 && launchParams[0] != nil && launchParams[0].ContinueAndFork {
+		agent.ContinueAndFork = true
 	}
 
 	ws := &WorkflowState{

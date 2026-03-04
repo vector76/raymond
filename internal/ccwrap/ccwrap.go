@@ -84,13 +84,14 @@ func BuildClaudeEnv() map[string]string {
 
 // BuildClaudeCommand constructs the full claude CLI argument slice.
 //
-//   - model == ""     → omit --model
-//   - effort == ""    → omit --effort
-//   - sessionID == "" → omit --resume
-//   - fork == true    → prepend --fork-session before the prompt separator
+//   - model == ""          → omit --model
+//   - effort == ""         → omit --effort
+//   - sessionID == ""      → omit --resume
+//   - fork == true         → prepend --fork-session before the prompt separator
+//   - continueSession == true → emit -c and --fork-session, skip --resume
 func BuildClaudeCommand(
 	prompt, model, effort, sessionID string,
-	dangerouslySkipPermissions, fork bool,
+	dangerouslySkipPermissions, fork, continueSession bool,
 ) []string {
 	cmd := []string{
 		claudeExe,
@@ -113,19 +114,26 @@ func BuildClaudeCommand(
 		cmd = append(cmd, "--effort", effort)
 	}
 
-	if sessionID != "" {
-		cmd = append(cmd, "--resume", sessionID)
+	if continueSession {
+		// Continue from the user's most recent interactive session and fork it.
+		// -c picks up the latest session; --fork-session creates a copy.
+		// Skip --resume even if sessionID is non-empty.
+		cmd = append(cmd, "-c", "--fork-session")
+	} else {
+		if sessionID != "" {
+			cmd = append(cmd, "--resume", sessionID)
+		}
+
+		// IMPORTANT: --fork-session must come before the "--" separator so the
+		// claude CLI interprets it as a flag rather than as part of the prompt text.
+		if fork {
+			cmd = append(cmd, "--fork-session")
+		}
 	}
 
 	// Unconditionally prevent orchestrator-level tools from being used by
 	// managed agents.
 	cmd = append(cmd, "--disallowed-tools", strings.Join(DisallowedTools, ","))
-
-	// IMPORTANT: --fork-session must come before the "--" separator so the
-	// claude CLI interprets it as a flag rather than as part of the prompt text.
-	if fork {
-		cmd = append(cmd, "--fork-session")
-	}
 
 	cmd = append(cmd, "--", prompt)
 
@@ -172,12 +180,13 @@ func InvokeStream(
 	idleTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
+	continueSession bool,
 ) <-chan StreamItem {
 	ch := make(chan StreamItem, 64)
 	go func() {
 		defer close(ch)
 		err := runStream(ctx, ch, prompt, model, effort, sessionID, idleTimeout,
-			dangerouslySkipPermissions, fork, cwd)
+			dangerouslySkipPermissions, fork, cwd, continueSession)
 		if err != nil {
 			select {
 			case ch <- StreamItem{Err: err}:
@@ -202,8 +211,9 @@ func runStream(
 	idleTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
+	continueSession bool,
 ) error {
-	cmdSlice := BuildClaudeCommand(prompt, model, effort, sessionID, dangerouslySkipPermissions, fork)
+	cmdSlice := BuildClaudeCommand(prompt, model, effort, sessionID, dangerouslySkipPermissions, fork, continueSession)
 	execCmd := exec.Command(cmdSlice[0], cmdSlice[1:]...)
 	execCmd.Stdin = nil // → /dev/null per exec.Cmd docs
 
@@ -349,6 +359,7 @@ func Invoke(
 	totalTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
+	continueSession bool,
 ) ([]map[string]any, string, error) {
 	if totalTimeout > 0 {
 		var cancel context.CancelFunc
@@ -358,7 +369,7 @@ func Invoke(
 	}
 
 	ch := InvokeStream(ctx, prompt, model, effort, sessionID, 0,
-		dangerouslySkipPermissions, fork, cwd)
+		dangerouslySkipPermissions, fork, cwd, continueSession)
 
 	var results []map[string]any
 	var extractedSID string

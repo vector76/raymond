@@ -45,7 +45,7 @@ func writeFakeClaude(t *testing.T, body string) string {
 // --------------------------------------------------------------------------
 
 func TestBuildClaudeCommand_Default(t *testing.T) {
-	got := BuildClaudeCommand("hello world", "", "", "", false, false)
+	got := BuildClaudeCommand("hello world", "", "", "", false, false, false)
 	want := []string{
 		"claude", "-p",
 		"--output-format", "stream-json",
@@ -65,32 +65,32 @@ func TestBuildClaudeCommand_Default(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_WithModel(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "haiku", "", "", false, false)
+	got := BuildClaudeCommand("prompt", "haiku", "", "", false, false, false)
 	if !containsSeq(got, "--model", "haiku") {
 		t.Errorf("expected --model haiku in %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_WithEffort(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", "", false, false)
+	got := BuildClaudeCommand("prompt", "", "", "", false, false, false)
 	if contains(got, "--effort") {
 		t.Errorf("should not have --effort when effort is empty: %v", got)
 	}
-	got = BuildClaudeCommand("prompt", "", "high", "", false, false)
+	got = BuildClaudeCommand("prompt", "", "high", "", false, false, false)
 	if !containsSeq(got, "--effort", "high") {
 		t.Errorf("expected --effort high in %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_WithSessionID(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", "sess-abc", false, false)
+	got := BuildClaudeCommand("prompt", "", "", "sess-abc", false, false, false)
 	if !containsSeq(got, "--resume", "sess-abc") {
 		t.Errorf("expected --resume sess-abc in %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_DangerouslySkipPermissions(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", "", true, false)
+	got := BuildClaudeCommand("prompt", "", "", "", true, false, false)
 	if !contains(got, "--dangerously-skip-permissions") {
 		t.Errorf("expected --dangerously-skip-permissions in %v", got)
 	}
@@ -100,14 +100,14 @@ func TestBuildClaudeCommand_DangerouslySkipPermissions(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_PermissionModeAcceptEdits(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", "", false, false)
+	got := BuildClaudeCommand("prompt", "", "", "", false, false, false)
 	if !containsSeq(got, "--permission-mode", "acceptEdits") {
 		t.Errorf("expected --permission-mode acceptEdits in %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_Fork(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", "sess-xyz", false, true)
+	got := BuildClaudeCommand("prompt", "", "", "sess-xyz", false, true, false)
 	// --fork-session must appear BEFORE -- so the claude CLI sees it as a flag,
 	// not as part of the prompt text.
 	sepIdx := indexOf(got, "--")
@@ -121,14 +121,14 @@ func TestBuildClaudeCommand_Fork(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_NoFork(t *testing.T) {
-	got := BuildClaudeCommand("prompt", "", "", "", false, false)
+	got := BuildClaudeCommand("prompt", "", "", "", false, false, false)
 	if contains(got, "--fork-session") {
 		t.Errorf("should not have --fork-session when fork=false: %v", got)
 	}
 }
 
 func TestBuildClaudeCommand_AllOptions(t *testing.T) {
-	got := BuildClaudeCommand("my prompt", "opus", "high", "sid123", true, true)
+	got := BuildClaudeCommand("my prompt", "opus", "high", "sid123", true, true, false)
 	checks := []struct {
 		name string
 		fn   func() bool
@@ -153,7 +153,7 @@ func TestBuildClaudeCommand_AllOptions(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_DisallowedToolsJoined(t *testing.T) {
-	got := BuildClaudeCommand("p", "", "", "", false, false)
+	got := BuildClaudeCommand("p", "", "", "", false, false, false)
 	idx := indexOf(got, "--disallowed-tools")
 	if idx < 0 || idx+1 >= len(got) {
 		t.Fatalf("--disallowed-tools not found in %v", got)
@@ -172,7 +172,7 @@ func TestBuildClaudeCommand_DisallowedToolsJoined(t *testing.T) {
 
 func TestBuildClaudeCommand_PromptAfterSeparator(t *testing.T) {
 	prompt := "do something\nwith newlines"
-	got := BuildClaudeCommand(prompt, "", "", "", false, false)
+	got := BuildClaudeCommand(prompt, "", "", "", false, false, false)
 	sepIdx := indexOf(got, "--")
 	if sepIdx < 0 {
 		t.Fatal("-- separator not found")
@@ -290,7 +290,7 @@ echo '{"type":"end"}'
 	overrideClaudeExe(t, script)
 
 	ctx := context.Background()
-	ch := InvokeStream(ctx, "test prompt", "", "", "", 0, false, false, "")
+	ch := InvokeStream(ctx, "test prompt", "", "", "", 0, false, false, "", false)
 
 	var items []StreamItem
 	for item := range ch {
@@ -323,7 +323,7 @@ echo '{"type":"data2"}'
 `)
 	overrideClaudeExe(t, script)
 
-	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "")
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "", false)
 	var objects []map[string]any
 	for item := range ch {
 		if item.Err != nil {
@@ -347,7 +347,7 @@ echo 'also not json'
 `)
 	overrideClaudeExe(t, script)
 
-	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "")
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "", false)
 	var objects []map[string]any
 	for item := range ch {
 		if item.Err != nil {
@@ -373,7 +373,7 @@ exit 42
 `)
 	overrideClaudeExe(t, script)
 
-	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "")
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, "", false)
 	var lastErr error
 	var objCount int
 	for item := range ch {
@@ -405,7 +405,7 @@ echo '{"type":"end"}'
 
 	ctx := context.Background()
 	start := time.Now()
-	ch := InvokeStream(ctx, "p", "", "", "", 0.15, false, false, "") // 150 ms idle timeout
+	ch := InvokeStream(ctx, "p", "", "", "", 0.15, false, false, "", false) // 150 ms idle timeout
 
 	var lastErr error
 	for item := range ch {
@@ -437,7 +437,7 @@ sleep 30
 	overrideClaudeExe(t, script)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ch := InvokeStream(ctx, "p", "", "", "", 0, false, false, "")
+	ch := InvokeStream(ctx, "p", "", "", "", 0, false, false, "", false)
 
 	// Receive the first item, then cancel.
 	item := <-ch
@@ -468,7 +468,7 @@ func TestInvokeStream_Cwd(t *testing.T) {
 	overrideClaudeExe(t, script)
 
 	dir := t.TempDir()
-	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, dir)
+	ch := InvokeStream(context.Background(), "p", "", "", "", 0, false, false, dir, false)
 	var objects []map[string]any
 	for item := range ch {
 		if item.Err != nil {
@@ -504,7 +504,7 @@ echo '{"type":"result","content":"done"}'
 `)
 	overrideClaudeExe(t, script)
 
-	objects, sid, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
+	objects, sid, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -523,7 +523,7 @@ echo '{"type":"meta","metadata":{"session_id":"nested-sid"}}'
 `)
 	overrideClaudeExe(t, script)
 
-	_, sid, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
+	_, sid, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestInvoke_TotalTimeout(t *testing.T) {
 	overrideClaudeExe(t, script)
 
 	start := time.Now()
-	_, _, err := Invoke(context.Background(), "p", "", "", "", 0.2, false, false, "") // 200 ms timeout
+	_, _, err := Invoke(context.Background(), "p", "", "", "", 0.2, false, false, "", false) // 200 ms timeout
 	elapsed := time.Since(start)
 
 	if elapsed > 5*time.Second {
@@ -559,7 +559,7 @@ func TestInvoke_ExitError(t *testing.T) {
 	script := writeFakeClaude(t, `exit 1`)
 	overrideClaudeExe(t, script)
 
-	_, _, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
+	_, _, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "", false)
 	if err == nil {
 		t.Fatal("expected error for exit code 1")
 	}
@@ -574,7 +574,7 @@ func TestInvoke_NoTimeout(t *testing.T) {
 	script := writeFakeClaude(t, `echo '{"type":"ok"}'`)
 	overrideClaudeExe(t, script)
 
-	objects, _, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "")
+	objects, _, err := Invoke(context.Background(), "p", "", "", "", 0, false, false, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -646,7 +646,7 @@ func beforeSep(slice []string, s string) bool {
 // test: --fork-session must appear before "--" so the claude CLI treats it as a
 // flag and not as part of the prompt text.
 func TestBuildClaudeCommand_ForkBeforeSeparator(t *testing.T) {
-	cmd := BuildClaudeCommand("test prompt", "", "", "", false, true)
+	cmd := BuildClaudeCommand("test prompt", "", "", "", false, true, false)
 
 	if !contains(cmd, "--fork-session") {
 		t.Fatal("--fork-session not found in command")
@@ -659,7 +659,7 @@ func TestBuildClaudeCommand_ForkBeforeSeparator(t *testing.T) {
 // TestBuildClaudeCommand_EffortBeforeSeparator is a position-assertion regression
 // test: --effort must appear before "--" so the claude CLI treats it as a flag.
 func TestBuildClaudeCommand_EffortBeforeSeparator(t *testing.T) {
-	cmd := BuildClaudeCommand("test prompt", "", "low", "", false, false)
+	cmd := BuildClaudeCommand("test prompt", "", "low", "", false, false, false)
 
 	effortIdx := indexOf(cmd, "--effort")
 	if effortIdx < 0 {
@@ -667,5 +667,32 @@ func TestBuildClaudeCommand_EffortBeforeSeparator(t *testing.T) {
 	}
 	if !beforeSep(cmd, "--effort") {
 		t.Errorf("--effort must come before '--' separator; got: %v", cmd)
+	}
+}
+
+// TestBuildClaudeCommand_ContinueSession verifies that continueSession=true
+// emits -c and --fork-session flags and omits --resume even when sessionID is set.
+func TestBuildClaudeCommand_ContinueSession(t *testing.T) {
+	cmd := BuildClaudeCommand("prompt", "", "", "existing-sess", false, false, true)
+
+	// Must have -c and --fork-session before the separator.
+	if !beforeSep(cmd, "-c") {
+		t.Errorf("-c must appear before '--' separator; got: %v", cmd)
+	}
+	if !beforeSep(cmd, "--fork-session") {
+		t.Errorf("--fork-session must appear before '--' separator; got: %v", cmd)
+	}
+	// Must NOT have --resume (continue-session skips resume).
+	if contains(cmd, "--resume") {
+		t.Errorf("--resume should not appear when continueSession=true; got: %v", cmd)
+	}
+}
+
+// TestBuildClaudeCommand_ContinueSessionNoCFlag verifies that when continueSession
+// is false, the -c flag is not emitted.
+func TestBuildClaudeCommand_ContinueSessionNoCFlag(t *testing.T) {
+	cmd := BuildClaudeCommand("prompt", "", "", "", false, false, false)
+	if contains(cmd, "-c") {
+		t.Errorf("-c should not appear when continueSession=false; got: %v", cmd)
 	}
 }

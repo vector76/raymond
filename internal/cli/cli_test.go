@@ -238,9 +238,9 @@ func TestStartDirectoryEntryPoint(t *testing.T) {
 	stateDir := makeStateDir(t)
 	workflowDir := t.TempDir()
 
-	// --no-run writes the state file without invoking the runner, so we can
+	// The test CLI has a no-op runner, so the state file is written and we can
 	// inspect the resolved initial state.
-	_, _, err := run(t, workflowDir, "--no-run", "--state-dir", stateDir)
+	_, _, err := run(t, workflowDir, "--state-dir", stateDir)
 	require.NoError(t, err)
 
 	ids, listErr := wfstate.ListWorkflows(stateDir)
@@ -264,7 +264,7 @@ func TestStartDirectoryScopeDirIsAbsolute(t *testing.T) {
 	require.NoError(t, os.Chdir(filepath.Dir(workflowDir)))
 	relDir := filepath.Base(workflowDir)
 
-	_, _, err := run(t, relDir, "--no-run", "--state-dir", stateDir)
+	_, _, err := run(t, relDir, "--state-dir", stateDir)
 	require.NoError(t, err)
 
 	ids, listErr := wfstate.ListWorkflows(stateDir)
@@ -288,7 +288,7 @@ func TestStartZipFileEntryPoint(t *testing.T) {
 	zipFile := filepath.Join(dir, "workflow.zip")
 	writeTestZip(t, zipFile, map[string]string{"1_START.md": "# Start"})
 
-	_, _, err := run(t, zipFile, "--no-run", "--state-dir", stateDir)
+	_, _, err := run(t, zipFile, "--state-dir", stateDir)
 	require.NoError(t, err)
 
 	ids, listErr := wfstate.ListWorkflows(stateDir)
@@ -754,41 +754,52 @@ func TestWorkflowIDFlagDuplicateIDReturnsError(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// --no-run flag
+// --continue-session flag
 // --------------------------------------------------------------------------
 
-func TestNoRunFlagCreatesStateWithoutRunning(t *testing.T) {
+func TestContinueSessionFlagSetsLaunchParamsAndAgentState(t *testing.T) {
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()
 	startFile := filepath.Join(dir, "START.md")
 	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
 
-	out, _, err := run(t, startFile, "--no-run", "--state-dir", stateDir)
+	_, _, err := run(t, startFile, "--continue-session", "--state-dir", stateDir)
 	require.NoError(t, err)
-
-	// A state file should have been created.
-	ids, err := wfstate.ListWorkflows(stateDir)
-	require.NoError(t, err)
-	assert.Len(t, ids, 1)
-
-	// Output should show the workflow ID and a resume hint.
-	assert.Contains(t, out, "Created workflow")
-	assert.Contains(t, out, "--resume")
-}
-
-func TestNoRunFlagWithWorkflowID(t *testing.T) {
-	stateDir := makeStateDir(t)
-	dir := t.TempDir()
-	startFile := filepath.Join(dir, "START.md")
-	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
-
-	out, _, err := run(t, startFile, "--no-run", "--workflow-id", "preset-wf", "--state-dir", stateDir)
-	require.NoError(t, err)
-
-	assert.Contains(t, out, "preset-wf")
 
 	ids, err := wfstate.ListWorkflows(stateDir)
 	require.NoError(t, err)
 	require.Len(t, ids, 1)
-	assert.Equal(t, "preset-wf", ids[0])
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+
+	// LaunchParams should have ContinueAndFork set.
+	require.NotNil(t, ws.LaunchParams)
+	assert.True(t, ws.LaunchParams.ContinueAndFork,
+		"LaunchParams.ContinueAndFork should be true")
+
+	// The agent should also have ContinueAndFork set.
+	require.Len(t, ws.Agents, 1)
+	assert.True(t, ws.Agents[0].ContinueAndFork,
+		"AgentState.ContinueAndFork should be true")
+}
+
+func TestContinueSessionFlagDefaultFalse(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	_, _, err := run(t, startFile, "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	require.Len(t, ws.Agents, 1)
+	assert.False(t, ws.Agents[0].ContinueAndFork,
+		"AgentState.ContinueAndFork should be false by default")
 }

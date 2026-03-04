@@ -30,7 +30,7 @@ func ResetRunScriptFn() {
 
 // SetInvokeStreamFn replaces the ccwrap.InvokeStream implementation used by
 // MarkdownExecutor. Call ResetInvokeStreamFn in a defer to restore the original.
-func SetInvokeStreamFn(fn func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem) {
+func SetInvokeStreamFn(fn func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem) {
 	invokeStreamFn = fn
 }
 

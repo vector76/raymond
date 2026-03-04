@@ -127,7 +127,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		initCfg                    bool
 		stateDir                   string // hidden; for testing
 		workflowID                 string
-		noRun                      bool
+		continueSession            bool
 	)
 
 	root := &cobra.Command{
@@ -169,6 +169,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 					}
 					if !cmd.Flags().Changed("timeout") && lp.Timeout > 0 {
 						timeout = lp.Timeout
+					}
+					if !cmd.Flags().Changed("continue-session") && lp.ContinueAndFork {
+						continueSession = lp.ContinueAndFork
 					}
 				}
 			}
@@ -253,8 +256,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				Model:                      merged.Model,
 				Effort:                     merged.Effort,
 				Timeout:                    effectiveTimeout,
+				ContinueAndFork:            continueSession,
 			}
-			return c.cmdStart(args[0], effectiveBudget, initialInput, opts, lp, workflowID, noRun)
+			return c.cmdStart(args[0], effectiveBudget, initialInput, opts, lp, workflowID)
 		},
 	}
 
@@ -276,7 +280,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.BoolVar(&initCfg, "init-config", false, "create a template .raymond/config.toml")
 
 	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
-	f.BoolVar(&noRun, "no-run", false, "create workflow without running it")
+	f.BoolVar(&continueSession, "continue-session", false, "continue from the most recent interactive Claude session")
 
 	// Hidden flag: allows tests to control the state directory without
 	// requiring a real .raymond directory structure.
@@ -292,10 +296,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 // Command implementations
 // --------------------------------------------------------------------------
 
-// cmdStart creates initial workflow state and optionally invokes the runner.
+// cmdStart creates initial workflow state and invokes the runner.
 // workflowIDOverride is the user-specified workflow ID; when empty, one is generated.
-// When noRun is true the state is written but the runner is not invoked.
-func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts orchestrator.RunOptions, lp *wfstate.LaunchParams, workflowIDOverride string, noRun bool) error {
+func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts orchestrator.RunOptions, lp *wfstate.LaunchParams, workflowIDOverride string) error {
 	scopeDir, initialState, err := parseScopeAndState(arg)
 	if err != nil {
 		return err
@@ -334,12 +337,6 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 	ws := wfstate.CreateInitialState(workflowID, scopeDir, initialState, budgetUSD, initialInput, lp)
 	if err := wfstate.WriteState(workflowID, ws, resolvedStateDir); err != nil {
 		return fmt.Errorf("write initial state: %w", err)
-	}
-
-	if noRun {
-		fmt.Fprintf(c.stdout, "Created workflow '%s'\n", workflowID)
-		fmt.Fprintf(c.stdout, "Run with: raymond --resume %s\n", workflowID)
-		return nil
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

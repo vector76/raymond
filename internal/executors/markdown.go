@@ -28,9 +28,10 @@ var invokeStreamFn = func(
 	idleTimeout float64,
 	dangerouslySkipPermissions, fork bool,
 	cwd string,
+	continueSession bool,
 ) <-chan ccwrap.StreamItem {
 	return ccwrap.InvokeStream(ctx, prompt, model, effort, sessionID, idleTimeout,
-		dangerouslySkipPermissions, fork, cwd)
+		dangerouslySkipPermissions, fork, cwd, continueSession)
 }
 
 // MarkdownExecutor handles .md states by invoking Claude Code.
@@ -123,7 +124,10 @@ func (e *MarkdownExecutor) Execute(
 		// Determine session to use (fork on first call if fork_session_id is set).
 		useSessionID := sessionIDStr(newSessionID)
 		useFork := false
-		if agent.ForkSessionID != nil && reminderAttempt == 0 {
+		useContinue := false
+		if agent.ContinueAndFork && reminderAttempt == 0 {
+			useContinue = true
+		} else if agent.ForkSessionID != nil && reminderAttempt == 0 {
 			useSessionID = *agent.ForkSessionID
 			useFork = true
 		}
@@ -154,7 +158,7 @@ func (e *MarkdownExecutor) Execute(
 		var streamErr error
 
 		ch := invokeStreamFn(ctx, prompt, model, effort, useSessionID,
-			execCtx.Timeout, execCtx.DangerouslySkipPermissions, useFork, agent.Cwd)
+			execCtx.Timeout, execCtx.DangerouslySkipPermissions, useFork, agent.Cwd, useContinue)
 
 		streamLoop:
 		for item := range ch {
@@ -274,6 +278,7 @@ func (e *MarkdownExecutor) Execute(
 		}
 		if allTrs != nil {
 			// Multi-fork: return full list without selecting a single transition.
+			agent.ContinueAndFork = false
 			return ExecutionResult{
 				Transitions: allTrs,
 				SessionID:   newSessionID,
@@ -282,6 +287,9 @@ func (e *MarkdownExecutor) Execute(
 		}
 		transition = singleTr
 	}
+
+	// Clear continue-and-fork so it only fires once.
+	agent.ContinueAndFork = false
 
 	durationMS := float64(time.Since(startTime).Milliseconds())
 

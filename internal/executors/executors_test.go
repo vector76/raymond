@@ -841,7 +841,7 @@ func TestMarkdownExecutor_UsesAgentScopeDir(t *testing.T) {
 	}
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "<goto>NEXT.md</goto>"},
 			{"session_id": "s1", "total_cost_usd": 0.0},
@@ -869,7 +869,7 @@ func TestMarkdownExecutor_EmitsStateStarted(t *testing.T) {
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 	agent := &wfState.Agents[0]
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "Output\n<goto>NEXT.md</goto>"},
 			{"session_id": "sess-123", "total_cost_usd": 0.01},
@@ -900,7 +900,7 @@ func TestMarkdownExecutor_EmitsStateCompleted(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "Output\n<goto>NEXT.md</goto>"},
 			{"session_id": "sess-123", "total_cost_usd": 0.05},
@@ -927,7 +927,7 @@ func TestMarkdownExecutor_ReturnsResultWithTransition(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "Output\n<goto>NEXT.md</goto>"},
 			{"session_id": "sess-123", "total_cost_usd": 0.02},
@@ -955,7 +955,7 @@ func TestMarkdownExecutor_ExtractsSessionID(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "<goto>NEXT.md</goto>"},
 			{"session_id": "new-sess-456", "total_cost_usd": 0.01},
@@ -978,7 +978,7 @@ func TestMarkdownExecutor_AccumulatesCost(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "<goto>NEXT.md</goto>"},
 			{"total_cost_usd": 0.10},
@@ -1024,7 +1024,7 @@ func TestMarkdownExecutor_RaisesLimitError(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "result", "is_error": true, "result": "You've hit your limit for today"},
 		})
@@ -1046,7 +1046,7 @@ func TestMarkdownExecutor_RaisesLimitError_OutOfExtraUsage(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "result", "is_error": true, "result": "You're out of extra usage · resets 1pm (America/Chicago)"},
 		})
@@ -1069,7 +1069,7 @@ func TestMarkdownExecutor_RaisesLimitErrorFromExitCode(t *testing.T) {
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	// Simulate claude exiting with code 1 and a limit message in stderr.
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		ch := make(chan ccwrap.StreamItem, 1)
 		ch <- ccwrap.StreamItem{Err: fmt.Errorf("claude command failed with return code 1\nStderr: You're out of extra usage · resets 1pm (America/Chicago)")}
 		close(ch)
@@ -1100,7 +1100,7 @@ func TestMarkdownExecutor_EmitsClaudeStreamOutputWithDebug(t *testing.T) {
 		DebugDir: debugDir,
 	}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "Output\n<goto>NEXT.md</goto>"},
 			{"session_id": "sess-123", "total_cost_usd": 0.01},
@@ -1123,7 +1123,7 @@ func TestMarkdownExecutor_HandlesResultTransition(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "Done\n<result>Task completed</result>"},
 			{"total_cost_usd": 0.01},
@@ -1149,7 +1149,7 @@ func TestMarkdownExecutor_WritesJSONLDebugFile(t *testing.T) {
 		DebugDir: debugDir,
 	}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "<goto>NEXT.md</goto>"},
 			{"session_id": "sess-123", "total_cost_usd": 0.01},
@@ -1213,7 +1213,7 @@ func TestMarkdownExecutor_EmitsErrorEventOnRetry(t *testing.T) {
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		callCount++
 		if callCount == 1 {
 			return makeMockStream([]map[string]any{
@@ -1250,7 +1250,7 @@ func TestMarkdownExecutor_RaisesAfterMaxRetries(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "No transition"},
 			{"total_cost_usd": 0.01},
@@ -1280,7 +1280,7 @@ func TestStateStarted_HasTimestamp(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: b}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "<goto>NEXT.md</goto>"},
 			{"total_cost_usd": 0.01},
@@ -1377,7 +1377,7 @@ func TestMarkdownExecutor_ReminderEmitsIsReminderFlag(t *testing.T) {
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		callCount++
 		if callCount == 1 {
 			// First attempt: no transition
@@ -1433,7 +1433,7 @@ func TestMarkdownExecutor_CostAccumulatesAcrossReminders(t *testing.T) {
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		callCount++
 		if callCount == 1 {
 			return makeMockStream([]map[string]any{
@@ -1480,7 +1480,7 @@ func TestMarkdownExecutor_ReminderSuccessOnThirdAttempt(t *testing.T) {
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	callCount := 0
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		callCount++
 		if callCount < 3 {
 			return makeMockStream([]map[string]any{
@@ -1521,7 +1521,7 @@ func TestMarkdownExecutor_DefaultModelIsSonnet(t *testing.T) {
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
 	var capturedModel string
-	executors.SetInvokeStreamFn(func(_ context.Context, _ string, model, _, _ string, _ float64, _, _ bool, _ string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(_ context.Context, _ string, model, _, _ string, _ float64, _, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
 		capturedModel = model
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "<goto>NEXT.md</goto>"},
@@ -1551,7 +1551,7 @@ func TestMarkdownExecutor_CLIModelOverridesDefault(t *testing.T) {
 	}
 
 	var capturedModel string
-	executors.SetInvokeStreamFn(func(_ context.Context, _ string, model, _, _ string, _ float64, _, _ bool, _ string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(_ context.Context, _ string, model, _, _ string, _ float64, _, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
 		capturedModel = model
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "<goto>NEXT.md</goto>"},
@@ -1585,7 +1585,7 @@ func TestMarkdownExecutor_EmitsErrorEventOnToolError(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			// "user" message with a failing tool_result
 			{
@@ -1638,7 +1638,7 @@ func TestMarkdownExecutor_ExtractsToolUseErrorTags(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{
 				"type": "user",
@@ -1683,7 +1683,7 @@ func TestMarkdownExecutor_NonErrorToolResultIgnored(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{
 				"type": "user",
@@ -1728,7 +1728,7 @@ func TestMarkdownExecutor_BudgetExceededTerminatesWorkflow(t *testing.T) {
 
 	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
 
-	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string) <-chan ccwrap.StreamItem {
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
 			{"type": "content", "text": "Working..."},
 			{"total_cost_usd": 0.05}, // cost exceeds 0.01 budget

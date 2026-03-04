@@ -2,8 +2,8 @@
 // absolute scope directories and entry points.
 //
 // A specifier may point to one of three things:
-//   - A directory: ScopeDir = dir, EntryPoint = resolved 1_START (any extension)
-//   - A .zip archive: ScopeDir = zip path, EntryPoint = resolved 1_START (any extension)
+//   - A directory: ScopeDir = dir, EntryPoint = resolved entry point (1_START or START, any extension)
+//   - A .zip archive: ScopeDir = zip path, EntryPoint = resolved entry point (1_START or START, any extension)
 //   - An explicit .md file: ScopeDir = parent dir, EntryPoint = filename
 //
 // Relative specifiers are resolved against the caller's scope directory.
@@ -36,9 +36,9 @@ type Resolution struct {
 //     the effective base is the zip stem path (zip filename minus extension),
 //     so "../sibling/" from caller.zip navigates to the zip's parent directory.
 //  3. Classify by extension and validate:
-//     - .zip: verify hash, layout, and resolve 1_START (any extension)
+//     - .zip: verify hash, layout, and resolve entry point (1_START or START)
 //     - .md:  verify the file exists
-//     - other: resolve 1_START (any extension) in the directory
+//     - other: resolve entry point (1_START or START) in the directory
 //  4. Derive Abbrev: base name (or zip stem), lowercased and capped at 6 chars.
 func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	// 1. Normalize separators.
@@ -74,9 +74,9 @@ func resolveZip(zipPath string) (Resolution, error) {
 	if _, err := zipscope.DetectLayout(zipPath); err != nil {
 		return Resolution{}, fmt.Errorf("invalid zip %q: %w", zipPath, err)
 	}
-	entryPoint, err := prompts.ResolveState(zipPath, "1_START")
+	entryPoint, err := ResolveEntryPoint(zipPath)
 	if err != nil {
-		return Resolution{}, fmt.Errorf("1_START not found in zip archive %q: %w", zipPath, err)
+		return Resolution{}, fmt.Errorf("cannot resolve entry point in zip archive %q: %w", zipPath, err)
 	}
 	base := filepath.Base(zipPath)
 	stem := base[:len(base)-len(filepath.Ext(base))]
@@ -101,15 +101,39 @@ func resolveMd(mdPath string) (Resolution, error) {
 }
 
 func resolveDir(dirPath string) (Resolution, error) {
-	entryPoint, err := prompts.ResolveState(dirPath, "1_START")
+	entryPoint, err := ResolveEntryPoint(dirPath)
 	if err != nil {
-		return Resolution{}, fmt.Errorf("1_START not found in directory %s: %w", dirPath, err)
+		return Resolution{}, fmt.Errorf("cannot resolve entry point in directory %s: %w", dirPath, err)
 	}
 	return Resolution{
 		ScopeDir:   dirPath,
 		EntryPoint: entryPoint,
 		Abbrev:     abbrev(filepath.Base(dirPath)),
 	}, nil
+}
+
+// ResolveEntryPoint tries to find the workflow entry point in scopeDir.
+// It prefers "1_START" (any extension), falls back to "START" (any extension),
+// and returns an error if both exist or neither exists.
+func ResolveEntryPoint(scopeDir string) (string, error) {
+	oneStart, oneErr := prompts.ResolveState(scopeDir, "1_START")
+	start, startErr := prompts.ResolveState(scopeDir, "START")
+
+	switch {
+	case oneErr == nil && startErr == nil:
+		return "", fmt.Errorf(
+			"ambiguous entry point: both %s and %s exist; remove one",
+			oneStart, start)
+	case oneErr == nil:
+		return oneStart, nil
+	case startErr == nil:
+		return start, nil
+	default:
+		// Both failed. Report the 1_START error since it is the primary
+		// entry point name and its error is more specific (e.g. ambiguity
+		// between 1_START.md and 1_START.sh).
+		return "", fmt.Errorf("no entry point found: %w", oneErr)
+	}
 }
 
 // abbrev derives a short identifier: lowercased base name capped at 6 characters.

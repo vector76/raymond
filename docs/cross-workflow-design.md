@@ -79,9 +79,9 @@ same grammar accepted by `raymond --start` on the command line:
 
 | Specifier form | Meaning |
 |----------------|---------|
-| `../other-workflow/` | Directory; entry point resolved to `1_START` (any supported extension) |
+| `../other-workflow/` | Directory; entry point resolved to `1_START` or `START` (any supported extension) |
 | `../other-workflow/1_START.md` | Explicit entry point file |
-| `../other-workflow.zip` | Zip archive; entry point is `1_START` (any supported extension) inside |
+| `../other-workflow.zip` | Zip archive; entry point is `1_START` or `START` (any supported extension) inside |
 
 The scope directory for the invoked workflow is derived from the specifier:
 - For a directory or `.md` file specifier, scope = the containing directory.
@@ -150,11 +150,12 @@ regardless of the current directory at resume time.
 ### Entry point resolution for directory specifiers
 
 When the specifier is a directory (no `.md` extension, no `.zip` extension), the
-entry point is resolved from `1_START` inside that directory using the same
-extension-agnostic resolution as `<goto>` (finds `1_START.md`, `1_START.sh`,
-etc.). This mirrors the convention already used for `raymond workflow/` on the
-command line. If no matching `1_START` file exists, the invocation is an error
-at dispatch time.
+entry point is resolved from `1_START` (or `START` as a fallback) inside that
+directory using the same extension-agnostic resolution as `<goto>` (finds
+`1_START.md`, `1_START.sh`, etc.). `1_START` takes priority; if both `1_START`
+and `START` exist, it is a fatal error. This mirrors the convention already used
+for `raymond workflow/` on the command line. If no matching entry point file
+exists, the invocation is an error at dispatch time.
 
 ## Tag Semantics
 
@@ -482,9 +483,9 @@ The workflow specifier (tag content) is parsed at transition dispatch time:
 3. Store as an absolute path in the agent state.
 4. Determine scope: directory → scope is that directory; `.md` file → scope is
    its containing directory; `.zip` file → scope is the zip (existing logic).
-5. Resolve entry point: directory scope → `1_START` (any supported extension);
-   `.md` specifier → the specified file; zip → `1_START` (any supported
-   extension) inside the archive.
+5. Resolve entry point: directory scope → `1_START` or `START` (any supported
+   extension); `.md` specifier → the specified file; zip → `1_START` or `START`
+   (any supported extension) inside the archive.
 
 ### Session handling for `call-workflow`
 

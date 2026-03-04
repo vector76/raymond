@@ -166,8 +166,14 @@ func ValidateTransitionPolicy(transition parsing.Transition, p *Policy) error {
 		if allowed["tag"] != transition.Tag {
 			continue
 		}
-		// result tags have no target or constrained attributes.
+		// result tags: if the policy specifies a fixed payload, only match
+		// when the transition's payload matches; otherwise allow any payload.
 		if transition.Tag == "result" {
+			if allowedPayload, ok := allowed["payload"]; ok {
+				if transition.Payload != allowedPayload {
+					continue
+				}
+			}
 			return nil
 		}
 		// Check target (if policy specifies one).
@@ -199,12 +205,22 @@ func ValidateTransitionPolicy(transition parsing.Transition, p *Policy) error {
 		}
 	}
 	if len(allowedForTag) > 0 {
-		return &PolicyViolationError{msg: fmt.Sprintf(
-			"transition %q with target %q and attributes %v is not allowed. "+
-				"Allowed combinations for %q: %v",
-			transition.Tag, transition.Target, transition.Attributes,
-			transition.Tag, allowedForTag,
-		)}
+		var detail string
+		if transition.Tag == "result" {
+			detail = fmt.Sprintf(
+				"result with payload %q is not allowed. "+
+					"Allowed payloads for %q: %v",
+				transition.Payload, transition.Tag, allowedForTag,
+			)
+		} else {
+			detail = fmt.Sprintf(
+				"transition %q with target %q and attributes %v is not allowed. "+
+					"Allowed combinations for %q: %v",
+				transition.Tag, transition.Target, transition.Attributes,
+				transition.Tag, allowedForTag,
+			)
+		}
+		return &PolicyViolationError{msg: detail}
 	}
 
 	seen := map[string]bool{}
@@ -225,15 +241,17 @@ func ValidateTransitionPolicy(transition parsing.Transition, p *Policy) error {
 // CanUseImplicitTransition reports whether the policy's single allowed
 // transition can be used implicitly (without requiring the agent to emit a tag).
 //
-// Conditions: policy exists, exactly one allowed transition, tag is not "result"
-// (result payloads are variable), and a target is specified.
+// Conditions: policy exists, exactly one allowed transition, and either a
+// target is specified (for non-result tags) or a fixed payload is specified
+// (for result tags).
 func CanUseImplicitTransition(p *Policy) bool {
 	if p == nil || len(p.AllowedTransitions) != 1 {
 		return false
 	}
 	allowed := p.AllowedTransitions[0]
 	if allowed["tag"] == "result" {
-		return false
+		_, hasPayload := allowed["payload"]
+		return hasPayload
 	}
 	_, hasTarget := allowed["target"]
 	return hasTarget
@@ -245,10 +263,16 @@ func GetImplicitTransition(p *Policy) (parsing.Transition, error) {
 	if !CanUseImplicitTransition(p) {
 		return parsing.Transition{}, fmt.Errorf(
 			"cannot get implicit transition: policy must have exactly one " +
-				"non-result allowed transition with a target",
+				"allowed transition with a target or a result with a fixed payload",
 		)
 	}
 	allowed := p.AllowedTransitions[0]
+	if allowed["tag"] == "result" {
+		return parsing.Transition{
+			Tag:     "result",
+			Payload: allowed["payload"],
+		}, nil
+	}
 	attrs := make(map[string]string)
 	for k, v := range allowed {
 		if k != "tag" && k != "target" {
@@ -305,7 +329,11 @@ func GenerateReminderPrompt(p *Policy) (string, error) {
 
 		var tagStr string
 		if tag == "result" {
-			tagStr = fmt.Sprintf("<%s>...</%s>", tag, tag)
+			if payload, ok := allowed["payload"]; ok {
+				tagStr = fmt.Sprintf("<%s>%s</%s>", tag, payload, tag)
+			} else {
+				tagStr = fmt.Sprintf("<%s>...</%s>", tag, tag)
+			}
 		} else {
 			if target == "" {
 				target = "TARGET"

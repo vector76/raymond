@@ -122,9 +122,10 @@ matches one of the declared transitions. If it doesn't, the agent gets
 re-prompted with a reminder listing the valid options (up to 3 retries).
 
 **2. Implicit transitions:** When frontmatter declares exactly one allowed
-transition (and it's not `<result>`), the agent doesn't need to emit the tag at
-all — the orchestrator assumes it. This saves tokens when only one path is
-possible.
+transition, the agent doesn't need to emit the tag at all — the orchestrator
+assumes it. This saves tokens when only one path is possible. (A bare
+`{ tag: result }` without a `payload` key cannot be implicit, since the
+orchestrator doesn't know what payload to use.)
 
 ```yaml
 ---
@@ -133,6 +134,32 @@ allowed_transitions:
 ---
 Do the work. You don't need to emit a transition tag.
 ```
+
+**Fixed-payload results:** Add a `payload` key to constrain `<result>` values.
+When a single fixed-payload result is the only allowed transition, it becomes
+implicit — the agent doesn't need to emit a tag.
+
+```yaml
+---
+allowed_transitions:
+  - { tag: result, payload: "YES" }
+  - { tag: result, payload: "NO" }
+---
+Is the task complete? Reply with <result>YES</result> or <result>NO</result>
+```
+
+With a single fixed-payload result, the transition is implicit:
+
+```yaml
+---
+allowed_transitions:
+  - { tag: result, payload: "DONE" }
+---
+Process the data. No need to emit a transition tag.
+```
+
+A `{ tag: result }` entry without `payload` still allows any payload and
+cannot be implicit.
 
 **Without frontmatter**, all transitions are allowed but the orchestrator
 cannot recover from missing or invalid tags — failures are fatal.

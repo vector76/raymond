@@ -620,6 +620,118 @@ func TestGenerateReminderWithAttributes(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// Fixed-payload result transitions
+// ----------------------------------------------------------------------------
+
+func TestValidateResultWithMatchingPayloadPasses(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result", "payload": "YES"},
+		},
+	}
+	tr := parsing.Transition{Tag: "result", Payload: "YES"}
+	assert.NoError(t, policy.ValidateTransitionPolicy(tr, p))
+}
+
+func TestValidateResultWithMismatchedPayloadFails(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result", "payload": "YES"},
+		},
+	}
+	tr := parsing.Transition{Tag: "result", Payload: "NO"}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "payload")
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+func TestValidateResultMultipleFixedPayloads(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result", "payload": "YES"},
+			{"tag": "result", "payload": "NO"},
+		},
+	}
+	assert.NoError(t, policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: "YES"}, p))
+	assert.NoError(t, policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: "NO"}, p))
+
+	err := policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: "MAYBE"}, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+func TestValidateResultWithoutPayloadKeyAllowsAnything(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result"},
+		},
+	}
+	assert.NoError(t, policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: "anything"}, p))
+	assert.NoError(t, policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: ""}, p))
+}
+
+func TestCanUseImplicitResultWithPayload(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result", "payload": "YES"},
+		},
+	}
+	assert.True(t, policy.CanUseImplicitTransition(p))
+}
+
+func TestCannotUseImplicitResultWithoutPayload(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result"},
+		},
+	}
+	assert.False(t, policy.CanUseImplicitTransition(p))
+}
+
+func TestGetImplicitTransitionResultWithPayload(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result", "payload": "DONE"},
+		},
+	}
+	tr, err := policy.GetImplicitTransition(p)
+	require.NoError(t, err)
+	assert.Equal(t, "result", tr.Tag)
+	assert.Equal(t, "DONE", tr.Payload)
+	assert.Empty(t, tr.Target)
+}
+
+func TestGenerateReminderResultWithPayload(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "goto", "target": "NEXT.md"},
+			{"tag": "result", "payload": "YES"},
+		},
+	}
+	out, err := policy.GenerateReminderPrompt(p)
+	require.NoError(t, err)
+	assert.Contains(t, out, "<result>YES</result>")
+	assert.NotContains(t, out, "<result>...</result>")
+}
+
+func TestGenerateReminderResultWithoutPayload(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result"},
+		},
+	}
+	out, err := policy.GenerateReminderPrompt(p)
+	require.NoError(t, err)
+	assert.Contains(t, out, "<result>...</result>")
+}
+
+// ----------------------------------------------------------------------------
 // Cross-workflow tag name distinctness (call-workflow, function-workflow, fork-workflow)
 // ----------------------------------------------------------------------------
 

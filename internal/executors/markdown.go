@@ -354,7 +354,7 @@ func (e *MarkdownExecutor) parseAndValidate(
 		return transitions, nil, false, nil
 	}
 
-	// Implicit transition (no tag, policy has exactly one allowed non-result transition with target).
+	// Implicit transition (no tag, policy has exactly one allowed transition with a target or a fixed-payload result).
 	if len(transitions) == 0 && policy.CanUseImplicitTransition(pol) {
 		implicit, implicitErr := policy.GetImplicitTransition(pol)
 		if implicitErr != nil {

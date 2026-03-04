@@ -13,8 +13,7 @@ see [orchestration-design.md](orchestration-design.md).
 
 A **workflow** is a collection of state files that reference each other via
 transition tags. Raymond runs these files in sequence, following the transitions
-your prompts declare. The collection may be a plain directory **or a zip
-archive** (see [Zip Workflow Packaging](#zip-workflow-packaging) below).
+your prompts declare. The collection may be a plain directory or a zip archive.
 
 A **state file** is either:
 - A **markdown prompt** (`.md`) — sent to Claude Code for LLM interpretation
@@ -166,7 +165,7 @@ Frontmatter can specify the effort level for extended thinking:
 ---
 effort: high
 allowed_transitions:
-  - { tag: goto, target: next.md }
+  - { tag: goto, target: NEXT.md }
 ---
 Analyze this complex problem carefully...
 ```
@@ -217,7 +216,7 @@ Scripts receive workflow context via environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `RAYMOND_WORKFLOW_ID` | Workflow run identifier | `wf-2024-01-15-abc123` |
+| `RAYMOND_WORKFLOW_ID` | Workflow run identifier | `wf-2026-01-15-abc123` |
 | `RAYMOND_AGENT_ID` | Current agent identifier | `main`, `main_worker1` |
 | `RAYMOND_RESULT` | Result payload from a `<call>` return, or the `--input` value for the first state | (unset when empty) |
 
@@ -376,7 +375,7 @@ The payload text is passed as-is to the return state via `{{result}}`.
 
 | Question | If yes | If no |
 |----------|--------|-------|
-| Is this part of a larger workflow? | `call`, `goto`, `reset`, or `fork` | `function` |
+| Does the child need the caller's context? | `call` | `function` |
 | Should intermediate work be discarded? | `call` or `reset` | `goto` |
 | Is this a decision/evaluation point? | `function` | Others |
 | Will there be messy iterations? | `call` | `goto` or `reset` |
@@ -513,62 +512,6 @@ meaningful reminder without knowing the allowed transitions.
 All errors are fatal. Scripts must emit exactly one valid tag on every code
 path. There is no re-prompting for scripts.
 
-## Configuration
-
-### CLI Flags
-
-**Starting a workflow:**
-```bash
-raymond workflow.md                          # Start from a specific .md file
-raymond workflows/coding/                    # Start from a directory (uses 1_START.md)
-raymond workflow.zip                         # Start from a zip archive (uses 1_START.md)
-raymond workflow.md --budget 5.0             # Cost limit ($5.00)
-raymond workflow.md --model sonnet           # Default model for all states
-raymond workflow.md --effort high            # Default effort level for all states
-raymond workflow.md --timeout 300            # Idle timeout per invocation in seconds (default: 600, 0=none)
-raymond workflow.md --dangerously-skip-permissions  # No permission prompts
-raymond workflow.md --input "data"           # Initial {{result}} value
-raymond workflow.md --no-debug               # Disable debug logging
-raymond workflow.md --verbose                # Verbose output
-raymond workflow.md --quiet                  # Suppress progress/tool output lines
-raymond workflow.md --no-wait                # Do not auto-wait when limit is reached
-raymond workflow.md --workflow-id my-run     # Assign a custom workflow ID
-raymond workflow.md --no-run                 # Create state file without running
-```
-
-**Managing workflows:**
-```bash
-raymond --resume <id>                        # Resume a paused or interrupted workflow
-raymond --list                               # List all workflow IDs
-raymond --status <id>                        # Show status (state, budget, agents) for a workflow
-raymond --recover                            # List in-progress (resumable) workflows
-```
-
-On `--resume`, the original `--model`, `--effort`, `--timeout`, and
-`--dangerously-skip-permissions` values are automatically restored from the
-saved workflow. Pass any of those flags explicitly to override them.
-
-### Config File
-
-Create `.raymond/config.toml` to avoid repeating CLI flags. Run
-`raymond --init-config` to generate a template with all options commented out,
-then uncomment and set only the values you want to override:
-
-```toml
-[raymond]
-budget = 50.0
-model = "sonnet"
-effort = "medium"
-# timeout = 600.0
-# dangerously_skip_permissions = false
-# no_debug = false
-# no_wait = false
-# verbose = false
-```
-
-CLI arguments override config file values. See
-[configuration-file-design.md](configuration-file-design.md) for details.
-
 ## Complete Examples
 
 ### Pattern: Plan then Implement
@@ -586,7 +529,9 @@ allowed_transitions:
   - { tag: reset, target: IMPLEMENT.md }
 ---
 Read the requirements and create a detailed plan in plan.md.
-When done, emit <reset>IMPLEMENT.md</reset>
+
+STOP after writing plan.md. Do not start implementing yet — that happens
+in a later step.
 ```
 
 **IMPLEMENT.md:**
@@ -653,12 +598,22 @@ If there's nothing more to do: <result>All tasks processed</result>
 
 ### Pattern: Fork Workers
 
-```markdown
-<!-- DISPATCH.md -->
-Read items.txt. For each item, spawn a worker:
-<fork next="DISPATCH.md" item="item1">WORKER.md</fork>
+```
+workflows/dispatch/
+  DISPATCH.md
+  WORKER.md
+```
 
-<!-- WORKER.md -->
+**DISPATCH.md:**
+```markdown
+Read items.txt. For each item, spawn a worker:
+<fork next="DISPATCH.md" item="item-name">WORKER.md</fork>
+
+When there are no more items: <result>All items dispatched</result>
+```
+
+**WORKER.md:**
+```markdown
 ---
 allowed_transitions:
   - { tag: result }
@@ -668,57 +623,3 @@ When done: <result>Processed {{item}}</result>
 ```
 
 For more complete examples, see [sample-workflows.md](sample-workflows.md).
-
-## Zip Workflow Packaging
-
-Workflows can be distributed and run directly from a zip archive. This is
-useful for sharing self-contained workflows without exposing the individual
-files.
-
-### Creating a zip archive
-
-Package your workflow files into a zip archive. Raymond accepts two layouts:
-
-**Flat layout** — all state files at the archive root:
-```bash
-zip workflow.zip 1_START.md REVIEW.md CHECK.sh
-```
-```
-workflow.zip
-├── 1_START.md
-├── REVIEW.md
-└── CHECK.sh
-```
-
-**Single-folder layout** — all state files inside one top-level directory:
-```bash
-zip -r workflow.zip mywf/
-```
-```
-workflow.zip
-└── mywf/
-    ├── 1_START.md
-    ├── REVIEW.md
-    └── CHECK.sh
-```
-
-In either layout, the archive **must** contain `1_START.md`. Raymond uses this
-as the entry point when you pass a zip file as input.
-
-### Running from a zip
-
-```bash
-raymond workflow.zip
-```
-
-State file transitions work exactly as with directory-based workflows — tag
-targets are bare filenames (e.g. `<goto>REVIEW.md</goto>`), resolved within the
-archive.
-
-### Constraints
-
-- Files may not be nested more than one level deep.
-- Mixed layouts (some files at root, some in a folder) are rejected.
-- Multiple top-level folders are rejected.
-- Empty archives are rejected.
-- The zip file must remain at the same path for `raymond resume` to work.

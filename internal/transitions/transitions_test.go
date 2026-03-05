@@ -1736,3 +1736,149 @@ func TestIntraScopeCallResultPreservesDepth(t *testing.T) {
 	assert.Equal(t, 2, r2.Agent.NestingDepth) // must be preserved, not reset to 0
 }
 
+// ----------------------------------------------------------------------------
+// HandleGoto: input attribute
+// ----------------------------------------------------------------------------
+
+func TestGotoInputAttributeSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "goto", Target: "NEXT.md", Attributes: map[string]string{"input": "task data"}}
+
+	result := transitions.HandleGoto(agent, tr)
+
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "task data", *result.Agent.PendingResult)
+}
+
+func TestGotoAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "goto", Target: "NEXT.md", Attributes: map[string]string{}}
+
+	result := transitions.HandleGoto(agent, tr)
+
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestGotoEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "goto", Target: "NEXT.md", Attributes: map[string]string{"input": ""}}
+
+	result := transitions.HandleGoto(agent, tr)
+
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+// ----------------------------------------------------------------------------
+// HandleReset: input attribute
+// ----------------------------------------------------------------------------
+
+func TestResetInputAttributeSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "reset", Target: "START.md", Attributes: map[string]string{"input": "task data"}}
+
+	result := transitions.HandleReset(agent, tr)
+
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "task data", *result.Agent.PendingResult)
+}
+
+func TestResetAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "reset", Target: "START.md", Attributes: map[string]string{}}
+
+	result := transitions.HandleReset(agent, tr)
+
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestResetEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "reset", Target: "START.md", Attributes: map[string]string{"input": ""}}
+
+	result := transitions.HandleReset(agent, tr)
+
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+// ----------------------------------------------------------------------------
+// HandleFunction: input attribute
+// ----------------------------------------------------------------------------
+
+func TestFunctionInputAttributeSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "function", Target: "EVAL.md", Attributes: map[string]string{"return": "NEXT.md", "input": "task data"}}
+
+	result, err := transitions.HandleFunction(agent, tr)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "task data", *result.Agent.PendingResult)
+}
+
+func TestFunctionAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "function", Target: "EVAL.md", Attributes: map[string]string{"return": "NEXT.md"}}
+
+	result, err := transitions.HandleFunction(agent, tr)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestFunctionEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "function", Target: "EVAL.md", Attributes: map[string]string{"return": "NEXT.md", "input": ""}}
+
+	result, err := transitions.HandleFunction(agent, tr)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+// ----------------------------------------------------------------------------
+// HandleCall: input attribute
+// ----------------------------------------------------------------------------
+
+func TestCallInputAttributeSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "call", Target: "CHILD.md", Attributes: map[string]string{"return": "NEXT.md", "input": "task data"}}
+
+	result, err := transitions.HandleCall(agent, tr)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "task data", *result.Agent.PendingResult)
+}
+
+func TestCallAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "call", Target: "CHILD.md", Attributes: map[string]string{"return": "NEXT.md"}}
+
+	result, err := transitions.HandleCall(agent, tr)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestCallEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	tr := parsing.Transition{Tag: "call", Target: "CHILD.md", Attributes: map[string]string{"return": "NEXT.md", "input": ""}}
+
+	result, err := transitions.HandleCall(agent, tr)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+

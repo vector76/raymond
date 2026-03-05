@@ -244,6 +244,9 @@ func withRenderedInput(
 // preserved unchanged.
 func HandleGoto(agent wfstate.AgentState, transition parsing.Transition) TransitionResult {
 	agent.CurrentState = transition.Target
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		agent.PendingResult = &input
+	}
 	return TransitionResult{Agent: &agent}
 }
 
@@ -259,6 +262,10 @@ func HandleReset(agent wfstate.AgentState, transition parsing.Transition) Transi
 
 	if cd, ok := transition.Attributes["cd"]; ok {
 		agent.Cwd = ResolveCd(cd, agent.Cwd)
+	}
+
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		agent.PendingResult = &input
 	}
 
 	return TransitionResult{Agent: &agent}
@@ -291,6 +298,9 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 	agent.Stack = append(agent.Stack, frame)
 	agent.SessionID = nil
 	agent.CurrentState = transition.Target
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		agent.PendingResult = &input
+	}
 
 	return TransitionResult{Agent: &agent}, nil
 }
@@ -324,6 +334,9 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 	agent.Stack = append(agent.Stack, frame)
 	agent.ForkSessionID = callerSession
 	agent.CurrentState = transition.Target
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		agent.PendingResult = &input
+	}
 
 	return TransitionResult{Agent: &agent}, nil
 }

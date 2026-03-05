@@ -1882,3 +1882,53 @@ func TestCallEmptyInputLeavesNilPendingResult(t *testing.T) {
 	assert.Nil(t, result.Agent.PendingResult)
 }
 
+// ----------------------------------------------------------------------------
+// CreateForkWorker: input attribute
+// ----------------------------------------------------------------------------
+
+func TestForkWorkerInputAttributeSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	wfState := &wfstate.WorkflowState{}
+	tr := parsing.Transition{Tag: "fork", Target: "WORKER.md", Attributes: map[string]string{"next": "AFTER.md", "input": "task data"}}
+
+	worker, err := transitions.CreateForkWorker(agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, worker.PendingResult)
+	assert.Equal(t, "task data", *worker.PendingResult)
+}
+
+func TestForkWorkerAbsentInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	wfState := &wfstate.WorkflowState{}
+	tr := parsing.Transition{Tag: "fork", Target: "WORKER.md", Attributes: map[string]string{"next": "AFTER.md"}}
+
+	worker, err := transitions.CreateForkWorker(agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.Nil(t, worker.PendingResult)
+}
+
+func TestForkWorkerEmptyInputLeavesNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	wfState := &wfstate.WorkflowState{}
+	tr := parsing.Transition{Tag: "fork", Target: "WORKER.md", Attributes: map[string]string{"next": "AFTER.md", "input": ""}}
+
+	worker, err := transitions.CreateForkWorker(agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.Nil(t, worker.PendingResult)
+}
+
+func TestForkWorkerInputNotInForkAttributes(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	wfState := &wfstate.WorkflowState{}
+	tr := parsing.Transition{Tag: "fork", Target: "WORKER.md", Attributes: map[string]string{"next": "AFTER.md", "input": "task data", "extra": "value"}}
+
+	worker, err := transitions.CreateForkWorker(agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.NotContains(t, worker.ForkAttributes, "input")
+	assert.Equal(t, "value", worker.ForkAttributes["extra"])
+}
+

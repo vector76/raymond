@@ -382,12 +382,16 @@ func CreateForkWorker(
 	// Collect fork attributes (exclude "next" and "cd").
 	forkAttrs := make(map[string]string)
 	for k, v := range transition.Attributes {
-		if k != "next" && k != "cd" {
+		if k != "next" && k != "cd" && k != "input" {
 			forkAttrs[k] = v
 		}
 	}
 	if len(forkAttrs) > 0 {
 		worker.ForkAttributes = forkAttrs
+	}
+
+	if input, ok := transition.Attributes["input"]; ok && input != "" {
+		worker.PendingResult = &input
 	}
 
 	return worker, nil

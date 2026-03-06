@@ -312,6 +312,12 @@ commit message after implementing code).
 
 **Context:** Preserved. All prior conversation history is visible.
 
+**Optional `input`:** Pass data to the target state via `{{result}}`:
+
+```
+<goto input="3 issues found">REVIEW.md</goto>
+```
+
 ### `<reset>FILE</reset>` — Fresh Start
 
 Discards the current session and starts the next state with **no context**.
@@ -330,6 +336,12 @@ agent's working directory:
 
 ```
 <reset cd="/repo/worktree-feature">IMPLEMENT.md</reset>
+```
+
+**Optional `input`:** Pass data to the target state via `{{result}}`:
+
+```
+<reset input="phase 2">IMPLEMENT.md</reset>
 ```
 
 ### `<call return="NEXT">CHILD</call>` — Subroutine Call
@@ -352,6 +364,12 @@ parent's context.
 **Context:** Child branches from caller. Caller's context is preserved and
 resumed when the child returns.
 
+**Optional `input`:** Pass initial data to the child state via `{{result}}`:
+
+```
+<call return="SUMMARIZE.md" input="focus on security">RESEARCH.md</call>
+```
+
 ### `<function return="NEXT">EVAL</function>` — Stateless Evaluation
 
 Like `<call>`, but the child runs with **no context** (fresh session). Good
@@ -366,6 +384,12 @@ context beyond what's in its own prompt.
 
 **Context:** Child starts fresh. Caller's context is preserved and resumed.
 
+**Optional `input`:** Pass data to the child state via `{{result}}`:
+
+```
+<function return="NEXT.md" input="test output: 3 failures">EVALUATE.md</function>
+```
+
 ### `<fork next="NEXT" ...>WORKER</fork>` — Spawn Independent Agent
 
 Spawns a new independent agent running `WORKER` while the current agent
@@ -377,11 +401,17 @@ return a result to the parent.
 ```
 
 **Attributes:** Beyond the required `next`, any additional attributes become
-template variables in the worker's prompt. The `cd` attribute sets the
-worker's working directory and is not passed as a template variable.
+template variables in the worker's prompt. The `cd` and `input` attributes
+are consumed by the orchestrator and are not passed as template variables.
 
 ```markdown
 <fork next="CONTINUE.md" cd="/repo/worktree-a" task="refactor">WORKER.md</fork>
+```
+
+**Optional `input`:** Pass initial data to the worker via `{{result}}`:
+
+```
+<fork next="CONTINUE.md" item="issue-123" input="high priority">WORKER.md</fork>
 ```
 
 **Use when:** You want parallel execution. The parent doesn't wait for the
@@ -433,10 +463,14 @@ message needs to see what was implemented.
 Prompts support `{{variable}}` placeholders that the orchestrator substitutes
 before sending to Claude Code.
 
-### `{{result}}` — Return Values
+### `{{result}}` — Return Values and Input
 
-When a state is reached via a `<call>` or `<function>` return, the child's
-`<result>` payload is available as `{{result}}`:
+`{{result}}` is set when a state receives data from any of these sources:
+
+- A `<call>` or `<function>` child returning via `<result>`
+- The `input` attribute on any transition tag (`<goto>`, `<reset>`, `<call>`,
+  `<function>`, `<fork>`)
+- The `--input` CLI flag (sets `{{result}}` for the first state)
 
 ```markdown
 The research findings:
@@ -474,8 +508,9 @@ echo "Processing item: $item"        # "issue-123"
 echo "Priority level: $priority"     # "high"
 ```
 
-**Note:** The `next` and `cd` attributes are consumed by the orchestrator and
-are not available as template variables or environment variables.
+**Note:** The `next`, `cd`, and `input` attributes are consumed by the
+orchestrator and are not available as template variables or environment
+variables.
 
 ## State Resolution
 

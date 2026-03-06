@@ -226,6 +226,9 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Return stack**: Preserved unchanged.
 - **Session behavior**: Resume the current session (same context), then load
   `FILE.md` from the scope directory.
+- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+  into the target state's prompt. See [The `input` Attribute](#the-input-attribute)
+  below.
 
 ### `<reset>FILE.md</reset>`
 
@@ -235,12 +238,18 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Optional attribute**: `cd="/path/to/dir"` — changes the agent's working
   directory for all subsequent state executions. See
   [Working Directory](#working-directory-cd-attribute) below.
+- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+  into the target state's prompt. See [The `input` Attribute](#the-input-attribute)
+  below.
 
 ### `<call return="NEXT.md">CHILD.md</call>`
 
 - **Meaning**: Enter a subroutine-like workflow that will eventually return a
   `<result>...</result>` to the caller.
 - **Required attribute**: `return="NEXT.md"` (the state to continue at after return)
+- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+  into the child state's prompt. See [The `input` Attribute](#the-input-attribute)
+  below.
 - **Return stack**: Push a frame for the caller (resume session + `NEXT.md`).
 - **Session behavior**: Start the callee (typically by branching context from the
   caller so the callee can use relevant context without polluting the caller).
@@ -249,6 +258,9 @@ S5 --result--> (pop) resume caller session and continue at S3
 
 - **Meaning**: Run a stateless/pure evaluation task that returns to the caller.
 - **Required attribute**: `return="NEXT.md"`
+- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+  into the child state's prompt. See [The `input` Attribute](#the-input-attribute)
+  below.
 - **Return stack**: Push a frame for the caller (resume session + `NEXT.md`).
 - **Session behavior**: Run in fresh context (no session history).
 
@@ -259,6 +271,9 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Required attribute**: `next="NEXT.md"` (the state the parent continues at)
 - **Optional attribute**: `cd="/path/to/dir"` — sets the worker's working
   directory. See [Working Directory](#working-directory-cd-attribute) below.
+- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+  into the worker's prompt. See [The `input` Attribute](#the-input-attribute)
+  below.
 - **Return stack**:
   - **Worker**: starts with an empty return stack.
   - **Parent**: preserves its existing return stack (like `goto`).
@@ -268,7 +283,7 @@ S5 --result--> (pop) resume caller session and continue at S3
 
 `<fork>` increases the number of live agents by one.
 
-Additional attributes beyond `next` and `cd` become template variables
+Additional attributes beyond `next`, `cd`, and `input` become template variables
 available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
 
 ### `<result>...</result>`
@@ -330,6 +345,35 @@ directory where `raymond` was launched). The `cd` attribute on `<fork>` and
 
 **Note:** The `cd` attribute is consumed by the orchestrator and is NOT
 passed as a template variable or fork attribute.
+
+## The `input` Attribute
+
+All transition tags except `<result>` support an optional `input` attribute
+that injects a string as `{{result}}` into the target state's prompt:
+
+```xml
+<goto input="some data">NEXT.md</goto>
+<reset input="some data">NEXT.md</reset>
+<call return="AFTER.md" input="some data">CHILD.md</call>
+<function return="AFTER.md" input="some data">EVAL.md</function>
+<fork next="CONTINUE.md" input="some data">WORKER.md</fork>
+```
+
+The value is stored as `pending_result` on the agent before the target state
+executes, then cleared after the state runs — the same mechanism used by
+`raymond --input "..."` and by `<result>` return payloads.
+
+**Behavior:**
+- The `input` value is available as `{{result}}` in the target state's prompt
+- If `input` is absent or empty, `{{result}}` remains unsubstituted (same as
+  any unset template variable)
+- The `input` attribute is consumed by the orchestrator and is NOT passed as a
+  template variable or fork attribute
+
+**Use cases:**
+- Pass data between states without relying on `<call>`/`<result>` round-trips
+- Parameterize a `<goto>` or `<reset>` target with runtime data
+- Provide initial context to forked workers alongside fork attributes
 
 ## Multi-tag Outputs
 

@@ -457,6 +457,12 @@ func (e *MarkdownExecutor) parseAndValidate(
 		return nil, nil, false, polErr
 	}
 
+	// Normalize result payload: strip surrounding whitespace so callers receive
+	// a clean value even when the LLM emits extra newlines around the content.
+	if resolved.Tag == "result" {
+		resolved.Payload = strings.TrimSpace(resolved.Payload)
+	}
+
 	return nil, &resolved, false, nil
 }
 

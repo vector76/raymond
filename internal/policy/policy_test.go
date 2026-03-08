@@ -633,6 +633,25 @@ func TestValidateResultWithMatchingPayloadPasses(t *testing.T) {
 	assert.NoError(t, policy.ValidateTransitionPolicy(tr, p))
 }
 
+func TestValidateResultPayloadWhitespaceTrimmed(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "result", "payload": "YES"},
+			{"tag": "result", "payload": "NO"},
+		},
+	}
+	// Leading/trailing whitespace (e.g. newlines) should be stripped before comparison.
+	assert.NoError(t, policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: "\nYES\n"}, p))
+	assert.NoError(t, policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: "  NO  "}, p))
+	// Whitespace-only difference from disallowed value still fails.
+	err := policy.ValidateTransitionPolicy(
+		parsing.Transition{Tag: "result", Payload: "\nMAYBE\n"}, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
 func TestValidateResultWithMismatchedPayloadFails(t *testing.T) {
 	p := &policy.Policy{
 		AllowedTransitions: []map[string]string{

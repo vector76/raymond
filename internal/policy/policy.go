@@ -170,7 +170,7 @@ func ValidateTransitionPolicy(transition parsing.Transition, p *Policy) error {
 		// when the transition's payload matches; otherwise allow any payload.
 		if transition.Tag == "result" {
 			if allowedPayload, ok := allowed["payload"]; ok {
-				if transition.Payload != allowedPayload {
+				if strings.TrimSpace(transition.Payload) != allowedPayload {
 					continue
 				}
 			}

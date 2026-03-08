@@ -25,6 +25,7 @@ import (
 	"github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/observers/titlebar"
 	"github.com/vector76/raymond/internal/orchestrator"
+	"github.com/vector76/raymond/internal/registry"
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/version"
@@ -300,6 +301,44 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 // cmdStart creates initial workflow state and invokes the runner.
 // workflowIDOverride is the user-specified workflow ID; when empty, one is generated.
 func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts orchestrator.RunOptions, lp *wfstate.LaunchParams, workflowIDOverride string) error {
+	// ---- URL resolution block ----
+	isRemoteURL := registry.IsRemoteWorkflowURL(arg)
+	// Guard against unsupported URL schemes.
+	if !isRemoteURL && strings.Contains(arg, "://") {
+		return fmt.Errorf("unsupported URL scheme in workflow argument %q: only http:// and https:// are accepted", arg)
+	}
+	if isRemoteURL {
+		hash, err := registry.ValidateRemoteURL(arg)
+		if err != nil {
+			return fmt.Errorf("invalid remote workflow URL: %w", err)
+		}
+
+		// Resolve the .raymond directory for the registry.
+		var raymondDir string
+		if opts.StateDir != "" {
+			// --state-dir was provided: .raymond is its parent.
+			raymondDir = filepath.Dir(opts.StateDir)
+		} else {
+			cwd, cwdErr := os.Getwd()
+			if cwdErr != nil {
+				cwd = "."
+			}
+			found, findErr := config.FindRaymondDir(cwd, false)
+			if findErr != nil || found == "" {
+				raymondDir = filepath.Join(cwd, ".raymond")
+			} else {
+				raymondDir = found
+			}
+		}
+
+		reg := registry.New(raymondDir)
+		localPath, fetchErr := reg.Fetch(arg, hash)
+		if fetchErr != nil {
+			return fmt.Errorf("failed to fetch remote workflow: %w", fetchErr)
+		}
+		arg = localPath
+	}
+
 	scopeDir, initialState, err := parseScopeAndState(arg)
 	if err != nil {
 		return err

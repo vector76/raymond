@@ -3,6 +3,11 @@ package cli_test
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -804,4 +809,124 @@ func TestContinueSessionFlagDefaultFalse(t *testing.T) {
 	require.Len(t, ws.Agents, 1)
 	assert.False(t, ws.Agents[0].ContinueAndFork,
 		"AgentState.ContinueAndFork should be false by default")
+}
+
+// --------------------------------------------------------------------------
+// Remote URL workflow support
+// --------------------------------------------------------------------------
+
+// buildWorkflowZipBytes creates a valid workflow zip in memory (flat layout,
+// contains START.md) and returns its bytes plus the SHA256 hex hash.
+func buildWorkflowZipBytes(t *testing.T) ([]byte, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	fw, err := w.Create("START.md")
+	require.NoError(t, err)
+	_, err = fw.Write([]byte("# Start\nThis is the entry point."))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	data := buf.Bytes()
+	h := sha256.Sum256(data)
+	return data, hex.EncodeToString(h[:])
+}
+
+func TestRemoteURLFreshDownload(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	zipData, hash := buildWorkflowZipBytes(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	url := fmt.Sprintf("%s/workflow_%s.zip", srv.URL, hash)
+	captured, err := runCapturing(t, url, "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1, "runner should have been invoked once")
+
+	registryPath := filepath.Join(tmpDir, ".raymond", "registry", hash+".zip")
+	require.FileExists(t, registryPath, "downloaded zip should exist in registry")
+}
+
+func TestRemoteURLCacheHit(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	registryDir := filepath.Join(tmpDir, ".raymond", "registry")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	require.NoError(t, os.MkdirAll(registryDir, 0o755))
+
+	zipData, hash := buildWorkflowZipBytes(t)
+
+	// Pre-populate the registry cache.
+	cachedPath := filepath.Join(registryDir, hash+".zip")
+	require.NoError(t, os.WriteFile(cachedPath, zipData, 0o644))
+
+	// Port 1 is never listening; if Fetch tries the network it will fail.
+	url := fmt.Sprintf("http://127.0.0.1:1/workflow_%s.zip", hash)
+	captured, err := runCapturing(t, url, "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1, "runner should have been invoked from cache without network")
+}
+
+func TestRemoteURLBadScheme(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	url := fmt.Sprintf("ftp://host/workflow_%s.zip", hash)
+	_, _, err := run(t, url, "--state-dir", makeStateDir(t))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported URL scheme")
+}
+
+func TestRemoteURLMissingHash(t *testing.T) {
+	_, _, err := run(t, "http://host/workflow.zip", "--state-dir", makeStateDir(t))
+	require.Error(t, err)
+}
+
+func TestRemoteURLAmbiguousHash(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	// Two 64-char hex sequences in the filename.
+	url := fmt.Sprintf("http://host/workflow_%s_%s.zip", hash, hash)
+	_, _, err := run(t, url, "--state-dir", makeStateDir(t))
+	require.Error(t, err)
+}
+
+func TestRemoteURLHashMismatchAfterDownload(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	// Serve content that does NOT match the hash in the URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("wrong content"))
+	}))
+	defer srv.Close()
+
+	hash := strings.Repeat("b", 64)
+	url := fmt.Sprintf("%s/workflow_%s.zip", srv.URL, hash)
+	_, _, err := run(t, url, "--state-dir", stateDir)
+	require.Error(t, err)
+}
+
+func TestResumeUsesLocalRegistryPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	registryDir := filepath.Join(tmpDir, ".raymond", "registry")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	require.NoError(t, os.MkdirAll(registryDir, 0o755))
+
+	zipData, hash := buildWorkflowZipBytes(t)
+
+	cachedPath := filepath.Join(registryDir, hash+".zip")
+	require.NoError(t, os.WriteFile(cachedPath, zipData, 0o644))
+
+	writeWorkflow(t, "wf-local-resume", cachedPath, "START.md", stateDir)
+
+	_, _, err := run(t, "--resume", "wf-local-resume", "--state-dir", stateDir)
+	require.NoError(t, err)
 }

@@ -1435,3 +1435,110 @@ func TestMultiForkValidationNonForkTagMixedInPausesAgent(t *testing.T) {
 	assert.Equal(t, "paused", ws.Agents[0].Status)
 	assert.Contains(t, ws.Agents[0].Error, "result")
 }
+
+// ----------------------------------------------------------------------------
+// Implicit transition input propagation (end-to-end via mock executor)
+// ----------------------------------------------------------------------------
+
+// recordingMockExec is a mock executor that records the PendingResult value
+// seen on each invocation, then returns pre-programmed results.
+type recordingMockExec struct {
+	mu             sync.Mutex
+	results        []executors.ExecutionResult
+	idx            int
+	pendingResults []*string // captured PendingResult for each call
+}
+
+func (m *recordingMockExec) Execute(
+	_ context.Context,
+	agent *wfstate.AgentState,
+	wfState *wfstate.WorkflowState,
+	_ *executors.ExecutionContext,
+) (executors.ExecutionResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := m.idx
+	m.idx++
+	// Capture the PendingResult for this call.
+	m.pendingResults = append(m.pendingResults, agent.PendingResult)
+	if i < len(m.results) {
+		res := m.results[i]
+		if res.CostUSD > 0 {
+			wfState.TotalCostUSD += res.CostUSD
+		}
+		return res, nil
+	}
+	return executors.ExecutionResult{}, errors.New("recording mock: no more results")
+}
+
+// gotoResultWithInput returns an ExecutionResult carrying a goto transition
+// that includes an "input" attribute — simulating the output of a MarkdownExecutor
+// that rendered an implicit transition's input template.
+func gotoResultWithInput(target, input string) executors.ExecutionResult {
+	return executors.ExecutionResult{
+		Transition: parsing.Transition{
+			Tag:    "goto",
+			Target: target,
+			Attributes: map[string]string{
+				"input": input,
+			},
+		},
+	}
+}
+
+// TestImplicitInputPropagatesAsPendingResult verifies that when an executor
+// returns a goto transition with an "input" attribute, the orchestrator
+// (via ApplyTransition → HandleGoto) sets that value as PendingResult on the
+// next state's agent. This is the state-handoff half of the implicit-input
+// feature; the executor-side rendering is covered by the executor tests.
+func TestImplicitInputPropagatesAsPendingResult(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	// First call: return goto with input = "propagated-value"
+	// Second call: at this point agent.PendingResult should equal "propagated-value".
+	//              Return a result to terminate.
+	mock := &recordingMockExec{
+		results: []executors.ExecutionResult{
+			gotoResultWithInput("NEXT.md", "propagated-value"),
+			resultExecResult("done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Equal(t, 2, mock.idx, "expected exactly 2 executor calls")
+
+	// First call: no prior PendingResult (initial state).
+	assert.Nil(t, mock.pendingResults[0], "first call should have nil PendingResult")
+	// Second call: PendingResult should be "propagated-value" from the goto input.
+	require.NotNil(t, mock.pendingResults[1], "second call should have non-nil PendingResult")
+	assert.Equal(t, "propagated-value", *mock.pendingResults[1])
+}
+
+// TestImplicitInputChainPropagatesThroughThreeStates verifies that the input
+// value threads correctly through a 3-state chain: A→B→C each carrying the
+// same value forward via the "input" attribute on goto transitions.
+func TestImplicitInputChainPropagatesThroughThreeStates(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	// Simulate: START→MIDDLE with input "step1", MIDDLE→END with input "step2".
+	mock := &recordingMockExec{
+		results: []executors.ExecutionResult{
+			gotoResultWithInput("MIDDLE.md", "step1"),
+			gotoResultWithInput("END.md", "step2"),
+			resultExecResult("final"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Equal(t, 3, mock.idx, "expected exactly 3 executor calls")
+
+	assert.Nil(t, mock.pendingResults[0], "START: no PendingResult")
+	require.NotNil(t, mock.pendingResults[1], "MIDDLE: PendingResult should be set")
+	assert.Equal(t, "step1", *mock.pendingResults[1])
+	require.NotNil(t, mock.pendingResults[2], "END: PendingResult should be set")
+	assert.Equal(t, "step2", *mock.pendingResults[2])
+}

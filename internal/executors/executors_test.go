@@ -1757,6 +1757,147 @@ func TestMarkdownExecutor_BudgetExceededTerminatesWorkflow(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Implicit transition with input field (template rendering)
+// --------------------------------------------------------------------------
+
+// TestMarkdownExecutor_ImplicitTransitionInputRenderedFromResult verifies that
+// when an implicit transition declares input: "{{result}}", the executor
+// renders {{result}} to the agent's current PendingResult value before the
+// transition is dispatched. The LLM emits no tag — the transition fires
+// implicitly because there is only one allowed transition.
+func TestMarkdownExecutor_ImplicitTransitionInputRenderedFromResult(t *testing.T) {
+	dir := t.TempDir()
+
+	// START.md has a single allowed transition with input: "{{result}}".
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"{{result}}\" }\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Process the result.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next prompt")
+
+	pendingResult := "hello from previous state"
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-implicit-input",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:            "main",
+			CurrentState:  "START.md",
+			ScopeDir:      dir,
+			Stack:         []wfstate.StackFrame{},
+			PendingResult: &pendingResult,
+		}},
+	}
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+
+	// LLM emits no transition tag — implicit transition fires.
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "I have processed the result."},
+			{"session_id": "sess-impl", "total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if result.Transition.Tag != "goto" {
+		t.Fatalf("expected goto transition, got %q", result.Transition.Tag)
+	}
+	if result.Transition.Target != "NEXT.md" {
+		t.Errorf("target = %q, want NEXT.md", result.Transition.Target)
+	}
+	got := result.Transition.Attributes["input"]
+	if got != pendingResult {
+		t.Errorf("input attribute = %q, want %q", got, pendingResult)
+	}
+}
+
+// TestMarkdownExecutor_ImplicitTransitionStaticInputPassedThrough verifies
+// that a static (non-template) input value is forwarded unchanged.
+func TestMarkdownExecutor_ImplicitTransitionStaticInputPassedThrough(t *testing.T) {
+	dir := t.TempDir()
+
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"fixed-value\" }\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Do the thing.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-static-input",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:           "main",
+			CurrentState: "START.md",
+			ScopeDir:     dir,
+			Stack:        []wfstate.StackFrame{},
+		}},
+	}
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "done"},
+			{"session_id": "sess-static", "total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	got := result.Transition.Attributes["input"]
+	if got != "fixed-value" {
+		t.Errorf("input attribute = %q, want fixed-value", got)
+	}
+}
+
+// TestMarkdownExecutor_ImplicitTransitionInputRenderedFromForkAttribute verifies
+// that fork attributes are available for rendering in the input template.
+func TestMarkdownExecutor_ImplicitTransitionInputRenderedFromForkAttribute(t *testing.T) {
+	dir := t.TempDir()
+
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"item={{item}}\" }\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Process item.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-fork-attr-input",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:             "main",
+			CurrentState:   "START.md",
+			ScopeDir:       dir,
+			Stack:          []wfstate.StackFrame{},
+			ForkAttributes: map[string]string{"item": "widget"},
+		}},
+	}
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "processed"},
+			{"session_id": "sess-fork", "total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	got := result.Transition.Attributes["input"]
+	if got != "item=widget" {
+		t.Errorf("input attribute = %q, want \"item=widget\"", got)
+	}
+}
+
+// --------------------------------------------------------------------------
 // asError is errors.As without the import (keeps test file self-contained).
 // --------------------------------------------------------------------------
 

@@ -929,3 +929,38 @@ func TestMultiForkWorkflowAllAllowed(t *testing.T) {
 		assert.NoError(t, err, "fork-workflow transition %+v should be allowed", tr)
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Implicit transition with input field
+// ----------------------------------------------------------------------------
+
+// TestGetImplicitTransitionWithInputAttribute verifies that GetImplicitTransition
+// forwards the "input" key from the frontmatter into Transition.Attributes.
+// Template rendering is the executor's responsibility, not the policy package's.
+func TestGetImplicitTransitionWithInputAttribute(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "goto", "target": "NEXT.md", "input": "{{result}}"},
+		},
+	}
+	assert.True(t, policy.CanUseImplicitTransition(p))
+
+	tr, err := policy.GetImplicitTransition(p)
+	require.NoError(t, err)
+	assert.Equal(t, "goto", tr.Tag)
+	assert.Equal(t, "NEXT.md", tr.Target)
+	assert.Equal(t, map[string]string{"input": "{{result}}"}, tr.Attributes)
+}
+
+// TestGetImplicitTransitionWithStaticInputAttribute verifies that a static
+// (non-template) input value is also forwarded verbatim.
+func TestGetImplicitTransitionWithStaticInputAttribute(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "goto", "target": "DONE.md", "input": "done"},
+		},
+	}
+	tr, err := policy.GetImplicitTransition(p)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"input": "done"}, tr.Attributes)
+}

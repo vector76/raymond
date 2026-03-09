@@ -250,7 +250,7 @@ func (e *MarkdownExecutor) Execute(
 		allTrs, singleTr, doRetry, parseErr := e.parseAndValidate(
 			results, pol, scopeDir,
 			agentID, currentState, newSessionID,
-			execCtx, reminderAttempt,
+			execCtx, reminderAttempt, variables,
 		)
 		if parseErr != nil {
 			return ExecutionResult{}, parseErr
@@ -330,6 +330,7 @@ func (e *MarkdownExecutor) parseAndValidate(
 	sessionID *string,
 	execCtx *ExecutionContext,
 	reminderAttempt int,
+	variables map[string]any,
 ) (all []parsing.Transition, single *parsing.Transition, retry bool, err error) {
 	outputText := extractOutputText(results)
 
@@ -348,6 +349,19 @@ func (e *MarkdownExecutor) parseAndValidate(
 		implicit, implicitErr := policy.GetImplicitTransition(pol)
 		if implicitErr != nil {
 			return nil, nil, false, implicitErr
+		}
+		// Render the "input" attribute as a template so that {{result}} and
+		// fork attributes are substituted before the transition is dispatched.
+		if input, ok := implicit.Attributes["input"]; ok && input != "" {
+			rendered := prompts.RenderPrompt(input, variables)
+			if rendered != input {
+				attrs := make(map[string]string, len(implicit.Attributes))
+				for k, v := range implicit.Attributes {
+					attrs[k] = v
+				}
+				attrs["input"] = rendered
+				implicit.Attributes = attrs
+			}
 		}
 		resolved, resolveErr := ResolveTransitionTargets(implicit, scopeDir)
 		if resolveErr != nil {

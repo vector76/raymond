@@ -14,6 +14,7 @@ import (
 	"github.com/vector76/raymond/internal/ccwrap"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
+	debugobs "github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/platform"
 	wfstate "github.com/vector76/raymond/internal/state"
@@ -1144,8 +1145,13 @@ func TestMarkdownExecutor_WritesJSONLDebugFile(t *testing.T) {
 	_, wfState := makeWorkflow(t)
 	debugDir := t.TempDir()
 
+	b := newBus()
+	obs := debugobs.New(b)
+	defer obs.Close()
+	b.Emit(events.WorkflowStarted{DebugDir: debugDir})
+
 	execCtx := &executors.ExecutionContext{
-		Bus:      newBus(),
+		Bus:      b,
 		DebugDir: debugDir,
 	}
 

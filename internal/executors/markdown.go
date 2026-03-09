@@ -2,9 +2,7 @@ package executors
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -143,14 +141,10 @@ func (e *MarkdownExecutor) Execute(
 			Timestamp:       time.Now(),
 		})
 
-		// Prepare debug file path.
-		debugFilePath := ""
+		// Prepare step number for debug event.
 		stepNumber := 0
 		if execCtx.DebugDir != "" {
 			stepNumber = execCtx.GetNextStepNumber(agentID)
-			stateName := ExtractStateName(currentState)
-			debugFilePath = filepath.Join(execCtx.DebugDir,
-				fmt.Sprintf("%s_%s_%03d.jsonl", agentID, stateName, stepNumber))
 		}
 
 		// Invoke Claude Code and collect results.
@@ -202,11 +196,6 @@ func (e *MarkdownExecutor) Execute(
 					JSONObject: obj,
 					Timestamp:  time.Now(),
 				})
-			}
-
-			// Append to JSONL debug file.
-			if debugFilePath != "" {
-				e.appendJSONL(debugFilePath, obj)
 			}
 
 			// Emit progress/tool events for console observers.
@@ -573,25 +562,6 @@ func (e *MarkdownExecutor) processStreamForConsole(obj map[string]any, agentID s
 				Timestamp: time.Now(),
 			})
 		}
-	}
-}
-
-// appendJSONL appends obj as a JSON line to path.
-// I/O errors are written to stderr so that debug output failures are visible.
-func (e *MarkdownExecutor) appendJSONL(path string, obj map[string]any) {
-	data, err := json.Marshal(obj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "markdown executor: debug marshal error for %s: %v\n", path, err)
-		return
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "markdown executor: debug write error for %s: %v\n", path, err)
-		return
-	}
-	defer f.Close()
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		fmt.Fprintf(os.Stderr, "markdown executor: debug write error for %s: %v\n", path, err)
 	}
 }
 

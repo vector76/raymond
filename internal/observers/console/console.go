@@ -411,8 +411,8 @@ func returnSnippet(payload string) string {
 		s = s[:idx]
 	}
 	s = strings.TrimSpace(s)
-	if len(s) > 20 {
-		s = s[:20] + "..."
+	if runes := []rune(s); len(runes) > 20 {
+		s = string(runes[:20]) + "..."
 	}
 	return s
 }

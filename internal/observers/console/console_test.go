@@ -785,6 +785,152 @@ func TestConsoleColorCycleWrapsAfterSix(t *testing.T) {
 	assert.Contains(t, out, "\x1b[36m[g]\x1b[0m")
 }
 
+// newColorUnicodeObs creates a ConsoleObserver with color=true and unicode=true.
+func newColorUnicodeObs(b *bus.Bus, buf *bytes.Buffer) *console.ConsoleObserver {
+	return console.NewWithWriter(b, false, 0, buf, true, true)
+}
+
+func TestConsoleColorProgressSymbolColored(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.ProgressMessage{AgentID: "main", Message: "hello", Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36m|-\x1b[0m")
+	assert.Contains(t, out, "\x1b[0m hello\n")
+}
+
+func TestConsoleColorDoneSymbolColored(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+	b.Emit(events.StateCompleted{AgentID: "main", CostUSD: 0.01, TotalCostUSD: 0.01, DurationMS: 100})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36m\\-\x1b[0m")
+}
+
+func TestConsoleColorForkSymbolUsesParentColor(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+	b.Emit(events.StateStarted{AgentID: "worker1", StateName: "TASK.md", StateType: "markdown"})
+	b.Emit(events.AgentSpawned{ParentAgentID: "main", NewAgentID: "worker1", InitialState: "WORKER.md"})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36m++\x1b[0m")    // cyan = parent's color
+	assert.NotContains(t, out, "\x1b[33m++\x1b[0m") // not yellow = new agent's color
+}
+
+func TestConsoleColorResultSymbolColored(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.AgentTerminated{AgentID: "main", ResultPayload: "done"})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36m=>\x1b[0m")
+}
+
+func TestConsoleColorSymbolsInUnicodeMode(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorUnicodeObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.ProgressMessage{AgentID: "main", Message: "hi", Timestamp: time.Now()})
+	assert.Contains(t, buf.String(), "\x1b[36m├─\x1b[0m")
+
+	b.Emit(events.StateCompleted{AgentID: "main", CostUSD: 0.01, TotalCostUSD: 0.01, DurationMS: 100})
+	assert.Contains(t, buf.String(), "\x1b[36m└─\x1b[0m")
+}
+
+func TestConsoleColorSecondAgentSymbolDifferentColor(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.ProgressMessage{AgentID: "main", Message: "msg1", Timestamp: time.Now()})
+	b.Emit(events.ProgressMessage{AgentID: "worker1", Message: "msg2", Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36m|-\x1b[0m") // main = cyan
+	assert.Contains(t, out, "\x1b[33m|-\x1b[0m") // worker1 = yellow
+}
+
+func TestConsoleColorGotoTransitionWordColored(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.TransitionOccurred{AgentID: "main", TransitionType: "goto", ToState: "NEXT.md"})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36mgoto\x1b[0m")
+	assert.Contains(t, out, "\x1b[0m -> NEXT.md\n")
+}
+
+func TestConsoleColorReturnWithSnippetWordColored(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.TransitionOccurred{
+		AgentID:        "main",
+		TransitionType: "result",
+		ToState:        "CALLER.md",
+		Metadata:       map[string]any{"result_payload": "ok"},
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36mreturn\x1b[0m")
+	assert.Contains(t, out, "\x1b[0m (ok) -> CALLER.md\n")
+}
+
+func TestConsoleColorReturnWithoutSnippetWordColored(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	b.Emit(events.TransitionOccurred{
+		AgentID:        "main",
+		TransitionType: "result",
+		ToState:        "CALLER.md",
+		Metadata:       map[string]any{"result_payload": ""},
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[36mreturn\x1b[0m")
+	assert.Contains(t, out, "\x1b[0m -> CALLER.md\n")
+}
+
+func TestConsoleNoColorSymbolsNoEscapes(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false) // color=false
+	defer obs.Close()
+
+	b.Emit(events.ProgressMessage{AgentID: "main", Message: "hello", Timestamp: time.Now()})
+
+	out := buf.String()
+	assert.NotContains(t, out, "\x1b[")
+}
+
 // ----------------------------------------------------------------------------
 // Terminal-width-aware truncation
 // ----------------------------------------------------------------------------

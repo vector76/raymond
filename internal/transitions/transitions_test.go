@@ -467,6 +467,21 @@ func TestForkParentPreservesItsCwd(t *testing.T) {
 	assert.Equal(t, "/worker/dir", result.Worker.Cwd)
 }
 
+func TestForkWorkerInheritsScopeDir(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/abs/path/to/workflow"
+	tr := parsing.Transition{
+		Tag: "fork", Target: "WORKER.md",
+		Attributes: map[string]string{"next": "NEXT.md"},
+	}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+
+	require.NoError(t, err)
+	assert.Equal(t, "/abs/path/to/workflow", result.Worker.ScopeDir)
+	assert.Equal(t, "/abs/path/to/workflow", result.Agent.ScopeDir) // parent unchanged
+}
+
 func TestForkRelativeCdResolvedAgainstParentCwd(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	agent.Cwd = "/repo"

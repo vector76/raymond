@@ -373,6 +373,7 @@ func CreateForkWorker(
 		CurrentState: transition.Target,
 		SessionID:    nil,
 		Stack:        []wfstate.StackFrame{},
+		ScopeDir:     agent.ScopeDir,
 	}
 
 	if cd, ok := transition.Attributes["cd"]; ok {

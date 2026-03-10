@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,8 +48,10 @@ func (m *mockExec) Execute(
 	}
 	if i < len(m.results) {
 		res := m.results[i]
-		// Mirror real executor behaviour: accumulate cost directly into
-		// wfState so that the orchestrator does not need to do it again.
+		// Mirror real executor behaviour: the executor accumulates cost
+		// into wfState.TotalCostUSD (used for budget checks). Under the
+		// concurrent model wfState is a local snapshot, so this write is
+		// discarded; the orchestrator accumulates from CostUSD separately.
 		if res.CostUSD > 0 {
 			wfState.TotalCostUSD += res.CostUSD
 		}
@@ -1484,6 +1487,91 @@ func gotoResultWithInput(target, input string) executors.ExecutionResult {
 			},
 		},
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Concurrent execution: forked agents run in parallel
+// ----------------------------------------------------------------------------
+
+// TestForkAgentsRunConcurrently verifies that after a fork, both the parent
+// and the worker execute their steps simultaneously rather than sequentially.
+// It uses a barrier that requires two goroutines to arrive before either can
+// proceed. If agents run sequentially, the barrier is never released and the
+// test deadlocks (caught by -timeout).
+func TestForkAgentsRunConcurrently(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	// barrier is closed when 2 goroutines have both arrived at the rendezvous.
+	// If agents run sequentially, the second never arrives and the test hangs.
+	barrier := make(chan struct{})
+	var arrivals atomic.Int32
+
+	resultIdx := 0
+	var resultMu sync.Mutex
+	results := []executors.ExecutionResult{
+		forkResult("WORKER.md", "PARENT_NEXT.md"), // call 0: START.md forks
+		resultExecResult("parent done"),            // call 1: PARENT_NEXT.md
+		resultExecResult("worker done"),            // call 2: WORKER.md
+	}
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &concurrentGateExec{
+			barrier:   barrier,
+			arrivals:  &arrivals,
+			resultsMu: &resultMu,
+			results:   results,
+			idxPtr:    &resultIdx,
+		}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	var terminated []events.AgentTerminated
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentTerminated) {
+			terminated = append(terminated, e)
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	assert.Len(t, terminated, 2)
+}
+
+// concurrentGateExec is an executor that uses an atomic barrier for post-fork
+// calls, requiring two goroutines to be executing simultaneously to proceed.
+type concurrentGateExec struct {
+	barrier   chan struct{}
+	arrivals  *atomic.Int32
+	resultsMu *sync.Mutex
+	results   []executors.ExecutionResult
+	idxPtr    *int
+}
+
+func (e *concurrentGateExec) Execute(
+	ctx context.Context,
+	_ *wfstate.AgentState,
+	_ *wfstate.WorkflowState,
+	_ *executors.ExecutionContext,
+) (executors.ExecutionResult, error) {
+	e.resultsMu.Lock()
+	i := *e.idxPtr
+	*e.idxPtr++
+	res := e.results[i]
+	e.resultsMu.Unlock()
+
+	// For calls 1 and 2 (post-fork agents): both must arrive at the barrier
+	// simultaneously. The second arrival closes the channel, unblocking both.
+	if i >= 1 {
+		if e.arrivals.Add(1) == 2 {
+			close(e.barrier) // both arrived — release everyone
+		}
+		select {
+		case <-e.barrier:
+		case <-ctx.Done():
+			return executors.ExecutionResult{}, ctx.Err()
+		}
+	}
+	return res, nil
 }
 
 // TestImplicitInputPropagatesAsPendingResult verifies that when an executor

@@ -1,15 +1,22 @@
 // Package orchestrator implements the main workflow execution loop for raymond.
 //
 // RunAllAgents is the primary entry point. It reads workflow state, runs each
-// agent step sequentially (one agent at a time, cycling through all active
-// agents per iteration), handles errors, emits events, and persists state
-// after every step for crash-recovery.
+// agent concurrently (one goroutine per active agent), handles results from a
+// channel, applies transitions, and persists state after every step for
+// crash-recovery.
 //
-// Concurrency note: the current implementation is sequential. When only one
-// agent is active this matches the Python asyncio behaviour exactly. With
-// multiple agents the Go version executes them round-robin rather than truly
-// in parallel, which is correct for all existing tests. True goroutine-per-
-// agent concurrency can be layered on top in a later phase.
+// Concurrency model: each active agent runs its executor in its own goroutine.
+// Goroutines send stepResult values to a shared channel. The main goroutine
+// receives results one at a time, applies transitions (which may add new worker
+// agents), writes state, and relaunches goroutines for any active agents that
+// do not yet have one running. This gives true parallelism: multiple Claude
+// Code processes can run simultaneously.
+//
+// Shared-state safety: the WorkflowState (ws) is only accessed by the main
+// goroutine. Each agent goroutine receives its own deep copy of the agent and
+// a lightweight local snapshot of the workflow state needed by the executor
+// (WorkflowID, BudgetUSD, TotalCostUSD). Cost returned by each goroutine is
+// accumulated into ws by the main goroutine.
 package orchestrator
 
 import (
@@ -81,16 +88,20 @@ type RunOptions struct {
 	ObserverSetup func(*bus.Bus)
 }
 
+// stepResult is sent by an agent goroutine when its executor call completes.
+type stepResult struct {
+	agentID    string
+	execResult executors.ExecutionResult
+	err        error
+}
+
 // RunAllAgents executes the workflow identified by workflowID until all agents
 // have terminated or the workflow is paused due to an unrecoverable error.
 //
-// The function:
-//  1. Reads workflow state from disk.
-//  2. Resets any agents that were previously paused (unless NoResetPaused).
-//  3. Creates an EventBus and an ExecutionContext.
-//  4. Loops: picks the first active (non-paused) agent, executes one step,
-//     applies the transition, handles errors, and writes state for recovery.
-//  5. Exits when no agents remain (workflow completed) or all are paused.
+// Agents run concurrently: each active agent has a goroutine executing its
+// current state. The main goroutine collects results via a channel, applies
+// transitions (potentially spawning new workers), writes state for crash
+// recovery, and launches goroutines for any new or reactivated agents.
 func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error {
 	stateDir := wfstate.GetStateDir(opts.StateDir)
 
@@ -144,152 +155,220 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		Timestamp:  time.Now(),
 	})
 
+	// Cancel context on exit so any still-running goroutines are signalled to stop.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Buffered channel so goroutines can send results without blocking.
+	resultCh := make(chan stepResult, 64)
+
+	// running tracks agent IDs that currently have goroutines executing.
+	// Only accessed from the main goroutine.
+	running := make(map[string]bool)
+
+	// launch starts an executor goroutine for the given agent. It takes a
+	// snapshot of the mutable workflow fields needed by the executor (to avoid
+	// data races: ws is only accessed by the main goroutine).
+	launch := func(agent wfstate.AgentState) {
+		running[agent.ID] = true
+		agentCopy := deepCopyOrchestratorAgent(agent)
+		localWS := &wfstate.WorkflowState{
+			WorkflowID:   ws.WorkflowID,
+			TotalCostUSD: ws.TotalCostUSD,
+			BudgetUSD:    ws.BudgetUSD,
+			ScopeDir:     ws.ScopeDir,
+		}
+		exec := executorFactory(agentCopy.CurrentState)
+		go func() {
+			execResult, execErr := exec.Execute(ctx, &agentCopy, localWS, execCtx)
+			resultCh <- stepResult{
+				agentID:    agentCopy.ID,
+				execResult: execResult,
+				err:        execErr,
+			}
+		}()
+	}
+
+	// launchActive launches goroutines for all active agents that don't already
+	// have one running. Called after every state change to ensure all active
+	// agents (including newly spawned workers) are running.
+	launchActive := func() {
+		for i, a := range ws.Agents {
+			if a.Status != wfstate.AgentStatusPaused && !running[a.ID] {
+				launch(ws.Agents[i])
+			}
+		}
+	}
+
+	// Start: launch goroutines for all initial active agents.
+	launchActive()
+
 	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+		// When no goroutines are in flight, evaluate terminal conditions.
+		if len(running) == 0 {
+			if len(ws.Agents) == 0 {
+				b.Emit(events.WorkflowCompleted{
+					WorkflowID:   workflowID,
+					TotalCostUSD: ws.TotalCostUSD,
+					Timestamp:    time.Now(),
+				})
+				_ = wfstate.DeleteState(workflowID, stateDir)
+				return nil
+			}
 
-		// --- Exit if no agents remain ---
-		if len(ws.Agents) == 0 {
-			b.Emit(events.WorkflowCompleted{
-				WorkflowID:   workflowID,
-				TotalCostUSD: ws.TotalCostUSD,
-				Timestamp:    time.Now(),
-			})
-			_ = wfstate.DeleteState(workflowID, stateDir)
-			return nil
-		}
-
-		// --- Check if all agents are paused ---
-		if allPaused(ws.Agents) {
-			if !opts.NoWait {
-				// Attempt auto-wait: parse reset times from paused agents.
-				if waitSec, ok := computeAutoWait(ws.Agents); ok {
-					now := time.Now()
-					resetTime := now.Add(time.Duration(float64(time.Second) * waitSec))
-					b.Emit(events.WorkflowWaiting{
-						WorkflowID:       workflowID,
-						TotalCostUSD:     ws.TotalCostUSD,
-						PausedAgentCount: len(ws.Agents),
-						ResetTime:        resetTime,
-						WaitSeconds:      waitSec,
-						Timestamp:        now,
-					})
-					if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
-						return err
-					}
-					if waitSec > 0 {
-						select {
-						case <-ctx.Done():
-							return ctx.Err()
-						case <-time.After(time.Duration(waitSec * float64(time.Second))):
+			if allPaused(ws.Agents) {
+				if !opts.NoWait {
+					if waitSec, ok := computeAutoWait(ws.Agents); ok {
+						now := time.Now()
+						resetTime := now.Add(time.Duration(float64(time.Second) * waitSec))
+						b.Emit(events.WorkflowWaiting{
+							WorkflowID:       workflowID,
+							TotalCostUSD:     ws.TotalCostUSD,
+							PausedAgentCount: len(ws.Agents),
+							ResetTime:        resetTime,
+							WaitSeconds:      waitSec,
+							Timestamp:        now,
+						})
+						if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
+							return err
 						}
+						if waitSec > 0 {
+							select {
+							case <-ctx.Done():
+								return ctx.Err()
+							case <-time.After(time.Duration(waitSec * float64(time.Second))):
+							}
+						}
+						b.Emit(events.WorkflowResuming{WorkflowID: workflowID, Timestamp: time.Now()})
+						resetPausedAgents(ws)
+						launchActive()
+						continue
 					}
-					b.Emit(events.WorkflowResuming{WorkflowID: workflowID, Timestamp: time.Now()})
-					resetPausedAgents(ws)
-					continue
 				}
+				// Pause-and-exit.
+				b.Emit(events.WorkflowPaused{
+					WorkflowID:       workflowID,
+					TotalCostUSD:     ws.TotalCostUSD,
+					PausedAgentCount: len(ws.Agents),
+					Timestamp:        time.Now(),
+				})
+				return wfstate.WriteState(workflowID, ws, stateDir)
 			}
-			// Pause-and-exit.
-			b.Emit(events.WorkflowPaused{
-				WorkflowID:       workflowID,
-				TotalCostUSD:     ws.TotalCostUSD,
-				PausedAgentCount: len(ws.Agents),
-				Timestamp:        time.Now(),
-			})
-			return wfstate.WriteState(workflowID, ws, stateDir)
+
+			// Active agents with no goroutines: should not be reachable since
+			// launchActive() is called before every check. Return an error
+			// rather than silently exiting with nil.
+			return fmt.Errorf("internal error: %d agents remain but no goroutines are running", len(ws.Agents))
 		}
 
-		// --- Find the first active (non-paused) agent ---
-		agentIdx := firstActiveIndex(ws.Agents)
-		if agentIdx < 0 {
-			// Shouldn't happen — allPaused guard above would have caught this.
-			break
-		}
+		// Wait for the next goroutine result.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 
-		// Copy the agent before stepping so we have the fromState for events.
-		agentBefore := ws.Agents[agentIdx]
+		case result := <-resultCh:
+			delete(running, result.agentID)
 
-		// --- Execute one step ---
-		tr, stepErr := stepAgent(ctx, &ws.Agents[agentIdx], ws, execCtx, b)
-
-		if stepErr != nil {
-			if err := handleStepError(stepErr, agentIdx, ws, execCtx, b); err != nil {
-				// Fatal or unhandled error — propagate up.
-				return err
+			agentIdx := findAgentByID(ws.Agents, result.agentID)
+			if agentIdx < 0 {
+				// Agent was already removed (shouldn't happen).
+				launchActive()
+				continue
 			}
-		} else {
-			// Apply the transition result.
-			applyResult(tr, agentIdx, agentBefore.CurrentState, ws, b)
-		}
 
-		// --- Write state for crash recovery ---
-		if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
-			return fmt.Errorf("write state: %w", err)
+			agentBefore := ws.Agents[agentIdx]
+
+			if result.err != nil {
+				if fatalErr := handleStepError(result.err, agentIdx, ws, execCtx, b); fatalErr != nil {
+					return fatalErr
+				}
+				// handleStepError updated ws.Agents[agentIdx] in place.
+				// launchActive below will relaunch the agent if still active.
+			} else {
+				// Apply execResult.SessionID to agent BEFORE transition (handlers
+				// rely on the post-execution session ID; e.g. function pushes it
+				// onto the stack, reset/result then overwrite it).
+				if result.execResult.SessionID != nil {
+					ws.Agents[agentIdx].SessionID = result.execResult.SessionID
+				}
+
+				// Clear ContinueAndFork: the executor consumed it in its copy;
+				// we must clear it in persistent state so it does not fire again
+				// on resume.
+				ws.Agents[agentIdx].ContinueAndFork = false
+
+				// Accumulate cost into the shared total.
+				ws.TotalCostUSD += result.execResult.CostUSD
+
+				// Apply the transition.
+				var tr transitions.TransitionResult
+				var transErr error
+
+				if isMultiForkTransitions(result.execResult.Transitions) {
+					tr, transErr = applyMultiFork(&ws.Agents[agentIdx], result.execResult.Transitions, ws, b, agentBefore.CurrentState)
+				} else {
+					tr, transErr = transitions.ApplyTransition(&ws.Agents[agentIdx], result.execResult.Transition, ws)
+					if transErr == nil {
+						emitTransitionEvents(tr, agentBefore, result.execResult, ws, b)
+					}
+				}
+				if transErr != nil {
+					return transErr
+				}
+
+				// Apply transition result: update/remove agent in ws.Agents,
+				// append worker if present.
+				applyResult(tr, agentIdx, agentBefore.CurrentState, ws, b)
+			}
+
+			// Launch goroutines for all active agents that don't have one yet
+			// (includes any new workers just appended to ws.Agents).
+			launchActive()
+
+			// Write state for crash recovery.
+			if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
+				return fmt.Errorf("write state: %w", err)
+			}
 		}
 	}
 	return nil
 }
 
-// stepAgent executes one step for the agent at ws.Agents[agentIdx].
-//
-// It:
-//  1. Invokes the executor for the agent's current state.
-//  2. Updates session_id on the agent from the execution result (BEFORE transition).
-//  3. Checks for multi-fork (multiple fork-family tags or fork+goto). If detected,
-//     dispatches to applyMultiFork which directly appends workers to ws.Agents.
-//  4. Otherwise calls transitions.ApplyTransition for the single-transition path.
-//  5. Emits transition-related events (TransitionOccurred, AgentSpawned, AgentTerminated).
-//
-// Returns the TransitionResult (describing the new agent state) or an error.
-func stepAgent(
-	ctx context.Context,
-	agent *wfstate.AgentState,
+// findAgentByID returns the index of the agent with the given ID, or -1.
+func findAgentByID(agents []wfstate.AgentState, id string) int {
+	for i, a := range agents {
+		if a.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstActiveIndex returns the index of the first non-paused agent, or -1.
+func firstActiveIndex(agents []wfstate.AgentState) int {
+	for i, a := range agents {
+		if a.Status != wfstate.AgentStatusPaused {
+			return i
+		}
+	}
+	return -1
+}
+
+// emitTransitionEvents emits TransitionOccurred, AgentTerminated, and
+// AgentSpawned events for the single-transition path. (The multi-fork path
+// emits its own events inside applyMultiFork.)
+func emitTransitionEvents(
+	tr transitions.TransitionResult,
+	agentBefore wfstate.AgentState,
+	execResult executors.ExecutionResult,
 	ws *wfstate.WorkflowState,
-	execCtx *executors.ExecutionContext,
 	b *bus.Bus,
-) (transitions.TransitionResult, error) {
-	fromState := agent.CurrentState
-	exec := executorFactory(fromState)
-
-	execResult, err := exec.Execute(ctx, agent, ws, execCtx)
-	if err != nil {
-		return transitions.TransitionResult{}, err
-	}
-
-	// Apply the session_id from the execution result to the agent BEFORE handling
-	// the transition. Transition handlers need to see the post-execution session_id:
-	//   - function/call: save it in the return-stack frame (caller's session to
-	//     restore later), so it must reflect what was actually used during execution.
-	//   - reset/function: then replace it with nil for a fresh start.
-	//   - result (return): pops the saved caller session from the stack.
-	// Script states return the agent's existing session_id unchanged (they have no
-	// Claude session of their own), so this update is a no-op for script states.
-	if execResult.SessionID != nil {
-		agent.SessionID = execResult.SessionID
-	}
-
-	// Multi-fork path: multiple fork-family tags or fork-family alongside goto.
-	if isMultiForkTransitions(execResult.Transitions) {
-		return applyMultiFork(agent, execResult.Transitions, ws, b, fromState)
-	}
-
-	// Single-transition path: apply transition (deep-copies agent, clears transients).
-	tr, err := transitions.ApplyTransition(agent, execResult.Transition, ws)
-	if err != nil {
-		return transitions.TransitionResult{}, err
-	}
-
-	// Note: cost is already accumulated into ws.TotalCostUSD by the executor
-	// (markdown executor adds directly; script executor contributes 0). We do
-	// not add execResult.CostUSD here to avoid double-counting.
-
-	// Emit TransitionOccurred.
+) {
 	toState := ""
 	if tr.Agent != nil {
 		toState = tr.Agent.CurrentState
 	}
-	meta := map[string]any{"state_type": stateType(fromState)}
+	meta := map[string]any{"state_type": stateType(agentBefore.CurrentState)}
 	if execResult.Transition.Tag == "result" {
 		meta["result_payload"] = execResult.Transition.Payload
 	}
@@ -297,37 +376,34 @@ func stepAgent(
 		meta["spawned_agent_id"] = tr.Worker.ID
 	}
 	b.Emit(events.TransitionOccurred{
-		AgentID:        agent.ID,
-		FromState:      fromState,
+		AgentID:        agentBefore.ID,
+		FromState:      agentBefore.CurrentState,
 		ToState:        toState,
 		TransitionType: execResult.Transition.Tag,
 		Metadata:       meta,
 		Timestamp:      time.Now(),
 	})
 
-	// Emit type-specific events.
 	if tr.Agent == nil {
 		// Agent terminated.
 		payload := ""
 		if ws.AgentTerminationResults != nil {
-			payload = ws.AgentTerminationResults[agent.ID]
+			payload = ws.AgentTerminationResults[agentBefore.ID]
 		}
 		b.Emit(events.AgentTerminated{
-			AgentID:       agent.ID,
+			AgentID:       agentBefore.ID,
 			ResultPayload: payload,
 			Timestamp:     time.Now(),
 		})
 	}
 	if tr.Worker != nil {
 		b.Emit(events.AgentSpawned{
-			ParentAgentID: agent.ID,
+			ParentAgentID: agentBefore.ID,
 			NewAgentID:    tr.Worker.ID,
 			InitialState:  tr.Worker.CurrentState,
 			Timestamp:     time.Now(),
 		})
 	}
-
-	return tr, nil
 }
 
 // isMultiForkTransitions reports whether the transition list should be handled
@@ -494,8 +570,8 @@ func applyMultiFork(
 		ToState:        continuation,
 		TransitionType: "multi-fork",
 		Metadata: map[string]any{
-			"state_type":  stateType(fromState),
-			"fork_count":  len(workers),
+			"state_type": stateType(fromState),
+			"fork_count": len(workers),
 		},
 		Timestamp: time.Now(),
 	})
@@ -514,7 +590,7 @@ func applyMultiFork(
 }
 
 // deepCopyOrchestratorAgent returns a deep copy of a for safe mutation in the
-// orchestrator's multi-fork dispatch path.
+// orchestrator's goroutine launch path.
 func deepCopyOrchestratorAgent(a wfstate.AgentState) wfstate.AgentState {
 	c := a // copies all value-type fields
 
@@ -539,7 +615,13 @@ func deepCopyOrchestratorAgent(a wfstate.AgentState) wfstate.AgentState {
 	}
 	if len(a.Stack) > 0 {
 		newStack := make([]wfstate.StackFrame, len(a.Stack))
-		copy(newStack, a.Stack)
+		for i, frame := range a.Stack {
+			newStack[i] = frame
+			if frame.Session != nil {
+				s := *frame.Session
+				newStack[i].Session = &s
+			}
+		}
 		c.Stack = newStack
 	}
 	return c
@@ -653,17 +735,6 @@ func allPaused(agents []wfstate.AgentState) bool {
 		}
 	}
 	return true
-}
-
-// firstActiveIndex returns the index of the first non-paused agent,
-// or -1 if all are paused.
-func firstActiveIndex(agents []wfstate.AgentState) int {
-	for i, a := range agents {
-		if a.Status != wfstate.AgentStatusPaused {
-			return i
-		}
-	}
-	return -1
 }
 
 // isLimitError reports whether err is a ClaudeCodeLimitError.

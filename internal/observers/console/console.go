@@ -196,6 +196,16 @@ func (r *ConsoleReporter) agentColor(agentID string) string {
 	return c
 }
 
+// colorToken wraps token in the agent's assigned color and a reset, or returns
+// token unchanged when color is disabled. Must be called with r.mu held.
+func (r *ConsoleReporter) colorToken(agentID, token string) string {
+	c := r.agentColor(agentID)
+	if c == "" {
+		return token
+	}
+	return c + token + colorReset
+}
+
 // formatAgentID returns "[agentID]" wrapped in the agent's assigned color when
 // color output is enabled. Must be called with r.mu held.
 func (r *ConsoleReporter) formatAgentID(agentID string) string {
@@ -255,7 +265,7 @@ func (r *ConsoleReporter) onStateStarted(e events.StateStarted) {
 	r.lastStateType[e.AgentID] = e.StateType
 	fmt.Fprintf(r.w, "%s %s\n", r.formatAgentID(e.AgentID), e.StateName)
 	if e.StateType == events.StateTypeScript && !r.quiet {
-		fmt.Fprintf(r.w, "  %s Executing script...\n", r.sym.progress)
+		fmt.Fprintf(r.w, "  %s Executing script...\n", r.colorToken(e.AgentID, r.sym.progress))
 	}
 }
 
@@ -265,10 +275,10 @@ func (r *ConsoleReporter) onStateCompleted(e events.StateCompleted) {
 	stateType := r.lastStateType[e.AgentID]
 	if stateType == events.StateTypeScript {
 		exitCode := r.lastExitCode[e.AgentID]
-		fmt.Fprintf(r.w, "  %s Done (exit %d, %.0fms)\n", r.sym.done, exitCode, e.DurationMS)
+		fmt.Fprintf(r.w, "  %s Done (exit %d, %.0fms)\n", r.colorToken(e.AgentID, r.sym.done), exitCode, e.DurationMS)
 	} else {
 		fmt.Fprintf(r.w, "  %s Done ($%.4f, total: $%.4f)\n",
-			r.sym.done, e.CostUSD, e.TotalCostUSD)
+			r.colorToken(e.AgentID, r.sym.done), e.CostUSD, e.TotalCostUSD)
 	}
 }
 
@@ -279,7 +289,7 @@ func (r *ConsoleReporter) onProgressMessage(e events.ProgressMessage) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	msg := truncateMessage(e.Message, r.availableWidth(prefixTreeBranch))
-	fmt.Fprintf(r.w, "  %s %s\n", r.sym.progress, msg)
+	fmt.Fprintf(r.w, "  %s %s\n", r.colorToken(e.AgentID, r.sym.progress), msg)
 }
 
 func (r *ConsoleReporter) onToolInvocation(e events.ToolInvocation) {
@@ -293,9 +303,9 @@ func (r *ConsoleReporter) onToolInvocation(e events.ToolInvocation) {
 		// Prefix: "  ├─ [ToolName] " = 8 + len(tool_name)
 		prefixLen := 8 + len(e.ToolName)
 		detail := truncateMessage(e.Detail, r.availableWidth(prefixLen))
-		fmt.Fprintf(r.w, "  %s [%s] %s\n", r.sym.progress, e.ToolName, detail)
+		fmt.Fprintf(r.w, "  %s [%s] %s\n", r.colorToken(e.AgentID, r.sym.progress), e.ToolName, detail)
 	} else {
-		fmt.Fprintf(r.w, "  %s [%s]\n", r.sym.progress, e.ToolName)
+		fmt.Fprintf(r.w, "  %s [%s]\n", r.colorToken(e.AgentID, r.sym.progress), e.ToolName)
 	}
 }
 
@@ -326,14 +336,14 @@ func (r *ConsoleReporter) onTransitionOccurred(e events.TransitionOccurred) {
 		}
 		snippet := returnSnippet(payload)
 		if snippet != "" {
-			fmt.Fprintf(r.w, "  return (%s) %s %s\n", snippet, r.sym.arrow, e.ToState)
+			fmt.Fprintf(r.w, "  %s (%s) %s %s\n", r.colorToken(e.AgentID, "return"), snippet, r.sym.arrow, e.ToState)
 		} else {
-			fmt.Fprintf(r.w, "  return %s %s\n", r.sym.arrow, e.ToState)
+			fmt.Fprintf(r.w, "  %s %s %s\n", r.colorToken(e.AgentID, "return"), r.sym.arrow, e.ToState)
 		}
 
 	default:
 		// goto, reset, call, function — prefix with transition type.
-		fmt.Fprintf(r.w, "  %s %s %s\n", e.TransitionType, r.sym.arrow, e.ToState)
+		fmt.Fprintf(r.w, "  %s %s %s\n", r.colorToken(e.AgentID, e.TransitionType), r.sym.arrow, e.ToState)
 	}
 }
 
@@ -342,7 +352,7 @@ func (r *ConsoleReporter) onAgentSpawned(e events.AgentSpawned) {
 	defer r.mu.Unlock()
 	// ⑂ WORKER.md → main_worker1
 	fmt.Fprintf(r.w, "  %s %s %s %s\n",
-		r.sym.fork, e.InitialState, r.sym.forkArrow, e.NewAgentID)
+		r.colorToken(e.ParentAgentID, r.sym.fork), e.InitialState, r.sym.forkArrow, e.NewAgentID)
 }
 
 func (r *ConsoleReporter) onAgentTerminated(e events.AgentTerminated) {
@@ -351,9 +361,9 @@ func (r *ConsoleReporter) onAgentTerminated(e events.AgentTerminated) {
 	payload := strings.TrimSpace(e.ResultPayload)
 	if payload != "" {
 		truncated := truncateMessage(payload, r.availableWidth(prefixResult))
-		fmt.Fprintf(r.w, "  %s Result: %q\n", r.sym.result, truncated)
+		fmt.Fprintf(r.w, "  %s Result: %q\n", r.colorToken(e.AgentID, r.sym.result), truncated)
 	} else {
-		fmt.Fprintf(r.w, "  %s (terminated)\n", r.sym.result)
+		fmt.Fprintf(r.w, "  %s (terminated)\n", r.colorToken(e.AgentID, r.sym.result))
 	}
 }
 

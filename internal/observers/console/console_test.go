@@ -127,18 +127,84 @@ func TestConsoleStateCompletedMarkdown(t *testing.T) {
 	obs := newObs(b, &buf, false)
 	defer obs.Close()
 
+	tokens := int64(95307)
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
 	b.Emit(events.StateCompleted{
 		AgentID:      "main",
 		CostUSD:      0.0353,
 		TotalCostUSD: 0.0353,
 		DurationMS:   1234,
+		InputTokens:  &tokens,
 	})
 
 	out := buf.String()
 	assert.Contains(t, out, `\-`)    // ASCII done symbol
 	assert.Contains(t, out, "Done")
 	assert.Contains(t, out, "0.0353")
+	assert.Contains(t, out, "95.3k tokens")
+}
+
+func TestConsoleStateCompletedMarkdownZeroTokens(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	tokens := int64(0)
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+	b.Emit(events.StateCompleted{
+		AgentID:      "main",
+		CostUSD:      0.0,
+		TotalCostUSD: 0.0,
+		DurationMS:   100,
+		InputTokens:  &tokens,
+	})
+
+	assert.Contains(t, buf.String(), "0.0k tokens")
+}
+
+func TestConsoleStateCompletedMarkdownMissingTokens(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+	b.Emit(events.StateCompleted{
+		AgentID:      "main",
+		CostUSD:      0.0,
+		TotalCostUSD: 0.0,
+		DurationMS:   100,
+		InputTokens:  nil,
+	})
+
+	assert.Contains(t, buf.String(), "--- tokens")
+}
+
+func TestConsoleStateCompletedMarkdownRounding(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	emitCompleted := func(tokens int64) {
+		b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md", StateType: "markdown"})
+		b.Emit(events.StateCompleted{AgentID: "main", InputTokens: &tokens})
+	}
+
+	// 950 tokens → math.Round(9.5)/10 = 1.0 → "1.0k tokens" (rounds up at midpoint)
+	emitCompleted(950)
+	assert.Contains(t, buf.String(), "1.0k tokens")
+	buf.Reset()
+
+	// 949 tokens → math.Round(9.49)/10 = 0.9 → "0.9k tokens"
+	emitCompleted(949)
+	assert.Contains(t, buf.String(), "0.9k tokens")
+	buf.Reset()
+
+	// 105507 → math.Round(1055.07)/10 = 1055/10 = 105.5 → "105.5k tokens"
+	emitCompleted(105507)
+	assert.Contains(t, buf.String(), "105.5k tokens")
 }
 
 func TestConsoleStateCompletedScript(t *testing.T) {
@@ -155,6 +221,8 @@ func TestConsoleStateCompletedScript(t *testing.T) {
 	assert.Contains(t, out, "exit 0")
 	assert.Contains(t, out, "125ms")
 	assert.NotContains(t, out, "$") // no cost shown for scripts
+	assert.NotContains(t, out, "tokens")
+	assert.NotContains(t, out, "---")
 }
 
 func TestConsoleStateCompletedScriptNonZeroExit(t *testing.T) {

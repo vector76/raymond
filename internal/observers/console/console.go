@@ -22,6 +22,7 @@ package console
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -277,9 +278,19 @@ func (r *ConsoleReporter) onStateCompleted(e events.StateCompleted) {
 		exitCode := r.lastExitCode[e.AgentID]
 		fmt.Fprintf(r.w, "  %s Done (exit %d, %.0fms)\n", r.colorToken(e.AgentID, r.sym.done), exitCode, e.DurationMS)
 	} else {
-		fmt.Fprintf(r.w, "  %s Done ($%.4f, total: $%.4f)\n",
-			r.colorToken(e.AgentID, r.sym.done), e.CostUSD, e.TotalCostUSD)
+		fmt.Fprintf(r.w, "  %s Done ($%.4f, total: $%.4f, %s)\n",
+			r.colorToken(e.AgentID, r.sym.done), e.CostUSD, e.TotalCostUSD, formatTokens(e.InputTokens))
 	}
+}
+
+// formatTokens formats an optional token count for display.
+// nil → "--- tokens"; non-nil → "X.Xk tokens" (rounded to nearest 0.1k).
+func formatTokens(tokens *int64) string {
+	if tokens == nil {
+		return "--- tokens"
+	}
+	rounded := math.Round(float64(*tokens)/100.0) / 10.0
+	return fmt.Sprintf("%.1fk tokens", rounded)
 }
 
 func (r *ConsoleReporter) onProgressMessage(e events.ProgressMessage) {

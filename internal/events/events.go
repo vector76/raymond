@@ -79,6 +79,7 @@ type StateCompleted struct {
 	TotalCostUSD float64
 	SessionID    string // empty for script states
 	DurationMS   float64
+	InputTokens  *int64
 	Timestamp    time.Time
 }
 

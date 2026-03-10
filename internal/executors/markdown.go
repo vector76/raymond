@@ -106,6 +106,7 @@ func (e *MarkdownExecutor) Execute(
 	newSessionID := sessionID
 	reminderAttempt := 0
 	var stateTotalCost float64
+	var lastInvocationTokens *int64
 	startTime := time.Now()
 
 	for transition == nil {
@@ -225,6 +226,7 @@ func (e *MarkdownExecutor) Execute(
 
 		// Extract and accumulate cost.
 		invocationCost := ExtractCostFromResults(results)
+		lastInvocationTokens = ExtractTokensFromResults(results)
 		if invocationCost > 0 {
 			stateTotalCost += invocationCost
 			wfState.TotalCostUSD += invocationCost
@@ -289,6 +291,7 @@ func (e *MarkdownExecutor) Execute(
 		TotalCostUSD: wfState.TotalCostUSD,
 		SessionID:    sessionIDStr(newSessionID),
 		DurationMS:   durationMS,
+		InputTokens:  lastInvocationTokens,
 		Timestamp:    time.Now(),
 	})
 

@@ -177,3 +177,39 @@ func ExtractCostFromResults(results []map[string]any) float64 {
 	}
 	return 0.0
 }
+
+// ExtractTokensFromResults searches the Claude stream results (in reverse order)
+// for a "usage" field. When found, it extracts cache_creation_input_tokens,
+// cache_read_input_tokens, and input_tokens, sums them, and returns a pointer
+// to the sum. Returns nil when no result has a "usage" key or when "usage" is
+// not a map[string]any.
+func ExtractTokensFromResults(results []map[string]any) *int64 {
+	for i := len(results) - 1; i >= 0; i-- {
+		obj := results[i]
+		usageRaw, ok := obj["usage"]
+		if !ok {
+			continue
+		}
+		usage, ok := usageRaw.(map[string]any)
+		if !ok {
+			return nil
+		}
+		var sum int64
+		for _, key := range []string{"cache_creation_input_tokens", "cache_read_input_tokens", "input_tokens"} {
+			val, exists := usage[key]
+			if !exists {
+				continue
+			}
+			switch v := val.(type) {
+			case float64:
+				sum += int64(v)
+			case int:
+				sum += int64(v)
+			case int64:
+				sum += v
+			}
+		}
+		return &sum
+	}
+	return nil
+}

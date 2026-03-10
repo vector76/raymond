@@ -1911,3 +1911,114 @@ func asError[T error](err error, target *T) bool {
 	}
 	return false
 }
+
+// --------------------------------------------------------------------------
+// TestExtractTokensFromResults
+// --------------------------------------------------------------------------
+
+func TestExtractTokensFromResults(t *testing.T) {
+	t.Run("all three fields present", func(t *testing.T) {
+		results := []map[string]any{
+			{
+				"usage": map[string]any{
+					"cache_creation_input_tokens": float64(100),
+					"cache_read_input_tokens":     float64(200),
+					"input_tokens":                float64(300),
+				},
+			},
+		}
+		got := executors.ExtractTokensFromResults(results)
+		if got == nil {
+			t.Fatal("expected non-nil pointer, got nil")
+		}
+		if *got != 600 {
+			t.Errorf("got %d, want 600", *got)
+		}
+	})
+
+	t.Run("only some fields present", func(t *testing.T) {
+		results := []map[string]any{
+			{
+				"usage": map[string]any{
+					"input_tokens": float64(50),
+				},
+			},
+		}
+		got := executors.ExtractTokensFromResults(results)
+		if got == nil {
+			t.Fatal("expected non-nil pointer, got nil")
+		}
+		if *got != 50 {
+			t.Errorf("got %d, want 50", *got)
+		}
+	})
+
+	t.Run("last usage wins among multiple results", func(t *testing.T) {
+		results := []map[string]any{
+			{
+				"usage": map[string]any{
+					"input_tokens": float64(999),
+				},
+			},
+			{
+				"usage": map[string]any{
+					"input_tokens": float64(42),
+				},
+			},
+		}
+		got := executors.ExtractTokensFromResults(results)
+		if got == nil {
+			t.Fatal("expected non-nil pointer, got nil")
+		}
+		if *got != 42 {
+			t.Errorf("got %d, want 42 (last entry should win)", *got)
+		}
+	})
+
+	t.Run("no usage field returns nil", func(t *testing.T) {
+		results := []map[string]any{
+			{"total_cost_usd": float64(1.5)},
+		}
+		got := executors.ExtractTokensFromResults(results)
+		if got != nil {
+			t.Errorf("expected nil, got pointer to %d", *got)
+		}
+	})
+
+	t.Run("usage is not an object returns nil", func(t *testing.T) {
+		results := []map[string]any{
+			{"usage": "not-an-object"},
+		}
+		got := executors.ExtractTokensFromResults(results)
+		if got != nil {
+			t.Errorf("expected nil for string usage, got pointer to %d", *got)
+		}
+
+		results2 := []map[string]any{
+			{"usage": float64(42)},
+		}
+		got2 := executors.ExtractTokensFromResults(results2)
+		if got2 != nil {
+			t.Errorf("expected nil for numeric usage, got pointer to %d", *got2)
+		}
+	})
+
+	t.Run("all fields zero returns non-nil pointer to 0", func(t *testing.T) {
+		results := []map[string]any{
+			{
+				"usage": map[string]any{
+					"cache_creation_input_tokens": float64(0),
+					"cache_read_input_tokens":     float64(0),
+					"input_tokens":                float64(0),
+				},
+			},
+		}
+		got := executors.ExtractTokensFromResults(results)
+		if got == nil {
+			t.Fatal("expected non-nil pointer to 0, got nil")
+		}
+		if *got != 0 {
+			t.Errorf("got %d, want 0", *got)
+		}
+	})
+}

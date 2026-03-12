@@ -11,6 +11,7 @@
 //   - call-workflow:     blocking cross-workflow call; forks caller session
 //   - function-workflow: blocking cross-workflow call; fresh session, cd allowed
 //   - fork-workflow:     non-blocking cross-workflow spawn; fresh session, cd allowed
+//   - reset-workflow:    cross-workflow reset; clears session and stack, cd allowed
 //
 // The primary entry point is ApplyTransition, which deep-copies the agent,
 // clears transient fields, and dispatches to the appropriate handler.
@@ -93,6 +94,15 @@ func ApplyTransition(
 		return HandleCall(copy, transition)
 	case "fork":
 		return HandleFork(copy, transition, wfState)
+	case "reset-workflow":
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
+		if err != nil {
+			copy.Status = wfstate.AgentStatusPaused
+			copy.Error = fmt.Sprintf("reset-workflow: %s", err.Error())
+			return TransitionResult{Agent: &copy}, nil
+		}
+		return HandleResetWorkflow(copy, tr, res), nil
 	case "fork-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
 		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)

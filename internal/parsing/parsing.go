@@ -12,7 +12,7 @@ import (
 // Go's RE2 does not support backreferences, so we cannot enforce matching
 // close tags in a single regex. Instead we find the opening tag here, then
 // locate the corresponding closing tag with a plain string search.
-var openTagRe = regexp.MustCompile(`<(call-workflow|function-workflow|fork-workflow|goto|reset|function|call|fork|result)([^>]*)>`)
+var openTagRe = regexp.MustCompile(`<(call-workflow|function-workflow|fork-workflow|reset-workflow|goto|reset|function|call|fork|result)([^>]*)>`)
 
 // attrRe matches key="value" or key='value' attribute pairs.
 // Two alternatives enforce matching quote characters so key="val' is rejected.
@@ -59,7 +59,7 @@ func ParseTransitions(output string) ([]Transition, error) {
 					tagName,
 				)
 			}
-			isWorkflowTag := tagName == "call-workflow" || tagName == "function-workflow" || tagName == "fork-workflow"
+			isWorkflowTag := tagName == "call-workflow" || tagName == "function-workflow" || tagName == "fork-workflow" || tagName == "reset-workflow"
 			if !isWorkflowTag && strings.ContainsAny(target, "/\\") {
 				return nil, fmt.Errorf(
 					"path %q contains path separator. Tag targets must be filenames only, not paths.",

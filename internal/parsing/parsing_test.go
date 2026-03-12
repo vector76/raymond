@@ -299,6 +299,19 @@ func TestParseForkWorkflow(t *testing.T) {
 	assert.Empty(t, tr.Payload)
 }
 
+func TestParseResetWorkflow(t *testing.T) {
+	out := `<reset-workflow input="x" cd="/tmp">../other/</reset-workflow>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "reset-workflow", tr.Tag)
+	assert.Equal(t, "../other/", tr.Target)
+	assert.Equal(t, "x", tr.Attributes["input"])
+	assert.Equal(t, "/tmp", tr.Attributes["cd"])
+	assert.Empty(t, tr.Payload)
+}
+
 func TestWorkflowTagAcceptsForwardSlash(t *testing.T) {
 	// Path separators are valid in workflow specifiers.
 	out := `<call-workflow return="R.md">some/nested/workflow.md</call-workflow>`

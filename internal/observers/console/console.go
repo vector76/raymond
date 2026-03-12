@@ -194,7 +194,7 @@ func (r *ConsoleReporter) agentColor(agentID string) string {
 		return c
 	}
 	// Compute occupied colors from live agents.
-	occupied := make(map[string]bool, len(r.liveAgents))
+	occupied := make(map[string]bool, len(agentColors))
 	for id := range r.liveAgents {
 		if c, ok := r.agentColorMap[id]; ok {
 			occupied[c] = true

@@ -2,6 +2,7 @@ package console_test
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1068,4 +1069,127 @@ func TestConsoleMinContentWidthFloor(t *testing.T) {
 	// With min width 40 and message of 50, it should truncate to 40
 	// (37 chars + "...") rather than some tiny number
 	assert.Contains(t, out, strings.Repeat("z", 37)+"...")
+}
+
+// ----------------------------------------------------------------------------
+// Collision-avoidance color tests
+// ----------------------------------------------------------------------------
+
+func TestConsoleColorCollisionAvoidanceBasic(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	// main→cyan (pos 0), worker1→yellow (pos 1); both remain live.
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "A.md", StateType: "markdown"})
+	b.Emit(events.StateStarted{AgentID: "worker1", StateName: "B.md", StateType: "markdown"})
+
+	// worker2 assigned while main and worker1 live: pos 2=magenta is free → magenta.
+	b.Emit(events.StateStarted{AgentID: "worker2", StateName: "C.md", StateType: "markdown"})
+
+	// Terminate main; worker3 assigned: pos 3=green is free → green (not yellow, worker1 still live).
+	b.Emit(events.AgentTerminated{AgentID: "main", ResultPayload: "done"})
+	b.Emit(events.StateStarted{AgentID: "worker3", StateName: "D.md", StateType: "markdown"})
+
+	out := buf.String()
+	assert.Contains(t, out, "\x1b[35m[worker2]\x1b[0m") // magenta — not cyan or yellow (both occupied)
+	assert.Contains(t, out, "\x1b[32m[worker3]\x1b[0m") // green — not yellow (worker1 still live)
+}
+
+func TestConsoleColorSkipsAtRotationWrap(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	// Assign all 6 palette slots (counter goes 0→6, ending at position 0).
+	agents := []string{"a", "b", "c", "d", "e", "f"}
+	for _, id := range agents {
+		b.Emit(events.StateStarted{AgentID: id, StateName: "X.md", StateType: "markdown"})
+	}
+
+	// Terminate "b"–"f", leaving only "a" (cyan) live. Counter is at position 0.
+	for _, id := range []string{"b", "c", "d", "e", "f"} {
+		b.Emit(events.AgentTerminated{AgentID: id, ResultPayload: "done"})
+	}
+
+	// Assign "g": position 0 is cyan, occupied by still-live "a" — skip must fire.
+	b.Emit(events.StateStarted{AgentID: "g", StateName: "X.md", StateType: "markdown"})
+
+	out := buf.String()
+	// "g" must NOT be cyan (position 0 is occupied by "a"); it gets yellow (next free slot).
+	assert.NotContains(t, out, "\x1b[36m[g]\x1b[0m")
+	assert.Contains(t, out, "\x1b[33m[g]\x1b[0m")
+}
+
+func TestConsoleColorCounterAdvancesByOneNotBySkipCount(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	// Assign "main" (gets cyan, counter 0→1).
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "X.md", StateType: "markdown"})
+
+	// Assign w1–w5 and immediately terminate each (counter 1→6, only "main" remains live).
+	for i := 1; i <= 5; i++ {
+		id := fmt.Sprintf("w%d", i)
+		b.Emit(events.StateStarted{AgentID: id, StateName: "X.md", StateType: "markdown"})
+		b.Emit(events.AgentTerminated{AgentID: id, ResultPayload: "done"})
+	}
+
+	// counter=6, pos=0=cyan is occupied by "main". Skip fires → w6 gets yellow (pos 1). Counter→7.
+	b.Emit(events.StateStarted{AgentID: "w6", StateName: "X.md", StateType: "markdown"})
+
+	// Terminate w6 (releases yellow).
+	b.Emit(events.AgentTerminated{AgentID: "w6", ResultPayload: "done"})
+
+	// counter=7, pos=7%6=1=yellow, which is now free → w7 must get yellow.
+	b.Emit(events.StateStarted{AgentID: "w7", StateName: "X.md", StateType: "markdown"})
+
+	out := buf.String()
+	// If counter had incorrectly advanced past the skip destination, w7 would get magenta instead.
+	assert.Contains(t, out, "\x1b[33m[w7]\x1b[0m")
+}
+
+func TestConsoleColorFallbackWhenAllOccupied(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	// Fill all 6 palette slots (counter=6, position=0=cyan).
+	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
+		b.Emit(events.StateStarted{AgentID: id, StateName: "X.md", StateType: "markdown"})
+	}
+
+	// Assign 7th agent "g": all colors occupied, fallback fires → g gets cyan (pos 0).
+	b.Emit(events.StateStarted{AgentID: "g", StateName: "X.md", StateType: "markdown"})
+
+	out := buf.String()
+	// No panic must occur, and g gets the fallback color: cyan (next-in-rotation, pos 0).
+	assert.Contains(t, out, "\x1b[36m[g]\x1b[0m")
+}
+
+func TestConsoleColorTerminationReleasesColor(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newColorObs(b, &buf)
+	defer obs.Close()
+
+	// Fill all 6 palette slots (counter=6, all live).
+	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
+		b.Emit(events.StateStarted{AgentID: id, StateName: "X.md", StateType: "markdown"})
+	}
+
+	// Terminate only "a" (releases cyan). counter is at position 0.
+	b.Emit(events.AgentTerminated{AgentID: "a", ResultPayload: "done"})
+
+	// Assign "g": position 0=cyan is now free → g must take cyan.
+	b.Emit(events.StateStarted{AgentID: "g", StateName: "X.md", StateType: "markdown"})
+
+	out := buf.String()
+	// Contrast with TestConsoleColorSkipsAtRotationWrap: here cyan is freed, so g takes it.
+	assert.Contains(t, out, "\x1b[36m[g]\x1b[0m")
 }

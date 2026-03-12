@@ -59,8 +59,7 @@ func ParseTransitions(output string) ([]Transition, error) {
 					tagName,
 				)
 			}
-			isWorkflowTag := tagName == "call-workflow" || tagName == "function-workflow" || tagName == "fork-workflow" || tagName == "reset-workflow"
-			if !isWorkflowTag && strings.ContainsAny(target, "/\\") {
+			if !IsWorkflowTag(tagName) && strings.ContainsAny(target, "/\\") {
 				return nil, fmt.Errorf(
 					"path %q contains path separator. Tag targets must be filenames only, not paths.",
 					target,
@@ -104,6 +103,14 @@ func ValidateSingleTransition(transitions []Transition) error {
 		return fmt.Errorf("expected exactly one transition, found %d", len(transitions))
 	}
 	return nil
+}
+
+// IsWorkflowTag reports whether tag is a cross-workflow transition whose target
+// is a workflow specifier (directory path or zip path) rather than a local
+// state name. Workflow-tag targets are passed through to specifier.Resolve
+// without being validated as filenames.
+func IsWorkflowTag(tag string) bool {
+	return tag == "call-workflow" || tag == "function-workflow" || tag == "fork-workflow" || tag == "reset-workflow"
 }
 
 // ExtractStateName strips the recognized state file extension (.md, .sh, .bat, .ps1)

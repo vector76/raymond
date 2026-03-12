@@ -353,16 +353,20 @@ func TestResolveTransitionTargets_WorkflowTagsPassThroughTarget(t *testing.T) {
 	write(t, filepath.Join(dir, "AFTER.md"), "prompt")
 
 	cases := []struct {
-		tag      string
-		attrKey  string // the resume-state attribute for this tag
+		tag     string
+		attrKey string // the resume-state attribute for this tag (empty if none)
 	}{
 		{"fork-workflow", "next"},
 		{"call-workflow", "return"},
 		{"function-workflow", "return"},
+		{"reset-workflow", ""},
 	}
 
 	for _, tc := range cases {
-		attrs := map[string]string{tc.attrKey: "AFTER"}
+		attrs := map[string]string{}
+		if tc.attrKey != "" {
+			attrs[tc.attrKey] = "AFTER"
+		}
 		from := parsing.Transition{Tag: tc.tag, Target: "../other-workflow/", Attributes: attrs}
 		got, err := executors.ResolveTransitionTargets(from, dir)
 		if err != nil {
@@ -371,7 +375,7 @@ func TestResolveTransitionTargets_WorkflowTagsPassThroughTarget(t *testing.T) {
 		if got.Target != "../other-workflow/" {
 			t.Errorf("tag %q: target = %q, want %q", tc.tag, got.Target, "../other-workflow/")
 		}
-		if got.Attributes[tc.attrKey] != "AFTER.md" {
+		if tc.attrKey != "" && got.Attributes[tc.attrKey] != "AFTER.md" {
 			t.Errorf("tag %q: %s = %q, want AFTER.md", tc.tag, tc.attrKey, got.Attributes[tc.attrKey])
 		}
 	}

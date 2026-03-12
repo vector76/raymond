@@ -17,7 +17,10 @@ package integration_test
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +30,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vector76/raymond/internal/bus"
+	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/orchestrator"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
@@ -68,27 +73,7 @@ func runWorkflow(
 	mutOpts ...func(*orchestrator.RunOptions),
 ) (completedClean bool, runErr error) {
 	t.Helper()
-
-	stateDir := t.TempDir()
-	id := "integration-wf"
-	ws := wfstate.CreateInitialState(id, scopeDir, initialState, budgetUSD, nil)
-	require.NoError(t, wfstate.WriteState(id, ws, stateDir))
-
-	opts := orchestrator.RunOptions{
-		StateDir: stateDir,
-		Quiet:    true,
-		Timeout:  120.0,
-		NoWait:   true, // never block waiting for usage-limit resets in tests
-	}
-	for _, m := range mutOpts {
-		m(&opts)
-	}
-
-	runErr = orchestrator.RunAllAgents(context.Background(), id, opts)
-
-	// State file absent ↔ clean completion (RunAllAgents deleted it).
-	_, statErr := wfstate.ReadState(id, stateDir)
-	completedClean = statErr != nil
+	completedClean, _, runErr = runWorkflowCapture(t, scopeDir, initialState, budgetUSD, nil, mutOpts...)
 	return completedClean, runErr
 }
 
@@ -428,6 +413,153 @@ func TestCallWorkflowZipExplicitEntry(t *testing.T) {
 	completed, err := runWorkflow(t, callerDir, "1_START.md", 10.0)
 	require.NoError(t, err)
 	assert.True(t, completed, "call-workflow zip explicit entry should complete cleanly")
+}
+
+// --------------------------------------------------------------------------
+// reset-workflow integration tests (no Claude required)
+// --------------------------------------------------------------------------
+
+// runWorkflowCapture is like runWorkflow but also returns the ResultPayload
+// from the terminating AgentTerminated event. initialInput, when non-nil, is
+// set as the agent's PendingResult before the workflow starts.
+func runWorkflowCapture(
+	t *testing.T,
+	scopeDir, initialState string,
+	budgetUSD float64,
+	initialInput *string,
+	mutOpts ...func(*orchestrator.RunOptions),
+) (completedClean bool, resultPayload string, runErr error) {
+	t.Helper()
+
+	stateDir := t.TempDir()
+	id := "integration-wf"
+	ws := wfstate.CreateInitialState(id, scopeDir, initialState, budgetUSD, initialInput)
+	require.NoError(t, wfstate.WriteState(id, ws, stateDir))
+
+	var captured string
+	opts := orchestrator.RunOptions{
+		StateDir: stateDir,
+		Quiet:    true,
+		Timeout:  120.0,
+		NoWait:   true,
+		ObserverSetup: func(b *bus.Bus) {
+			bus.Subscribe(b, func(ev events.AgentTerminated) {
+				captured = ev.ResultPayload
+			})
+		},
+	}
+	for _, m := range mutOpts {
+		m(&opts)
+	}
+
+	runErr = orchestrator.RunAllAgents(context.Background(), id, opts)
+
+	_, statErr := wfstate.ReadState(id, stateDir)
+	completedClean = statErr != nil
+	return completedClean, captured, runErr
+}
+
+// buildZipWithHash builds a ZIP from srcDir, computes its SHA256, and renames
+// it to destDir/<hash>.zip. Returns the path to the created zip file.
+func buildZipWithHash(t *testing.T, srcDir, destDir string) string {
+	t.Helper()
+
+	tmpPath := filepath.Join(t.TempDir(), "temp.zip")
+	require.NoError(t, buildZipFromDir(srcDir, tmpPath))
+
+	// Stream the zip through sha256 without loading it fully into memory.
+	f, err := os.Open(tmpPath)
+	require.NoError(t, err)
+	h := sha256.New()
+	_, err = io.Copy(h, f)
+	f.Close()
+	require.NoError(t, err)
+
+	hashStr := hex.EncodeToString(h.Sum(nil))
+	finalPath := filepath.Join(destDir, hashStr+".zip")
+	require.NoError(t, os.Rename(tmpPath, finalPath))
+	return finalPath
+}
+
+// TestResetWorkflowBasic verifies that a script can emit <reset-workflow> to
+// transfer control to an external workflow directory, and that the target runs
+// to completion.
+func TestResetWorkflowBasic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reset-workflow tests use .sh scripts; skipping on Windows")
+	}
+
+	scopeDir := filepath.Join(testCasesDir(), "reset_workflow_basic")
+	completed, result, err := runWorkflowCapture(t, scopeDir, "1_START.sh", 10.0, nil)
+	require.NoError(t, err)
+	assert.True(t, completed, "basic reset-workflow should complete cleanly")
+	assert.Equal(t, "reached_target", result, "target workflow should produce 'reached_target'")
+}
+
+// TestResetWorkflowInputForwarded verifies that the input attribute on
+// <reset-workflow> is forwarded as RAYMOND_RESULT to the target workflow's
+// first state.
+func TestResetWorkflowInputForwarded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reset-workflow tests use .sh scripts; skipping on Windows")
+	}
+
+	scopeDir := filepath.Join(testCasesDir(), "reset_workflow_input")
+	completed, result, err := runWorkflowCapture(t, scopeDir, "1_START.sh", 10.0, nil)
+	require.NoError(t, err)
+	assert.True(t, completed, "input-forwarding reset-workflow should complete cleanly")
+	assert.Equal(t, "hello_from_caller", result, "input attribute should be forwarded as RAYMOND_RESULT")
+}
+
+// TestResetWorkflowCdApplied verifies that the cd attribute on <reset-workflow>
+// sets the working directory for the target workflow's execution.
+func TestResetWorkflowCdApplied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reset-workflow tests use .sh scripts; skipping on Windows")
+	}
+
+	scopeDir := filepath.Join(testCasesDir(), "reset_workflow_cd")
+	completed, result, err := runWorkflowCapture(t, scopeDir, "1_START.sh", 10.0, nil)
+	require.NoError(t, err)
+	assert.True(t, completed, "cd-attribute reset-workflow should complete cleanly")
+	assert.Equal(t, "/tmp", result, "cd attribute should set working directory to /tmp")
+}
+
+// TestResetWorkflowStackCleared verifies that <reset-workflow> clears the
+// call stack. The outer workflow calls the inner workflow (pushing a return
+// frame), but the inner workflow does a reset-workflow. The target's
+// <result>done</result> should terminate the workflow directly (not resume
+// at outer's DONE.sh, which would produce "outer_sentinel").
+func TestResetWorkflowStackCleared(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reset-workflow tests use .sh scripts; skipping on Windows")
+	}
+
+	scopeDir := filepath.Join(testCasesDir(), "reset_workflow_stack_cleared_outer")
+	completed, result, err := runWorkflowCapture(t, scopeDir, "1_START.sh", 10.0, nil)
+	require.NoError(t, err)
+	assert.True(t, completed, "stack-cleared reset-workflow should complete cleanly")
+	assert.Equal(t, "done", result, "stack should be cleared; result must be 'done', not 'outer_sentinel'")
+}
+
+// TestResetWorkflowZipTarget verifies that <reset-workflow> can target a ZIP
+// archive and that hash validation passes when the zip filename encodes its
+// SHA256. The target zip's entry state runs and produces "zip_ok".
+func TestResetWorkflowZipTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reset-workflow tests use .sh scripts; skipping on Windows")
+	}
+
+	zipPath := buildZipWithHash(t,
+		filepath.Join(testCasesDir(), "reset_workflow_zip_src"),
+		t.TempDir(),
+	)
+
+	callerDir := filepath.Join(testCasesDir(), "reset_workflow_zip_caller")
+	completed, result, err := runWorkflowCapture(t, callerDir, "1_START.sh", 10.0, &zipPath)
+	require.NoError(t, err)
+	assert.True(t, completed, "zip-target reset-workflow should complete cleanly")
+	assert.Equal(t, "zip_ok", result, "zip target entry state should produce 'zip_ok'")
 }
 
 // --------------------------------------------------------------------------

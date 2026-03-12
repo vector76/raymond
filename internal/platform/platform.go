@@ -81,6 +81,14 @@ func RunScript(ctx context.Context, scriptPath string, timeout float64, env map[
 		return nil, fmt.Errorf("Script not found: %s: %w", scriptPath, os.ErrNotExist)
 	}
 
+	// Convert to absolute path so that cmd.Dir (cwd) does not cause the
+	// interpreter to misinterpret a relative script path.
+	abs, absErr := filepath.Abs(scriptPath)
+	if absErr != nil {
+		return nil, fmt.Errorf("failed to resolve absolute path for script %q: %w", scriptPath, absErr)
+	}
+	scriptPath = abs
+
 	ext := strings.ToLower(filepath.Ext(scriptPath))
 	cmd, err := buildScriptCmd(scriptPath, ext)
 	if err != nil {

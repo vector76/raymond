@@ -116,10 +116,8 @@ func ResolveTransitionTargets(t parsing.Transition, scopeDir string) (parsing.Tr
 		return t, nil
 	}
 
-	isWorkflowTag := t.Tag == "call-workflow" || t.Tag == "function-workflow" || t.Tag == "fork-workflow"
-
 	resolvedTarget := t.Target
-	if !isWorkflowTag {
+	if !parsing.IsWorkflowTag(t.Tag) {
 		var err error
 		resolvedTarget, err = prompts.ResolveState(scopeDir, t.Target)
 		if err != nil {

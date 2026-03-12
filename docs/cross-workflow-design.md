@@ -34,9 +34,10 @@ raymond orchestrator instance** — not as child processes. This means:
 - **Shared budget**: All workflows debit the same `total_cost_usd` counter.
   No inter-process coordination needed.
 - **Shared state file**: All agent state lives in the same JSON state file.
-  `<fork-workflow>` adds new agent entries (like `<fork>`); `<call-workflow>`
-  and `<function-workflow>` transition the existing agent into the sub-workflow
-  scope (like `<call>` and `<function>`) without creating new agent entries.
+  `<fork-workflow>` adds new agent entries (like `<fork>`); `<call-workflow>`,
+  `<function-workflow>`, and `<reset-workflow>` transition the existing agent
+  into the sub-workflow scope (like `<call>` and `<function>`) without creating
+  new agent entries.
   Crash recovery via `raymond --resume` restores the entire composition
   automatically.
 - **Shared event bus**: All events (cost, state transitions, agent lifecycle)
@@ -45,19 +46,22 @@ raymond orchestrator instance** — not as child processes. This means:
   interpretation.
 
 The trade-off is that the orchestrator must support per-agent scope directories
-(see [Implementation Requirements](#implementation-requirements) below).
+(see [Implementation Notes](#implementation-notes) below).
 
-## Three New Tags
+## Four New Tags
 
-Cross-workflow support is implemented as three new transition tags, designed as
-analogues to the existing `<call>`, `<function>`, and `<fork>` tags. The
-`-workflow` suffix marks the cross-scope boundary explicitly.
+Cross-workflow support is implemented as four new transition tags. Three are
+designed as analogues to the existing `<call>`, `<function>`, and `<fork>` tags;
+the fourth, `<reset-workflow>`, is an in-place agent transition that discards all
+caller context and replaces the current agent's scope with the target workflow.
+The `-workflow` suffix marks the cross-scope boundary explicitly.
 
 | Tag | Blocks parent? | `cd` override | Session | Analogue |
 |-----|---------------|--------------|---------|---------|
 | `<call-workflow>` | yes | no | fork caller's | `<call>` |
 | `<function-workflow>` | yes | yes | fresh | `<function>` |
 | `<fork-workflow>` | no | yes | fresh | `<fork>` |
+| `<reset-workflow>` | — (in-place) | yes | fresh | `<reset>` |
 
 ### Why distinct tag names?
 
@@ -74,7 +78,7 @@ a different tag.
 
 ## Workflow Specifier Syntax
 
-The content of all three cross-workflow tags is a **workflow specifier** — the
+The content of all four cross-workflow tags is a **workflow specifier** — the
 same grammar accepted by `raymond --start` on the command line:
 
 | Specifier form | Meaning |
@@ -289,6 +293,62 @@ inheritance). Same semantics as `<fork>`.
 processing tasks from a shared queue in separate worktrees, while the main
 agent proceeds to a monitoring loop.
 
+### `<reset-workflow>../other-wf/</reset-workflow>`
+
+In-place agent transition to a different workflow. The current agent abandons
+its scope entirely — the stack is cleared, the session is cleared, the nesting
+depth is reset to zero, and the agent's `ScopeDir` is updated to the target
+workflow. No new agent entry is created; the current agent becomes the target
+workflow's agent.
+
+Unlike `<call-workflow>` and `<function-workflow>`, there is no return: once
+the transition fires, the caller's context is gone. The agent simply continues
+as if it had been launched directly in the target workflow.
+
+**Attributes:**
+- `input` (optional): String injected as `{{result}}` into the target
+  workflow's entry state, equivalent to `raymond --input "..."`. Same
+  semantics as the `input` attribute on the other cross-workflow tags.
+- `cd` (optional): Changes the agent's working directory (`cwd`) to this
+  path, resolved against the current `cwd`. If omitted, `cwd` is preserved.
+
+**State effects:**
+| Field | Value after transition |
+|---|---|
+| `ScopeDir` | Target workflow's scope directory |
+| `CurrentState` | Resolved entry point of target workflow |
+| `SessionID` | Cleared (fresh session) |
+| Stack | Cleared (empty) |
+| `NestingDepth` | Reset to 0 |
+| `Cwd` | Updated by `cd` if present; otherwise preserved |
+
+**Contrast with related tags:**
+- `<goto>`: intra-workflow only; preserves session, stack, and nesting depth.
+- `<reset>`: stays within the same workflow; preserves stack and nesting depth.
+- `<fork-workflow>`: spawns an independent worker; the current agent is
+  unaffected and continues at `next`.
+- `<call-workflow>` / `<function-workflow>`: blocking calls that push a stack
+  frame so the caller can resume after the sub-workflow completes.
+
+**Specifier syntax:** All forms supported by the other cross-workflow tags are
+accepted — directory, explicit file, zip, zip with explicit entry state. See
+[Workflow Specifier Syntax](#workflow-specifier-syntax) for the full grammar.
+
+**Canonical use case:** Sequential cross-workflow transition where the caller
+has no further work to do. Previously, this required `<fork-workflow>` combined
+with an explicit parent termination sequence (the spawned workflow does the real
+work, the parent immediately emits `<result>`). `<reset-workflow>` replaces that
+workaround with a single, semantically clear tag:
+
+```xml
+<!-- Before: awkward fork + immediate parent termination -->
+<fork-workflow cd="...">../next-phase/</fork-workflow>
+<goto>TERMINATE.md</goto>  <!-- parent does nothing useful -->
+
+<!-- After: direct in-place transition -->
+<reset-workflow>../next-phase/</reset-workflow>
+```
+
 ## Session Constraints on `call-workflow`
 
 `<call-workflow>` does not permit a `cd` attribute. This constraint is
@@ -305,9 +365,9 @@ resolvable — `--fork-session` silently fails or errors.
 caller's conversation context. Allowing a different `cwd` would break this
 invariant silently.
 
-`<function-workflow>` and `<fork-workflow>` start with fresh sessions
-(`session_id = nil`), so they are immune to this constraint. The `cd`
-attribute is permitted on both.
+`<function-workflow>`, `<fork-workflow>`, and `<reset-workflow>` start with
+fresh sessions (`session_id = nil`), so they are immune to this constraint.
+The `cd` attribute is permitted on all three.
 
 **Consequence for workflow authors:** If you need a blocking call to a
 sub-workflow in a different directory (e.g., a different worktree), use
@@ -317,16 +377,16 @@ own directory.
 
 ## The `input` Attribute
 
-The `input` attribute on all three tags injects a string as `{{result}}` into
+The `input` attribute on all four tags injects a string as `{{result}}` into
 the sub-workflow's entry state. This is semantically identical to running:
 
 ```bash
 raymond ../other-wf/ --input "some data"
 ```
 
-The input value is stored as `pending_result` on the spawned agent before its
-first state executes, then cleared after the first state runs — exactly as
-`--input` and the normal `<result>` return mechanism work.
+The input value is stored as `pending_result` on the agent before its first
+state in the target workflow executes, then cleared after that state runs —
+exactly as `--input` and the normal `<result>` return mechanism work.
 
 **Use cases:**
 - Pass a file path the sub-workflow should process.
@@ -390,9 +450,9 @@ will succeed as long as the targets match.
 4. **Exactly one `<goto>` permitted.** Even if a `<goto>` would match a
    redundant second `<goto>`, only one is allowed.
 5. **Only `<goto>` may accompany fork tags.** Combining fork tags with
-   `<call>`, `<function>`, `<reset>`, `<result>`, `<call-workflow>`, or
-   `<function-workflow>` in the same output is not permitted. The semantics
-   would be ambiguous or contradictory.
+   `<call>`, `<function>`, `<reset>`, `<result>`, `<call-workflow>`,
+   `<function-workflow>`, or `<reset-workflow>` in the same output is not
+   permitted. The semantics would be ambiguous or contradictory.
 6. **`<fork>` and `<fork-workflow>` may be freely mixed** in the same output,
    subject to the rules above.
 
@@ -491,7 +551,9 @@ agent that spawned them.
 
 At depth 4, any attempt to emit a `<call-workflow>` or `<function-workflow>`
 tag is treated as a policy violation and the agent is paused with an
-explanatory error.
+explanatory error. `<reset-workflow>` is not subject to this limit: it resets
+`NestingDepth` to 0, so an agent at any depth may perform an in-place
+cross-workflow transition.
 
 Cycle detection (workflow A calls workflow B which calls workflow A) is
 implicitly handled by the nesting limit in practice, though implementors may
@@ -645,8 +707,9 @@ The new tags are additive. All existing tags (`<goto>`, `<reset>`, `<call>`,
 | `<call>` | `<call-workflow>` | Content is workflow spec, not state filename; no `cd` |
 | `<function>` | `<function-workflow>` | Content is workflow spec; `cd` permitted |
 | `<fork>` | `<fork-workflow>` | Content is workflow spec; `cd` permitted |
+| `<reset>` | `<reset-workflow>` | Content is workflow spec; changes `ScopeDir`, clears stack; `cd` permitted |
 
-There is no `<goto-workflow>` or `<reset-workflow>`: these transitions are
-intra-agent by nature. Crossing a workflow boundary always involves either
-suspending and returning (call/function) or spawning an independent agent
-(fork).
+There is no `<goto-workflow>`: `<goto>` is intra-workflow by nature (it
+transitions between states within the current scope without altering scope
+context). The `<reset-workflow>` tag fills the role of an in-place cross-scope
+transition when no return to the caller is needed.

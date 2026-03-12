@@ -752,3 +752,106 @@ func TestResolveZipParent_AbbrevFromZipStem(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "mypipe", res.Abbrev) // "MyPipeline" → lowercase → truncate to 6
 }
+
+// --------------------------------------------------------------------------
+// Zip-scope explicit entry state (TestResolve_ZipWithExplicitEntry)
+// --------------------------------------------------------------------------
+
+func TestResolve_ZipWithExplicitEntry(t *testing.T) {
+	t.Run("regression - bare zip resolves 1_START", func(t *testing.T) {
+		// No inner state component — bare zip resolves to 1_START.md as before.
+		zipPath := mkZip(t, "wf.zip", map[string]string{"1_START.md": "start"})
+
+		res, err := specifier.Resolve(zipPath, "")
+
+		require.NoError(t, err)
+		assert.Equal(t, zipPath, res.ScopeDir)
+		assert.Equal(t, "1_START.md", res.EntryPoint)
+	})
+
+	t.Run("happy path - .md inside zip", func(t *testing.T) {
+		// Zip contains 1_START.md and OTHER_ENTRY.md; explicit entry resolves correctly.
+		zipPath := mkZip(t, "mywf.zip", map[string]string{
+			"1_START.md":     "start",
+			"OTHER_ENTRY.md": "other",
+		})
+		spec := filepath.Join(zipPath, "OTHER_ENTRY")
+
+		res, err := specifier.Resolve(spec, "")
+
+		require.NoError(t, err)
+		assert.Equal(t, zipPath, res.ScopeDir)
+		assert.Equal(t, "OTHER_ENTRY.md", res.EntryPoint)
+		assert.Equal(t, "mywf", res.Abbrev) // from zip stem "mywf"
+	})
+
+	t.Run("trailing slash on inner component", func(t *testing.T) {
+		// "{zip_path}/OTHER_ENTRY/" has a trailing slash — must be rejected.
+		base := t.TempDir()
+		zipPath := filepath.Join(base, "mywf.zip")
+		writeZip(t, zipPath, map[string]string{"OTHER_ENTRY.md": "other"})
+
+		_, err := specifier.Resolve("mywf.zip/OTHER_ENTRY/", base)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "trailing slash")
+	})
+
+	t.Run("named entry state not inside zip", func(t *testing.T) {
+		// Zip contains 1_START.md but no MISSING.* — expect error.
+		zipPath := mkZip(t, "mywf.zip", map[string]string{"1_START.md": "start"})
+		spec := filepath.Join(zipPath, "MISSING")
+
+		_, err := specifier.Resolve(spec, "")
+
+		require.Error(t, err)
+	})
+
+	t.Run("ambiguity - both .md and platform script inside zip", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix-only ambiguity test (.sh is not a platform script on Windows)")
+		}
+		// Zip contains both OTHER_ENTRY.md and OTHER_ENTRY.sh — ambiguity error.
+		zipPath := mkZip(t, "mywf.zip", map[string]string{
+			"OTHER_ENTRY.md": "# Entry",
+			"OTHER_ENTRY.sh": "#!/bin/sh",
+		})
+		spec := filepath.Join(zipPath, "OTHER_ENTRY")
+
+		_, err := specifier.Resolve(spec, "")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "Ambiguous")
+	})
+
+	t.Run("zip hash verification fails", func(t *testing.T) {
+		// Embed a wrong 64-char hex string in the filename so VerifyZipHash detects mismatch.
+		base := t.TempDir()
+		realZipPath := filepath.Join(base, "mywf.zip")
+		writeZip(t, realZipPath, map[string]string{
+			"1_START.md":     "start",
+			"OTHER_ENTRY.md": "other",
+		})
+		// Rename to embed a wrong hash (all zeros ≠ actual SHA256).
+		wrongHash := strings.Repeat("0", 64)
+		wrongZipPath := filepath.Join(base, wrongHash+"_mywf.zip")
+		require.NoError(t, os.Rename(realZipPath, wrongZipPath))
+		spec := filepath.Join(wrongZipPath, "OTHER_ENTRY")
+
+		_, err := specifier.Resolve(spec, "")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "hash")
+	})
+
+	t.Run("abbrev derived from zip stem", func(t *testing.T) {
+		// "longworkflowname" is 16 chars → truncated to "longwo" (first 6).
+		zipPath := mkZip(t, "longworkflowname.zip", map[string]string{"STEP.md": "step"})
+		spec := filepath.Join(zipPath, "STEP")
+
+		res, err := specifier.Resolve(spec, "")
+
+		require.NoError(t, err)
+		assert.Equal(t, "longwo", res.Abbrev)
+	})
+}

@@ -17,6 +17,7 @@ package integration_test
 import (
 	"archive/zip"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -371,6 +372,62 @@ func TestForkWorkflowParallel(t *testing.T) {
 	completed, err := runWorkflow(t, scopeDir, "1_START.md", 10.0)
 	require.NoError(t, err)
 	assert.True(t, completed, "fork-workflow parallel dispatch should complete cleanly")
+}
+
+// TestCallWorkflowExplicitEntry verifies that call-workflow can target a
+// non-default entry state in a sub-workflow using the explicit entry specifier.
+func TestCallWorkflowExplicitEntry(t *testing.T) {
+	skipIfNoClaude(t)
+
+	scopeDir := filepath.Join(testCasesDir(), "cross_workflow_entry_call")
+	completed, err := runWorkflow(t, scopeDir, "1_START.md", 10.0)
+	require.NoError(t, err)
+	assert.True(t, completed, "call-workflow explicit entry should complete cleanly")
+}
+
+// TestForkWorkflowExplicitEntry verifies that fork-workflow can target a
+// non-default entry state in a sub-workflow using the explicit entry specifier.
+func TestForkWorkflowExplicitEntry(t *testing.T) {
+	skipIfNoClaude(t)
+
+	scopeDir := filepath.Join(testCasesDir(), "cross_workflow_entry_fork")
+	completed, err := runWorkflow(t, scopeDir, "1_START.md", 10.0)
+	require.NoError(t, err)
+	assert.True(t, completed, "fork-workflow explicit entry should complete cleanly")
+}
+
+// TestFunctionWorkflowExplicitEntry verifies that function-workflow can target
+// a non-default entry state in a sub-workflow using the explicit entry specifier.
+func TestFunctionWorkflowExplicitEntry(t *testing.T) {
+	skipIfNoClaude(t)
+
+	scopeDir := filepath.Join(testCasesDir(), "cross_workflow_entry_function")
+	completed, err := runWorkflow(t, scopeDir, "1_START.md", 10.0)
+	require.NoError(t, err)
+	assert.True(t, completed, "function-workflow explicit entry should complete cleanly")
+}
+
+// TestCallWorkflowZipExplicitEntry verifies that call-workflow can target a
+// non-default entry state inside a ZIP-scoped sub-workflow.
+func TestCallWorkflowZipExplicitEntry(t *testing.T) {
+	skipIfNoClaude(t)
+
+	// Build zip from the source fixture directory.
+	tmpZipPath := filepath.Join(t.TempDir(), "cross_wf_zip.zip")
+	err := buildZipFromDir(filepath.Join(testCasesDir(), "cross_workflow_zip_entry_sub_src"), tmpZipPath)
+	require.NoError(t, err)
+
+	// Build a caller dir with a 1_START.md that calls into the zip at OTHER_ENTRY.
+	callerDir := t.TempDir()
+	startContent := fmt.Sprintf("<call-workflow return=\"2_DONE.md\">%s/OTHER_ENTRY</call-workflow>", tmpZipPath)
+	err = os.WriteFile(filepath.Join(callerDir, "1_START.md"), []byte(startContent), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(callerDir, "2_DONE.md"), []byte("Result received: {{result}}"), 0644)
+	require.NoError(t, err)
+
+	completed, err := runWorkflow(t, callerDir, "1_START.md", 10.0)
+	require.NoError(t, err)
+	assert.True(t, completed, "call-workflow zip explicit entry should complete cleanly")
 }
 
 // --------------------------------------------------------------------------

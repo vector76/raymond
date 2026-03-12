@@ -1947,3 +1947,193 @@ func TestForkWorkerInputNotInForkAttributes(t *testing.T) {
 	assert.Equal(t, "value", worker.ForkAttributes["extra"])
 }
 
+// ----------------------------------------------------------------------------
+// HandleResetWorkflow
+// ----------------------------------------------------------------------------
+
+func resetWorkflowTransition(attrs map[string]string) parsing.Transition {
+	return parsing.Transition{
+		Tag:        "reset-workflow",
+		Attributes: attrs,
+	}
+}
+
+func TestApplyTransitionDispatchesResetWorkflow(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	tr := parsing.Transition{
+		Tag:        "reset-workflow",
+		Target:     childDir,
+		Attributes: map[string]string{},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Worker)
+}
+
+func TestResetWorkflowAgentIDPreserved(t *testing.T) {
+	agent := makeAgent("agent-42", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "agent-42", result.Agent.ID)
+}
+
+func TestResetWorkflowSessionCleared(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Nil(t, result.Agent.SessionID)
+}
+
+func TestResetWorkflowStackCleared(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Stack = []wfstate.StackFrame{
+		{Session: strPtr("s1"), State: "A.md"},
+		{Session: strPtr("s2"), State: "B.md"},
+	}
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Empty(t, result.Agent.Stack)
+}
+
+func TestResetWorkflowNestingDepthReset(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.NestingDepth = 3
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Equal(t, 0, result.Agent.NestingDepth)
+}
+
+func TestResetWorkflowScopeDirUpdated(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/old/scope"
+	resolution := makeResolution("/new/scope", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Equal(t, "/new/scope", result.Agent.ScopeDir)
+}
+
+func TestResetWorkflowCurrentStateUpdated(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "2_INIT.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Equal(t, "2_INIT.md", result.Agent.CurrentState)
+}
+
+func TestResetWorkflowCwdPreservedWhenNoCd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/repo/project"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Equal(t, "/repo/project", result.Agent.Cwd)
+}
+
+func TestResetWorkflowCwdUpdatedWithRelativeCd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/repo/project"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{"cd": "../other"})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Equal(t, "/repo/other", result.Agent.Cwd)
+}
+
+func TestResetWorkflowCwdUpdatedWithAbsoluteCd(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.Cwd = "/repo/project"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{"cd": "/absolute/path"})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Equal(t, "/absolute/path", result.Agent.Cwd)
+}
+
+func TestResetWorkflowInputSetsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{"input": "task data"})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "task data", *result.Agent.PendingResult)
+}
+
+func TestResetWorkflowNoInputNilPendingResult(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestResetWorkflowNoWorkerSpawned(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.Nil(t, result.Worker)
+}
+
+func TestResetWorkflowAgentNonNil(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	assert.NotNil(t, result.Agent)
+}
+
+func TestResetWorkflowResolverErrorPausesAgent(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/some/scope"
+	tr := parsing.Transition{
+		Tag:        "reset-workflow",
+		Target:     "/nonexistent/no/such/path",
+		Attributes: map[string]string{},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err) // error is converted to a paused agent, not propagated
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.NotEmpty(t, result.Agent.Error)
+	assert.Contains(t, result.Agent.Error, "reset-workflow")
+}
+

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/vector76/raymond/internal/prompts"
 	"github.com/vector76/raymond/internal/zipscope"
@@ -49,6 +50,9 @@ func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	// 1. Normalize separators.
 	spec := filepath.FromSlash(rawSpecifier)
 
+	// Capture trailing slash before filepath.Join strips it.
+	trailingSlash := strings.HasSuffix(spec, string(filepath.Separator))
+
 	// 2. Resolve relative paths.
 	if !filepath.IsAbs(spec) {
 		base := callerScopeDir
@@ -68,7 +72,7 @@ func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	case ".md":
 		return resolveMd(spec)
 	default:
-		return resolveDir(spec)
+		return resolveDir(spec, trailingSlash)
 	}
 }
 
@@ -105,14 +109,16 @@ func resolveMd(mdPath string) (Resolution, error) {
 	}, nil
 }
 
-func resolveDir(dirPath string) (Resolution, error) {
+func resolveDir(dirPath string, trailingSlash bool) (Resolution, error) {
 	info, err := os.Stat(dirPath)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+		// ENOTDIR means a path component is a regular file (e.g. foo.zip/STATE).
+		// Treat this the same as ENOENT: last component is an entry state name.
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
 			return Resolution{}, err
 		}
-		// Path doesn't exist — treat last component as an entry state name.
-		return resolveStateInDir(dirPath)
+		// Path doesn't exist or a component is not a directory — treat last component as an entry state name.
+		return resolveStateInDir(dirPath, trailingSlash)
 	}
 	if info.IsDir() {
 		// Full path is a directory — resolve its entry point.
@@ -127,12 +133,12 @@ func resolveDir(dirPath string) (Resolution, error) {
 		}, nil
 	}
 	// A file exists at the path (not a directory) — treat last component as entry state name.
-	return resolveStateInDir(dirPath)
+	return resolveStateInDir(dirPath, trailingSlash)
 }
 
 // resolveStateInDir interprets filepath.Base(dirPath) as an extension-less entry
 // state name and filepath.Dir(dirPath) as the scope directory.
-func resolveStateInDir(dirPath string) (Resolution, error) {
+func resolveStateInDir(dirPath string, trailingSlash bool) (Resolution, error) {
 	scopeDir := filepath.Dir(dirPath)
 	stateName := filepath.Base(dirPath)
 
@@ -144,7 +150,22 @@ func resolveStateInDir(dirPath string) (Resolution, error) {
 	}
 
 	if strings.ToLower(filepath.Ext(scopeDir)) == ".zip" {
-		return Resolution{}, fmt.Errorf("zip parent scopes are not supported for state specifiers: %s", scopeDir)
+		if trailingSlash {
+			return Resolution{}, fmt.Errorf("trailing slash on inner component of zip specifier is not allowed: %q", dirPath)
+		}
+		if err := zipscope.VerifyZipHash(scopeDir); err != nil {
+			return Resolution{}, fmt.Errorf("zip hash verification failed for %q: %w", scopeDir, err)
+		}
+		if _, err := zipscope.DetectLayout(scopeDir); err != nil {
+			return Resolution{}, fmt.Errorf("invalid zip %q: %w", scopeDir, err)
+		}
+		entryPoint, err := prompts.ResolveState(scopeDir, stateName)
+		if err != nil {
+			return Resolution{}, fmt.Errorf("cannot resolve state %q in %s: %w", stateName, scopeDir, err)
+		}
+		base := filepath.Base(scopeDir)
+		stem := base[:len(base)-len(filepath.Ext(base))]
+		return Resolution{ScopeDir: scopeDir, EntryPoint: entryPoint, Abbrev: abbrev(stem)}, nil
 	}
 
 	entryPoint, err := prompts.ResolveState(scopeDir, stateName)

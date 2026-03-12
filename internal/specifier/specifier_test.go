@@ -653,3 +653,102 @@ func TestResolve_DirectoryWithExplicitEntry(t *testing.T) {
 		assert.Contains(t, err.Error(), "entry point")
 	})
 }
+
+// --------------------------------------------------------------------------
+// Zip-parent branch (zip file as scope directory with explicit state name)
+// --------------------------------------------------------------------------
+
+func TestResolveZipParent_HappyPath(t *testing.T) {
+	// Spec: /path/to/workflow.zip/MYSTATE — flat layout zip with MYSTATE.md inside.
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "workflow.zip")
+	writeZip(t, zipPath, map[string]string{"MYSTATE.md": "# State"})
+	spec := filepath.Join(zipPath, "MYSTATE")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, zipPath, res.ScopeDir)
+	assert.Equal(t, "MYSTATE.md", res.EntryPoint)
+	assert.Equal(t, "workfl", res.Abbrev) // "workflow" → 6 chars
+}
+
+func TestResolveZipParent_FolderLayout(t *testing.T) {
+	// Single-folder layout zip: all files inside a top-level directory.
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "mywf.zip")
+	writeZip(t, zipPath, map[string]string{"mywf/STEP.md": "# Step"})
+	spec := filepath.Join(zipPath, "STEP")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, zipPath, res.ScopeDir)
+	assert.Equal(t, "STEP.md", res.EntryPoint)
+	assert.Equal(t, "mywf", res.Abbrev)
+}
+
+func TestResolveZipParent_RelativeSpecifier(t *testing.T) {
+	// Relative specifier "workflow.zip/MYSTATE" resolved against a caller directory.
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "workflow.zip")
+	writeZip(t, zipPath, map[string]string{"MYSTATE.md": "# State"})
+
+	res, err := specifier.Resolve("workflow.zip/MYSTATE", base)
+
+	require.NoError(t, err)
+	assert.Equal(t, zipPath, res.ScopeDir)
+	assert.Equal(t, "MYSTATE.md", res.EntryPoint)
+}
+
+func TestResolveZipParent_TrailingSlash(t *testing.T) {
+	// "workflow.zip/MYSTATE/" has a trailing slash — should be rejected.
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "workflow.zip")
+	writeZip(t, zipPath, map[string]string{"MYSTATE.md": "# State"})
+	// Forward slash is normalized by filepath.FromSlash; trailing slash is captured.
+	_, err := specifier.Resolve("workflow.zip/MYSTATE/", base)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trailing slash")
+}
+
+func TestResolveZipParent_BadLayout(t *testing.T) {
+	// Zip with multiple top-level folders → layout error.
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "bad.zip")
+	writeZip(t, zipPath, map[string]string{
+		"folder1/MYSTATE.md": "# State",
+		"folder2/OTHER.md":   "# Other",
+	})
+	spec := filepath.Join(zipPath, "MYSTATE")
+
+	_, err := specifier.Resolve(spec, "")
+
+	require.Error(t, err)
+}
+
+func TestResolveZipParent_StateNotFound(t *testing.T) {
+	// Zip is valid but does not contain the requested state.
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "workflow.zip")
+	writeZip(t, zipPath, map[string]string{"OTHER.md": "# Other"})
+	spec := filepath.Join(zipPath, "MISSING")
+
+	_, err := specifier.Resolve(spec, "")
+
+	require.Error(t, err)
+}
+
+func TestResolveZipParent_AbbrevFromZipStem(t *testing.T) {
+	// Abbrev is derived from the zip filename stem, not the state name.
+	base := t.TempDir()
+	zipPath := filepath.Join(base, "MyPipeline.zip")
+	writeZip(t, zipPath, map[string]string{"STEP.md": "# Step"})
+	spec := filepath.Join(zipPath, "STEP")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "mypipe", res.Abbrev) // "MyPipeline" → lowercase → truncate to 6
+}

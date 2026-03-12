@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -97,6 +98,92 @@ func TestResolveDir_NonExistentPath(t *testing.T) {
 	_, err := specifier.Resolve("/nonexistent/path/that/cannot/exist/xyz", "")
 
 	require.Error(t, err)
+}
+
+func TestResolveDir_ExplicitStateName_Success(t *testing.T) {
+	// Path doesn't exist as a directory; base is treated as a state name in parent.
+	parent := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "PROCESS.md"), []byte("# Process"), 0600))
+	spec := filepath.Join(parent, "PROCESS") // no extension, not a directory
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, parent, res.ScopeDir)
+	assert.Equal(t, "PROCESS.md", res.EntryPoint)
+	assert.Equal(t, abbrevOf(filepath.Base(parent)), res.Abbrev)
+}
+
+func TestResolveDir_ExplicitStateName_ScopeDirMissing(t *testing.T) {
+	// Neither the path nor its parent exists.
+	_, err := specifier.Resolve("/nonexistent/parent/MYSTATE", "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scope directory does not exist")
+}
+
+func TestResolveDir_ExplicitStateName_ZipParent(t *testing.T) {
+	// Scope dir is a directory whose name ends in .zip — unsupported.
+	// Using a directory (not a file) ensures os.Stat on the spec path returns
+	// ErrNotExist rather than ENOTDIR, so resolveStateInDir is reached and the
+	// .zip extension check fires.
+	base := t.TempDir()
+	zipDir := filepath.Join(base, "workflow.zip") // directory with .zip extension
+	require.NoError(t, os.MkdirAll(zipDir, 0700))
+	spec := filepath.Join(zipDir, "MYSTATE") // doesn't exist inside zipDir
+
+	_, err := specifier.Resolve(spec, "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zip")
+}
+
+func TestResolveDir_ExplicitStateName_StateNotFound(t *testing.T) {
+	// Scope dir exists but no matching state file.
+	parent := t.TempDir()
+	spec := filepath.Join(parent, "NONEXISTENT_STATE")
+
+	_, err := specifier.Resolve(spec, "")
+
+	require.Error(t, err)
+}
+
+func TestResolveDir_ExplicitStateName_FileAtPath(t *testing.T) {
+	// A regular file exists at the path (not a directory) — treat as state name in parent.
+	parent := t.TempDir()
+	// The "specifier" path is a file, and there's a PROCESS.md in the same dir.
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "PROCESS"), []byte("not a dir"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "PROCESS.md"), []byte("# Process"), 0600))
+	spec := filepath.Join(parent, "PROCESS")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, parent, res.ScopeDir)
+	assert.Equal(t, "PROCESS.md", res.EntryPoint)
+}
+
+func TestResolveDir_ExplicitStateName_AbbrevFromScopeDir(t *testing.T) {
+	// Abbrev is derived from the scope directory name, not the state name.
+	parent := t.TempDir()
+	scopeDir := filepath.Join(parent, "MyWorkflowDir")
+	require.NoError(t, os.MkdirAll(scopeDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "STEP.md"), []byte("# Step"), 0600))
+	spec := filepath.Join(scopeDir, "STEP")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "mywork", res.Abbrev) // from "MyWorkflowDir", not "STEP"
+}
+
+// abbrevOf mirrors the internal abbrev logic for test assertions.
+func abbrevOf(s string) string {
+	lower := strings.ToLower(s)
+	if len(lower) > 6 {
+		return lower[:6]
+	}
+	return lower
 }
 
 // --------------------------------------------------------------------------

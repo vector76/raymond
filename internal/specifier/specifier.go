@@ -1,10 +1,11 @@
 // Package specifier resolves raw workflow specifier strings into validated
 // absolute scope directories and entry points.
 //
-// A specifier may point to one of three things:
+// A specifier may point to one of four things:
 //   - A directory: ScopeDir = dir, EntryPoint = resolved entry point (1_START or START, any extension)
 //   - A .zip archive: ScopeDir = zip path, EntryPoint = resolved entry point (1_START or START, any extension)
 //   - An explicit .md file: ScopeDir = parent dir, EntryPoint = filename
+//   - An explicit state name (no extension, not an existing directory): ScopeDir = parent dir, EntryPoint = resolved state file
 //
 // Relative specifiers are resolved against the caller's scope directory.
 // For zip callers the effective base is the zip stem path (zip filename minus
@@ -12,6 +13,7 @@
 package specifier
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +40,10 @@ type Resolution struct {
 //  3. Classify by extension and validate:
 //     - .zip: verify hash, layout, and resolve entry point (1_START or START)
 //     - .md:  verify the file exists
-//     - other: resolve entry point (1_START or START) in the directory
+//     - other: three-way disambiguation based on os.Stat:
+//       (a) path is a directory → resolve its entry point (1_START or START)
+//       (b) path is a non-directory file, or does not exist → treat
+//           filepath.Base as an explicit state name within filepath.Dir
 //  4. Derive Abbrev: base name (or zip stem), lowercased and capped at 6 chars.
 func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	// 1. Normalize separators.
@@ -101,14 +106,56 @@ func resolveMd(mdPath string) (Resolution, error) {
 }
 
 func resolveDir(dirPath string) (Resolution, error) {
-	entryPoint, err := ResolveEntryPoint(dirPath)
+	info, err := os.Stat(dirPath)
 	if err != nil {
-		return Resolution{}, fmt.Errorf("cannot resolve entry point in directory %s: %w", dirPath, err)
+		if !errors.Is(err, os.ErrNotExist) {
+			return Resolution{}, err
+		}
+		// Path doesn't exist — treat last component as an entry state name.
+		return resolveStateInDir(dirPath)
 	}
+	if info.IsDir() {
+		// Full path is a directory — resolve its entry point.
+		entryPoint, err := ResolveEntryPoint(dirPath)
+		if err != nil {
+			return Resolution{}, fmt.Errorf("cannot resolve entry point in directory %s: %w", dirPath, err)
+		}
+		return Resolution{
+			ScopeDir:   dirPath,
+			EntryPoint: entryPoint,
+			Abbrev:     abbrev(filepath.Base(dirPath)),
+		}, nil
+	}
+	// A file exists at the path (not a directory) — treat last component as entry state name.
+	return resolveStateInDir(dirPath)
+}
+
+// resolveStateInDir interprets filepath.Base(dirPath) as an extension-less entry
+// state name and filepath.Dir(dirPath) as the scope directory.
+func resolveStateInDir(dirPath string) (Resolution, error) {
+	scopeDir := filepath.Dir(dirPath)
+	stateName := filepath.Base(dirPath)
+
+	if _, err := os.Stat(scopeDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Resolution{}, fmt.Errorf("scope directory does not exist: %s", scopeDir)
+		}
+		return Resolution{}, fmt.Errorf("cannot access scope directory %s: %w", scopeDir, err)
+	}
+
+	if strings.ToLower(filepath.Ext(scopeDir)) == ".zip" {
+		return Resolution{}, fmt.Errorf("zip parent scopes are not supported for state specifiers: %s", scopeDir)
+	}
+
+	entryPoint, err := prompts.ResolveState(scopeDir, stateName)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("cannot resolve state %q in %s: %w", stateName, scopeDir, err)
+	}
+
 	return Resolution{
-		ScopeDir:   dirPath,
+		ScopeDir:   scopeDir,
 		EntryPoint: entryPoint,
-		Abbrev:     abbrev(filepath.Base(dirPath)),
+		Abbrev:     abbrev(filepath.Base(scopeDir)),
 	}, nil
 }
 

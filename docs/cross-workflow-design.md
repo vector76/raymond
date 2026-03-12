@@ -81,11 +81,66 @@ same grammar accepted by `raymond --start` on the command line:
 |----------------|---------|
 | `../other-workflow/` | Directory; entry point resolved to `1_START` or `START` (any supported extension) |
 | `../other-workflow/1_START.md` | Explicit entry point file |
+| `../other-workflow/OTHER_ENTRY` | Extension-less explicit entry state within the directory |
 | `../other-workflow.zip` | Zip archive; entry point is `1_START` or `START` (any supported extension) inside |
+| `../other-workflow.zip/OTHER_ENTRY` | Zip archive with explicit entry state (inner component always a state name) |
 
 The scope directory for the invoked workflow is derived from the specifier:
 - For a directory or `.md` file specifier, scope = the containing directory.
 - For a zip specifier, scope = the zip archive (existing zip scope logic).
+- For an extension-less specifier (last component has no recognized extension), a
+  three-way disambiguation applies (see below).
+
+### Extension-less explicit entry states
+
+When the last path component of a specifier has no recognized extension (not
+`.md`, not `.zip`) and is not itself a trailing slash, the resolver applies
+three-way disambiguation:
+
+1. **Path is a directory with a valid entry point** — scope is that directory;
+   entry point is auto-discovered (`1_START` or `START`, any extension). The
+   trailing-slash form (`../other-workflow/`) is equivalent and unambiguous, but
+   omitting the slash is also accepted.
+2. **Path is a directory but has no valid entry point** — error immediately.
+   A directory with no `1_START`/`START` file cannot be used as a workflow
+   scope, so the error surfaces at resolution time rather than at dispatch.
+3. **Path is not a directory** (does not exist, is a regular file, or a path
+   component is itself a regular file) — the last component is treated as an
+   extension-less entry state name; the parent is the scope directory.
+   The state is resolved via extension-agnostic lookup (same as `<goto>`).
+   **Explicit entry states bypass `1_START`/`START` discovery entirely.**
+
+**Cross-platform motivation:** Extension-less specifiers eliminate the need to
+hardcode `.sh` or `.ps1` when authoring workflows intended to run on multiple
+platforms. A specifier like `../other-workflow/BUILD` resolves to `BUILD.sh` on
+Linux or `BUILD.ps1` on Windows, using the same extension-agnostic lookup that
+`<goto>` uses for intra-workflow transitions.
+
+### Zip inner-component specifiers
+
+A specifier of the form `../other.zip/STATE_NAME` routes into a zip archive at
+an explicit entry state rather than the default `1_START`/`START`:
+
+- The component after the `.zip` path is **always** a state name — zip scopes
+  expose no sub-directory hierarchy through specifiers.
+- A trailing slash on the inner component (e.g. `../other.zip/STATE_NAME/`) is
+  **illegal** and returns an error at resolution time.
+- Hash verification and layout detection are applied to the zip before the
+  inner state is resolved, identical to the plain zip specifier case.
+
+### `Abbrev` stability invariant
+
+For directory and zip scope specifiers, the `Abbrev` field (used to construct
+agent IDs) is derived from the **scope**, not from the entry state name:
+
+- Directory scope → `abbrev(filepath.Base(scopeDir))` (lowercased, capped at 6 chars)
+- Zip scope → `abbrev(zip_stem)` (filename minus `.zip`, lowercased, capped at 6 chars)
+
+This means that invoking the same workflow at different entry points produces
+agent IDs with the same prefix. Both `../bs_work/` (auto-discovers `1_START.md`)
+and `../bs_work/OTHER_ENTRY` (explicit entry state) produce abbreviation `bs_wor`,
+derived from the directory name `bs_work`. The scope, not the entry point,
+is the stable identifier for the sub-workflow.
 
 ### Path normalization
 

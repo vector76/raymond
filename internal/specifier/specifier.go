@@ -5,7 +5,23 @@
 //   - A directory: ScopeDir = dir, EntryPoint = resolved entry point (1_START or START, any extension)
 //   - A .zip archive: ScopeDir = zip path, EntryPoint = resolved entry point (1_START or START, any extension)
 //   - An explicit .md file: ScopeDir = parent dir, EntryPoint = filename
-//   - An explicit state name (no extension, not an existing directory): ScopeDir = parent dir, EntryPoint = resolved state file
+//   - An explicit state name (no extension): ScopeDir = parent dir, EntryPoint = resolved state file
+//
+// Three-way disambiguation for the no-extension case (resolveDir):
+//   (a) Path is a directory with a valid entry point → use the directory as scope,
+//       auto-discover 1_START or START (any extension).
+//   (b) Path is a directory but has no valid entry point → error immediately.
+//   (c) Path is not a directory (does not exist, is a regular file, or a path
+//       component is itself a regular file) → treat filepath.Base as an
+//       extension-less entry state name and filepath.Dir as the scope directory.
+//       The state is resolved via prompts.ResolveState (extension-agnostic).
+//       Explicit entry states bypass 1_START/START discovery entirely.
+//
+// Zip inner-component constraint:
+// When the scope directory resolved in case (c) is a .zip file, the inner
+// component is always interpreted as a state name — zip scopes have no
+// sub-directory structure accessible via specifiers. A trailing slash on the
+// inner component (e.g. "archive.zip/STATE/") is illegal and returns an error.
 //
 // Relative specifiers are resolved against the caller's scope directory.
 // For zip callers the effective base is the zip stem path (zip filename minus
@@ -42,9 +58,10 @@ type Resolution struct {
 //     - .zip: verify hash, layout, and resolve entry point (1_START or START)
 //     - .md:  verify the file exists
 //     - other: three-way disambiguation based on os.Stat:
-//       (a) path is a directory → resolve its entry point (1_START or START)
-//       (b) path is a non-directory file, or does not exist → treat
-//           filepath.Base as an explicit state name within filepath.Dir
+//       (a) path is a directory with a valid entry point → use as scope
+//       (b) path is a directory with no valid entry point → error
+//       (c) path is not a directory (ENOENT, ENOTDIR, or regular file) →
+//           treat filepath.Base as an explicit state name within filepath.Dir
 //  4. Derive Abbrev: base name (or zip stem), lowercased and capped at 6 chars.
 func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	// 1. Normalize separators.

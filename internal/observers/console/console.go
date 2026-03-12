@@ -113,8 +113,9 @@ type ConsoleReporter struct {
 	lastStateType map[string]string // agentID → "markdown" or "script"
 	lastExitCode  map[string]int    // agentID → script exit code
 	lastTool      map[string]string // agentID → last tool name (for error ctx)
-	agentColorMap map[string]string // agentID → assigned ANSI color code
-	agentCounter  int               // number of unique agents seen (for cycling)
+	agentColorMap map[string]string  // agentID → assigned ANSI color code
+	agentCounter  int                // number of unique agents seen (for cycling)
+	liveAgents    map[string]struct{} // set of agents not yet terminated
 }
 
 func newReporter(w io.Writer, quiet, unicode, color bool, width int) *ConsoleReporter {
@@ -132,6 +133,7 @@ func newReporter(w io.Writer, quiet, unicode, color bool, width int) *ConsoleRep
 		lastExitCode:  make(map[string]int),
 		lastTool:      make(map[string]string),
 		agentColorMap: make(map[string]string),
+		liveAgents:    make(map[string]struct{}),
 	}
 }
 
@@ -191,8 +193,24 @@ func (r *ConsoleReporter) agentColor(agentID string) string {
 	if c, ok := r.agentColorMap[agentID]; ok {
 		return c
 	}
+	// Compute occupied colors from live agents.
+	occupied := make(map[string]bool, len(r.liveAgents))
+	for id := range r.liveAgents {
+		if c, ok := r.agentColorMap[id]; ok {
+			occupied[c] = true
+		}
+	}
+	// Find first free color starting at agentCounter position.
 	c := agentColors[r.agentCounter%len(agentColors)]
+	for i := 0; i < len(agentColors); i++ {
+		candidate := agentColors[(r.agentCounter+i)%len(agentColors)]
+		if !occupied[candidate] {
+			c = candidate
+			break
+		}
+	}
 	r.agentColorMap[agentID] = c
+	r.liveAgents[agentID] = struct{}{}
 	r.agentCounter++
 	return c
 }
@@ -376,6 +394,7 @@ func (r *ConsoleReporter) onAgentTerminated(e events.AgentTerminated) {
 	} else {
 		fmt.Fprintf(r.w, "  %s (terminated)\n", r.colorToken(e.AgentID, r.sym.result))
 	}
+	delete(r.liveAgents, e.AgentID)
 }
 
 func (r *ConsoleReporter) onErrorOccurred(e events.ErrorOccurred) {

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -536,4 +537,119 @@ func TestAbbrev_Md_LongName(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "3_proc", res.Abbrev)
+}
+
+// --------------------------------------------------------------------------
+// Directory-scope explicit entry state (three-way disambiguation)
+// --------------------------------------------------------------------------
+
+func TestResolve_DirectoryWithExplicitEntry(t *testing.T) {
+	t.Run("happy path .md", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "mywf")
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "OTHER_ENTRY.md"), []byte("# Entry"), 0600))
+		spec := filepath.Join(dir, "OTHER_ENTRY")
+
+		res, err := specifier.Resolve(spec, "")
+
+		require.NoError(t, err)
+		assert.Equal(t, dir, res.ScopeDir)
+		assert.Equal(t, "OTHER_ENTRY.md", res.EntryPoint)
+		assert.Equal(t, "mywf", res.Abbrev) // first 6 chars of "mywf" lowercased
+	})
+
+	t.Run("happy path .sh (Unix only)", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix-only test")
+		}
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "mywf")
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "OTHER_ENTRY.sh"), []byte("#!/bin/sh"), 0600))
+		spec := filepath.Join(dir, "OTHER_ENTRY")
+
+		res, err := specifier.Resolve(spec, "")
+
+		require.NoError(t, err)
+		assert.Equal(t, "OTHER_ENTRY.sh", res.EntryPoint)
+	})
+
+	t.Run("happy path .ps1 (Windows only)", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Windows-only test")
+		}
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "mywf")
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "OTHER_ENTRY.ps1"), []byte("# ps1"), 0600))
+		spec := filepath.Join(dir, "OTHER_ENTRY")
+
+		res, err := specifier.Resolve(spec, "")
+
+		require.NoError(t, err)
+		assert.Equal(t, "OTHER_ENTRY.ps1", res.EntryPoint)
+	})
+
+	t.Run("regression - bare directory with 1_START", func(t *testing.T) {
+		dir := mkDir(t, "mywf") // creates 1_START.md
+
+		res, err := specifier.Resolve(dir, "")
+
+		require.NoError(t, err)
+		assert.Equal(t, dir, res.ScopeDir)
+		assert.Equal(t, "1_START.md", res.EntryPoint)
+	})
+
+	t.Run("scope directory does not exist", func(t *testing.T) {
+		nonexistent := t.TempDir() + "_gone"
+		spec := filepath.Join(nonexistent, "mywf", "OTHER_ENTRY")
+
+		_, err := specifier.Resolve(spec, "")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), nonexistent)
+	})
+
+	t.Run("named entry state not found", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "mywf")
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		// No OTHER_ENTRY.* file exists
+		spec := filepath.Join(dir, "OTHER_ENTRY")
+
+		_, err := specifier.Resolve(spec, "")
+
+		require.Error(t, err)
+	})
+
+	t.Run("ambiguity - both .md and platform script", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix-only ambiguity test")
+		}
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "mywf")
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "OTHER_ENTRY.md"), []byte("# Entry"), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "OTHER_ENTRY.sh"), []byte("#!/bin/sh"), 0600))
+		spec := filepath.Join(dir, "OTHER_ENTRY")
+
+		_, err := specifier.Resolve(spec, "")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "Ambiguous")
+	})
+
+	t.Run("full path is a directory with no 1_START or START", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "mywf")
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		// No entry point files
+		spec := filepath.Join(parent, "mywf")
+
+		_, err := specifier.Resolve(spec, "")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "entry point")
+	})
 }

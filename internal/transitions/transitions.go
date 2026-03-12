@@ -271,6 +271,36 @@ func HandleReset(agent wfstate.AgentState, transition parsing.Transition) Transi
 	return TransitionResult{Agent: &agent}
 }
 
+// HandleResetWorkflow handles the <reset-workflow> transition tag.
+//
+// Resets to an external workflow entry point with a clean slate:
+//   - Sets CurrentState to resolution.EntryPoint
+//   - Clears SessionID (fresh session)
+//   - Clears Stack (nil — empty)
+//   - Resets NestingDepth to 0
+//   - Sets ScopeDir to resolution.ScopeDir
+//   - Applies cd attribute if non-empty
+//   - Sets PendingResult from input attribute if non-empty; otherwise nil
+func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, resolution specifier.Resolution) TransitionResult {
+	agent.CurrentState = resolution.EntryPoint
+	agent.SessionID = nil
+	agent.Stack = nil
+	agent.NestingDepth = 0
+	agent.ScopeDir = resolution.ScopeDir
+
+	if cd := tr.Attributes["cd"]; cd != "" {
+		agent.Cwd = ResolveCd(cd, agent.Cwd)
+	}
+
+	if input := tr.Attributes["input"]; input != "" {
+		agent.PendingResult = &input
+	} else {
+		agent.PendingResult = nil
+	}
+
+	return TransitionResult{Agent: &agent}
+}
+
 // HandleFunction handles the <function> transition tag.
 //
 // Runs a stateless sub-evaluation that returns to the caller:

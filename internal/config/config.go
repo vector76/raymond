@@ -12,6 +12,7 @@
 //	dangerously_skip_permissions bool
 //	effort                      string   "low"|"medium"|"high"
 //	model                       string   "opus"|"sonnet"|"haiku"
+//	name                        string   any value
 //	timeout                     float64  non-negative
 //	no_debug                    bool
 //	no_wait                     bool
@@ -24,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -42,6 +44,7 @@ type CLIArgs struct {
 	DangerouslySkipPermissions bool
 	Effort                     string   // "" if not specified
 	Model                      string   // "" if not specified
+	Name                       string   // "" if not specified
 	Timeout                    *float64 // nil if not specified
 	NoDebug                    bool
 	NoWait                     bool
@@ -150,6 +153,7 @@ var knownKeys = map[string]bool{
 	"dangerously_skip_permissions": true,
 	"effort":                      true,
 	"model":                       true,
+	"name":                        true,
 	"timeout":                     true,
 	"no_debug":                    true,
 	"no_wait":                     true,
@@ -225,6 +229,15 @@ func ValidateConfig(config map[string]any, configFile string) (map[string]any, e
 			return nil, &ConfigError{msg: fmt.Sprintf(
 				"Invalid value for 'model' in %s: must be one of 'opus', 'sonnet', 'haiku' (lowercase), got %q",
 				configFile, s,
+			)}
+		}
+	}
+
+	// name: must be a string (any value is valid).
+	if v, ok := validated["name"]; ok {
+		if _, isStr := v.(string); !isStr {
+			return nil, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'name' in %s: expected string, got %T", configFile, v,
 			)}
 		}
 	}
@@ -356,6 +369,15 @@ func MergeConfig(fileConfig map[string]any, args CLIArgs) CLIArgs {
 		}
 	}
 
+	// Name: CLI wins if non-empty, else config value, else ""; trim whitespace.
+	name := result.Name
+	if name == "" {
+		if v, ok := fileConfig["name"].(string); ok {
+			name = v
+		}
+	}
+	result.Name = strings.TrimSpace(name)
+
 	// Boolean flags: config can only enable, not disable.
 	if !result.DangerouslySkipPermissions {
 		if v, _ := fileConfig["dangerously_skip_permissions"].(bool); v {
@@ -399,6 +421,9 @@ const configTemplate = `# Raymond configuration file
 
 # Default effort level: "low", "medium", or "high" (default: None)
 # effort = "medium"
+
+# Workflow name (default: None)
+# name = ""
 
 # Timeout per Claude Code invocation in seconds (default: 600, 0=none)
 # timeout = 600.0

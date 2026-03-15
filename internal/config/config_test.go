@@ -284,6 +284,19 @@ func TestValidateConfigEffortValidChoices(t *testing.T) {
 	}
 }
 
+func TestValidateConfigNameAccepted(t *testing.T) {
+	result, err := config.ValidateConfig(map[string]any{"name": "foo"}, "config.toml")
+	require.NoError(t, err)
+	assert.Equal(t, "foo", result["name"])
+}
+
+func TestValidateConfigNameWrongType(t *testing.T) {
+	_, err := config.ValidateConfig(map[string]any{"name": 123}, "config.toml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name")
+	assert.Contains(t, err.Error(), "expected string")
+}
+
 func TestValidateConfigUnknownKeysFiltered(t *testing.T) {
 	in := map[string]any{
 		"budget":      float64(50),
@@ -551,6 +564,30 @@ func TestMergeConfigBooleanFlagsNotDisabledByConfig(t *testing.T) {
 	assert.False(t, result.NoDebug)
 	assert.False(t, result.NoWait)
 	assert.False(t, result.Verbose)
+}
+
+func TestMergeConfigCLINameOverridesConfig(t *testing.T) {
+	args := config.CLIArgs{Name: "cli-name"}
+	fileConfig := map[string]any{"name": "config-name"}
+
+	result := config.MergeConfig(fileConfig, args)
+	assert.Equal(t, "cli-name", result.Name)
+}
+
+func TestMergeConfigWhitespaceOnlyCLINameMergesToEmpty(t *testing.T) {
+	args := config.CLIArgs{Name: "   "}
+	fileConfig := map[string]any{"name": "config-name"}
+
+	result := config.MergeConfig(fileConfig, args)
+	assert.Equal(t, "", result.Name)
+}
+
+func TestMergeConfigFillsMissingNameFromConfig(t *testing.T) {
+	args := config.CLIArgs{} // Name is ""
+	fileConfig := map[string]any{"name": "  my-project  "}
+
+	result := config.MergeConfig(fileConfig, args)
+	assert.Equal(t, "my-project", result.Name)
 }
 
 func TestMergeConfigEmptyFileConfig(t *testing.T) {

@@ -486,6 +486,29 @@ The `--input` CLI flag sets `{{result}}` for the first state:
 raymond workflow.md --input "hello, there"
 ```
 
+### `{{workflow_id}}` — Workflow Identifier
+
+`{{workflow_id}}` contains the unique ID string assigned to the current workflow
+run (e.g. `workflow_2024-01-15_12-30-45-123456`). It is always set — never
+empty — while the workflow is running.
+
+It is available in:
+
+- Markdown body prompts
+- Implicit-transition `input` attributes rendered by the executor
+- The `input` attributes of the cross-workflow transition tags: `<call-workflow>`,
+  `<function-workflow>`, `<fork-workflow>`, and `<reset-workflow>`
+
+> **Note:** `{{workflow_id}}` is **not** substituted in the `input` attributes of
+> the within-workflow tags `<goto>`, `<reset>`, `<call>`, `<function>`, or
+> `<fork>` — those pass `input` as a raw string without template rendering.
+
+```markdown
+Workflow ID: {{workflow_id}}
+
+Write your analysis to `outputs/{{workflow_id}}/report.md`.
+```
+
 ### Fork Attributes
 
 Extra attributes on `<fork>` tags become template variables in the worker:

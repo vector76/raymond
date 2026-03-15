@@ -2137,3 +2137,143 @@ func TestResetWorkflowResolverErrorPausesAgent(t *testing.T) {
 	assert.Contains(t, result.Agent.Error, "reset-workflow")
 }
 
+// ----------------------------------------------------------------------------
+// {{workflow_id}} substitution in cross-workflow input attributes
+// ----------------------------------------------------------------------------
+
+func TestWithRenderedInputSubstitutesWorkflowID(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	tr := parsing.Transition{
+		Tag:    "call-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+			"input":  "id={{workflow_id}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "id=wf-test-42", *result.Agent.PendingResult)
+}
+
+func TestWithRenderedInputSubstitutesWorkflowIDAndResult(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.PendingResult = strPtr("r")
+	tr := parsing.Transition{
+		Tag:    "call-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+			"input":  "{{result}}/{{workflow_id}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-99"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "r/wf-99", *result.Agent.PendingResult)
+}
+
+func TestWithRenderedInputAbsentInputUnchanged(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	tr := parsing.Transition{
+		Tag:    "call-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+
+func TestWorkflowIDSubstitutedInFunctionWorkflowInput(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	tr := parsing.Transition{
+		Tag:    "function-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+			"input":  "id={{workflow_id}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "id=wf-test-42", *result.Agent.PendingResult)
+}
+
+func TestWorkflowIDSubstitutedInForkWorkflowInput(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	tr := parsing.Transition{
+		Tag:    "fork-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"next":  "CONTINUE.md",
+			"input": "id={{workflow_id}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-fork-7"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Worker)
+	require.NotNil(t, result.Worker.PendingResult)
+	assert.Equal(t, "id=wf-fork-7", *result.Worker.PendingResult)
+}
+
+func TestWorkflowIDSubstitutedInResetWorkflowInput(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	tr := parsing.Transition{
+		Tag:    "reset-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"input": "id={{workflow_id}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-reset-9"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "id=wf-reset-9", *result.Agent.PendingResult)
+}
+

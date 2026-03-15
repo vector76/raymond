@@ -45,6 +45,7 @@ type Resolution struct {
 	ScopeDir   string // absolute path (directory or .zip file)
 	EntryPoint string // state filename within the scope (e.g. "1_START.md")
 	Abbrev     string // short name derived from the specifier base for use in agent IDs
+	ScopeURL   string // original remote URL if resolved from a URL (otherwise "")
 }
 
 // Resolve resolves rawSpecifier into a validated Resolution.

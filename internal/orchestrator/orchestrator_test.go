@@ -1,10 +1,15 @@
 package orchestrator_test
 
 import (
+	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +23,7 @@ import (
 	"github.com/vector76/raymond/internal/executors"
 	"github.com/vector76/raymond/internal/orchestrator"
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
 
@@ -1629,4 +1635,433 @@ func TestImplicitInputChainPropagatesThroughThreeStates(t *testing.T) {
 	assert.Equal(t, "step1", *mock.pendingResults[1])
 	require.NotNil(t, mock.pendingResults[2], "END: PendingResult should be set")
 	assert.Equal(t, "step2", *mock.pendingResults[2])
+}
+
+// ----------------------------------------------------------------------------
+// URL-scope integration tests
+//
+// These tests verify the full URL-scope cross-workflow flow end-to-end using a
+// mock Fetcher (injected via RunOptions.Fetcher) to avoid real HTTP fetches.
+// ----------------------------------------------------------------------------
+
+// makeURLHashedZip creates a zip with the given files, renames it to
+// <sha256hex>.zip so that zipscope.VerifyZipHash passes, and returns the path.
+func makeURLHashedZip(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "tmp.zip")
+
+	f, err := os.Create(tmp)
+	require.NoError(t, err)
+	w := zip.NewWriter(f)
+	for name, content := range files {
+		fw, err := w.Create(name)
+		require.NoError(t, err)
+		_, err = fw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+	require.NoError(t, w.Close())
+	require.NoError(t, f.Close())
+
+	data, err := os.ReadFile(tmp)
+	require.NoError(t, err)
+	sum := sha256.Sum256(data)
+	h := hex.EncodeToString(sum[:])
+
+	finalPath := filepath.Join(dir, h+".zip")
+	require.NoError(t, os.Rename(tmp, finalPath))
+	return finalPath
+}
+
+// urlFor builds a test HTTPS URL for a local zip file using its basename.
+func urlFor(zipPath string) string {
+	return "https://example.test/" + filepath.Base(zipPath)
+}
+
+// mockURLFetcher returns a Fetcher that maps URLs to local paths and errors on
+// any unexpected URL (to catch accidental real-URL fetches in tests).
+func mockURLFetcher(mapping map[string]string) specifier.Fetcher {
+	return func(rawURL, _ string) (string, error) {
+		p, ok := mapping[rawURL]
+		if !ok {
+			return "", fmt.Errorf("mock fetcher: unexpected URL %q", rawURL)
+		}
+		return p, nil
+	}
+}
+
+// scopeCapturingMock is a StateExecutor that records the agent's ScopeURL and
+// ScopeDir at each Execute call before returning pre-programmed results.
+type scopeCapturingMock struct {
+	mu                sync.Mutex
+	results           []executors.ExecutionResult
+	idx               int
+	capturedScopeURLs []string
+	capturedScopeDirs []string
+}
+
+func (m *scopeCapturingMock) Execute(
+	_ context.Context,
+	agent *wfstate.AgentState,
+	wfState *wfstate.WorkflowState,
+	_ *executors.ExecutionContext,
+) (executors.ExecutionResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.capturedScopeURLs = append(m.capturedScopeURLs, agent.ScopeURL)
+	m.capturedScopeDirs = append(m.capturedScopeDirs, agent.ScopeDir)
+	i := m.idx
+	m.idx++
+	if i < len(m.results) {
+		res := m.results[i]
+		if res.CostUSD > 0 {
+			wfState.TotalCostUSD += res.CostUSD
+		}
+		return res, nil
+	}
+	return executors.ExecutionResult{}, errors.New("scopeCapturingMock: no more results")
+}
+
+// setupURLWorkflow creates a state directory with a workflow whose initial
+// agent is at agentState with the given scopeDir and scopeURL.
+func setupURLWorkflow(t *testing.T, agentState, scopeDir, scopeURL string) (stateDir, workflowID string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), ".raymond", "state")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	workflowID = "test-wf"
+	ws := wfstate.CreateInitialState(workflowID, scopeDir, agentState, 0, nil, scopeURL)
+	require.NoError(t, wfstate.WriteState(workflowID, ws, dir))
+	return dir, workflowID
+}
+
+// fakeURLForA returns a synthetic scope URL for "workflow A" (the initial
+// caller). No real zip file is needed for A since the mock executor runs
+// without reading the scope directory.
+func fakeURLForA() string {
+	return "https://example.test/" + strings.Repeat("a", 64) + ".zip"
+}
+
+// specifierTo builds the relative specifier from A's URL scope to the zip at
+// zipPath. Since both A and the target share the same "directory" segment of
+// the URL, the specifier is "../<zipFilename>".
+func specifierTo(zipPath string) string {
+	return "../" + filepath.Base(zipPath)
+}
+
+// TestURLScope_ResetWorkflow verifies that reset-workflow resolves the target
+// via ResolveFromURL when the calling agent has a non-empty ScopeURL, and
+// correctly updates the agent's ScopeURL and ScopeDir.
+func TestURLScope_ResetWorkflow(t *testing.T) {
+	zipB := makeURLHashedZip(t, map[string]string{"1_START.md": "# B"})
+	urlB := urlFor(zipB)
+	urlA := fakeURLForA()
+
+	dir, wfID := setupURLWorkflow(t, "START.md", "/fake/scope/a", urlA)
+
+	mock := &scopeCapturingMock{
+		results: []executors.ExecutionResult{
+			// Step 1: at A's scope, issue reset-workflow to sibling zip B.
+			{Transition: parsing.Transition{Tag: "reset-workflow", Target: specifierTo(zipB), Attributes: map[string]string{}}},
+			// Step 2: now at B's scope (1_START.md), terminate.
+			resultExecResult("done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.Fetcher = mockURLFetcher(map[string]string{urlB: zipB})
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+	require.Equal(t, 2, mock.idx)
+
+	assert.Equal(t, urlA, mock.capturedScopeURLs[0], "step 0: agent at A's scope")
+	assert.Equal(t, urlB, mock.capturedScopeURLs[1], "step 1: agent at B's scope after reset-workflow")
+	assert.Equal(t, zipB, mock.capturedScopeDirs[1], "step 1: ScopeDir is B's local zip path")
+}
+
+// TestURLScope_ForkWorkflow verifies that fork-workflow resolves the target via
+// ResolveFromURL when the calling agent has a non-empty ScopeURL, and the
+// spawned worker receives the correct ScopeURL and ScopeDir.
+func TestURLScope_ForkWorkflow(t *testing.T) {
+	zipB := makeURLHashedZip(t, map[string]string{"1_START.md": "# B"})
+	urlB := urlFor(zipB)
+	urlA := fakeURLForA()
+
+	dir, wfID := setupURLWorkflow(t, "START.md", "/fake/scope/a", urlA)
+
+	mock := &scopeCapturingMock{
+		results: []executors.ExecutionResult{
+			// Step 0: at A's scope, fork-workflow to B with continuation CONT.md.
+			{Transition: parsing.Transition{Tag: "fork-workflow", Target: specifierTo(zipB), Attributes: map[string]string{"next": "CONT.md"}}},
+			// Steps 1&2: caller at CONT.md and worker at 1_START.md (concurrent, order varies).
+			resultExecResult("done"),
+			resultExecResult("done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.Fetcher = mockURLFetcher(map[string]string{urlB: zipB})
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+	require.Equal(t, 3, mock.idx)
+
+	assert.Equal(t, urlA, mock.capturedScopeURLs[0], "step 0: A's scope")
+
+	// Among calls 1 and 2, the worker must execute with B's ScopeURL and ScopeDir,
+	// and the caller must remain at A's ScopeURL.
+	var foundWorkerAtB, foundCallerAtA bool
+	for i := 1; i < 3; i++ {
+		switch mock.capturedScopeURLs[i] {
+		case urlB:
+			if mock.capturedScopeDirs[i] == zipB {
+				foundWorkerAtB = true
+			}
+		case urlA:
+			foundCallerAtA = true
+		}
+	}
+	assert.True(t, foundWorkerAtB, "worker agent should execute at B's URL scope")
+	assert.True(t, foundCallerAtA, "caller agent should remain at A's URL scope after fork-workflow")
+}
+
+// TestURLScope_CallWorkflow verifies that call-workflow transitions use
+// ResolveFromURL when ScopeURL is set, enter the target scope, and restore
+// the original ScopeURL when the callee issues a result.
+func TestURLScope_CallWorkflow(t *testing.T) {
+	zipB := makeURLHashedZip(t, map[string]string{"1_START.md": "# B"})
+	urlB := urlFor(zipB)
+	urlA := fakeURLForA()
+
+	dir, wfID := setupURLWorkflow(t, "START.md", "/fake/scope/a", urlA)
+
+	mock := &scopeCapturingMock{
+		results: []executors.ExecutionResult{
+			// Step 0: at A's scope, call-workflow into B (return to RETURN.md).
+			{Transition: parsing.Transition{Tag: "call-workflow", Target: specifierTo(zipB), Attributes: map[string]string{"return": "RETURN.md"}}},
+			// Step 1: at B's scope (1_START.md), return result.
+			resultExecResult("b done"),
+			// Step 2: back at A's scope (RETURN.md), terminate.
+			resultExecResult("a done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.Fetcher = mockURLFetcher(map[string]string{urlB: zipB})
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+	require.Equal(t, 3, mock.idx)
+
+	assert.Equal(t, urlA, mock.capturedScopeURLs[0], "step 0: A's scope")
+	assert.Equal(t, urlB, mock.capturedScopeURLs[1], "step 1: B's scope after call-workflow")
+	assert.Equal(t, zipB, mock.capturedScopeDirs[1], "step 1: B's ScopeDir")
+	assert.Equal(t, urlA, mock.capturedScopeURLs[2], "step 2: A's ScopeURL restored after result")
+}
+
+// TestURLScope_FunctionWorkflow verifies that function-workflow transitions use
+// ResolveFromURL when ScopeURL is set, enter the target scope with a fresh
+// session, and restore the original ScopeURL when the callee issues a result.
+func TestURLScope_FunctionWorkflow(t *testing.T) {
+	zipB := makeURLHashedZip(t, map[string]string{"1_START.md": "# B"})
+	urlB := urlFor(zipB)
+	urlA := fakeURLForA()
+
+	dir, wfID := setupURLWorkflow(t, "START.md", "/fake/scope/a", urlA)
+
+	mock := &scopeCapturingMock{
+		results: []executors.ExecutionResult{
+			// Step 0: at A's scope, function-workflow into B (return to RETURN.md).
+			{Transition: parsing.Transition{Tag: "function-workflow", Target: specifierTo(zipB), Attributes: map[string]string{"return": "RETURN.md"}}},
+			// Step 1: at B's scope (1_START.md), return result.
+			resultExecResult("b done"),
+			// Step 2: back at A's scope (RETURN.md), terminate.
+			resultExecResult("a done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.Fetcher = mockURLFetcher(map[string]string{urlB: zipB})
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+	require.Equal(t, 3, mock.idx)
+
+	assert.Equal(t, urlA, mock.capturedScopeURLs[0], "step 0: A's scope")
+	assert.Equal(t, urlB, mock.capturedScopeURLs[1], "step 1: B's scope after function-workflow")
+	assert.Equal(t, zipB, mock.capturedScopeDirs[1], "step 1: B's ScopeDir")
+	assert.Equal(t, urlA, mock.capturedScopeURLs[2], "step 2: A's ScopeURL restored after result")
+}
+
+// TestURLScope_MultiHop verifies a two-level URL-scope chain:
+//
+//	A (call-workflow) → B (function-workflow) → C (result) → B (result) → A
+//
+// At each hop the correct ScopeURL is active; each result restores the
+// previous ScopeURL from the stack frame.
+func TestURLScope_MultiHop(t *testing.T) {
+	zipB := makeURLHashedZip(t, map[string]string{"1_START.md": "# B"})
+	zipC := makeURLHashedZip(t, map[string]string{"1_START.md": "# C"})
+	urlB := urlFor(zipB)
+	urlC := urlFor(zipC)
+	urlA := fakeURLForA()
+
+	dir, wfID := setupURLWorkflow(t, "START.md", "/fake/scope/a", urlA)
+
+	mock := &scopeCapturingMock{
+		results: []executors.ExecutionResult{
+			// Step 0: at A (START.md) → call-workflow to B, return to RETURN_A.md.
+			{Transition: parsing.Transition{Tag: "call-workflow", Target: specifierTo(zipB), Attributes: map[string]string{"return": "RETURN_A.md"}}},
+			// Step 1: at B (1_START.md) → function-workflow to C, return to RETURN_B.md.
+			{Transition: parsing.Transition{Tag: "function-workflow", Target: specifierTo(zipC), Attributes: map[string]string{"return": "RETURN_B.md"}}},
+			// Step 2: at C (1_START.md) → result, returning to B's RETURN_B.md.
+			resultExecResult("c done"),
+			// Step 3: at B (RETURN_B.md) → result, returning to A's RETURN_A.md.
+			resultExecResult("b done"),
+			// Step 4: at A (RETURN_A.md) → result, terminates.
+			resultExecResult("a done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.Fetcher = mockURLFetcher(map[string]string{urlB: zipB, urlC: zipC})
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+	require.Equal(t, 5, mock.idx)
+
+	assert.Equal(t, urlA, mock.capturedScopeURLs[0], "step 0: A's scope")
+	assert.Equal(t, urlB, mock.capturedScopeURLs[1], "step 1: B's scope after call-workflow")
+	assert.Equal(t, zipB, mock.capturedScopeDirs[1], "step 1: B's ScopeDir")
+	assert.Equal(t, urlC, mock.capturedScopeURLs[2], "step 2: C's scope after function-workflow")
+	assert.Equal(t, zipC, mock.capturedScopeDirs[2], "step 2: C's ScopeDir")
+	assert.Equal(t, urlB, mock.capturedScopeURLs[3], "step 3: restored to B's scope after C's result")
+	assert.Equal(t, urlA, mock.capturedScopeURLs[4], "step 4: restored to A's scope after B's result")
+}
+
+// TestURLScope_Resume verifies that ScopeURL survives a WriteState/ReadState
+// round-trip and is used correctly when the orchestrator subsequently
+// processes a URL-scope cross-workflow transition.
+func TestURLScope_Resume(t *testing.T) {
+	zipB := makeURLHashedZip(t, map[string]string{"1_START.md": "# B"})
+	urlB := urlFor(zipB)
+	urlA := fakeURLForA()
+
+	stateDir := filepath.Join(t.TempDir(), ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	wfID := "test-wf"
+
+	// Write initial state with ScopeURL set.
+	ws := wfstate.CreateInitialState(wfID, "/fake/scope/a", "START.md", 0, nil, urlA)
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	// Read back and assert ScopeURL survived the JSON round-trip.
+	wsBack, err := wfstate.ReadState(wfID, stateDir)
+	require.NoError(t, err)
+	require.Len(t, wsBack.Agents, 1)
+	assert.Equal(t, urlA, wsBack.Agents[0].ScopeURL, "ScopeURL must survive WriteState/ReadState")
+
+	// Run the orchestrator and verify ScopeURL is used for cross-workflow resolution.
+	mock := &scopeCapturingMock{
+		results: []executors.ExecutionResult{
+			// call-workflow requires correct ScopeURL to resolve the relative specifier.
+			{Transition: parsing.Transition{Tag: "call-workflow", Target: specifierTo(zipB), Attributes: map[string]string{"return": "RETURN.md"}}},
+			resultExecResult("b done"),
+			resultExecResult("a done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Fetcher = mockURLFetcher(map[string]string{urlB: zipB})
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+	require.Equal(t, 3, mock.idx)
+
+	assert.Equal(t, urlA, mock.capturedScopeURLs[0], "after resume, initial ScopeURL is urlA")
+	assert.Equal(t, urlB, mock.capturedScopeURLs[1], "call-workflow succeeded: now at B's scope")
+	assert.Equal(t, urlA, mock.capturedScopeURLs[2], "result returns ScopeURL to urlA")
+}
+
+// TestURLScope_NonURLRegression verifies that existing local-scope
+// cross-workflow behavior is completely unchanged when ScopeURL == "".
+func TestURLScope_NonURLRegression(t *testing.T) {
+	tmp := t.TempDir()
+	childDir := filepath.Join(tmp, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "1_START.md"), []byte("# child"), 0o644))
+
+	// Workflow with ScopeURL="" — purely local scope.
+	dir, wfID := setupURLWorkflow(t, "START.md", tmp, "")
+
+	mock := &scopeCapturingMock{
+		results: []executors.ExecutionResult{
+			// call-workflow to local child directory, return to RETURN.md.
+			{Transition: parsing.Transition{Tag: "call-workflow", Target: childDir, Attributes: map[string]string{"return": "RETURN.md"}}},
+			resultExecResult("child done"),
+			resultExecResult("a done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	// No Fetcher needed for local-scope workflows.
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Equal(t, 3, mock.idx)
+
+	// All calls should have empty ScopeURL (local scope).
+	for i, u := range mock.capturedScopeURLs {
+		assert.Equal(t, "", u, "call %d: ScopeURL must be empty for local-scope workflow", i)
+	}
+	// Second call is at the child directory.
+	assert.Equal(t, childDir, mock.capturedScopeDirs[1], "child call must be at childDir")
+}
+
+// TestURLScope_ErrorPath verifies that a relative specifier from a URL scope
+// that resolves to a URL without a valid SHA256 hash (e.g. "../no-hash.zip")
+// pauses the agent with an error describing the resolution failure, while the
+// orchestrator continues (i.e. RunAllAgents returns nil).
+//
+// Note: single-transition pausing (inside ApplyTransition) does not emit an
+// AgentPaused event — only the multi-fork path does. We therefore verify the
+// outcome via the persisted state file.
+func TestURLScope_ErrorPath(t *testing.T) {
+	urlA := fakeURLForA()
+	dir, wfID := setupURLWorkflow(t, "START.md", "/fake/scope/a", urlA)
+
+	// "../no-hash.zip" resolves to "https://example.test/no-hash.zip".
+	// ValidateRemoteURL returns an error because "no-hash.zip" contains no
+	// 64-character hex hash in its filename — the fetch is never attempted.
+	mock := newMock(
+		executors.ExecutionResult{
+			Transition: parsing.Transition{
+				Tag:        "call-workflow",
+				Target:     "../no-hash.zip",
+				Attributes: map[string]string{"return": "RETURN.md"},
+			},
+		},
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	// Fetcher should not be called since hash validation fails before fetching.
+	opts.Fetcher = mockURLFetcher(map[string]string{})
+
+	// Orchestrator must return nil — the agent is paused, not a fatal error.
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	// State file is preserved (paused workflow is resumable).
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "paused", ws.Agents[0].Status)
+	assert.Contains(t, ws.Agents[0].Error, "no-hash.zip",
+		"error should mention the problematic URL/filename")
 }

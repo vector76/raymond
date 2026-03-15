@@ -95,7 +95,7 @@ func ApplyTransition(
 	case "fork":
 		return HandleFork(copy, transition, wfState)
 	case "reset-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
 		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
@@ -104,7 +104,7 @@ func ApplyTransition(
 		}
 		return HandleResetWorkflow(copy, tr, res), nil
 	case "fork-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
 		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
@@ -119,7 +119,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "call-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
 		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
@@ -134,7 +134,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "function-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
 		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
@@ -215,6 +215,7 @@ func withRenderedInput(
 	transition parsing.Transition,
 	pendingResult *string,
 	forkAttributes map[string]string,
+	workflowID string,
 ) parsing.Transition {
 	input, ok := transition.Attributes["input"]
 	if !ok || input == "" {
@@ -228,6 +229,7 @@ func withRenderedInput(
 	for k, v := range forkAttributes {
 		variables[k] = v
 	}
+	variables["workflow_id"] = workflowID
 
 	rendered := prompts.RenderPrompt(input, variables)
 	if rendered == input {

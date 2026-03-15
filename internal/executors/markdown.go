@@ -82,6 +82,7 @@ func (e *MarkdownExecutor) Execute(
 	for k, v := range agent.ForkAttributes {
 		variables[k] = v
 	}
+	variables["workflow_id"] = wfState.WorkflowID
 	basePrompt := prompts.RenderPrompt(body, variables)
 
 	// Determine model and effort (frontmatter takes precedence over defaults).

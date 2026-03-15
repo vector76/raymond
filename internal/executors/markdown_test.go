@@ -2,12 +2,15 @@ package executors_test
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/vector76/raymond/internal/ccwrap"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
+	wfstate "github.com/vector76/raymond/internal/state"
 )
 
 // TestMarkdownExecutor_StateCompleted_InputTokens checks that InputTokens is
@@ -150,5 +153,160 @@ func TestMarkdownExecutor_StateCompleted_InputTokens_LastInvocationOnly(t *testi
 	// Should reflect last invocation (80), not accumulated (200+80=280).
 	if *ev.InputTokens != 80 {
 		t.Errorf("InputTokens = %d, want 80 (last invocation only)", *ev.InputTokens)
+	}
+}
+
+// TestMarkdownExecutor_WorkflowIDSubstitutedInBody verifies that {{workflow_id}}
+// in the prompt body is replaced with the WorkflowState's WorkflowID.
+func TestMarkdownExecutor_WorkflowIDSubstitutedInBody(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "Task ID: {{workflow_id}}")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-abc-123",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if !strings.Contains(capturedPrompt, "Task ID: wf-abc-123") {
+		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "Task ID: wf-abc-123")
+	}
+	if strings.Contains(capturedPrompt, "{{workflow_id}}") {
+		t.Errorf("prompt still contains literal {{workflow_id}}: %q", capturedPrompt)
+	}
+}
+
+// TestMarkdownExecutor_WorkflowIDSubstitutedInImplicitInput verifies that
+// {{workflow_id}} in an implicit transition's input attribute is substituted.
+func TestMarkdownExecutor_WorkflowIDSubstitutedInImplicitInput(t *testing.T) {
+	dir := t.TempDir()
+
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"wf={{workflow_id}}\" }\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Process the workflow.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-abc-123",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	executors.SetInvokeStreamFn(func(_ context.Context, _ string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		// No transition tag → implicit transition fires.
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "Analysis complete"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	got := result.Transition.Attributes["input"]
+	if got != "wf=wf-abc-123" {
+		t.Errorf("input attribute = %q, want %q", got, "wf=wf-abc-123")
+	}
+}
+
+// TestMarkdownExecutor_WorkflowIDAndResultBothSubstituted verifies that
+// {{result}} and {{workflow_id}} are both substituted in the same prompt.
+func TestMarkdownExecutor_WorkflowIDAndResultBothSubstituted(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "{{result}} in {{workflow_id}}")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	pending := "the-result"
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-xyz",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:            "main",
+			CurrentState:  "START.md",
+			ScopeDir:      dir,
+			Stack:         []wfstate.StackFrame{},
+			PendingResult: &pending,
+		}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if !strings.Contains(capturedPrompt, "the-result in wf-xyz") {
+		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "the-result in wf-xyz")
+	}
+}
+
+// TestMarkdownExecutor_WorkflowIDAlwaysSubstituted verifies that {{workflow_id}}
+// is replaced even when no {{result}} placeholder is present.
+func TestMarkdownExecutor_WorkflowIDAlwaysSubstituted(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "Run workflow {{workflow_id}} now.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-no-result",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if strings.Contains(capturedPrompt, "{{workflow_id}}") {
+		t.Errorf("prompt still contains literal {{workflow_id}}: %q", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "wf-no-result") {
+		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "wf-no-result")
 	}
 }

@@ -29,17 +29,18 @@ import (
 type TitleBarObserver struct {
 	w      io.Writer
 	cancel func()
+	name   string
 }
 
 // New creates a TitleBarObserver subscribed to b that writes to os.Stdout.
-func New(b *bus.Bus) *TitleBarObserver {
-	return NewWithWriter(b, os.Stdout)
+func New(b *bus.Bus, name string) *TitleBarObserver {
+	return NewWithWriter(b, os.Stdout, name)
 }
 
 // NewWithWriter creates a TitleBarObserver that writes to w. Used in tests
 // to capture output without writing to the real terminal.
-func NewWithWriter(b *bus.Bus, w io.Writer) *TitleBarObserver {
-	o := &TitleBarObserver{w: w}
+func NewWithWriter(b *bus.Bus, w io.Writer, name string) *TitleBarObserver {
+	o := &TitleBarObserver{w: w, name: name}
 	o.cancel = bus.Subscribe(b, o.onStateStarted)
 	return o
 }
@@ -53,7 +54,11 @@ func (o *TitleBarObserver) Close() {
 }
 
 func (o *TitleBarObserver) onStateStarted(e events.StateStarted) {
-	fmt.Fprintf(o.w, "\x1b]2;ray: %s\x07", stateStem(e.StateName))
+	if o.name != "" {
+		fmt.Fprintf(o.w, "\x1b]2;%s ray: %s\x07", o.name, stateStem(e.StateName))
+	} else {
+		fmt.Fprintf(o.w, "\x1b]2;ray: %s\x07", stateStem(e.StateName))
+	}
 }
 
 // stateStem strips the last extension from a filename.

@@ -14,7 +14,7 @@ import (
 func TestTitleBarOnStateStarted(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	defer obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md"})
@@ -25,7 +25,7 @@ func TestTitleBarOnStateStarted(t *testing.T) {
 func TestTitleBarStripsShExtension(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	defer obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "CHECK.sh"})
@@ -36,7 +36,7 @@ func TestTitleBarStripsShExtension(t *testing.T) {
 func TestTitleBarStripsBatExtension(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	defer obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "CHECK.bat"})
@@ -47,7 +47,7 @@ func TestTitleBarStripsBatExtension(t *testing.T) {
 func TestTitleBarStripsLastExtensionOnly(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	defer obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "foo.bar.md"})
@@ -58,7 +58,7 @@ func TestTitleBarStripsLastExtensionOnly(t *testing.T) {
 func TestTitleBarNoExtension(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	defer obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "NOOP"})
@@ -69,7 +69,7 @@ func TestTitleBarNoExtension(t *testing.T) {
 func TestTitleBarMultipleStateTransitions(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	defer obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md"})
@@ -82,7 +82,7 @@ func TestTitleBarMultipleAgents(t *testing.T) {
 	// With multiple agents, last-write-wins — both fire to the same writer.
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	defer obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "A.md"})
@@ -96,7 +96,7 @@ func TestTitleBarMultipleAgents(t *testing.T) {
 func TestTitleBarUnsubscribesOnClose(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 	obs.Close()
 
 	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md"})
@@ -107,8 +107,42 @@ func TestTitleBarUnsubscribesOnClose(t *testing.T) {
 func TestTitleBarCloseIdempotent(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
-	obs := titlebar.NewWithWriter(b, &buf)
+	obs := titlebar.NewWithWriter(b, &buf, "")
 
 	obs.Close()
 	obs.Close() // should not panic
+}
+
+func TestTitleBarNamePrefixNonEmpty(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := titlebar.NewWithWriter(b, &buf, "mybox")
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md"})
+
+	assert.Equal(t, "\x1b]2;mybox ray: START\x07", buf.String())
+}
+
+func TestTitleBarNamePrefixEmpty(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := titlebar.NewWithWriter(b, &buf, "")
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md"})
+
+	assert.Equal(t, "\x1b]2;ray: START\x07", buf.String())
+}
+
+func TestTitleBarNameStableAcrossTransitions(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := titlebar.NewWithWriter(b, &buf, "mybox")
+	defer obs.Close()
+
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "START.md"})
+	b.Emit(events.StateStarted{AgentID: "main", StateName: "NEXT.md"})
+
+	assert.Equal(t, "\x1b]2;mybox ray: START\x07\x1b]2;mybox ray: NEXT\x07", buf.String())
 }

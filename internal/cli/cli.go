@@ -233,7 +233,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				if !merged.NoDebug {
 					debug.New(b)
 				}
-				titlebar.New(b)
+				titlebar.New(b, "")
 			}
 
 			// ---- resume mode ----

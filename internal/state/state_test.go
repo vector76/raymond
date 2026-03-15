@@ -198,7 +198,7 @@ func TestListWorkflowsNonexistentDir(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestCreateInitialStateBasic(t *testing.T) {
-	ws := state.CreateInitialState("wf-001", "workflows/test", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("wf-001", "workflows/test", "START.md", 10.0, nil, "")
 
 	assert.Equal(t, "wf-001", ws.WorkflowID)
 	assert.Equal(t, "workflows/test", ws.ScopeDir)
@@ -215,7 +215,7 @@ func TestCreateInitialStateBasic(t *testing.T) {
 }
 
 func TestCreateInitialStatePopulatesAgentScopeDir(t *testing.T) {
-	ws := state.CreateInitialState("wf-scopedir", "workflows/myapp", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("wf-scopedir", "workflows/myapp", "START.md", 10.0, nil, "")
 	require.Len(t, ws.Agents, 1)
 	assert.Equal(t, "workflows/myapp", ws.Agents[0].ScopeDir,
 		"agent ScopeDir should be populated from the scopeDir argument")
@@ -223,7 +223,7 @@ func TestCreateInitialStatePopulatesAgentScopeDir(t *testing.T) {
 
 func TestCreateInitialStateWithInitialInput(t *testing.T) {
 	input := "hello there"
-	ws := state.CreateInitialState("wf-002", "workflows/test", "START.md", 10.0, &input)
+	ws := state.CreateInitialState("wf-002", "workflows/test", "START.md", 10.0, &input, "")
 
 	require.NotNil(t, ws.Agents[0].PendingResult)
 	assert.Equal(t, "hello there", *ws.Agents[0].PendingResult)
@@ -231,19 +231,19 @@ func TestCreateInitialStateWithInitialInput(t *testing.T) {
 
 func TestCreateInitialStateWithEmptyStringInput(t *testing.T) {
 	input := ""
-	ws := state.CreateInitialState("wf-003", "workflows/test", "START.md", 10.0, &input)
+	ws := state.CreateInitialState("wf-003", "workflows/test", "START.md", 10.0, &input, "")
 
 	require.NotNil(t, ws.Agents[0].PendingResult)
 	assert.Equal(t, "", *ws.Agents[0].PendingResult)
 }
 
 func TestCreateInitialStateWithNilInputHasNoPendingResult(t *testing.T) {
-	ws := state.CreateInitialState("wf-004", "workflows/test", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("wf-004", "workflows/test", "START.md", 10.0, nil, "")
 	assert.Nil(t, ws.Agents[0].PendingResult)
 }
 
 func TestCreateInitialStateStackSerializesAsArray(t *testing.T) {
-	ws := state.CreateInitialState("wf-005", "workflows/test", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("wf-005", "workflows/test", "START.md", 10.0, nil, "")
 
 	data, err := json.Marshal(ws)
 	require.NoError(t, err)
@@ -329,7 +329,7 @@ func TestRecoverWorkflowsFindsInProgress(t *testing.T) {
 	dir := stateDir(t)
 
 	// In-progress: has agents.
-	ws1 := state.CreateInitialState("wf-active", "scope", "START.md", 10.0, nil)
+	ws1 := state.CreateInitialState("wf-active", "scope", "START.md", 10.0, nil, "")
 	require.NoError(t, state.WriteState("wf-active", ws1, dir))
 
 	// Completed: empty agents array.
@@ -359,7 +359,7 @@ func TestRecoverWorkflowsSkipsMalformed(t *testing.T) {
 	dir := stateDir(t)
 
 	// Good file.
-	ws := state.CreateInitialState("good-wf", "scope", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("good-wf", "scope", "START.md", 10.0, nil, "")
 	require.NoError(t, state.WriteState("good-wf", ws, dir))
 
 	// Malformed JSON — should be skipped, not cause an error.
@@ -379,7 +379,7 @@ func TestRecoverWorkflowsSkipsMalformed(t *testing.T) {
 
 func TestSessionIDNullRoundTrip(t *testing.T) {
 	dir := stateDir(t)
-	ws := state.CreateInitialState("sid-null", "scope", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("sid-null", "scope", "START.md", 10.0, nil, "")
 
 	require.NoError(t, state.WriteState("sid-null", ws, dir))
 
@@ -400,7 +400,7 @@ func TestSessionIDNullRoundTrip(t *testing.T) {
 func TestSessionIDNonNullRoundTrip(t *testing.T) {
 	dir := stateDir(t)
 	sid := "ses-xyz"
-	ws := state.CreateInitialState("sid-set", "scope", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("sid-set", "scope", "START.md", 10.0, nil, "")
 	ws.Agents[0].SessionID = &sid
 
 	require.NoError(t, state.WriteState("sid-set", ws, dir))
@@ -422,7 +422,7 @@ func TestCreateInitialState_WithLaunchParams(t *testing.T) {
 		Effort:                     "high",
 		Timeout:                    300.0,
 	}
-	ws := state.CreateInitialState("lp-test", "scope", "START.md", 10.0, nil, lp)
+	ws := state.CreateInitialState("lp-test", "scope", "START.md", 10.0, nil, "", lp)
 
 	require.NotNil(t, ws.LaunchParams)
 	assert.Equal(t, true, ws.LaunchParams.DangerouslySkipPermissions)
@@ -432,12 +432,12 @@ func TestCreateInitialState_WithLaunchParams(t *testing.T) {
 }
 
 func TestCreateInitialState_WithoutLaunchParams(t *testing.T) {
-	ws := state.CreateInitialState("lp-nil", "scope", "START.md", 10.0, nil)
+	ws := state.CreateInitialState("lp-nil", "scope", "START.md", 10.0, nil, "")
 	assert.Nil(t, ws.LaunchParams, "LaunchParams should be nil when not provided")
 }
 
 func TestCreateInitialState_NilLaunchParamsOmitted(t *testing.T) {
-	ws := state.CreateInitialState("lp-explicit-nil", "scope", "START.md", 10.0, nil, nil)
+	ws := state.CreateInitialState("lp-explicit-nil", "scope", "START.md", 10.0, nil, "", nil)
 	assert.Nil(t, ws.LaunchParams, "LaunchParams should be nil when explicitly nil is passed")
 }
 
@@ -449,7 +449,7 @@ func TestLaunchParamsRoundTrip(t *testing.T) {
 		Effort:                     "low",
 		Timeout:                    120.0,
 	}
-	ws := state.CreateInitialState("lp-rtrip", "scope", "START.md", 10.0, nil, lp)
+	ws := state.CreateInitialState("lp-rtrip", "scope", "START.md", 10.0, nil, "", lp)
 	require.NoError(t, state.WriteState("lp-rtrip", ws, dir))
 
 	got, err := state.ReadState("lp-rtrip", dir)
@@ -536,4 +536,78 @@ func TestScopeDirMigrationDoesNotOverwriteExistingAgentScopeDir(t *testing.T) {
 	require.Len(t, got.Agents, 2)
 	assert.Equal(t, "workflows/custom", got.Agents[0].ScopeDir, "agent with its own ScopeDir must not be overwritten")
 	assert.Equal(t, "workflows/default", got.Agents[1].ScopeDir, "agent without ScopeDir should inherit workflow value")
+}
+
+// ----------------------------------------------------------------------------
+// ScopeURL field
+// ----------------------------------------------------------------------------
+
+func TestScopeURLRoundTripAgentState(t *testing.T) {
+	dir := stateDir(t)
+	ws := state.CreateInitialState("su-agent", "scope", "START.md", 10.0, nil, "https://example.com/workflow_abc.zip")
+	require.NoError(t, state.WriteState("su-agent", ws, dir))
+
+	got, err := state.ReadState("su-agent", dir)
+	require.NoError(t, err)
+	require.Len(t, got.Agents, 1)
+	assert.Equal(t, "https://example.com/workflow_abc.zip", got.Agents[0].ScopeURL)
+}
+
+func TestScopeURLEmptyOmittedFromJSON(t *testing.T) {
+	dir := stateDir(t)
+	ws := state.CreateInitialState("su-empty", "scope", "START.md", 10.0, nil, "")
+	require.NoError(t, state.WriteState("su-empty", ws, dir))
+
+	data, err := os.ReadFile(filepath.Join(dir, "su-empty.json"))
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	agents := raw["agents"].([]any)
+	agent := agents[0].(map[string]any)
+	_, hasScopeURL := agent["scope_url"]
+	assert.False(t, hasScopeURL, "scope_url should be absent from JSON when empty")
+}
+
+func TestScopeURLAbsentInOldJSONDeserializesAsEmpty(t *testing.T) {
+	dir := stateDir(t)
+	raw := `{"workflow_id":"su-old","scope_dir":"scope","total_cost_usd":0,"budget_usd":10,"agents":[{"id":"main","current_state":"START.md","session_id":null,"stack":[],"scope_dir":"scope"}]}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "su-old.json"), []byte(raw), 0o644))
+
+	got, err := state.ReadState("su-old", dir)
+	require.NoError(t, err)
+	require.Len(t, got.Agents, 1)
+	assert.Equal(t, "", got.Agents[0].ScopeURL, "ScopeURL should be empty for old state files without scope_url")
+}
+
+func TestScopeURLRoundTripStackFrame(t *testing.T) {
+	frame := state.StackFrame{
+		Session:      nil,
+		State:        "NEXT.md",
+		ScopeDir:     "scope",
+		NestingDepth: 1,
+		ScopeURL:     "https://example.com/workflow_abc.zip",
+	}
+
+	data, err := json.Marshal(frame)
+	require.NoError(t, err)
+
+	var got state.StackFrame
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "https://example.com/workflow_abc.zip", got.ScopeURL)
+}
+
+func TestScopeURLEmptyOmittedFromStackFrameJSON(t *testing.T) {
+	frame := state.StackFrame{
+		State:    "NEXT.md",
+		ScopeDir: "scope",
+	}
+
+	data, err := json.Marshal(frame)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, hasScopeURL := raw["scope_url"]
+	assert.False(t, hasScopeURL, "scope_url should be absent from JSON when empty")
 }

@@ -123,7 +123,7 @@ func setupWorkflow(t *testing.T, agentState string) (stateDir, workflowID string
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 
 	workflowID = "test-wf"
-	ws := wfstate.CreateInitialState(workflowID, "workflows/test", agentState, 0, nil)
+	ws := wfstate.CreateInitialState(workflowID, "workflows/test", agentState, 0, nil, "")
 	require.NoError(t, wfstate.WriteState(workflowID, ws, dir))
 	return dir, workflowID
 }
@@ -1120,7 +1120,7 @@ func setupMultiForkWorkflow(t *testing.T, scopeDir string) (stateDir, workflowID
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 
 	workflowID = "test-wf"
-	ws := wfstate.CreateInitialState(workflowID, scopeDir, "START.md", 0, nil)
+	ws := wfstate.CreateInitialState(workflowID, scopeDir, "START.md", 0, nil, "")
 	require.NoError(t, wfstate.WriteState(workflowID, ws, dir))
 	return dir, workflowID
 }

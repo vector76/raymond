@@ -68,7 +68,7 @@ func writeTestZip(t *testing.T, path string, files map[string]string) {
 // writeWorkflow writes a workflow state file to stateDir and returns the ID.
 func writeWorkflow(t *testing.T, id, scopeDir, initialState, stateDir string) {
 	t.Helper()
-	ws := wfstate.CreateInitialState(id, scopeDir, initialState, 10.0, nil)
+	ws := wfstate.CreateInitialState(id, scopeDir, initialState, 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState(id, ws, stateDir))
 }
 
@@ -164,7 +164,7 @@ func TestStatusFound(t *testing.T) {
 
 func TestStatusShowsBudget(t *testing.T) {
 	stateDir := makeStateDir(t)
-	ws := wfstate.CreateInitialState("wf-budget", "workflows/test", "START.md", 25.0, nil)
+	ws := wfstate.CreateInitialState("wf-budget", "workflows/test", "START.md", 25.0, nil, "")
 	require.NoError(t, wfstate.WriteState("wf-budget", ws, stateDir))
 
 	out, _, err := run(t, "--status", "wf-budget", "--state-dir", stateDir)
@@ -174,7 +174,7 @@ func TestStatusShowsBudget(t *testing.T) {
 
 func TestStatusPausedAgent(t *testing.T) {
 	stateDir := makeStateDir(t)
-	ws := wfstate.CreateInitialState("wf-paused", "workflows/test", "START.md", 10.0, nil)
+	ws := wfstate.CreateInitialState("wf-paused", "workflows/test", "START.md", 10.0, nil, "")
 	ws.Agents[0].Status = "paused"
 	ws.Agents[0].Error = "usage limit hit"
 	require.NoError(t, wfstate.WriteState("wf-paused", ws, stateDir))
@@ -365,7 +365,7 @@ func TestResumeZipNotFound(t *testing.T) {
 	// Create a workflow state whose scope points to a zip that does not exist.
 	dir := t.TempDir()
 	missingZip := filepath.Join(dir, "gone.zip")
-	ws := wfstate.CreateInitialState("wf-zip-gone", missingZip, "START.md", 10.0, nil)
+	ws := wfstate.CreateInitialState("wf-zip-gone", missingZip, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState("wf-zip-gone", ws, stateDir))
 
 	_, _, err := run(t, "--resume", "wf-zip-gone", "--state-dir", stateDir)
@@ -382,7 +382,7 @@ func TestResumeZipWithHashInNameNotFound(t *testing.T) {
 	dir := t.TempDir()
 	fakeHash := strings.Repeat("a", 64)
 	missingZip := filepath.Join(dir, "workflow-"+fakeHash+".zip")
-	ws := wfstate.CreateInitialState("wf-zip-hash-gone", missingZip, "START.md", 10.0, nil)
+	ws := wfstate.CreateInitialState("wf-zip-hash-gone", missingZip, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState("wf-zip-hash-gone", ws, stateDir))
 
 	_, _, err := run(t, "--resume", "wf-zip-hash-gone", "--state-dir", stateDir)
@@ -400,7 +400,7 @@ func TestResumeZipHashMismatch(t *testing.T) {
 	zipFile := filepath.Join(dir, "workflow-"+badHash+".zip")
 	writeTestZip(t, zipFile, map[string]string{"START.md": "# Start"})
 
-	ws := wfstate.CreateInitialState("wf-zip-hash-mismatch", zipFile, "START.md", 10.0, nil)
+	ws := wfstate.CreateInitialState("wf-zip-hash-mismatch", zipFile, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState("wf-zip-hash-mismatch", ws, stateDir))
 
 	_, _, err := run(t, "--resume", "wf-zip-hash-mismatch", "--state-dir", stateDir)
@@ -416,7 +416,7 @@ func TestResumeZipInvalidLayout(t *testing.T) {
 	zipFile := filepath.Join(dir, "workflow.zip")
 	writeTestZip(t, zipFile, map[string]string{}) // empty zip → ZipLayoutError
 
-	ws := wfstate.CreateInitialState("wf-zip-bad-layout", zipFile, "START.md", 10.0, nil)
+	ws := wfstate.CreateInitialState("wf-zip-bad-layout", zipFile, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState("wf-zip-bad-layout", ws, stateDir))
 
 	_, _, err := run(t, "--resume", "wf-zip-bad-layout", "--state-dir", stateDir)
@@ -632,7 +632,7 @@ func TestStartSavesDefaultLaunchParamsWhenFlagsUnspecified(t *testing.T) {
 func TestResumeRestoresSavedModel(t *testing.T) {
 	stateDir := makeStateDir(t)
 	lp := &wfstate.LaunchParams{Model: "haiku", Effort: "low", DangerouslySkipPermissions: false}
-	ws := wfstate.CreateInitialState("wf-restore-model", "scope", "START.md", 10.0, nil, lp)
+	ws := wfstate.CreateInitialState("wf-restore-model", "scope", "START.md", 10.0, nil, "", lp)
 	require.NoError(t, wfstate.WriteState("wf-restore-model", ws, stateDir))
 
 	captured, err := runCapturing(t, "--resume", "wf-restore-model", "--state-dir", stateDir)
@@ -647,7 +647,7 @@ func TestResumeRestoresSavedModel(t *testing.T) {
 func TestResumeCLIModelOverridesSavedModel(t *testing.T) {
 	stateDir := makeStateDir(t)
 	lp := &wfstate.LaunchParams{Model: "haiku", Effort: "low"}
-	ws := wfstate.CreateInitialState("wf-override-model", "scope", "START.md", 10.0, nil, lp)
+	ws := wfstate.CreateInitialState("wf-override-model", "scope", "START.md", 10.0, nil, "", lp)
 	require.NoError(t, wfstate.WriteState("wf-override-model", ws, stateDir))
 
 	// CLI explicitly passes --model opus; should override saved haiku.
@@ -661,7 +661,7 @@ func TestResumeCLIModelOverridesSavedModel(t *testing.T) {
 func TestResumeDangerouslySkipPermissionsRestored(t *testing.T) {
 	stateDir := makeStateDir(t)
 	lp := &wfstate.LaunchParams{DangerouslySkipPermissions: true}
-	ws := wfstate.CreateInitialState("wf-dsp-restore", "scope", "START.md", 10.0, nil, lp)
+	ws := wfstate.CreateInitialState("wf-dsp-restore", "scope", "START.md", 10.0, nil, "", lp)
 	require.NoError(t, wfstate.WriteState("wf-dsp-restore", ws, stateDir))
 
 	captured, err := runCapturing(t, "--resume", "wf-dsp-restore", "--state-dir", stateDir)
@@ -674,7 +674,7 @@ func TestResumeDangerouslySkipPermissionsRestored(t *testing.T) {
 func TestResumeNoLaunchParamsUsesDefaults(t *testing.T) {
 	stateDir := makeStateDir(t)
 	// Old-style state file with no launch_params.
-	ws := wfstate.CreateInitialState("wf-no-lp", "scope", "START.md", 10.0, nil)
+	ws := wfstate.CreateInitialState("wf-no-lp", "scope", "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState("wf-no-lp", ws, stateDir))
 
 	captured, err := runCapturing(t, "--resume", "wf-no-lp", "--state-dir", stateDir)
@@ -929,4 +929,55 @@ func TestResumeUsesLocalRegistryPath(t *testing.T) {
 
 	_, _, err := run(t, "--resume", "wf-local-resume", "--state-dir", stateDir)
 	require.NoError(t, err)
+}
+
+// --------------------------------------------------------------------------
+// ScopeURL wiring
+// --------------------------------------------------------------------------
+
+func TestURLStartPopulatesScopeURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	zipData, hash := buildWorkflowZipBytes(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	url := fmt.Sprintf("%s/workflow_%s.zip", srv.URL, hash)
+	_, _, err := run(t, url, "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, url, ws.Agents[0].ScopeURL, "ScopeURL should equal the original remote URL")
+}
+
+func TestLocalPathStartScopeURLEmpty(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	_, _, err := run(t, startFile, "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "", ws.Agents[0].ScopeURL, "ScopeURL should be empty for local-path starts")
 }

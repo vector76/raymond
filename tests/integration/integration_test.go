@@ -133,7 +133,7 @@ func TestCrashRecovery(t *testing.T) {
 	tc := testCasesDir()
 	id := "integration-crash-wf"
 
-	ws := wfstate.CreateInitialState(id, tc, scriptName, 10.0, nil)
+	ws := wfstate.CreateInitialState(id, tc, scriptName, 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState(id, ws, stateDir))
 
 	opts := orchestrator.RunOptions{
@@ -433,7 +433,7 @@ func runWorkflowCapture(
 
 	stateDir := t.TempDir()
 	id := "integration-wf"
-	ws := wfstate.CreateInitialState(id, scopeDir, initialState, budgetUSD, initialInput)
+	ws := wfstate.CreateInitialState(id, scopeDir, initialState, budgetUSD, initialInput, "")
 	require.NoError(t, wfstate.WriteState(id, ws, stateDir))
 
 	var captured string

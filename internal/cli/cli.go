@@ -307,6 +307,7 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 	if !isRemoteURL && strings.Contains(arg, "://") {
 		return fmt.Errorf("unsupported URL scheme in workflow argument %q: only http:// and https:// are accepted", arg)
 	}
+	var scopeURL string
 	if isRemoteURL {
 		hash, err := registry.ValidateRemoteURL(arg)
 		if err != nil {
@@ -336,6 +337,7 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		if fetchErr != nil {
 			return fmt.Errorf("failed to fetch remote workflow: %w", fetchErr)
 		}
+		scopeURL = arg
 		arg = localPath
 	}
 
@@ -379,7 +381,7 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		}
 	}
 
-	ws := wfstate.CreateInitialState(workflowID, scopeDir, initialState, budgetUSD, initialInput, lp)
+	ws := wfstate.CreateInitialState(workflowID, scopeDir, initialState, budgetUSD, initialInput, scopeURL, lp)
 	if err := wfstate.WriteState(workflowID, ws, resolvedStateDir); err != nil {
 		return fmt.Errorf("write initial state: %w", err)
 	}

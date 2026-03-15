@@ -197,6 +197,7 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 				ScopeDir:     frame.ScopeDir,
 				Cwd:          frame.Cwd,
 				NestingDepth: frame.NestingDepth,
+				ScopeURL:     frame.ScopeURL,
 			}
 		}
 	}

@@ -61,6 +61,7 @@ type StackFrame struct {
 	ScopeDir     string  `json:"scope_dir,omitempty"`     // caller's scope directory
 	Cwd          string  `json:"cwd,omitempty"`           // caller's working directory
 	NestingDepth int     `json:"nesting_depth,omitempty"` // caller's cross-workflow nesting depth at the time of the call
+	ScopeURL     string  `json:"scope_url,omitempty"`     // original URL when scope was fetched from a remote URL
 }
 
 // AgentState holds the persisted state of a single agent within a workflow.
@@ -72,6 +73,7 @@ type AgentState struct {
 	PendingResult *string      `json:"pending_result,omitempty"` // absent from JSON when nil
 	Cwd           string       `json:"cwd,omitempty"`            // per-agent working directory; empty = inherit
 	ScopeDir      string       `json:"scope_dir,omitempty"`      // per-agent scope directory; empty = use workflow ScopeDir
+	ScopeURL      string       `json:"scope_url,omitempty"`      // original URL when scope was fetched from a remote URL
 
 	// Cross-workflow nesting depth. Incremented by call-workflow/function-workflow,
 	// restored by result. Capped at 4 to prevent runaway recursion.
@@ -259,13 +261,14 @@ func ListWorkflows(stateDir string) ([]string, error) {
 // If initialInput is non-nil, the agent's PendingResult is set to its value
 // (even if the value is an empty string), making it available as {{result}}
 // when the first state's prompt is rendered.
-func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD float64, initialInput *string, launchParams ...*LaunchParams) *WorkflowState {
+func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD float64, initialInput *string, scopeURL string, launchParams ...*LaunchParams) *WorkflowState {
 	agent := AgentState{
 		ID:           "main",
 		CurrentState: initialState,
 		SessionID:    nil,
 		Stack:        []StackFrame{},
 		ScopeDir:     scopeDir,
+		ScopeURL:     scopeURL,
 	}
 	if initialInput != nil {
 		agent.PendingResult = initialInput

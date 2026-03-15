@@ -32,6 +32,7 @@ import (
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/registry"
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/transitions"
@@ -81,6 +82,10 @@ type RunOptions struct {
 	// to simulate a mid-run resume without the initial status clearing).
 	NoResetPaused bool
 
+	// Fetcher is the function used to download remote workflow zip files.
+	// If nil, a registry.Registry rooted at the state directory's parent is used.
+	Fetcher specifier.Fetcher
+
 	// ObserverSetup, if non-nil, is called with the Bus immediately after it
 	// is created (before WorkflowStarted is emitted). Use it to register
 	// observers from production code (e.g. the CLI). Tests use SetBusHook
@@ -104,6 +109,14 @@ type stepResult struct {
 // recovery, and launches goroutines for any new or reactivated agents.
 func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error {
 	stateDir := wfstate.GetStateDir(opts.StateDir)
+
+	// Resolve the fetcher: use the injected one or construct from the registry.
+	fetch := opts.Fetcher
+	if fetch == nil {
+		raymondDir := filepath.Dir(stateDir)
+		reg := registry.New(raymondDir)
+		fetch = reg.Fetch
+	}
 
 	ws, err := wfstate.ReadState(workflowID, stateDir)
 	if err != nil {
@@ -305,9 +318,9 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				var transErr error
 
 				if isMultiForkTransitions(result.execResult.Transitions) {
-					tr, transErr = applyMultiFork(&ws.Agents[agentIdx], result.execResult.Transitions, ws, b, agentBefore.CurrentState)
+					tr, transErr = applyMultiFork(&ws.Agents[agentIdx], result.execResult.Transitions, ws, b, agentBefore.CurrentState, fetch)
 				} else {
-					tr, transErr = transitions.ApplyTransition(&ws.Agents[agentIdx], result.execResult.Transition, ws)
+					tr, transErr = transitions.ApplyTransition(&ws.Agents[agentIdx], result.execResult.Transition, ws, fetch)
 					if transErr == nil {
 						emitTransitionEvents(tr, agentBefore, result.execResult, ws, b)
 					}
@@ -502,6 +515,7 @@ func applyMultiFork(
 	ws *wfstate.WorkflowState,
 	b *bus.Bus,
 	fromState string,
+	fetch specifier.Fetcher,
 ) (transitions.TransitionResult, error) {
 	continuation, valErr := validateMultiFork(trs)
 	if valErr != nil {
@@ -531,11 +545,17 @@ func applyMultiFork(
 			}
 			workers = append(workers, w)
 		case "fork-workflow":
-			res, err := specifier.Resolve(tr.Target, callerCopy.ScopeDir)
-			if err != nil {
+			var res specifier.Resolution
+			var resErr error
+			if callerCopy.ScopeURL != "" {
+				res, resErr = specifier.ResolveFromURL(tr.Target, callerCopy.ScopeURL, fetch)
+			} else {
+				res, resErr = specifier.Resolve(tr.Target, callerCopy.ScopeDir)
+			}
+			if resErr != nil {
 				agentCopy := *agent
 				agentCopy.Status = wfstate.AgentStatusPaused
-				agentCopy.Error = fmt.Sprintf("fork-workflow: %v", err)
+				agentCopy.Error = fmt.Sprintf("fork-workflow: %v", resErr)
 				b.Emit(events.AgentPaused{
 					AgentID:   agent.ID,
 					Reason:    "validation_error",

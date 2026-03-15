@@ -1,6 +1,7 @@
 package transitions_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,7 +41,7 @@ func TestApplyTransitionDeepCopiesAgent(t *testing.T) {
 	tr := gotoTransition("NEXT.md")
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&original, tr, wfState)
+	result, err := transitions.ApplyTransition(&original, tr, wfState, nil)
 
 	require.NoError(t, err)
 	// Original must not be mutated.
@@ -55,7 +56,7 @@ func TestApplyTransitionClearsPendingResult(t *testing.T) {
 	agent.PendingResult = strPtr("previous result")
 	tr := gotoTransition("NEXT.md")
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result.Agent.PendingResult)
@@ -66,7 +67,7 @@ func TestApplyTransitionClearsForkSessionID(t *testing.T) {
 	agent.ForkSessionID = strPtr("forked_session")
 	tr := gotoTransition("NEXT.md")
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result.Agent.ForkSessionID)
@@ -77,7 +78,7 @@ func TestApplyTransitionClearsForkAttributes(t *testing.T) {
 	agent.ForkAttributes = map[string]string{"item": "task_123"}
 	tr := gotoTransition("NEXT.md")
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result.Agent.ForkAttributes)
@@ -87,7 +88,7 @@ func TestApplyTransitionDispatchesGoto(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := gotoTransition("NEXT.md")
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -102,7 +103,7 @@ func TestApplyTransitionDispatchesReset(t *testing.T) {
 	agent.Stack = []wfstate.StackFrame{frame}
 	tr := parsing.Transition{Tag: "reset", Target: "FRESH.md", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -121,7 +122,7 @@ func TestApplyTransitionDispatchesFunction(t *testing.T) {
 		Attributes: map[string]string{"return": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -139,7 +140,7 @@ func TestApplyTransitionDispatchesCall(t *testing.T) {
 		Attributes: map[string]string{"return": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -156,7 +157,7 @@ func TestApplyTransitionDispatchesFork(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -171,7 +172,7 @@ func TestApplyTransitionDispatchesResultTermination(t *testing.T) {
 	// Empty stack — agent terminates.
 	tr := parsing.Transition{Tag: "result", Payload: "Task completed", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result.Agent) // terminated
@@ -184,7 +185,7 @@ func TestApplyTransitionDispatchesResultReturn(t *testing.T) {
 	agent.Stack = []wfstate.StackFrame{frame}
 	tr := parsing.Transition{Tag: "result", Payload: "evaluation result", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -200,7 +201,7 @@ func TestApplyTransitionUnknownTagReturnsError(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{Tag: "unknown_tag", Target: "SOMEWHERE.md", Attributes: map[string]string{}}
 
-	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown transition tag: unknown_tag")
@@ -217,7 +218,7 @@ func TestAllTransientFieldsCleared(t *testing.T) {
 	agent.ForkAttributes = map[string]string{"item": "old item"}
 	tr := gotoTransition("NEXT.md")
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result.Agent.PendingResult)
@@ -232,7 +233,7 @@ func TestTransientFieldsClearedBeforeHandlerSetsNew(t *testing.T) {
 	agent.PendingResult = strPtr("old result") // will be cleared, then set fresh by result handler
 	tr := parsing.Transition{Tag: "result", Payload: "new result", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent.PendingResult)
@@ -247,7 +248,7 @@ func TestCallHandlerSetsForkSessionIDFresh(t *testing.T) {
 		Attributes: map[string]string{"return": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent.ForkSessionID)
@@ -306,7 +307,7 @@ func TestResetWithAbsoluteCdSetsAgentCwd(t *testing.T) {
 		Attributes: map[string]string{"cd": "/path/to/worktree"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "FRESH.md", result.Agent.CurrentState)
@@ -319,7 +320,7 @@ func TestResetWithoutCdDoesNotChangeCwd(t *testing.T) {
 	// No cwd set on agent, no cd in transition.
 	tr := parsing.Transition{Tag: "reset", Target: "FRESH.md", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "", result.Agent.Cwd)
@@ -330,7 +331,7 @@ func TestResetPreservesExistingCwdWhenNoCd(t *testing.T) {
 	agent.Cwd = "/existing/path"
 	tr := parsing.Transition{Tag: "reset", Target: "FRESH.md", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/existing/path", result.Agent.Cwd)
@@ -344,7 +345,7 @@ func TestResetWithCdOverridesExistingCwd(t *testing.T) {
 		Attributes: map[string]string{"cd": "/new/path"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/new/path", result.Agent.Cwd)
@@ -358,7 +359,7 @@ func TestResetRelativeCdResolvedAgainstAgentCwd(t *testing.T) {
 		Attributes: map[string]string{"cd": "../other-project"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/repo/other-project", result.Agent.Cwd)
@@ -371,7 +372,7 @@ func TestResetRelativeCdUsesWdWhenNoAgentCwd(t *testing.T) {
 		Attributes: map[string]string{"cd": "subdir"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	wd, err2 := os.Getwd()
@@ -387,7 +388,7 @@ func TestResetCdNormalizesPath(t *testing.T) {
 		Attributes: map[string]string{"cd": "../foo/../bar/../baz"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/repo/baz", result.Agent.Cwd)
@@ -400,7 +401,7 @@ func TestResetAbsoluteCdNormalized(t *testing.T) {
 		Attributes: map[string]string{"cd": "/a/b/../c/./d"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/a/c/d", result.Agent.Cwd)
@@ -417,7 +418,7 @@ func TestForkWithAbsoluteCdSetsWorkerCwd(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md", "cd": "/path/to/worktree"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/path/to/worktree", result.Worker.Cwd)
@@ -431,7 +432,7 @@ func TestForkWithoutCdDoesNotSetWorkerCwd(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "", result.Worker.Cwd)
@@ -444,7 +445,7 @@ func TestForkCdNotInForkAttributes(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md", "cd": "/path/to/worktree", "item": "task1"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	_, hasCd := result.Worker.ForkAttributes["cd"]
@@ -460,7 +461,7 @@ func TestForkParentPreservesItsCwd(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md", "cd": "/worker/dir"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/parent/dir", result.Agent.Cwd)
@@ -475,7 +476,7 @@ func TestForkWorkerInheritsScopeDir(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/abs/path/to/workflow", result.Worker.ScopeDir)
@@ -490,7 +491,7 @@ func TestForkRelativeCdResolvedAgainstParentCwd(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md", "cd": "worktrees/feature-a"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/repo/worktrees/feature-a", result.Worker.Cwd)
@@ -504,7 +505,7 @@ func TestForkRelativeCdUsesWdWhenNoParentCwd(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md", "cd": "worktrees/feature-a"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	wd, err2 := os.Getwd()
@@ -521,7 +522,7 @@ func TestForkCdNormalizesPath(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md", "cd": "./a/../b/./c"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "/repo/b/c", result.Worker.Cwd)
@@ -535,7 +536,7 @@ func TestFunctionMissingReturnAttrErrors(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{Tag: "function", Target: "EVAL.md", Attributes: map[string]string{}}
 
-	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "return")
@@ -545,7 +546,7 @@ func TestCallMissingReturnAttrErrors(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{Tag: "call", Target: "CHILD.md", Attributes: map[string]string{}}
 
-	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "return")
@@ -555,7 +556,7 @@ func TestForkMissingNextAttrErrors(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{Tag: "fork", Target: "WORKER.md", Attributes: map[string]string{}}
 
-	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	_, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "next")
@@ -573,11 +574,11 @@ func TestForkCounterIncrementsPerParent(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result1, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result1, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 	require.NoError(t, err)
 
 	// Use updated parent for second fork
-	result2, err := transitions.ApplyTransition(result1.Agent, tr, wfState)
+	result2, err := transitions.ApplyTransition(result1.Agent, tr, wfState, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "main_worker1", result1.Worker.ID)
@@ -593,7 +594,7 @@ func TestForkWorkerIDUsesStateAbbrev(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "main_analyz1", result.Worker.ID)
@@ -608,7 +609,7 @@ func TestForkWorkerIDShortStateName(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "main_run1", result.Worker.ID)
@@ -621,7 +622,7 @@ func TestForkWorkerHasEmptyStack(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Empty(t, result.Worker.Stack)
@@ -635,7 +636,7 @@ func TestForkExtraAttributesBecomeWorkerForkAttributes(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md", "task": "build", "env": "prod"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "build", result.Worker.ForkAttributes["task"])
@@ -651,7 +652,7 @@ func TestForkNoExtraAttributesGivesNilForkAttributes(t *testing.T) {
 		Attributes: map[string]string{"next": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result.Worker.ForkAttributes)
@@ -666,7 +667,7 @@ func TestResultTerminationStoresResultInWfState(t *testing.T) {
 	wfState := &wfstate.WorkflowState{}
 	tr := parsing.Transition{Tag: "result", Payload: "final answer", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result.Agent)
@@ -686,7 +687,7 @@ func TestFunctionPushesOntoExistingStack(t *testing.T) {
 		Attributes: map[string]string{"return": "MID.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.Len(t, result.Agent.Stack, 2)
@@ -701,7 +702,7 @@ func TestResultPopsOnlyTopFrame(t *testing.T) {
 	agent.Stack = []wfstate.StackFrame{frame1, frame2}
 	tr := parsing.Transition{Tag: "result", Payload: "leaf result", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "INNER.md", result.Agent.CurrentState) // top frame popped
@@ -724,7 +725,7 @@ func TestFunctionPushSavesScopeDirAndCwd(t *testing.T) {
 		Attributes: map[string]string{"return": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.Len(t, result.Agent.Stack, 1)
@@ -741,12 +742,98 @@ func TestCallPushSavesScopeDirAndCwd(t *testing.T) {
 		Attributes: map[string]string{"return": "NEXT.md"},
 	}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.Len(t, result.Agent.Stack, 1)
 	assert.Equal(t, "workflows/service", result.Agent.Stack[0].ScopeDir)
 	assert.Equal(t, "/repo/service", result.Agent.Stack[0].Cwd)
+}
+
+func TestFunctionPushSavesScopeURL(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/wf.zip"
+	tr := parsing.Transition{
+		Tag: "function", Target: "EVAL.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "https://example.com/wf.zip", result.Agent.Stack[0].ScopeURL)
+}
+
+func TestCallPushSavesScopeURL(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/wf.zip"
+	tr := parsing.Transition{
+		Tag: "call", Target: "CHILD.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "https://example.com/wf.zip", result.Agent.Stack[0].ScopeURL)
+}
+
+func TestResultRestoresScopeURLFromFunctionFrame(t *testing.T) {
+	// A URL-scoped agent does <function> then <result>; ScopeURL must survive the round-trip.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/wf.zip"
+	functionTr := parsing.Transition{
+		Tag: "function", Target: "EVAL.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	r1, err := transitions.ApplyTransition(&agent, functionTr, wfState, nil)
+	require.NoError(t, err)
+
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, "https://example.com/wf.zip", r2.Agent.ScopeURL)
+}
+
+func TestResultRestoresScopeURLFromCallFrame(t *testing.T) {
+	// A URL-scoped agent does <call> then <result>; ScopeURL must survive the round-trip.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/wf.zip"
+	callTr := parsing.Transition{
+		Tag: "call", Target: "CHILD.md",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	r1, err := transitions.ApplyTransition(&agent, callTr, wfState, nil)
+	require.NoError(t, err)
+
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, "https://example.com/wf.zip", r2.Agent.ScopeURL)
+}
+
+func TestForkWorkerInheritsScopeURL(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/wf.zip"
+	tr := parsing.Transition{
+		Tag: "fork", Target: "WORKER.md",
+		Attributes: map[string]string{"next": "NEXT.md"},
+	}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Worker)
+	assert.Equal(t, "https://example.com/wf.zip", result.Worker.ScopeURL)
+	assert.Equal(t, "https://example.com/wf.zip", result.Agent.ScopeURL) // parent unchanged
 }
 
 func TestResultRestoresScopeDirAndCwdFromFrame(t *testing.T) {
@@ -762,7 +849,7 @@ func TestResultRestoresScopeDirAndCwdFromFrame(t *testing.T) {
 	agent.Stack = []wfstate.StackFrame{frame}
 	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -784,7 +871,7 @@ func TestResultDoesNotOverwriteScopeDirCwdFromOldFrame(t *testing.T) {
 	agent.Stack = []wfstate.StackFrame{frame}
 	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -803,7 +890,7 @@ func TestResultAlwaysRestoresNestingDepth(t *testing.T) {
 	agent.Stack = []wfstate.StackFrame{frame}
 	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1370,7 +1457,7 @@ func TestApplyTransitionDispatchesCallWorkflow(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1392,7 +1479,7 @@ func TestApplyTransitionCallWorkflowResolverErrorPausesAgent(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err) // error is converted to a paused agent, not propagated
 	require.NotNil(t, result.Agent)
@@ -1413,7 +1500,7 @@ func TestApplyTransitionFunctionWorkflowResolverErrorPausesAgent(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1433,7 +1520,7 @@ func TestApplyTransitionForkWorkflowResolverErrorPausesAgent(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1457,7 +1544,7 @@ func TestApplyTransitionCallWorkflowInputTemplateRendered(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1481,7 +1568,7 @@ func TestApplyTransitionFunctionWorkflowInputTemplateRenderedFromForkAttrs(t *te
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1564,7 +1651,7 @@ func TestCallWorkflowDepth4PausesAgentViaApplyTransition(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1585,7 +1672,7 @@ func TestFunctionWorkflowDepth4PausesAgentViaApplyTransition(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1621,7 +1708,7 @@ func TestResultRestoresDepthToPreCallValue(t *testing.T) {
 	agent.Stack = []wfstate.StackFrame{frame}
 	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
 
-	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{})
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -1644,7 +1731,7 @@ func TestSequentialCallsDoNotAccumulateDepth(t *testing.T) {
 	// Simulate result: pop frame, restore depth to 0.
 	r1.Agent.Stack[0].NestingDepth = 0
 	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
-	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState)
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, r2.Agent.NestingDepth)
 
@@ -1664,7 +1751,7 @@ func TestIntraScopeForkDoesNotChangeDepth(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.Agent.NestingDepth)
@@ -1681,7 +1768,7 @@ func TestIntraScopeCallDoesNotChangeDepth(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.Agent.NestingDepth)
@@ -1697,7 +1784,7 @@ func TestIntraScopeFunctionDoesNotChangeDepth(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.Agent.NestingDepth)
@@ -1715,13 +1802,13 @@ func TestIntraScopeFunctionResultPreservesDepth(t *testing.T) {
 		Target:     "EVAL.md",
 		Attributes: map[string]string{"return": "NEXT.md"},
 	}
-	r1, err := transitions.ApplyTransition(&agent, callTr, wfState)
+	r1, err := transitions.ApplyTransition(&agent, callTr, wfState, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, r1.Agent.NestingDepth) // unchanged during call
 
 	// Intra-scope result.
 	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
-	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState)
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
 	require.NoError(t, err)
 	require.NotNil(t, r2.Agent)
 	assert.Equal(t, 2, r2.Agent.NestingDepth) // must be preserved, not reset to 0
@@ -1739,13 +1826,13 @@ func TestIntraScopeCallResultPreservesDepth(t *testing.T) {
 		Target:     "CHILD.md",
 		Attributes: map[string]string{"return": "NEXT.md"},
 	}
-	r1, err := transitions.ApplyTransition(&agent, callTr, wfState)
+	r1, err := transitions.ApplyTransition(&agent, callTr, wfState, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, r1.Agent.NestingDepth) // unchanged during call
 
 	// Intra-scope result.
 	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
-	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState)
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
 	require.NoError(t, err)
 	require.NotNil(t, r2.Agent)
 	assert.Equal(t, 2, r2.Agent.NestingDepth) // must be preserved, not reset to 0
@@ -1970,7 +2057,7 @@ func TestApplyTransitionDispatchesResetWorkflow(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -2128,7 +2215,7 @@ func TestResetWorkflowResolverErrorPausesAgent(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err) // error is converted to a paused agent, not propagated
 	require.NotNil(t, result.Agent)
@@ -2156,7 +2243,7 @@ func TestWithRenderedInputSubstitutesWorkflowID(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -2180,7 +2267,7 @@ func TestWithRenderedInputSubstitutesWorkflowIDAndResult(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{WorkflowID: "wf-99"}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -2202,7 +2289,7 @@ func TestWithRenderedInputAbsentInputUnchanged(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -2224,7 +2311,7 @@ func TestWorkflowIDSubstitutedInFunctionWorkflowInput(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
@@ -2247,7 +2334,7 @@ func TestWorkflowIDSubstitutedInForkWorkflowInput(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{WorkflowID: "wf-fork-7"}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Worker)
@@ -2269,11 +2356,311 @@ func TestWorkflowIDSubstitutedInResetWorkflowInput(t *testing.T) {
 	}
 	wfState := &wfstate.WorkflowState{WorkflowID: "wf-reset-9"}
 
-	result, err := transitions.ApplyTransition(&agent, tr, wfState)
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Agent)
 	require.NotNil(t, result.Agent.PendingResult)
 	assert.Equal(t, "id=wf-reset-9", *result.Agent.PendingResult)
+}
+
+// ----------------------------------------------------------------------------
+// ApplyTransition: URL-scope resolution via ResolveFromURL
+// ----------------------------------------------------------------------------
+
+// --- HandleResetWorkflow ScopeURL propagation ---
+
+func TestResetWorkflowSetsScopeURL(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/old.zip"
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/new.zip",
+	}
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "https://example.com/new.zip", result.Agent.ScopeURL)
+}
+
+func TestResetWorkflowClearsScopeURLForFilesystemResolution(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/old.zip"
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "", // filesystem resolution
+	}
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "", result.Agent.ScopeURL) // cleared
+}
+
+// --- CreateForkWorkflowWorker ScopeURL propagation ---
+
+func TestForkWorkflowWorkerGetsScopeURL(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/child.zip",
+	}
+	wfState := &wfstate.WorkflowState{}
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Worker)
+	assert.Equal(t, "https://example.com/child.zip", result.Worker.ScopeURL)
+	assert.Equal(t, "", result.Agent.ScopeURL) // caller unchanged
+}
+
+// --- HandleCallWorkflow ScopeURL propagation ---
+
+func TestCallWorkflowFrameCapturesCallerScopeURL(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/child.zip",
+	}
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "https://example.com/caller.zip", result.Agent.Stack[0].ScopeURL)
+	assert.Equal(t, "https://example.com/child.zip", result.Agent.ScopeURL)
+}
+
+func TestCallWorkflowResultRestoresScopeURL(t *testing.T) {
+	// Use HandleCallWorkflow directly to set up the frame with ScopeURL,
+	// then verify ApplyTransition("result") restores it.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/child.zip",
+	}
+	wfState := &wfstate.WorkflowState{}
+	callTr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	r1, err := transitions.HandleCallWorkflow(agent, callTr, wfState, resolution)
+	require.NoError(t, err)
+	require.NotNil(t, r1.Agent)
+	require.Len(t, r1.Agent.Stack, 1)
+
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, "https://example.com/caller.zip", r2.Agent.ScopeURL) // restored
+}
+
+// --- HandleFunctionWorkflow ScopeURL propagation ---
+
+func TestFunctionWorkflowFrameCapturesCallerScopeURL(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/child.zip",
+	}
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "https://example.com/caller.zip", result.Agent.Stack[0].ScopeURL)
+	assert.Equal(t, "https://example.com/child.zip", result.Agent.ScopeURL)
+}
+
+func TestFunctionWorkflowResultRestoresScopeURL(t *testing.T) {
+	// Use HandleFunctionWorkflow directly to set up the frame with ScopeURL,
+	// then verify ApplyTransition("result") restores it.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/child.zip",
+	}
+	wfState := &wfstate.WorkflowState{}
+	callTr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	r1, err := transitions.HandleFunctionWorkflow(agent, callTr, wfState, resolution)
+	require.NoError(t, err)
+	require.NotNil(t, r1.Agent)
+	require.Len(t, r1.Agent.Stack, 1)
+
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, "https://example.com/caller.zip", r2.Agent.ScopeURL) // restored
+}
+
+// --- ApplyTransition URL-scope branching: error pauses agent ---
+
+func TestApplyTransitionURLScopeResolveErrorPausesAgent_ResetWorkflow(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	tr := parsing.Transition{
+		Tag:        "reset-workflow",
+		Target:     "../bad.zip",
+		Attributes: map[string]string{},
+	}
+	// ResolveFromURL fails (hash validation rejects "bad.zip" — no 64-hex-char hash in filename).
+	// Fetcher is a no-op here; the error occurs before fetch is called.
+	fetch := func(url, hash string) (string, error) {
+		return "", fmt.Errorf("network error")
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, fetch)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "reset-workflow")
+}
+
+func TestApplyTransitionURLScopeResolveErrorPausesAgent_ForkWorkflow(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	tr := parsing.Transition{
+		Tag:        "fork-workflow",
+		Target:     "../bad.zip",
+		Attributes: map[string]string{"next": "AFTER.md"},
+	}
+	// ResolveFromURL fails at hash validation; fetch is a no-op.
+	fetch := func(url, hash string) (string, error) {
+		return "", fmt.Errorf("network error")
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, fetch)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "fork-workflow")
+}
+
+func TestApplyTransitionURLScopeResolveErrorPausesAgent_CallWorkflow(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	tr := parsing.Transition{
+		Tag:        "call-workflow",
+		Target:     "../bad.zip",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	// ResolveFromURL fails at hash validation; fetch is a no-op.
+	fetch := func(url, hash string) (string, error) {
+		return "", fmt.Errorf("network error")
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, fetch)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "call-workflow")
+}
+
+func TestApplyTransitionURLScopeResolveErrorPausesAgent_FunctionWorkflow(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeURL = "https://example.com/caller.zip"
+	tr := parsing.Transition{
+		Tag:        "function-workflow",
+		Target:     "../bad.zip",
+		Attributes: map[string]string{"return": "NEXT.md"},
+	}
+	// ResolveFromURL fails at hash validation; fetch is a no-op.
+	fetch := func(url, hash string) (string, error) {
+		return "", fmt.Errorf("network error")
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, fetch)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "paused", result.Agent.Status)
+	assert.Contains(t, result.Agent.Error, "function-workflow")
+}
+
+// --- ScopeURL cleared when filesystem caller returns from URL-scoped callee ---
+
+func TestCallWorkflowResultClearsScopeURLForFilesystemCaller(t *testing.T) {
+	// Filesystem caller (ScopeURL="") calls into URL-scoped callee; on result
+	// the agent's ScopeURL must revert to "" (not remain as the callee's URL).
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	// ScopeURL intentionally left "" — filesystem caller
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/child.zip",
+	}
+	wfState := &wfstate.WorkflowState{}
+	callTr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	r1, err := transitions.HandleCallWorkflow(agent, callTr, wfState, resolution)
+	require.NoError(t, err)
+	require.NotNil(t, r1.Agent)
+	assert.Equal(t, "https://example.com/child.zip", r1.Agent.ScopeURL) // inside callee
+
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, "", r2.Agent.ScopeURL) // restored to filesystem caller's ""
+}
+
+func TestFunctionWorkflowResultClearsScopeURLForFilesystemCaller(t *testing.T) {
+	// Same as above but for function-workflow.
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	resolution := specifier.Resolution{
+		ScopeDir:   "/local/child",
+		EntryPoint: "1_START.md",
+		Abbrev:     "child",
+		ScopeURL:   "https://example.com/child.zip",
+	}
+	wfState := &wfstate.WorkflowState{}
+	funcTr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	r1, err := transitions.HandleFunctionWorkflow(agent, funcTr, wfState, resolution)
+	require.NoError(t, err)
+	require.NotNil(t, r1.Agent)
+	assert.Equal(t, "https://example.com/child.zip", r1.Agent.ScopeURL) // inside callee
+
+	resultTr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+	r2, err := transitions.ApplyTransition(r1.Agent, resultTr, wfState, nil)
+	require.NoError(t, err)
+	require.NotNil(t, r2.Agent)
+	assert.Equal(t, "", r2.Agent.ScopeURL) // restored to filesystem caller's ""
 }
 

@@ -63,11 +63,16 @@ func ResolveCd(cdValue, baseCwd string) string {
 //  2. Clears transient fields (PendingResult, ForkSessionID, ForkAttributes).
 //  3. Dispatches to the appropriate handler based on transition.Tag.
 //
+// fetch is used to download remote zip files for cross-workflow transitions when
+// the agent has a non-empty ScopeURL. It may be nil when agent.ScopeURL is always
+// empty (i.e. all workflows are filesystem-based).
+//
 // Returns an error when the tag is unknown or a required attribute is missing.
 func ApplyTransition(
 	agent *wfstate.AgentState,
 	transition parsing.Transition,
 	wfState *wfstate.WorkflowState,
+	fetch specifier.Fetcher,
 ) (TransitionResult, error) {
 	// Deep copy — handlers must not mutate the original agent.
 	copy := deepCopyAgent(*agent)
@@ -96,7 +101,13 @@ func ApplyTransition(
 		return HandleFork(copy, transition, wfState)
 	case "reset-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
-		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
+		var res specifier.Resolution
+		var err error
+		if copy.ScopeURL != "" {
+			res, err = specifier.ResolveFromURL(tr.Target, copy.ScopeURL, fetch)
+		} else {
+			res, err = specifier.Resolve(tr.Target, copy.ScopeDir)
+		}
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
 			copy.Error = fmt.Sprintf("reset-workflow: %s", err.Error())
@@ -105,7 +116,13 @@ func ApplyTransition(
 		return HandleResetWorkflow(copy, tr, res), nil
 	case "fork-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
-		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
+		var res specifier.Resolution
+		var err error
+		if copy.ScopeURL != "" {
+			res, err = specifier.ResolveFromURL(tr.Target, copy.ScopeURL, fetch)
+		} else {
+			res, err = specifier.Resolve(tr.Target, copy.ScopeDir)
+		}
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
 			copy.Error = fmt.Sprintf("fork-workflow: %s", err.Error())
@@ -120,7 +137,13 @@ func ApplyTransition(
 		return result, nil
 	case "call-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
-		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
+		var res specifier.Resolution
+		var err error
+		if copy.ScopeURL != "" {
+			res, err = specifier.ResolveFromURL(tr.Target, copy.ScopeURL, fetch)
+		} else {
+			res, err = specifier.Resolve(tr.Target, copy.ScopeDir)
+		}
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
 			copy.Error = fmt.Sprintf("call-workflow: %s", err.Error())
@@ -135,7 +158,13 @@ func ApplyTransition(
 		return result, nil
 	case "function-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
-		res, err := specifier.Resolve(tr.Target, copy.ScopeDir)
+		var res specifier.Resolution
+		var err error
+		if copy.ScopeURL != "" {
+			res, err = specifier.ResolveFromURL(tr.Target, copy.ScopeURL, fetch)
+		} else {
+			res, err = specifier.Resolve(tr.Target, copy.ScopeDir)
+		}
 		if err != nil {
 			copy.Status = wfstate.AgentStatusPaused
 			copy.Error = fmt.Sprintf("function-workflow: %s", err.Error())
@@ -291,7 +320,7 @@ func HandleReset(agent wfstate.AgentState, transition parsing.Transition) Transi
 //   - Clears SessionID (fresh session)
 //   - Clears Stack (nil — empty)
 //   - Resets NestingDepth to 0
-//   - Sets ScopeDir to resolution.ScopeDir
+//   - Sets ScopeDir and ScopeURL from the resolution
 //   - Applies cd attribute if non-empty
 //   - Sets PendingResult from input attribute if non-empty; otherwise nil
 func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, resolution specifier.Resolution) TransitionResult {
@@ -300,6 +329,7 @@ func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, resolu
 	agent.Stack = nil
 	agent.NestingDepth = 0
 	agent.ScopeDir = resolution.ScopeDir
+	agent.ScopeURL = resolution.ScopeURL
 
 	if cd := tr.Attributes["cd"]; cd != "" {
 		agent.Cwd = ResolveCd(cd, agent.Cwd)
@@ -317,7 +347,7 @@ func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, resolu
 // HandleFunction handles the <function> transition tag.
 //
 // Runs a stateless sub-evaluation that returns to the caller:
-//   - Pushes {caller session, return state} frame onto the stack
+//   - Pushes {caller session, return state, ScopeDir, ScopeURL, Cwd, NestingDepth} frame onto the stack
 //   - Clears session_id (fresh context)
 //   - Updates current_state to the function target
 //
@@ -335,6 +365,7 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 		Session:      agent.SessionID,
 		State:        returnState,
 		ScopeDir:     agent.ScopeDir,
+		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
 	}
@@ -351,7 +382,7 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 // HandleCall handles the <call> transition tag.
 //
 // Enters a subroutine that inherits the caller's context via session forking:
-//   - Pushes {caller session, return state} frame onto the stack
+//   - Pushes {caller session, return state, ScopeDir, ScopeURL, Cwd, NestingDepth} frame onto the stack
 //   - Sets fork_session_id to trigger --fork-session in the next executor step
 //   - Updates current_state to the callee target
 //
@@ -371,6 +402,7 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 		Session:      callerSession,
 		State:        returnState,
 		ScopeDir:     agent.ScopeDir,
+		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
 	}
@@ -417,6 +449,7 @@ func CreateForkWorker(
 		SessionID:    nil,
 		Stack:        []wfstate.StackFrame{},
 		ScopeDir:     agent.ScopeDir,
+		ScopeURL:     agent.ScopeURL,
 	}
 
 	if cd, ok := transition.Attributes["cd"]; ok {
@@ -515,6 +548,7 @@ func CreateForkWorkflowWorker(
 		ID:           workerID,
 		CurrentState: resolution.EntryPoint,
 		ScopeDir:     resolution.ScopeDir,
+		ScopeURL:     resolution.ScopeURL,
 		Cwd:          workerCwd,
 		SessionID:    nil,
 		Stack:        []wfstate.StackFrame{},
@@ -578,11 +612,11 @@ func HandleForkWorkflow(
 //   - Validates that "cd" attribute is absent; errors if present (forbidden
 //     because the session-binding constraint makes changing directory unsafe).
 //   - Returns an error when agent.NestingDepth >= 4 (depth limit enforced).
-//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth}
+//   - Pushes {caller session, return state, ScopeDir, ScopeURL, Cwd, NestingDepth}
 //     frame onto the stack, then increments agent.NestingDepth.
 //   - Sets ForkSessionID to caller's session (sub-workflow inherits context).
 //   - Clears SessionID (fresh Claude session for sub-workflow).
-//   - Updates ScopeDir and CurrentState from the resolution.
+//   - Updates ScopeDir, ScopeURL, and CurrentState from the resolution.
 //   - Sets PendingResult from "input" attribute if non-empty.
 func HandleCallWorkflow(
 	agent wfstate.AgentState,
@@ -617,6 +651,7 @@ func HandleCallWorkflow(
 		Session:      callerSession,
 		State:        returnState,
 		ScopeDir:     agent.ScopeDir,
+		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
 	}
@@ -625,6 +660,7 @@ func HandleCallWorkflow(
 	agent.ForkSessionID = callerSession
 	agent.SessionID = nil
 	agent.ScopeDir = resolution.ScopeDir
+	agent.ScopeURL = resolution.ScopeURL
 	agent.CurrentState = resolution.EntryPoint
 
 	if input, ok := transition.Attributes["input"]; ok && input != "" {
@@ -640,10 +676,10 @@ func HandleCallWorkflow(
 // inheritance):
 //   - Validates that "return" attribute is present; errors if absent.
 //   - Returns an error when agent.NestingDepth >= 4 (depth limit enforced).
-//   - Pushes {caller session, return state, ScopeDir, Cwd, NestingDepth}
+//   - Pushes {caller session, return state, ScopeDir, ScopeURL, Cwd, NestingDepth}
 //     frame onto the stack, then increments agent.NestingDepth.
 //   - Clears SessionID (fresh Claude session; no ForkSessionID set).
-//   - Updates ScopeDir and CurrentState from the resolution.
+//   - Updates ScopeDir, ScopeURL, and CurrentState from the resolution.
 //   - Updates Cwd from "cd" attribute if present.
 //   - Sets PendingResult from "input" attribute if non-empty.
 func HandleFunctionWorkflow(
@@ -670,6 +706,7 @@ func HandleFunctionWorkflow(
 		Session:      agent.SessionID,
 		State:        returnState,
 		ScopeDir:     agent.ScopeDir,
+		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
 	}
@@ -677,6 +714,7 @@ func HandleFunctionWorkflow(
 	agent.NestingDepth = agent.NestingDepth + 1
 	agent.SessionID = nil
 	agent.ScopeDir = resolution.ScopeDir
+	agent.ScopeURL = resolution.ScopeURL
 	agent.CurrentState = resolution.EntryPoint
 
 	if cd, ok := transition.Attributes["cd"]; ok {
@@ -730,6 +768,9 @@ func HandleResult(
 	if frame.Cwd != "" {
 		agent.Cwd = frame.Cwd
 	}
+	// ScopeURL is always restored; "" correctly clears a URL scope when returning
+	// to a caller that was filesystem-based.
+	agent.ScopeURL = frame.ScopeURL
 	// NestingDepth is always restored; 0 is the correct default for both old frames
 	// and frames saved from a depth-0 agent.
 	agent.NestingDepth = frame.NestingDepth

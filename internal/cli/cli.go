@@ -115,6 +115,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		budget                     float64
 		model                      string
 		effort                     string
+		name                       string
 		timeout                    float64
 		dangerouslySkipPermissions bool
 		quiet                      bool
@@ -189,6 +190,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				DangerouslySkipPermissions: dangerouslySkipPermissions,
 				Model:                      model,
 				Effort:                     effort,
+				Name:                       name,
 				NoDebug:                    noDebug,
 				NoWait:                     noWait,
 				Verbose:                    verbose,
@@ -233,7 +235,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				if !merged.NoDebug {
 					debug.New(b)
 				}
-				titlebar.New(b, "")
+				titlebar.NewWithWriter(b, c.stdout, merged.Name)
 			}
 
 			// ---- resume mode ----
@@ -281,6 +283,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.BoolVar(&recover, "recover", false, "list in-progress (non-completed) workflows")
 	f.BoolVar(&initCfg, "init-config", false, "create a template .raymond/config.toml")
 
+	f.StringVar(&name, "name", "", "prefix label for the terminal title bar")
 	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
 	f.BoolVar(&continueSession, "continue-session", false, "continue from the most recent interactive Claude session")
 

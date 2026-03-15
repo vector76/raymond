@@ -16,7 +16,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/cli"
+	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/orchestrator"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
@@ -980,4 +982,100 @@ func TestLocalPathStartScopeURLEmpty(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ws.Agents, 1)
 	assert.Equal(t, "", ws.Agents[0].ScopeURL, "ScopeURL should be empty for local-path starts")
+}
+
+// --------------------------------------------------------------------------
+// --name flag / title bar wiring
+// --------------------------------------------------------------------------
+
+// runTitlebar runs the CLI with the given args, then manually exercises the
+// ObserverSetup closure (which is normally called by the real runner) by
+// emitting a StateStarted event on a fresh bus. Returns whatever the
+// title bar observer wrote to the CLI's captured stdout buffer.
+func runTitlebar(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	var captured []orchestrator.RunOptions
+	c := cli.NewTestCLICapturing(&out, &errOut, &captured)
+	cmd := c.NewRootCmd()
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if len(captured) == 1 && captured[0].ObserverSetup != nil {
+		b := bus.New()
+		captured[0].ObserverSetup(b)
+		b.Emit(events.StateStarted{StateName: "START.md"})
+	}
+	return out.String(), err
+}
+
+func TestNameFlagTitleBar(t *testing.T) {
+	tests := []struct {
+		testName string
+		nameArgs []string
+		want     string
+	}{
+		{"with name", []string{"--name", "foo"}, "foo ray: "},
+		{"no name", []string{}, "ray: "},
+		{"name with spaces trimmed", []string{"--name", "  foo  "}, "foo ray: "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.testName, func(t *testing.T) {
+			stateDir := makeStateDir(t)
+			dir := t.TempDir()
+			startFile := filepath.Join(dir, "START.md")
+			require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+			args := append([]string{startFile, "--state-dir", stateDir}, tc.nameArgs...)
+			out, err := runTitlebar(t, args...)
+			require.NoError(t, err)
+			assert.Contains(t, out, tc.want)
+		})
+	}
+}
+
+func TestNameFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".raymond"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, ".raymond", "config.toml"),
+		[]byte("[raymond]\nname = \"bar\"\n"),
+		0o644,
+	))
+	stateDir := filepath.Join(dir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	out, err := runTitlebar(t, startFile, "--state-dir", stateDir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "bar ray: ")
+}
+
+func TestNameCLIOverridesConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".raymond"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, ".raymond", "config.toml"),
+		[]byte("[raymond]\nname = \"cfg\"\n"),
+		0o644,
+	))
+	stateDir := filepath.Join(dir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	out, err := runTitlebar(t, startFile, "--name", "cli", "--state-dir", stateDir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "cli ray: ")
+	assert.NotContains(t, out, "cfg ray: ")
 }

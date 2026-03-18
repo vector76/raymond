@@ -100,7 +100,7 @@ func ApplyTransition(
 	case "fork":
 		return HandleFork(copy, transition, wfState)
 	case "reset-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -115,7 +115,7 @@ func ApplyTransition(
 		}
 		return HandleResetWorkflow(copy, tr, res), nil
 	case "fork-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -136,7 +136,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "call-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -157,7 +157,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "function-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -246,6 +246,7 @@ func withRenderedInput(
 	pendingResult *string,
 	forkAttributes map[string]string,
 	workflowID string,
+	agentID string,
 ) parsing.Transition {
 	input, ok := transition.Attributes["input"]
 	if !ok || input == "" {
@@ -260,6 +261,7 @@ func withRenderedInput(
 		variables[k] = v
 	}
 	variables["workflow_id"] = workflowID
+	variables["agent_id"] = agentID
 
 	rendered := prompts.RenderPrompt(input, variables)
 	if rendered == input {

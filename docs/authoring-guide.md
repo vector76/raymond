@@ -509,6 +509,35 @@ Workflow ID: {{workflow_id}}
 Write your analysis to `outputs/{{workflow_id}}/report.md`.
 ```
 
+### `{{agent_id}}` — Agent Identifier
+
+`{{agent_id}}` contains the current agent's ID string (e.g., `main`,
+`main_worker1`, `main_worker1_analyz1`). It is always set — never empty —
+while the workflow is running.
+
+It is available in:
+
+- Markdown body prompts
+- Implicit-transition `input` attributes rendered by the executor
+- The `input` attributes of the cross-workflow transition tags: `<call-workflow>`,
+  `<function-workflow>`, `<fork-workflow>`, and `<reset-workflow>`
+
+> **Note:** `{{agent_id}}` is **not** substituted in the `input` attributes of
+> the within-workflow tags `<goto>`, `<reset>`, `<call>`, `<function>`, or
+> `<fork>` — those pass `input` as a raw string without template rendering.
+
+> **Note for `<fork-workflow>`:** `{{agent_id}}` evaluates to the **parent**
+> agent's ID at state-load time, not any subsequently-spawned child agent's ID.
+
+```markdown
+Agent: {{agent_id}}
+
+Write your results to `outputs/{{agent_id}}/result.md`.
+```
+
+This is especially useful in multi-agent workflows to avoid file-path
+collisions — each agent writes to its own scoped output directory.
+
 ### Fork Attributes
 
 Extra attributes on `<fork>` tags become template variables in the worker:

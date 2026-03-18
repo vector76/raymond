@@ -310,3 +310,78 @@ func TestMarkdownExecutor_WorkflowIDAlwaysSubstituted(t *testing.T) {
 		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "wf-no-result")
 	}
 }
+
+// TestMarkdownExecutor_AgentIDSubstitutedInBody verifies that {{agent_id}}
+// in the prompt body is replaced with the agent's ID.
+func TestMarkdownExecutor_AgentIDSubstitutedInBody(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "Agent: {{agent_id}}")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-agent-test",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "test-agent-42", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if !strings.Contains(capturedPrompt, "test-agent-42") {
+		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "test-agent-42")
+	}
+	if strings.Contains(capturedPrompt, "{{agent_id}}") {
+		t.Errorf("prompt still contains literal {{agent_id}}: %q", capturedPrompt)
+	}
+}
+
+// TestMarkdownExecutor_AgentIDSubstitutedInImplicitInput verifies that
+// {{agent_id}} in an implicit transition's input attribute is substituted.
+func TestMarkdownExecutor_AgentIDSubstitutedInImplicitInput(t *testing.T) {
+	dir := t.TempDir()
+
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"id={{agent_id}}\" }\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Process the task.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-agent-test",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "test-agent-42", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	executors.SetInvokeStreamFn(func(_ context.Context, _ string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		// No transition tag → implicit transition fires.
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "Analysis complete"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	got := result.Transition.Attributes["input"]
+	if got != "id=test-agent-42" {
+		t.Errorf("input attribute = %q, want %q", got, "id=test-agent-42")
+	}
+}

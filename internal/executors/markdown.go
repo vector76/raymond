@@ -83,6 +83,7 @@ func (e *MarkdownExecutor) Execute(
 		variables[k] = v
 	}
 	variables["workflow_id"] = wfState.WorkflowID
+	variables["agent_id"] = agentID
 	basePrompt := prompts.RenderPrompt(body, variables)
 
 	// Determine model and effort (frontmatter takes precedence over defaults).

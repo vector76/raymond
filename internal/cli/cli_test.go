@@ -1079,3 +1079,59 @@ func TestNameCLIOverridesConfig(t *testing.T) {
 	assert.Contains(t, out, "cli ray: ")
 	assert.NotContains(t, out, "cfg ray: ")
 }
+
+// --------------------------------------------------------------------------
+// diagram subcommand
+// --------------------------------------------------------------------------
+
+func TestDiagramDirectory(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<goto>NEXT.md</goto>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "NEXT.md"), []byte("<result>done</result>"), 0o644))
+
+	out, errOut, err := run(t, "diagram", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "flowchart TD")
+	assert.Contains(t, out, "1_START -->|goto| NEXT")
+	assert.Empty(t, errOut)
+}
+
+func TestDiagramZipFile(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "wf.zip")
+	writeTestZip(t, zipPath, map[string]string{
+		"1_START.md": "<goto>NEXT.md</goto>",
+		"NEXT.md":    "<result>done</result>",
+	})
+
+	out, _, err := run(t, "diagram", zipPath)
+	require.NoError(t, err)
+	assert.Contains(t, out, "flowchart TD")
+	assert.Contains(t, out, "1_START -->|goto| NEXT")
+}
+
+func TestDiagramFileNotDir(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "file.md")
+	require.NoError(t, os.WriteFile(f, []byte("hello"), 0o644))
+
+	_, _, err := run(t, "diagram", f)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not a directory or zip archive")
+}
+
+func TestDiagramNonexistentPath(t *testing.T) {
+	_, _, err := run(t, "diagram", "/nonexistent/path")
+	assert.Error(t, err)
+}
+
+func TestDiagramWarningsToStderr(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<goto>MISSING.md</goto>"), 0o644))
+
+	out, _, err := run(t, "diagram", dir)
+	require.NoError(t, err)
+	// Diagram should still be generated.
+	assert.Contains(t, out, "flowchart TD")
+	// Missing node should appear with dashed style.
+	assert.Contains(t, out, "style MISSING stroke-dasharray: 5 5")
+}

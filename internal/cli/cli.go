@@ -21,6 +21,7 @@ import (
 
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/config"
+	"github.com/vector76/raymond/internal/diagram"
 	"github.com/vector76/raymond/internal/observers/console"
 	"github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/observers/titlebar"
@@ -139,6 +140,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		Version:       version.Version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
+		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// ---- non-workflow commands ----
 			if initCfg {
@@ -291,6 +293,8 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	// requiring a real .raymond directory structure.
 	f.StringVar(&stateDir, "state-dir", "", "")
 	_ = f.MarkHidden("state-dir")
+
+	root.AddCommand(c.newDiagramCmd())
 
 	root.SetOut(c.stdout)
 	root.SetErr(c.stderr)
@@ -552,4 +556,54 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// newDiagramCmd builds the "diagram" subcommand.
+func (c *CLI) newDiagramCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "diagram <path>",
+		Short: "Generate a Mermaid flowchart of workflow transitions",
+		Long:  "Scan a workflow directory or zip archive and print a Mermaid flowchart to stdout.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return c.cmdDiagram(cmd, args[0])
+		},
+	}
+}
+
+// cmdDiagram generates a Mermaid diagram from a workflow scope.
+func (c *CLI) cmdDiagram(cmd *cobra.Command, arg string) error {
+	absArg, err := filepath.Abs(arg)
+	if err != nil {
+		return fmt.Errorf("cannot resolve path %q: %w", arg, err)
+	}
+
+	if zipscope.IsZipScope(absArg) {
+		if err := zipscope.VerifyZipHash(absArg); err != nil {
+			return fmt.Errorf("zip hash validation failed: %w", err)
+		}
+		if _, err := zipscope.DetectLayout(absArg); err != nil {
+			return fmt.Errorf("zip layout invalid: %w", err)
+		}
+	} else {
+		info, statErr := os.Stat(absArg)
+		if statErr != nil {
+			return fmt.Errorf("cannot access %q: %w", arg, statErr)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%q is not a directory or zip archive", arg)
+		}
+	}
+
+	result, err := diagram.GenerateDiagram(absArg)
+	if err != nil {
+		return err
+	}
+
+	for _, w := range result.Warnings {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+	}
+
+	fmt.Fprint(cmd.OutOrStdout(), result.Mermaid)
+	return nil
 }

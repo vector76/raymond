@@ -438,6 +438,41 @@ const configTemplate = `# Raymond configuration file
 # verbose = false
 `
 
+// configUnsafeDefaultsTemplate is structurally identical to configTemplate but
+// with budget and dangerously_skip_permissions uncommented and set to unsafe defaults.
+const configUnsafeDefaultsTemplate = `# Raymond configuration file
+# Command-line arguments override values in this file
+# Uncomment and modify values as needed
+
+[raymond]
+# Cost budget limit in USD (default: 10.0)
+budget = 1000.0
+
+# Skip permission prompts (WARNING: allows any action without prompting) (default: false)
+dangerously_skip_permissions = true
+
+# Default model: "opus", "sonnet", or "haiku" (default: None)
+# model = "sonnet"
+
+# Default effort level: "low", "medium", or "high" (default: None)
+# effort = "medium"
+
+# Workflow name (default: None)
+# name = ""
+
+# Timeout per Claude Code invocation in seconds (default: 600, 0=none)
+# timeout = 600.0
+
+# Disable debug mode (default: false, meaning debug mode is enabled by default)
+# no_debug = false
+
+# Don't wait for usage limit reset; pause and exit immediately (default: false)
+# no_wait = false
+
+# Enable verbose logging (default: false)
+# verbose = false
+`
+
 // InitConfig creates .raymond/config.toml at the project root with all options
 // commented out. Returns a ConfigError if the file already exists or cannot be
 // created.
@@ -474,6 +509,47 @@ func InitConfig(cwd string) error {
 
 	configFile := filepath.Join(raymondDir, "config.toml")
 	if err := os.WriteFile(configFile, []byte(configTemplate), 0o644); err != nil {
+		return &ConfigError{msg: fmt.Sprintf("failed to write configuration file: %v", err)}
+	}
+	return nil
+}
+
+// InitUnsafeDefaults creates .raymond/config.toml at the project root with
+// budget set to 1000.0 and dangerously_skip_permissions set to true.
+// Returns a ConfigError if the file already exists or cannot be created.
+//
+// If cwd is empty, the process working directory is used.
+func InitUnsafeDefaults(cwd string) error {
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return &ConfigError{msg: fmt.Sprintf("failed to get working directory: %v", err)}
+		}
+	}
+
+	// Refuse if config already exists.
+	existing := FindConfigFile(cwd)
+	if existing != "" {
+		return &ConfigError{msg: fmt.Sprintf(
+			"configuration file already exists at %s\n"+
+				"Refusing to generate a new config file. Delete or rename the existing file first.",
+			existing,
+		)}
+	}
+
+	// Locate (or create) the .raymond directory at the project root.
+	projectRoot := FindProjectRoot(cwd)
+	raymondDir, err := FindRaymondDir(projectRoot, true)
+	if err != nil {
+		return err
+	}
+	if raymondDir == "" {
+		return &ConfigError{msg: "failed to create .raymond directory"}
+	}
+
+	configFile := filepath.Join(raymondDir, "config.toml")
+	if err := os.WriteFile(configFile, []byte(configUnsafeDefaultsTemplate), 0o644); err != nil {
 		return &ConfigError{msg: fmt.Sprintf("failed to write configuration file: %v", err)}
 	}
 	return nil

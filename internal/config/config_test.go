@@ -690,3 +690,104 @@ func TestInitConfigErrorMentionsExistingPath(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config.toml")
 }
+
+// ----------------------------------------------------------------------------
+// InitUnsafeDefaults
+// ----------------------------------------------------------------------------
+
+func TestInitUnsafeDefaultsCreatesConfigFile(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
+
+	sub := filepath.Join(root, "subdir")
+	require.NoError(t, os.Mkdir(sub, 0o755))
+
+	err := config.InitUnsafeDefaults(sub)
+	require.NoError(t, err)
+
+	cf := filepath.Join(root, ".raymond", "config.toml")
+	_, statErr := os.Stat(cf)
+	require.NoError(t, statErr)
+
+	content, readErr := os.ReadFile(cf)
+	require.NoError(t, readErr)
+	s := string(content)
+	assert.Contains(t, s, "[raymond]")
+	assert.Contains(t, s, "budget = 1000.0")
+	assert.Contains(t, s, "dangerously_skip_permissions = true")
+	assert.Contains(t, s, "# Skip permission prompts (WARNING:")
+}
+
+func TestInitUnsafeDefaultsOtherFieldsRemainCommented(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
+
+	err := config.InitUnsafeDefaults(root)
+	require.NoError(t, err)
+
+	cf := filepath.Join(root, ".raymond", "config.toml")
+	content, readErr := os.ReadFile(cf)
+	require.NoError(t, readErr)
+	s := string(content)
+	assert.Contains(t, s, `# model = "sonnet"`)
+	assert.Contains(t, s, "# timeout = 600.0")
+	assert.Contains(t, s, "# no_debug = false")
+	assert.Contains(t, s, "# no_wait = false")
+	assert.Contains(t, s, "# verbose = false")
+}
+
+func TestInitUnsafeDefaultsCreatesRaymondDirIfMissing(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
+
+	err := config.InitUnsafeDefaults(root)
+	require.NoError(t, err)
+
+	rdir := filepath.Join(root, ".raymond")
+	info, statErr := os.Stat(rdir)
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir())
+}
+
+func TestInitUnsafeDefaultsCreatesAtProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
+
+	nested := filepath.Join(root, "subdir", "nested")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+
+	err := config.InitUnsafeDefaults(nested)
+	require.NoError(t, err)
+
+	cf := filepath.Join(root, ".raymond", "config.toml")
+	_, statErr := os.Stat(cf)
+	require.NoError(t, statErr)
+}
+
+func TestInitUnsafeDefaultsRefusesIfConfigExists(t *testing.T) {
+	root := t.TempDir()
+	rdir := filepath.Join(root, ".raymond")
+	require.NoError(t, os.Mkdir(rdir, 0o755))
+	cf := filepath.Join(rdir, "config.toml")
+	require.NoError(t, os.WriteFile(cf, []byte("[raymond]\nbudget = 50.0\n"), 0o644))
+
+	err := config.InitUnsafeDefaults(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+
+	// Original file should be unchanged
+	content, _ := os.ReadFile(cf)
+	assert.Contains(t, string(content), "budget = 50.0")
+}
+
+func TestInitUnsafeDefaultsErrorMentionsExistingPath(t *testing.T) {
+	root := t.TempDir()
+	rdir := filepath.Join(root, ".raymond")
+	require.NoError(t, os.Mkdir(rdir, 0o755))
+	cf := filepath.Join(rdir, "config.toml")
+	require.NoError(t, os.WriteFile(cf, []byte("[raymond]\n"), 0o644))
+
+	err := config.InitUnsafeDefaults(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config.toml")
+}

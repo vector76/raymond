@@ -129,6 +129,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		statusID                   string
 		recover                    bool
 		initCfg                    bool
+		initUnsafeDefaults         bool
 		stateDir                   string // hidden; for testing
 		workflowID                 string
 		continueSession            bool
@@ -145,6 +146,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			// ---- non-workflow commands ----
 			if initCfg {
 				return c.cmdInitConfig(cmd)
+			}
+			if initUnsafeDefaults {
+				return c.cmdInitUnsafeDefaults(cmd)
 			}
 			if list {
 				return c.cmdList(cmd, stateDir)
@@ -284,6 +288,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.StringVar(&statusID, "status", "", "show status of workflow by ID")
 	f.BoolVar(&recover, "recover", false, "list in-progress (non-completed) workflows")
 	f.BoolVar(&initCfg, "init-config", false, "create a template .raymond/config.toml")
+	f.BoolVar(&initUnsafeDefaults, "init-unsafe-defaults", false, "create .raymond/config.toml with budget=1000 and dangerously-skip-permissions=true")
 
 	f.StringVar(&name, "name", "", "prefix label for the terminal title bar")
 	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
@@ -501,6 +506,18 @@ func (c *CLI) cmdStatus(cmd *cobra.Command, workflowID, stateDir string) error {
 // cmdInitConfig creates a template .raymond/config.toml at the project root.
 func (c *CLI) cmdInitConfig(cmd *cobra.Command) error {
 	if err := config.InitConfig(""); err != nil {
+		return err
+	}
+	cwd, _ := os.Getwd()
+	projectRoot := config.FindProjectRoot(cwd)
+	configPath := filepath.Join(projectRoot, ".raymond", "config.toml")
+	fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", configPath)
+	return nil
+}
+
+// cmdInitUnsafeDefaults creates a .raymond/config.toml with budget=1000 and dangerously-skip-permissions=true.
+func (c *CLI) cmdInitUnsafeDefaults(cmd *cobra.Command) error {
+	if err := config.InitUnsafeDefaults(""); err != nil {
 		return err
 	}
 	cwd, _ := os.Getwd()

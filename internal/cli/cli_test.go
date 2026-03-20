@@ -466,6 +466,44 @@ func TestInitConfigAlreadyExists(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// --init-unsafe-defaults
+// --------------------------------------------------------------------------
+
+func TestInitUnsafeDefaults(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	out, _, err := run(t, "--init-unsafe-defaults")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Created")
+
+	configPath := filepath.Join(dir, ".raymond", "config.toml")
+	_, statErr := os.Stat(configPath)
+	assert.NoError(t, statErr, "config.toml should have been created")
+}
+
+func TestInitUnsafeDefaultsAlreadyExists(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".raymond"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, ".raymond", "config.toml"), []byte("[raymond]\n"), 0o644,
+	))
+
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	_, _, err := run(t, "--init-unsafe-defaults")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+// --------------------------------------------------------------------------
 // Flag defaults and parsing
 // --------------------------------------------------------------------------
 

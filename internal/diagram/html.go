@@ -61,7 +61,7 @@ body { display: flex; margin: 0; font-family: sans-serif; height: 100vh; overflo
 <div class="content"><p>Click a node to view its content.</p></div>
 <script>
 const nodeData = %s;
-mermaid.initialize({startOnLoad: true});
+mermaid.initialize({startOnLoad: true, securityLevel: 'loose'});
 function handleNodeClick(nodeId) {
   const data = nodeData[nodeId];
   if (!data) return;

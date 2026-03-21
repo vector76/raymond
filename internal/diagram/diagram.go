@@ -206,7 +206,12 @@ func filterStateFiles(names []string, opts Options) []string {
 func findEntryPoint(scopeDir string, nodes map[string]*nodeInfo) string {
 	entry, err := specifier.ResolveEntryPoint(scopeDir)
 	if err == nil {
-		return parsing.ExtractStateName(entry)
+		id := parsing.ExtractStateName(entry)
+		if _, ok := nodes[id]; ok {
+			return id
+		}
+		// The resolved entry file was filtered out (e.g. a .sh file when running
+		// in Windows mode). Fall through to the node-set fallback.
 	}
 	// Fallback: look for 1_START or START in node set.
 	if _, ok := nodes["1_START"]; ok {
@@ -830,20 +835,6 @@ func escapeLabel(s string) string {
 	s = strings.ReplaceAll(s, "(", "#40;")
 	s = strings.ReplaceAll(s, ")", "#41;")
 	return s
-}
-
-// uniqueStrings returns sorted unique values from a string slice.
-func uniqueStrings(ss []string) []string {
-	seen := make(map[string]bool)
-	var result []string
-	for _, s := range ss {
-		if !seen[s] {
-			seen[s] = true
-			result = append(result, s)
-		}
-	}
-	sort.Strings(result)
-	return result
 }
 
 // sortedKeys returns the keys of a map in sorted order.

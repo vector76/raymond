@@ -482,8 +482,22 @@ func TestBfsReachable(t *testing.T) {
 	assert.False(t, reachable["E"])
 }
 
-func TestUniqueStrings(t *testing.T) {
-	assert.Equal(t, []string{"a", "b", "c"}, uniqueStrings([]string{"b", "a", "c", "a", "b"}))
+func TestEntryPointFilteredOutFallsBackToNone(t *testing.T) {
+	// When the resolved entry file is excluded by the current mode's filter
+	// (e.g. a .sh file when --win is active), findEntryPoint must not emit a
+	// dangling __start__ edge pointing to a node that is absent from the diagram.
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.sh", `echo "<result>done</result>"`)
+	writeFile(t, dir, "WIN_STEP.bat", `echo ^<result^>done^</result^>`)
+
+	// Windows mode: .sh is filtered out, so 1_START.sh is not in nodes.
+	// ResolveEntryPoint (platform-based) succeeds and returns 1_START.sh on
+	// Unix, but that node is absent from the Windows-mode diagram.
+	result, err := GenerateDiagram(dir, Options{WindowsMode: true})
+	require.NoError(t, err)
+
+	// The diagram must not contain a __start__ edge to a non-existent node.
+	assert.NotContains(t, result.Mermaid, "__start__")
 }
 
 func TestShellEscapedQuotes(t *testing.T) {

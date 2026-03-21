@@ -1166,12 +1166,15 @@ func TestDiagramWarningsToStderr(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<goto>MISSING.md</goto>"), 0o644))
 
-	out, _, err := run(t, "diagram", dir)
+	out, errOut, err := run(t, "diagram", dir)
 	require.NoError(t, err)
-	// Diagram should still be generated.
+	// Diagram should still be generated on stdout.
 	assert.Contains(t, out, "flowchart TD")
-	// Missing node should appear with dashed style.
+	// Missing node should appear with dashed style on stdout.
 	assert.Contains(t, out, "style MISSING stroke-dasharray: 5 5")
+	// Warning about the missing state must appear on stderr, not stdout.
+	assert.Contains(t, errOut, "warning:")
+	assert.NotContains(t, out, "warning:")
 }
 
 func TestDiagramWinFlag(t *testing.T) {

@@ -40,6 +40,8 @@ func TestGenerateHTMLNonClickableNodes(t *testing.T) {
 	html := GenerateHTML(result)
 	assert.Contains(t, html, "click nodeA handleNodeClick")
 	assert.NotContains(t, html, "click nodeC handleNodeClick")
+	// nodeC has no backing file, so it must not appear in the content map.
+	assert.NotContains(t, html, `"nodeC":`)
 }
 
 func TestGenerateHTMLContentMapJSON(t *testing.T) {

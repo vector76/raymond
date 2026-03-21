@@ -1,1 +1,1 @@
-<goto target="LOOP">
+<goto>LOOP</goto>

@@ -198,6 +198,42 @@ func TestScriptStateInfo(t *testing.T) {
 	assert.Fail(t, "expected diagnostic with Check==\"script-state-no-static-analysis\" and Severity==Info, got", diags)
 }
 
+func TestUnreachableState(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("unreachable_state"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "unreachable-state" && d.Severity == lint.Warning {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"unreachable-state\" and Severity==Warning, got", diags)
+}
+
+func TestDeadEndState(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("dead_end_state"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "dead-end-state" && d.Severity == lint.Warning {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"dead-end-state\" and Severity==Warning, got", diags)
+}
+
+func TestCallWithoutResultPath(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("call_without_result"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "call-without-result-path" && d.Severity == lint.Warning {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"call-without-result-path\" and Severity==Warning, got", diags)
+}
+
 func TestZipScopeNoEntryPoint(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := writeTestZip(t, dir, map[string]string{

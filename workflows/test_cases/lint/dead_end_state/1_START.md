@@ -1,1 +1,1 @@
-<goto target="STUCK">
+<goto>STUCK</goto>

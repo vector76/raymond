@@ -1,1 +1,1 @@
-<call target="SUB" return="DONE">
+<call return="DONE">SUB</call>

@@ -70,7 +70,6 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 		knownFiles[filename] = true
 		knownStates[parsing.ExtractStateName(filename)] = true
 	}
-	_ = knownStates
 
 	var diags []Diagnostic
 	var entryStateName string
@@ -97,7 +96,6 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 	} else {
 		entryStateName = parsing.ExtractStateName(entryFilename)
 	}
-	_ = entryStateName
 
 	// Step 3: Parse each file.
 	type parsedFile struct {
@@ -310,7 +308,119 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 		}
 	}
 
-	// Step 5: Sort and return.
+	// Step 5: Graph analysis checks.
+
+	// Build fullAdj (all outgoing edges) and statesWithResult.
+	fullAdj := make(map[string][]string)
+	statesWithResult := make(map[string]bool)
+	for _, filename := range files {
+		pf := parsed[filename]
+		stateName := parsing.ExtractStateName(filename)
+		for _, t := range pf.transitions {
+			if parsing.IsWorkflowTag(t.Tag) {
+				continue
+			}
+			switch t.Tag {
+			case "goto", "reset":
+				if t.Target != "" {
+					fullAdj[stateName] = append(fullAdj[stateName], parsing.ExtractStateName(t.Target))
+				}
+			case "call", "function":
+				if t.Target != "" {
+					fullAdj[stateName] = append(fullAdj[stateName], parsing.ExtractStateName(t.Target))
+				}
+				if ret := t.Attributes["return"]; ret != "" {
+					fullAdj[stateName] = append(fullAdj[stateName], parsing.ExtractStateName(ret))
+				}
+			case "fork":
+				if t.Target != "" {
+					fullAdj[stateName] = append(fullAdj[stateName], parsing.ExtractStateName(t.Target))
+				}
+				if next := t.Attributes["next"]; next != "" {
+					fullAdj[stateName] = append(fullAdj[stateName], parsing.ExtractStateName(next))
+				}
+			case "result":
+				statesWithResult[stateName] = true
+			}
+		}
+	}
+
+	// unreachable-state check.
+	if epErr == nil {
+		reachable := workflow.BFSReachable(entryStateName, fullAdj)
+		for _, filename := range files {
+			if !reachable[parsing.ExtractStateName(filename)] {
+				diags = append(diags, Diagnostic{
+					Severity: Warning,
+					File:     filename,
+					Message:  fmt.Sprintf("%s is unreachable: no transitions lead to this state", filename),
+					Check:    "unreachable-state",
+				})
+			}
+		}
+	}
+
+	// dead-end-state check: .md files only.
+	for _, filename := range files {
+		ext := strings.ToLower(filepath.Ext(filename))
+		if ext == ".sh" || ext == ".bat" || ext == ".ps1" {
+			continue
+		}
+		if len(parsed[filename].transitions) == 0 {
+			diags = append(diags, Diagnostic{
+				Severity: Warning,
+				File:     filename,
+				Message:  fmt.Sprintf("%s has no outgoing transitions; agent will fail to produce a valid transition", filename),
+				Check:    "dead-end-state",
+			})
+		}
+	}
+
+	// Build gotoResetAdj (only goto/reset edges) for call-without-result-path.
+	gotoResetAdj := make(map[string][]string)
+	for _, filename := range files {
+		pf := parsed[filename]
+		stateName := parsing.ExtractStateName(filename)
+		for _, t := range pf.transitions {
+			if parsing.IsWorkflowTag(t.Tag) {
+				continue
+			}
+			if (t.Tag == "goto" || t.Tag == "reset") && t.Target != "" {
+				gotoResetAdj[stateName] = append(gotoResetAdj[stateName], parsing.ExtractStateName(t.Target))
+			}
+		}
+	}
+
+	// call-without-result-path check.
+	for _, filename := range files {
+		for _, t := range parsed[filename].transitions {
+			if (t.Tag != "call" && t.Tag != "function") || parsing.IsWorkflowTag(t.Tag) {
+				continue
+			}
+			calleeStateName := parsing.ExtractStateName(t.Target)
+			if !knownStates[calleeStateName] {
+				continue
+			}
+			reachable := workflow.BFSReachable(calleeStateName, gotoResetAdj)
+			hasResult := false
+			for state := range reachable {
+				if statesWithResult[state] {
+					hasResult = true
+					break
+				}
+			}
+			if !hasResult {
+				diags = append(diags, Diagnostic{
+					Severity: Warning,
+					File:     filename,
+					Message:  fmt.Sprintf("<%s> in %s calls %s, but no reachable state from %s emits <result>; call will never return", t.Tag, filename, calleeStateName, calleeStateName),
+					Check:    "call-without-result-path",
+				})
+			}
+		}
+	}
+
+	// Step 6: Sort and return.
 	sort.Slice(diags, func(i, j int) bool {
 		if diags[i].Severity != diags[j].Severity {
 			return diags[i].Severity < diags[j].Severity

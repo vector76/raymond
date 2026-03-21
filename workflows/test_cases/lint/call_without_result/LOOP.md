@@ -1,1 +1,1 @@
-<goto target="SUB">
+<goto>SUB</goto>

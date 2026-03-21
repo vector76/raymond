@@ -1,1 +1,1 @@
-<goto target="DONE">
+<goto>DONE</goto>

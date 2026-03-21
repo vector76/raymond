@@ -104,9 +104,16 @@ func NewTestCLICapturing(stdout, stderr io.Writer, captured *[]orchestrator.RunO
 func Run() {
 	c := newCLI()
 	cmd := c.NewRootCmd()
-	if err := cmd.Execute(); err != nil {
+	err := cmd.Execute()
+	if err == nil {
+		return
+	}
+	var lintErr LintFoundErrorsError
+	if errors.As(err, &lintErr) {
 		os.Exit(1)
 	}
+	fmt.Fprintln(c.stderr, "Error:", err)
+	os.Exit(1)
 }
 
 // NewRootCmd builds and returns the cobra root command with all flags wired.
@@ -140,7 +147,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		Short:         "raymond workflow orchestrator",
 		Version:       version.Version,
 		SilenceUsage:  true,
-		SilenceErrors: false,
+		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// ---- non-workflow commands ----
@@ -299,7 +306,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.StringVar(&stateDir, "state-dir", "", "")
 	_ = f.MarkHidden("state-dir")
 
-	root.AddCommand(c.newDiagramCmd())
+	root.AddCommand(c.newDiagramCmd(), c.newLintCmd())
 
 	root.SetOut(c.stdout)
 	root.SetErr(c.stderr)

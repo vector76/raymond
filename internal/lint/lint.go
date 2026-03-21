@@ -294,7 +294,9 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 
 		// unused-allowed-transition check: for .md files with a policy, any
 		// allowed transition target (except result) not mentioned in the body.
-		if pf.pol != nil && len(pf.pol.AllowedTransitions) > 0 {
+		// Skip when there is only one allowed transition — single transitions
+		// are implicit and the prompt is not expected to mention the target.
+		if pf.pol != nil && len(pf.pol.AllowedTransitions) > 1 {
 			for _, entry := range pf.pol.AllowedTransitions {
 				if entry["tag"] == "result" {
 					continue

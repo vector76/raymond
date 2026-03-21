@@ -2,5 +2,7 @@
 allowed_transitions:
   - tag: goto
     target: DONE
+  - tag: goto
+    target: OTHER
 ---
-This state performs some work but never transitions anywhere.
+This state can go to OTHER but never mentions the first target.

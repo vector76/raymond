@@ -174,6 +174,17 @@ func TestUnusedAllowedTransition(t *testing.T) {
 	assert.Fail(t, "expected diagnostic with Check==\"unused-allowed-transition\" and Severity==Warning, got", diags)
 }
 
+func TestSingleTransitionNoUnusedWarning(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("single_transition_no_warn"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "unused-allowed-transition" {
+			assert.Fail(t, "single allowed transition should not produce unused-allowed-transition warning", d)
+		}
+	}
+}
+
 func TestImplicitTransition(t *testing.T) {
 	diags, err := lint.Lint(fixtureDir("implicit_transition"), lint.Options{})
 	require.NoError(t, err)

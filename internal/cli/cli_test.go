@@ -1173,3 +1173,72 @@ func TestDiagramWarningsToStderr(t *testing.T) {
 	// Missing node should appear with dashed style.
 	assert.Contains(t, out, "style MISSING stroke-dasharray: 5 5")
 }
+
+func TestDiagramWinFlag(t *testing.T) {
+	dir := t.TempDir()
+	// Use distinct stems so the two nodes are distinguishable in the output.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "UNIX_STEP.sh"), []byte("echo '<result>done</result>'"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "WIN_STEP.bat"), []byte("echo ^<result^>done^</result^>"), 0o644))
+
+	out, _, err := run(t, "diagram", "--win", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "WIN_STEP")
+	assert.NotContains(t, out, "UNIX_STEP")
+}
+
+func TestDiagramDefaultExcludesWindows(t *testing.T) {
+	dir := t.TempDir()
+	// Use distinct stems so the two nodes are distinguishable in the output.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "UNIX_STEP.sh"), []byte("echo '<result>done</result>'"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "WIN_STEP.bat"), []byte("echo ^<result^>done^</result^>"), 0o644))
+
+	out, _, err := run(t, "diagram", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "UNIX_STEP")
+	assert.NotContains(t, out, "WIN_STEP")
+}
+
+func TestDiagramHTMLOutput(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<goto>NEXT.md</goto>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "NEXT.md"), []byte("<result>done</result>"), 0o644))
+	outFile := filepath.Join(t.TempDir(), "out.html")
+
+	_, _, err := run(t, "diagram", "--html", "--output", outFile, dir)
+	require.NoError(t, err)
+
+	data, readErr := os.ReadFile(outFile)
+	require.NoError(t, readErr)
+	content := string(data)
+	assert.Contains(t, content, "flowchart TD")
+	assert.Contains(t, content, "<html")
+}
+
+func TestDiagramHTMLNoStdout(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<result>done</result>"), 0o644))
+	outFile := filepath.Join(t.TempDir(), "out.html")
+
+	out, _, err := run(t, "diagram", "--html", "--output", outFile, dir)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+func TestDiagramHTMLWarningsToStderr(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<goto>MISSING.md</goto>"), 0o644))
+	outFile := filepath.Join(t.TempDir(), "out.html")
+
+	_, errOut, err := run(t, "diagram", "--html", "--output", outFile, dir)
+	require.NoError(t, err)
+	assert.Contains(t, errOut, "warning:")
+}
+
+func TestDiagramOutputWithoutHTML(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<result>done</result>"), 0o644))
+
+	_, _, err := run(t, "diagram", "--output", "foo.html", dir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "--output requires --html")
+}

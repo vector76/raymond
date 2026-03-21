@@ -577,19 +577,38 @@ func truncate(s string, maxLen int) string {
 
 // newDiagramCmd builds the "diagram" subcommand.
 func (c *CLI) newDiagramCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "diagram <path>",
 		Short: "Generate a Mermaid flowchart of workflow transitions",
-		Long:  "Scan a workflow directory or zip archive and print a Mermaid flowchart to stdout.",
-		Args:  cobra.ExactArgs(1),
+		Long: `Scan a workflow directory or zip archive and generate a Mermaid flowchart.
+
+Flags:
+  --win     Include Windows scripts (.bat, .ps1) and exclude Unix scripts (.sh).
+            By default, Unix scripts (.sh) are included and Windows scripts excluded.
+  --html    Write an interactive HTML file instead of printing Mermaid text to stdout.
+  --output  Output filename for --html mode (default: diagram.html).
+            Requires --html.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return c.cmdDiagram(cmd, args[0])
 		},
 	}
+	cmd.Flags().Bool("win", false, "Include Windows scripts (.bat, .ps1) and exclude Unix scripts (.sh)")
+	cmd.Flags().Bool("html", false, "Write an interactive HTML file instead of printing Mermaid text")
+	cmd.Flags().String("output", "diagram.html", "Output filename for --html mode")
+	return cmd
 }
 
 // cmdDiagram generates a Mermaid diagram from a workflow scope.
 func (c *CLI) cmdDiagram(cmd *cobra.Command, arg string) error {
+	winMode, _ := cmd.Flags().GetBool("win")
+	htmlMode, _ := cmd.Flags().GetBool("html")
+	outputFile, _ := cmd.Flags().GetString("output")
+
+	if !htmlMode && cmd.Flags().Changed("output") {
+		return fmt.Errorf("--output requires --html")
+	}
+
 	absArg, err := filepath.Abs(arg)
 	if err != nil {
 		return fmt.Errorf("cannot resolve path %q: %w", arg, err)
@@ -612,13 +631,21 @@ func (c *CLI) cmdDiagram(cmd *cobra.Command, arg string) error {
 		}
 	}
 
-	result, err := diagram.GenerateDiagram(absArg, diagram.Options{})
+	result, err := diagram.GenerateDiagram(absArg, diagram.Options{WindowsMode: winMode})
 	if err != nil {
 		return err
 	}
 
 	for _, w := range result.Warnings {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+	}
+
+	if htmlMode {
+		html := diagram.GenerateHTML(result)
+		if err := os.WriteFile(outputFile, []byte(html), 0o644); err != nil {
+			return fmt.Errorf("writing HTML output: %w", err)
+		}
+		return nil
 	}
 
 	fmt.Fprint(cmd.OutOrStdout(), result.Mermaid)

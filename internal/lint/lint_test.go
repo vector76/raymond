@@ -234,6 +234,42 @@ func TestCallWithoutResultPath(t *testing.T) {
 	assert.Fail(t, "expected diagnostic with Check==\"call-without-result-path\" and Severity==Warning, got", diags)
 }
 
+func TestFrontmatterParseError(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("bad_frontmatter"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "frontmatter-parse-error" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"frontmatter-parse-error\" and Severity==Error, got", diags)
+}
+
+func TestInvalidModel(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("invalid_model"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "invalid-model" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"invalid-model\" and Severity==Error, got", diags)
+}
+
+func TestInvalidEffort(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("invalid_effort"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "invalid-effort" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"invalid-effort\" and Severity==Error, got", diags)
+}
+
 func TestZipScopeNoEntryPoint(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := writeTestZip(t, dir, map[string]string{

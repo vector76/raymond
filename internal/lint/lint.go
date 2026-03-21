@@ -128,6 +128,42 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 	for _, filename := range files {
 		pf := parsed[filename]
 
+		// frontmatter-parse-error check.
+		if pf.fmErr != nil {
+			diags = append(diags, Diagnostic{
+				Severity: Error,
+				File:     filename,
+				Message:  fmt.Sprintf("invalid YAML frontmatter in %s: %v", filename, pf.fmErr),
+				Check:    "frontmatter-parse-error",
+			})
+		}
+
+		// invalid-model check.
+		if pf.pol != nil && pf.pol.Model != "" {
+			validModels := map[string]bool{"opus": true, "sonnet": true, "haiku": true}
+			if !validModels[pf.pol.Model] {
+				diags = append(diags, Diagnostic{
+					Severity: Error,
+					File:     filename,
+					Message:  fmt.Sprintf("invalid model %q in %s; must be one of: opus, sonnet, haiku", pf.pol.Model, filename),
+					Check:    "invalid-model",
+				})
+			}
+		}
+
+		// invalid-effort check.
+		if pf.pol != nil && pf.pol.Effort != "" {
+			validEfforts := map[string]bool{"low": true, "medium": true, "high": true}
+			if !validEfforts[pf.pol.Effort] {
+				diags = append(diags, Diagnostic{
+					Severity: Error,
+					File:     filename,
+					Message:  fmt.Sprintf("invalid effort %q in %s; must be one of: low, medium, high", pf.pol.Effort, filename),
+					Check:    "invalid-effort",
+				})
+			}
+		}
+
 		// missing-target check
 		for _, t := range pf.transitions {
 			if !targetTags[t.Tag] || parsing.IsWorkflowTag(t.Tag) {

@@ -1,7 +1,12 @@
 package lint_test
 
 import (
+	"archive/zip"
+	"crypto/sha256"
+	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +16,42 @@ import (
 
 func fixtureDir(name string) string {
 	return filepath.Join("..", "..", "workflows", "test_cases", "lint", name)
+}
+
+// writeTestZip creates a zip file containing the given files and returns the path.
+// The zip filename includes its SHA256 hash so zipscope's hash verification passes.
+func writeTestZip(t *testing.T, dir string, files map[string]string) string {
+	t.Helper()
+
+	// Write zip content to a temp buffer first to compute hash.
+	tmpPath := filepath.Join(dir, "workflow_tmp.zip")
+	f, err := os.Create(tmpPath)
+	require.NoError(t, err)
+	w := zip.NewWriter(f)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fw, err := w.Create(name)
+		require.NoError(t, err)
+		_, err = fw.Write([]byte(files[name]))
+		require.NoError(t, err)
+	}
+	require.NoError(t, w.Close())
+	require.NoError(t, f.Close())
+
+	// Compute SHA256 of the zip file.
+	data, err := os.ReadFile(tmpPath)
+	require.NoError(t, err)
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum)
+
+	// Rename to include hash in filename.
+	finalPath := filepath.Join(dir, hash+".zip")
+	require.NoError(t, os.Rename(tmpPath, finalPath))
+	return finalPath
 }
 
 func TestNoEntryPoint(t *testing.T) {
@@ -23,4 +64,48 @@ func TestNoEntryPoint(t *testing.T) {
 		}
 	}
 	assert.Fail(t, "expected diagnostic with Check==\"no-entry-point\" and Severity==Error, got", diags)
+}
+
+func TestAmbiguousEntryPoint(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("ambiguous_entry"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "ambiguous-entry-point" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"ambiguous-entry-point\" and Severity==Error, got", diags)
+}
+
+func TestZipScopeValidWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := writeTestZip(t, dir, map[string]string{
+		"1_START.md": "<goto>DONE.md</goto>",
+		"DONE.md":    "<result>ok</result>",
+	})
+
+	diags, err := lint.Lint(zipPath, lint.Options{})
+	require.NoError(t, err)
+	assert.Empty(t, diags, "expected no diagnostics for valid zip workflow")
+}
+
+func TestZipScopeNoEntryPoint(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := writeTestZip(t, dir, map[string]string{
+		"STEP1.md": "<goto>STEP2.md</goto>",
+		"STEP2.md": "<result>done</result>",
+	})
+
+	diags, err := lint.Lint(zipPath, lint.Options{})
+	require.NoError(t, err)
+
+	found := false
+	for _, d := range diags {
+		if d.Check == "no-entry-point" && d.Severity == lint.Error {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected no-entry-point diagnostic for zip missing entry point, got %v", diags)
 }

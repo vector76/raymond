@@ -24,9 +24,11 @@ raymond/
 │   ├── bus/                     # Event bus (publish/subscribe)
 │   ├── ccwrap/                  # Claude Code CLI wrapper (streaming JSON)
 │   ├── cli/                     # Command-line interface (cobra)
-│   ├── config/                  # .raymond.toml configuration file handling
+│   ├── config/                  # .raymond/config.toml configuration file handling
+│   ├── diagram/                 # Mermaid flowchart and HTML generation
 │   ├── events/                  # Event type definitions (StateStarted, etc.)
 │   ├── executors/               # State executors (markdown and script)
+│   ├── lint/                    # Workflow static analysis (lint checks)
 │   ├── observers/               # Event subscribers that produce output
 │   │   ├── console/             # Human-readable terminal output
 │   │   ├── debug/               # Debug JSONL files per step
@@ -36,8 +38,12 @@ raymond/
 │   ├── platform/                # Cross-platform script execution (.sh / .bat)
 │   ├── policy/                  # Model and effort policy resolution
 │   ├── prompts/                 # Prompt file loading and state name resolution
+│   ├── registry/                # Remote workflow URL resolution and local cache
+│   ├── specifier/               # Workflow path/URL specifier parsing and entry-point resolution
 │   ├── state/                   # Workflow state persistence (JSON files)
 │   ├── transitions/             # Transition application logic (all 6 types)
+│   ├── version/                 # Build version string
+│   ├── workflow/                # State file enumeration, data extraction, and graph traversal
 │   └── zipscope/                # ZIP archive workflow scope support
 │
 ├── tests/
@@ -68,21 +74,24 @@ cmd/raymond  cmd/ray
      └──────────┬──────────┘
                 │
           internal/cli
-                │
-      internal/orchestrator
-         /           \
-  internal/executors  internal/transitions
-    /       \                   |
-ccwrap    platform         internal/state
-    \              \            |
-     \         internal/parsing |
-      \                         |
-       ──── internal/events ────
-                  │
-            internal/bus
-                  │
-           internal/observers
-            (console/debug/titlebar)
+        / /   /   \   \   \
+       / /    |    \   \   \
+  lint diagram  |  workflow specifier registry
+                |
+        internal/orchestrator
+             /           \
+      internal/executors  internal/transitions
+        /       \                   |
+    ccwrap    platform         internal/state
+        \              \            |
+         \         internal/parsing |
+          \                         |
+           ──── internal/events ────
+                      │
+                internal/bus
+                      │
+               internal/observers
+                (console/debug/titlebar)
 ```
 
 Lower-level packages (`events`, `bus`, `parsing`, `state`) have no dependencies
@@ -96,8 +105,10 @@ on higher-level orchestration code.
 | `ccwrap` | Spawn and stream `claude` CLI output; parse JSONL; handle timeouts |
 | `cli` | Parse CLI flags, load config, wire observers, call orchestrator |
 | `config` | Load and merge `.raymond/config.toml` configuration files |
+| `diagram` | Generate Mermaid flowchart text and interactive HTML from a workflow scope |
 | `events` | All event struct definitions shared across the codebase |
 | `executors` | `MarkdownExecutor` (LLM) and `ScriptExecutor` (.sh/.bat); `ExecutionContext` |
+| `lint` | Static analysis of workflow definitions; produces typed diagnostics |
 | `observers/console` | Print workflow progress to the terminal |
 | `observers/debug` | Write per-step JSONL debug files to a debug directory |
 | `observers/titlebar` | Update the terminal title bar with workflow status |
@@ -106,8 +117,12 @@ on higher-level orchestration code.
 | `platform` | Build and run `exec.Cmd` for .sh (bash) or .bat (cmd.exe); merge env |
 | `policy` | Resolve effective model and effort level from config + defaults |
 | `prompts` | Load prompt files from directory or ZIP scope; resolve state names |
+| `registry` | Local cache for workflow zip files downloaded from URLs; validates SHA256 hashes |
+| `specifier` | Resolve raw workflow specifier strings to absolute scope directories and entry points |
 | `state` | Read/write `WorkflowState` JSON; atomic writes via temp+rename |
 | `transitions` | Apply each of the 6 transition types to `WorkflowState` |
+| `version` | Build version string injected at link time |
+| `workflow` | List state files, read content, extract transitions and policy data, and BFS graph helpers |
 | `zipscope` | Treat ZIP archives as read-only workflow scope directories |
 
 ## Testing
@@ -169,6 +184,14 @@ raymond --no-debug path/to/workflow/START.md
 
 # Run quietly (suppress progress output)
 raymond --quiet path/to/workflow/START.md
+
+# Lint a workflow for static analysis issues
+raymond lint path/to/workflow/
+raymond lint --json --level error path/to/workflow/
+
+# Generate a workflow diagram
+raymond diagram path/to/workflow/
+raymond diagram --html --output my-diagram.html path/to/workflow/
 ```
 
 ## Platform Support

@@ -1,1 +1,1 @@
-<call target="SUB" return="NOWHERE">
+<call return="NOWHERE">SUB</call>

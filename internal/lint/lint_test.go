@@ -90,6 +90,66 @@ func TestZipScopeValidWorkflow(t *testing.T) {
 	assert.Empty(t, diags, "expected no diagnostics for valid zip workflow")
 }
 
+func TestMissingTarget(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("missing_target"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "missing-target" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"missing-target\" and Severity==Error, got", diags)
+}
+
+func TestMissingReturnAbsent(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("missing_return_absent"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "missing-return" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"missing-return\" and Severity==Error, got", diags)
+}
+
+func TestMissingReturnBadTarget(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("missing_return_bad_target"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "missing-return" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"missing-return\" and Severity==Error, got", diags)
+}
+
+func TestMissingForkNext(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("missing_fork_next"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "missing-fork-next" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"missing-fork-next\" and Severity==Error, got", diags)
+}
+
+func TestAmbiguousResolution(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("ambiguous_resolution"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "ambiguous-state-resolution" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"ambiguous-state-resolution\" and Severity==Error, got", diags)
+}
+
 func TestZipScopeNoEntryPoint(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := writeTestZip(t, dir, map[string]string{

@@ -1,1 +1,1 @@
-<goto target="NONEXISTENT">
+<goto>NONEXISTENT</goto>

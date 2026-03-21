@@ -1,2 +1,2 @@
-<fork target="A">
-<fork target="B">
+<fork>A</fork>
+<fork>B</fork>

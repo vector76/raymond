@@ -1,1 +1,1 @@
-<goto target="POLL">
+<goto>POLL</goto>

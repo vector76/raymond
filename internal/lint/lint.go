@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/policy"
 	"github.com/vector76/raymond/internal/specifier"
 	"github.com/vector76/raymond/internal/workflow"
 )
@@ -101,15 +102,17 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 	// Step 3: Parse each file.
 	type parsedFile struct {
 		transitions []parsing.Transition
+		pol         *policy.Policy
 		fmErr       error
+		bodyText    string
 	}
 	parsed := make(map[string]parsedFile, len(files))
 	for _, filename := range files {
-		transitions, _, fmErr, _, readErr := workflow.ExtractFileData(scopeDir, filename)
+		transitions, pol, fmErr, bodyText, readErr := workflow.ExtractFileData(scopeDir, filename)
 		if readErr != nil {
 			return nil, readErr
 		}
-		parsed[filename] = parsedFile{transitions: transitions, fmErr: fmErr}
+		parsed[filename] = parsedFile{transitions: transitions, pol: pol, fmErr: fmErr, bodyText: bodyText}
 	}
 
 	// Step 4: Per-file transition checks.
@@ -226,6 +229,84 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 					Check:    "ambiguous-state-resolution",
 				})
 			}
+		}
+
+		// fork-next-mismatch check: if 2+ fork transitions have non-empty next
+		// values that differ, emit a warning.
+		var forkNextValues []string
+		for _, t := range pf.transitions {
+			if t.Tag == "fork" && t.Attributes["next"] != "" {
+				forkNextValues = append(forkNextValues, t.Attributes["next"])
+			}
+		}
+		if len(forkNextValues) >= 2 {
+			first := forkNextValues[0]
+			var second string
+			for _, v := range forkNextValues[1:] {
+				if v != first {
+					second = v
+					break
+				}
+			}
+			if second != "" {
+				diags = append(diags, Diagnostic{
+					Severity: Warning,
+					File:     filename,
+					Message:  fmt.Sprintf("%s has fork tags with conflicting \"next\" values: %q vs %q; all must agree", filename, first, second),
+					Check:    "fork-next-mismatch",
+				})
+			}
+		}
+
+		// unused-allowed-transition check: for .md files with a policy, any
+		// allowed transition target (except result) not mentioned in the body.
+		if pf.pol != nil && len(pf.pol.AllowedTransitions) > 0 {
+			for _, entry := range pf.pol.AllowedTransitions {
+				if entry["tag"] == "result" {
+					continue
+				}
+				target := entry["target"]
+				if target == "" {
+					continue
+				}
+				if !strings.Contains(pf.bodyText, target) {
+					diags = append(diags, Diagnostic{
+						Severity: Warning,
+						File:     filename,
+						Message:  fmt.Sprintf("%s: allowed_transitions lists target %q which is not mentioned in the prompt body", filename, target),
+						Check:    "unused-allowed-transition",
+					})
+				}
+			}
+		}
+
+		// implicit-transition check: single allowed transition that could be
+		// applied without an explicit tag.
+		if pf.pol != nil && len(pf.pol.AllowedTransitions) > 0 {
+			if policy.CanUseImplicitTransition(pf.pol) {
+				t, _ := policy.GetImplicitTransition(pf.pol)
+				display := t.Target
+				if t.Tag == "result" {
+					display = t.Payload
+				}
+				diags = append(diags, Diagnostic{
+					Severity: Info,
+					File:     filename,
+					Message:  fmt.Sprintf("%s has a single allowed transition (<%s> %s); the agent does not need to emit the tag explicitly", filename, t.Tag, display),
+					Check:    "implicit-transition",
+				})
+			}
+		}
+
+		// script-state-no-static-analysis check: emit info for script files.
+		fileExt := strings.ToLower(filepath.Ext(filename))
+		if fileExt == ".sh" || fileExt == ".bat" || fileExt == ".ps1" {
+			diags = append(diags, Diagnostic{
+				Severity: Info,
+				File:     filename,
+				Message:  fmt.Sprintf("%s is a script state; transitions are determined at runtime and cannot be fully validated statically", filename),
+				Check:    "script-state-no-static-analysis",
+			})
 		}
 	}
 

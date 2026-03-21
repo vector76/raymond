@@ -150,6 +150,54 @@ func TestAmbiguousResolution(t *testing.T) {
 	assert.Fail(t, "expected diagnostic with Check==\"ambiguous-state-resolution\" and Severity==Error, got", diags)
 }
 
+func TestForkNextMismatch(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("fork_next_mismatch"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "fork-next-mismatch" && d.Severity == lint.Warning {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"fork-next-mismatch\" and Severity==Warning, got", diags)
+}
+
+func TestUnusedAllowedTransition(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("unused_allowed_transition"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "unused-allowed-transition" && d.Severity == lint.Warning {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"unused-allowed-transition\" and Severity==Warning, got", diags)
+}
+
+func TestImplicitTransition(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("implicit_transition"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "implicit-transition" && d.Severity == lint.Info {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"implicit-transition\" and Severity==Info, got", diags)
+}
+
+func TestScriptStateInfo(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("script_state"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "script-state-no-static-analysis" && d.Severity == lint.Info {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"script-state-no-static-analysis\" and Severity==Info, got", diags)
+}
+
 func TestZipScopeNoEntryPoint(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := writeTestZip(t, dir, map[string]string{

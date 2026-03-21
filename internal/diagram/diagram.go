@@ -6,21 +6,14 @@ package diagram
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/vector76/raymond/internal/parsing"
-	"github.com/vector76/raymond/internal/policy"
 	"github.com/vector76/raymond/internal/specifier"
-	"github.com/vector76/raymond/internal/zipscope"
+	"github.com/vector76/raymond/internal/workflow"
 )
-
-// stateExtensions lists recognized state file extensions (lowercase).
-var stateExtensions = map[string]bool{
-	".md": true, ".sh": true, ".bat": true, ".ps1": true,
-}
 
 // Options configures diagram generation behaviour.
 type Options struct {
@@ -68,7 +61,7 @@ type callSite struct {
 // GenerateDiagram scans the workflow scope at scopeDir and returns a Mermaid
 // flowchart diagram with warnings.
 func GenerateDiagram(scopeDir string, opts Options) (Result, error) {
-	files, err := listStateFiles(scopeDir, opts)
+	files, err := workflow.ListStateFiles(scopeDir, opts.WindowsMode)
 	if err != nil {
 		return Result{}, fmt.Errorf("listing state files: %w", err)
 	}
@@ -137,7 +130,7 @@ func GenerateDiagram(scopeDir string, opts Options) (Result, error) {
 	// Populate file contents map keyed by sanitized node ID.
 	fileContents := make(map[string]NodeContent)
 	for _, f := range files {
-		content, err := readFileContent(scopeDir, f)
+		content, err := workflow.ReadFileContent(scopeDir, f)
 		if err != nil {
 			continue
 		}
@@ -148,57 +141,6 @@ func GenerateDiagram(scopeDir string, opts Options) (Result, error) {
 
 	mermaid := renderMermaid(nodes, edges, entryID, terminalNodes)
 	return Result{Mermaid: mermaid, Warnings: warnings, FileContents: fileContents}, nil
-}
-
-// listStateFiles returns filenames of state files in the scope, excluding README.md.
-func listStateFiles(scopeDir string, opts Options) ([]string, error) {
-	var names []string
-	if zipscope.IsZipScope(scopeDir) {
-		files, err := zipscope.ListFiles(scopeDir)
-		if err != nil {
-			return nil, err
-		}
-		names = files
-	} else {
-		entries, err := os.ReadDir(scopeDir)
-		if err != nil {
-			return nil, err
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				names = append(names, e.Name())
-			}
-		}
-	}
-	return filterStateFiles(names, opts), nil
-}
-
-func filterStateFiles(names []string, opts Options) []string {
-	var result []string
-	for _, name := range names {
-		ext := strings.ToLower(filepath.Ext(name))
-		if !stateExtensions[ext] {
-			continue
-		}
-		if strings.EqualFold(name, "README.md") {
-			continue
-		}
-		// Apply platform filter: Unix mode includes .sh, excludes .bat/.ps1;
-		// Windows mode includes .bat/.ps1, excludes .sh.
-		switch ext {
-		case ".sh":
-			if opts.WindowsMode {
-				continue
-			}
-		case ".bat", ".ps1":
-			if !opts.WindowsMode {
-				continue
-			}
-		}
-		result = append(result, name)
-	}
-	sort.Strings(result)
-	return result
 }
 
 // findEntryPoint determines the entry node ID. Uses specifier.ResolveEntryPoint
@@ -223,115 +165,29 @@ func findEntryPoint(scopeDir string, nodes map[string]*nodeInfo) string {
 	return ""
 }
 
-// readFileContent reads a file from either a directory or zip scope.
-func readFileContent(scopeDir, filename string) (string, error) {
-	if zipscope.IsZipScope(scopeDir) {
-		return zipscope.ReadText(scopeDir, filename)
-	}
-	data, err := os.ReadFile(filepath.Join(scopeDir, filename))
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
 // extractTransitions returns transitions for a single file, preferring
 // frontmatter allowed_transitions when available.
 func extractTransitions(scopeDir, filename string) ([]parsing.Transition, []string) {
-	content, err := readFileContent(scopeDir, filename)
+	transitions, pol, _, _, err := workflow.ExtractFileData(scopeDir, filename)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("cannot read %s: %v", filename, err)}
 	}
-
-	ext := strings.ToLower(filepath.Ext(filename))
-
-	// For markdown files, try frontmatter first.
-	if ext == ".md" {
-		p, body, fmErr := policy.ParseFrontmatter(content)
-		if fmErr != nil {
-			// Bad frontmatter — fall through to body parse using full content.
-			return parseBodyTransitions(content, filename)
-		}
-		if p != nil && len(p.AllowedTransitions) > 0 {
-			return frontmatterToTransitions(p.AllowedTransitions, filename)
-		}
-		// No frontmatter or empty allowed_transitions — parse body.
-		return parseBodyTransitions(body, filename)
-	}
-
-	// Script files: strip shell quoting artifacts before parsing.
-	// In bash, echo "...<tag attr=\"val\">..." has \" for literal quotes.
-	// In PowerShell, Write-Output "...<tag attr=`"val`">..." has `" for literal quotes.
-	// In batch, echo ^<tag^> has ^ for literal angle brackets (handled by
-	// the parser already — the regex won't match ^<tag^>).
-	content = stripScriptQuoteEscapes(content)
-	return parseBodyTransitions(content, filename)
-}
-
-// frontmatterToTransitions converts allowed_transitions entries to Transitions.
-func frontmatterToTransitions(entries []map[string]string, filename string) ([]parsing.Transition, []string) {
-	var transitions []parsing.Transition
+	// Regenerate warnings for frontmatter entries that lack a required target.
 	var warnings []string
-
-	for _, entry := range entries {
-		tag := entry["tag"]
-		if tag == "" {
-			continue
-		}
-		target := entry["target"]
-
-		// For non-result tags without a target, warn and skip.
-		if tag != "result" && target == "" {
-			warnings = append(warnings, fmt.Sprintf(
-				"%s: frontmatter entry with tag=%q has no target; omitting from diagram",
-				filename, tag))
-			continue
-		}
-
-		attrs := make(map[string]string)
-		for k, v := range entry {
-			if k != "tag" && k != "target" && k != "payload" {
-				attrs[k] = v
+	if pol != nil {
+		for _, entry := range pol.AllowedTransitions {
+			tag := entry["tag"]
+			if tag == "" || tag == "result" {
+				continue
+			}
+			if entry["target"] == "" {
+				warnings = append(warnings, fmt.Sprintf(
+					"%s: frontmatter entry with tag=%q has no target; omitting from diagram",
+					filename, tag))
 			}
 		}
-		transitions = append(transitions, parsing.Transition{
-			Tag:        tag,
-			Target:     target,
-			Attributes: attrs,
-			Payload:    entry["payload"],
-		})
 	}
 	return transitions, warnings
-}
-
-// parseBodyTransitions extracts transitions from body text.
-// Filters out transitions with multiline targets (spurious matches from
-// comments that contain tag-like text) since valid state names are always
-// single-line.
-func parseBodyTransitions(body, filename string) ([]parsing.Transition, []string) {
-	transitions, err := parsing.ParseTransitions(body)
-	if err != nil {
-		return nil, []string{fmt.Sprintf("%s: parse error: %v", filename, err)}
-	}
-	var filtered []parsing.Transition
-	for _, t := range transitions {
-		if t.Tag != "result" && strings.Contains(t.Target, "\n") {
-			continue // multiline target — spurious match from comment text
-		}
-		filtered = append(filtered, t)
-	}
-	return filtered, nil
-}
-
-// stripScriptQuoteEscapes removes shell quoting artifacts from script source
-// so that attribute values like return=\"DONE\" or return=`"DONE`" are parsed
-// as return="DONE".
-func stripScriptQuoteEscapes(s string) string {
-	// Bash: \" → "
-	s = strings.ReplaceAll(s, `\"`, `"`)
-	// PowerShell: `" → "
-	s = strings.ReplaceAll(s, "`\"", `"`)
-	return s
 }
 
 // normalizeTarget strips extensions from a target name to produce a node ID.
@@ -523,7 +379,7 @@ func assignLevels(entryID string, adj map[string][]string, sites []callSite) (ma
 			}
 
 			// BFS from seed through goto/reset edges.
-			reachable := bfsReachable(seed, adj)
+			reachable := workflow.BFSReachable(seed, adj)
 			for node := range reachable {
 				if existing, ok := nodeLevel[node]; ok {
 					if existing != level {
@@ -611,7 +467,7 @@ func traceResults(
 	// Process levels bottom-up.
 	for level := maxLevel; level >= 1; level-- {
 		for _, cs := range callSitesByCalleeLevel[level] {
-			reachable := bfsReachable(cs.callee, adj)
+			reachable := workflow.BFSReachable(cs.callee, adj)
 			for state := range reachable {
 				if nodeLevel[state] != level {
 					continue
@@ -630,7 +486,7 @@ func traceResults(
 
 	// Flat fallback for disconnected call sites.
 	for _, cs := range unleveledSites {
-		reachable := bfsReachable(cs.callee, adj)
+		reachable := workflow.BFSReachable(cs.callee, adj)
 		for state := range reachable {
 			if resultEmitters[state] {
 				recordReturn(state, cs)
@@ -704,23 +560,6 @@ func buildGotoResetAdj(edges []edge) map[string][]string {
 		}
 	}
 	return adj
-}
-
-// bfsReachable returns all nodes reachable from start (including start itself).
-func bfsReachable(start string, adj map[string][]string) map[string]bool {
-	visited := map[string]bool{start: true}
-	queue := []string{start}
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		for _, next := range adj[node] {
-			if !visited[next] {
-				visited[next] = true
-				queue = append(queue, next)
-			}
-		}
-	}
-	return visited
 }
 
 // sanitizeID makes a string safe for use as a Mermaid node ID.

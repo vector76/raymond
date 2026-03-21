@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/workflow"
 )
 
 // writeFile is a test helper that writes content to a file in dir.
@@ -444,12 +445,12 @@ func TestFilterStateFiles(t *testing.T) {
 	}
 
 	t.Run("default (Unix) mode", func(t *testing.T) {
-		filtered := filterStateFiles(names, Options{})
+		filtered := workflow.FilterStateFiles(names, false)
 		assert.Equal(t, []string{"POLL.sh", "START.md"}, filtered)
 	})
 
 	t.Run("Windows mode", func(t *testing.T) {
-		filtered := filterStateFiles(names, Options{WindowsMode: true})
+		filtered := workflow.FilterStateFiles(names, true)
 		assert.Equal(t, []string{"BUILD.bat", "SCRIPT.ps1", "START.md"}, filtered)
 	})
 }
@@ -474,7 +475,7 @@ func TestBfsReachable(t *testing.T) {
 		"C": {"D"},
 		"D": {},
 	}
-	reachable := bfsReachable("A", adj)
+	reachable := workflow.BFSReachable("A", adj)
 	assert.True(t, reachable["A"])
 	assert.True(t, reachable["B"])
 	assert.True(t, reachable["C"])
@@ -610,7 +611,7 @@ func TestLevelAssignment(t *testing.T) {
 	writeFile(t, dir, "WORK.md", `<result>finished</result>`)
 
 	// Test assignLevels directly.
-	files, err := listStateFiles(dir, Options{})
+	files, err := workflow.ListStateFiles(dir, false)
 	require.NoError(t, err)
 
 	nodes := make(map[string]*nodeInfo)

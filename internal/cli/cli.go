@@ -612,7 +612,7 @@ func (c *CLI) cmdDiagram(cmd *cobra.Command, arg string) error {
 		}
 	}
 
-	result, err := diagram.GenerateDiagram(absArg)
+	result, err := diagram.GenerateDiagram(absArg, diagram.Options{})
 	if err != nil {
 		return err
 	}

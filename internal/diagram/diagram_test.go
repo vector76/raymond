@@ -44,7 +44,7 @@ When done: <goto>NEXT.md</goto>`)
 	writeFile(t, dir, "DONE.md", `Finish.
 <result>complete</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 	assert.Empty(t, result.Warnings)
 
@@ -68,7 +68,7 @@ func TestScriptStateShape(t *testing.T) {
 echo "<goto>NEXT.md</goto>"`)
 	writeFile(t, dir, "NEXT.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -89,7 +89,7 @@ Do stuff. <goto>WRONG.md</goto>`)
 	writeFile(t, dir, "REVIEW.md", `<result>ok</result>`)
 	writeFile(t, dir, "DONE.md", `<result>ok</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -104,7 +104,7 @@ func TestResetDottedEdge(t *testing.T) {
 	writeFile(t, dir, "1_START.md", `<reset>PHASE2.md</reset>`)
 	writeFile(t, dir, "PHASE2.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -119,7 +119,7 @@ func TestCallWithResultTracing(t *testing.T) {
 	writeFile(t, dir, "ANALYSIS.md", `<result>findings</result>`)
 	writeFile(t, dir, "SUMMARIZE.md", `<result>summary</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -143,7 +143,7 @@ func TestCallResultEmitterIsCallee(t *testing.T) {
 	writeFile(t, dir, "CHILD.md", `<result>done</result>`)
 	writeFile(t, dir, "AFTER.md", `<result>final</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -161,7 +161,7 @@ func TestForkEdges(t *testing.T) {
 	writeFile(t, dir, "WORKER.md", `<result>done</result>`)
 	writeFile(t, dir, "CONTINUE.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -177,7 +177,7 @@ func TestCrossWorkflowSubroutineShape(t *testing.T) {
 <fork-workflow next="MONITOR.md">../other_wf/</fork-workflow>`)
 	writeFile(t, dir, "MONITOR.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -189,7 +189,7 @@ func TestMissingStateWarning(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "1_START.md", `<goto>MISSING.md</goto>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -214,7 +214,7 @@ func TestUnreachableState(t *testing.T) {
 	writeFile(t, dir, "NEXT.md", `<result>done</result>`)
 	writeFile(t, dir, "ORPHAN.md", `<result>orphan</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -227,7 +227,7 @@ func TestREADMEExcluded(t *testing.T) {
 	writeFile(t, dir, "1_START.md", `<result>done</result>`)
 	writeFile(t, dir, "README.md", `# Documentation`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	assert.NotContains(t, result.Mermaid, "README")
@@ -243,7 +243,7 @@ allowed_transitions:
 Do stuff.
 <result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	// Should warn about no-target entry.
@@ -262,7 +262,7 @@ func TestInputAnnotation(t *testing.T) {
 	writeFile(t, dir, "1_START.md", `<goto input="data">NEXT.md</goto>`)
 	writeFile(t, dir, "NEXT.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	assert.Contains(t, result.Mermaid, "goto #91;input#93;")
@@ -276,7 +276,7 @@ func TestMultipleCallersResultWarning(t *testing.T) {
 	writeFile(t, dir, "AFTER_A.md", `<result>done</result>`)
 	writeFile(t, dir, "AFTER_B.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	// Should warn about multiple callers.
@@ -301,7 +301,7 @@ func TestFunctionEdges(t *testing.T) {
 	writeFile(t, dir, "EVAL.md", `<result>YES</result>`)
 	writeFile(t, dir, "NEXT.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -320,7 +320,7 @@ allowed_transitions:
 Try again: <goto>1_START.md</goto>
 Or finish: <result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	assert.Contains(t, result.Mermaid, "1_START -->|goto| 1_START")
@@ -334,7 +334,7 @@ func TestZipScope(t *testing.T) {
 		"NEXT.md":    "<result>done</result>",
 	})
 
-	result, err := GenerateDiagram(zipPath)
+	result, err := GenerateDiagram(zipPath, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -347,7 +347,7 @@ func TestResetWorkflowEdge(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "1_START.md", `<reset-workflow>../next_phase/</reset-workflow>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -360,7 +360,7 @@ func TestCallWorkflowEdge(t *testing.T) {
 	writeFile(t, dir, "1_START.md", `<call-workflow return="DONE.md">../sub_wf/</call-workflow>`)
 	writeFile(t, dir, "DONE.md", `<result>complete</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -382,7 +382,7 @@ Loop or finish.`)
 	writeFile(t, dir, "FINAL.md", `<result>done</result>`)
 	writeFile(t, dir, "AFTER.md", `<result>complete</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -394,7 +394,7 @@ Loop or finish.`)
 func TestEmptyDirectory(t *testing.T) {
 	dir := t.TempDir()
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	// Should produce a minimal diagram with no nodes.
@@ -410,7 +410,7 @@ echo "<goto>PROCESS.md</goto>"`)
 	writeFile(t, dir, "FINISH.sh", `#!/bin/bash
 echo "<result>done</result>"`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -428,7 +428,7 @@ func TestDedupEdges(t *testing.T) {
 If B: <goto>NEXT.md</goto>`)
 	writeFile(t, dir, "NEXT.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -442,8 +442,16 @@ func TestFilterStateFiles(t *testing.T) {
 		"START.md", "POLL.sh", "BUILD.bat", "SCRIPT.ps1",
 		"notes.txt", "image.png", "README.md", "readme.md",
 	}
-	filtered := filterStateFiles(names)
-	assert.Equal(t, []string{"BUILD.bat", "POLL.sh", "SCRIPT.ps1", "START.md"}, filtered)
+
+	t.Run("default (Unix) mode", func(t *testing.T) {
+		filtered := filterStateFiles(names, Options{})
+		assert.Equal(t, []string{"POLL.sh", "START.md"}, filtered)
+	})
+
+	t.Run("Windows mode", func(t *testing.T) {
+		filtered := filterStateFiles(names, Options{WindowsMode: true})
+		assert.Equal(t, []string{"BUILD.bat", "SCRIPT.ps1", "START.md"}, filtered)
+	})
 }
 
 func TestSanitizeID(t *testing.T) {
@@ -487,7 +495,7 @@ echo "<function return=\"DONE.sh\" input=\"task1\">WORK.md</function>"`)
 	writeFile(t, dir, "DONE.sh", `#!/bin/bash
 echo "<result>all done</result>"`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -506,7 +514,7 @@ func TestPowerShellEscapedQuotes(t *testing.T) {
 	writeFile(t, dir, "WORK.md", `<result>finished</result>`)
 	writeFile(t, dir, "DONE.md", `<result>all done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{WindowsMode: true})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -531,7 +539,7 @@ func TestNestedCallResultTracing(t *testing.T) {
 	writeFile(t, dir, "L2_WORK.md", `<goto>L2_DONE.md</goto>`)
 	writeFile(t, dir, "L2_DONE.md", `<result>level 2 done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -565,7 +573,7 @@ func TestNestedCallWithGotoChainBeforeReturn(t *testing.T) {
 	writeFile(t, dir, "AFTER_INNER.md", `<goto>FINAL.md</goto>`)
 	writeFile(t, dir, "FINAL.md", `<result>final</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
@@ -588,7 +596,7 @@ func TestLevelAssignment(t *testing.T) {
 	writeFile(t, dir, "WORK.md", `<result>finished</result>`)
 
 	// Test assignLevels directly.
-	files, err := listStateFiles(dir)
+	files, err := listStateFiles(dir, Options{})
 	require.NoError(t, err)
 
 	nodes := make(map[string]*nodeInfo)
@@ -628,7 +636,7 @@ invalid: yaml: [
 Do stuff. <goto>NEXT.md</goto>`)
 	writeFile(t, dir, "NEXT.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	// Should fall back to body parsing and find the goto.
@@ -640,9 +648,93 @@ func TestForkWorkflowWithInput(t *testing.T) {
 	writeFile(t, dir, "1_START.md", `<fork-workflow next="MONITOR.md" input="data">../worker/</fork-workflow>`)
 	writeFile(t, dir, "MONITOR.md", `<result>done</result>`)
 
-	result, err := GenerateDiagram(dir)
+	result, err := GenerateDiagram(dir, Options{})
 	require.NoError(t, err)
 
 	m := result.Mermaid
 	assert.Contains(t, m, "fork-workflow #91;input#93;")
+}
+
+func TestScriptTypeFilterDefaultMode(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "START.md", `<goto>WORK.sh</goto>`)
+	writeFile(t, dir, "WORK.sh", `echo "<result>done</result>"`)
+	writeFile(t, dir, "ALT.bat", `echo <result>done</result>`)
+	writeFile(t, dir, "ALTPS.ps1", `Write-Output "<result>done</result>"`)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	assert.Contains(t, m, "WORK")
+	assert.Contains(t, m, "START")
+	assert.NotContains(t, m, "ALT")
+	assert.NotContains(t, m, "ALTPS")
+}
+
+func TestScriptTypeFilterWindowsMode(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "START.md", `<goto>WORK.bat</goto>`)
+	writeFile(t, dir, "WORK.bat", `echo <goto>NEXT.ps1</goto>`)
+	writeFile(t, dir, "NEXT.ps1", `Write-Output "<result>done</result>"`)
+	writeFile(t, dir, "UNIX.sh", `echo "<result>done</result>"`)
+
+	result, err := GenerateDiagram(dir, Options{WindowsMode: true})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	assert.Contains(t, m, "WORK")
+	assert.Contains(t, m, "NEXT")
+	assert.Contains(t, m, "START")
+	assert.NotContains(t, m, "UNIX")
+}
+
+func TestScriptTypeFilterOnlyBatPs1DefaultMode(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ONLY.bat", `echo <result>done</result>`)
+	writeFile(t, dir, "ALSO.ps1", `Write-Output "<result>done</result>"`)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	// No state files in default mode → minimal diagram with no state nodes.
+	assert.Contains(t, m, "flowchart TD")
+	assert.NotContains(t, m, "ONLY")
+	assert.NotContains(t, m, "ALSO")
+}
+
+func TestGenerateDiagramFileContents(t *testing.T) {
+	dir := t.TempDir()
+	// START.md references MISSING.md which has no file, so MISSING will
+	// appear in the diagram as a missing-reference node.
+	mdContent := "# Hello\n<goto>MISSING.md</goto>\n<result>done</result>"
+	shContent := `#!/bin/bash
+echo "<result>done</result>"`
+	writeFile(t, dir, "START.md", mdContent)
+	writeFile(t, dir, "WORK.sh", shContent)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	// Only the two files that exist should be in FileContents.
+	require.Len(t, result.FileContents, 2)
+
+	startID := sanitizeID("START")
+	workID := sanitizeID("WORK")
+
+	startNode, ok := result.FileContents[startID]
+	require.True(t, ok, "expected FileContents to have key %q", startID)
+	assert.Equal(t, mdContent, startNode.Content)
+	assert.True(t, startNode.IsMarkdown)
+
+	workNode, ok := result.FileContents[workID]
+	require.True(t, ok, "expected FileContents to have key %q", workID)
+	assert.Equal(t, shContent, workNode.Content)
+	assert.False(t, workNode.IsMarkdown)
+
+	// MISSING is referenced in a transition but has no backing file —
+	// it appears in the diagram as a missing node but not in FileContents.
+	_, exists := result.FileContents[sanitizeID("MISSING")]
+	assert.False(t, exists)
 }

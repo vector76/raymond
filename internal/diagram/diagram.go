@@ -22,10 +22,22 @@ var stateExtensions = map[string]bool{
 	".md": true, ".sh": true, ".bat": true, ".ps1": true,
 }
 
+// Options configures diagram generation behaviour.
+type Options struct {
+	WindowsMode bool // if false (default), include .sh; if true, include .bat/.ps1
+}
+
+// NodeContent holds the raw content and type of a state file.
+type NodeContent struct {
+	Content    string // raw file text
+	IsMarkdown bool
+}
+
 // Result holds the output of GenerateDiagram.
 type Result struct {
-	Mermaid  string   // Mermaid flowchart text
-	Warnings []string // diagnostic messages for stderr
+	Mermaid      string                 // Mermaid flowchart text
+	Warnings     []string               // diagnostic messages for stderr
+	FileContents map[string]NodeContent // keyed by sanitized node ID (sanitizeID(ExtractStateName(filename)))
 }
 
 // nodeInfo tracks metadata for a single node in the diagram.
@@ -55,8 +67,8 @@ type callSite struct {
 
 // GenerateDiagram scans the workflow scope at scopeDir and returns a Mermaid
 // flowchart diagram with warnings.
-func GenerateDiagram(scopeDir string) (Result, error) {
-	files, err := listStateFiles(scopeDir)
+func GenerateDiagram(scopeDir string, opts Options) (Result, error) {
+	files, err := listStateFiles(scopeDir, opts)
 	if err != nil {
 		return Result{}, fmt.Errorf("listing state files: %w", err)
 	}
@@ -122,12 +134,24 @@ func GenerateDiagram(scopeDir string) (Result, error) {
 		}
 	}
 
+	// Populate file contents map keyed by sanitized node ID.
+	fileContents := make(map[string]NodeContent)
+	for _, f := range files {
+		content, err := readFileContent(scopeDir, f)
+		if err != nil {
+			continue
+		}
+		id := sanitizeID(parsing.ExtractStateName(f))
+		isMarkdown := strings.ToLower(filepath.Ext(f)) == ".md"
+		fileContents[id] = NodeContent{Content: content, IsMarkdown: isMarkdown}
+	}
+
 	mermaid := renderMermaid(nodes, edges, entryID, terminalNodes)
-	return Result{Mermaid: mermaid, Warnings: warnings}, nil
+	return Result{Mermaid: mermaid, Warnings: warnings, FileContents: fileContents}, nil
 }
 
 // listStateFiles returns filenames of state files in the scope, excluding README.md.
-func listStateFiles(scopeDir string) ([]string, error) {
+func listStateFiles(scopeDir string, opts Options) ([]string, error) {
 	var names []string
 	if zipscope.IsZipScope(scopeDir) {
 		files, err := zipscope.ListFiles(scopeDir)
@@ -146,10 +170,10 @@ func listStateFiles(scopeDir string) ([]string, error) {
 			}
 		}
 	}
-	return filterStateFiles(names), nil
+	return filterStateFiles(names, opts), nil
 }
 
-func filterStateFiles(names []string) []string {
+func filterStateFiles(names []string, opts Options) []string {
 	var result []string
 	for _, name := range names {
 		ext := strings.ToLower(filepath.Ext(name))
@@ -158,6 +182,18 @@ func filterStateFiles(names []string) []string {
 		}
 		if strings.EqualFold(name, "README.md") {
 			continue
+		}
+		// Apply platform filter: Unix mode includes .sh, excludes .bat/.ps1;
+		// Windows mode includes .bat/.ps1, excludes .sh.
+		switch ext {
+		case ".sh":
+			if opts.WindowsMode {
+				continue
+			}
+		case ".bat", ".ps1":
+			if !opts.WindowsMode {
+				continue
+			}
 		}
 		result = append(result, name)
 	}

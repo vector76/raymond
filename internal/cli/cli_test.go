@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1244,4 +1246,155 @@ func TestDiagramOutputWithoutHTML(t *testing.T) {
 	_, _, err := run(t, "diagram", "--output", "foo.html", dir)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "--output requires --html")
+}
+
+// --------------------------------------------------------------------------
+// lint subcommand
+// --------------------------------------------------------------------------
+
+// fixturePath returns the path to a lint test fixture directory relative to
+// the CLI package.
+func fixturePath(name string) string {
+	return filepath.Join("..", "..", "workflows", "test_cases", "lint", name)
+}
+
+// isLintSentinel reports whether err is a LintFoundErrorsError sentinel.
+func isLintSentinel(err error) bool {
+	var sentinel cli.LintFoundErrorsError
+	return errors.As(err, &sentinel)
+}
+
+func TestLintCleanWorkflow(t *testing.T) {
+	out, _, err := run(t, "lint", fixturePath("valid_simple"))
+	require.NoError(t, err)
+	assert.Contains(t, out, "No issues found.")
+	assert.NotContains(t, out, "error")
+	assert.NotContains(t, out, "warning")
+}
+
+func TestLintWorkflowWithErrors(t *testing.T) {
+	out, _, err := run(t, "lint", fixturePath("missing_target"))
+	require.True(t, isLintSentinel(err), "expected LintFoundErrorsError sentinel, got: %v", err)
+	assert.Contains(t, out, "error:")
+	assert.Contains(t, out, "missing-target")
+	// Summary line is present (e.g. "1 error").
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	assert.Greater(t, len(lines), 1, "expected a summary line after diagnostic lines")
+}
+
+func TestLintJSONOutput(t *testing.T) {
+	out, _, err := run(t, "lint", "--json", fixturePath("missing_target"))
+	require.True(t, isLintSentinel(err), "expected LintFoundErrorsError sentinel, got: %v", err)
+
+	// Strip trailing newline before unmarshaling.
+	var diags []map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &diags))
+	require.NotEmpty(t, diags)
+
+	// Every element must have non-empty string values for the required keys.
+	for _, d := range diags {
+		for _, key := range []string{"severity", "file", "message", "check"} {
+			val, ok := d[key]
+			require.True(t, ok, "missing key %q in diagnostic", key)
+			str, ok := val.(string)
+			require.True(t, ok, "key %q is not a string", key)
+			assert.NotEmpty(t, str, "key %q is empty", key)
+		}
+	}
+
+	// At least one diagnostic has check "missing-target".
+	found := false
+	for _, d := range diags {
+		if d["check"] == "missing-target" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected at least one diagnostic with check==\"missing-target\"")
+}
+
+func TestLintLevelFilterWithErrors(t *testing.T) {
+	// --level error: only errors printed, warnings suppressed; sentinel returned.
+	out, _, err := run(t, "lint", "--level", "error", fixturePath("mixed_errors_warnings"))
+	require.True(t, isLintSentinel(err), "expected LintFoundErrorsError sentinel, got: %v", err)
+	assert.Contains(t, out, "error:")
+	assert.NotContains(t, out, "warning:")
+	// Summary still reflects total unfiltered count (both error and warning).
+	assert.Contains(t, out, "warning")
+}
+
+func TestLintLevelFilterNoErrors(t *testing.T) {
+	// --level error on a warnings-only workflow: sentinel NOT returned, exit 0.
+	out, _, err := run(t, "lint", "--level", "error", fixturePath("unreachable_state"))
+	require.NoError(t, err)
+	// Warning diagnostic lines are filtered out.
+	assert.NotContains(t, out, "warning:")
+	// Summary still reflects the warning count.
+	assert.Contains(t, out, "warning")
+	// "No issues found." is NOT printed (there are warnings, just filtered).
+	assert.NotContains(t, out, "No issues found.")
+}
+
+func TestLintBadPath(t *testing.T) {
+	_, _, err := run(t, "lint", "/nonexistent/path/that/does/not/exist")
+	require.Error(t, err)
+	assert.False(t, isLintSentinel(err), "I/O error must not be a sentinel")
+}
+
+func TestLintNonDirectoryNonZip(t *testing.T) {
+	plain := filepath.Join(t.TempDir(), "plain.txt")
+	require.NoError(t, os.WriteFile(plain, []byte("hello"), 0o644))
+
+	_, _, err := run(t, "lint", plain)
+	require.Error(t, err)
+}
+
+func TestLintZipValid(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "workflow.zip")
+	writeTestZip(t, zipPath, map[string]string{
+		"1_START.md": "<result></result>",
+	})
+
+	out, _, err := run(t, "lint", zipPath)
+	require.NoError(t, err)
+	assert.Contains(t, out, "No issues found.")
+}
+
+func TestLintZipMissingEntryPoint(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "workflow.zip")
+	writeTestZip(t, zipPath, map[string]string{
+		"NOTSTART.md": "<result></result>",
+	})
+
+	out, _, err := run(t, "lint", "--json", zipPath)
+	require.True(t, isLintSentinel(err), "expected LintFoundErrorsError sentinel, got: %v", err)
+	assert.Contains(t, out, "no-entry-point")
+}
+
+func TestLintLevelErrorNoIssues(t *testing.T) {
+	// --level error on a clean workflow: exit 0, "No issues found." printed.
+	out, _, err := run(t, "lint", "--level", "error", fixturePath("valid_simple"))
+	require.NoError(t, err)
+	assert.Contains(t, out, "No issues found.")
+}
+
+func TestLintWinFlag(t *testing.T) {
+	dir := t.TempDir()
+	// 1_START.md transitions to ACTION (extensionless).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte("<goto>ACTION</goto>"), 0o644))
+	// Both .md and .bat variants exist — ambiguous on Windows, not on Unix.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ACTION.md"), []byte("<result></result>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ACTION.bat"), []byte(""), 0o644))
+
+	// Without --win: .bat is excluded → only ACTION.md → no ambiguity.
+	out, _, err := run(t, "lint", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "No issues found.")
+
+	// With --win: both ACTION.md and ACTION.bat included → ambiguous-state-resolution error.
+	out, _, err = run(t, "lint", "--win", "--json", dir)
+	require.True(t, isLintSentinel(err), "expected LintFoundErrorsError sentinel with --win, got: %v", err)
+	assert.Contains(t, out, "ambiguous-state-resolution")
 }

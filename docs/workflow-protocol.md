@@ -28,7 +28,7 @@ reminder to emit exactly one valid tag.
 ## Script States
 
 In addition to markdown prompts, Raymond supports **shell script states**
-(`.sh` on Unix, `.bat` on Windows). Script states execute directly without
+(`.sh` on Unix, `.bat` or `.ps1` on Windows). Script states execute directly without
 invoking an LLM, making them efficient for deterministic operations.
 
 **Key differences from markdown states:**

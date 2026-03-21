@@ -1,7 +1,7 @@
 # Shell Script States (Design Rationale)
 
 This document describes the problem of LLM overhead for deterministic operations
-and the design decisions behind shell scripts (`.sh` on Unix, `.bat` on Windows)
+and the design decisions behind shell scripts (`.sh` on Unix, `.bat` or `.ps1` on Windows)
 as an alternative state implementation alongside markdown prompt files.
 
 For how to write shell script states, see
@@ -82,12 +82,12 @@ script state.
 
 ## Proposed Solution: Shell Scripts as States
 
-Allow states to be implemented as shell scripts (`.sh` or `.bat`) instead of
-markdown files (`.md`). The orchestrator detects the file type and executes
-accordingly:
+Allow states to be implemented as shell scripts (`.sh` on Unix, `.bat` or `.ps1`
+on Windows) instead of markdown files (`.md`). The orchestrator detects the file
+type and executes accordingly:
 
 - **Markdown states** (`.md`): Sent to Claude Code for LLM interpretation
-- **Script states** (`.sh`/`.bat`): Executed directly by the orchestrator
+- **Script states** (`.sh`/`.bat`/`.ps1`): Executed directly by the orchestrator
 
 ### Same Transition Protocol
 
@@ -116,7 +116,7 @@ output exactly as it would from LLM output.
 
 ### Design Decision: File Extension Determines Execution Mode
 
-**Recommendation:** The file extension (`.md` vs `.sh`/`.bat`) determines how
+**Recommendation:** The file extension (`.md` vs `.sh`/`.bat`/`.ps1`) determines how
 the state is executed, not the transition tag type.
 
 **Rationale:**
@@ -160,10 +160,12 @@ State resolution is **platform-specific**. When resolving an abstract state name
 
 **On Windows:**
 1. `POLL.md` — Markdown prompt (LLM execution)
-2. `POLL.bat` — Batch file (direct execution)
+2. `POLL.ps1` — PowerShell script (direct execution)
+3. `POLL.bat` — Batch file (direct execution)
 
-There is no cross-platform fallback. If only `.bat` exists on Unix, that's an
-error (and vice versa for `.sh` on Windows).
+If both `.ps1` and `.bat` exist for the same state name on Windows, that is an
+ambiguity error. There is no cross-platform fallback. If only `.bat` or `.ps1`
+exists on Unix, that's an error (and vice versa for `.sh` on Windows).
 
 **Explicit extensions bypass resolution:**
 
@@ -172,25 +174,31 @@ resolution occurs — that exact file must exist. Specifying a platform-incompat
 extension is an error:
 - `<goto>POLL.sh</goto>` on Windows → Error
 - `<goto>POLL.bat</goto>` on Unix → Error
+- `<goto>POLL.ps1</goto>` on Unix → Error
 
 **Cross-platform workflows:**
 
-Workflows can provide both `.sh` and `.bat` for the same state name. Each
-platform uses its native script type:
+Workflows can provide `.sh` for Unix and `.bat` or `.ps1` for Windows with the
+same state name. Each platform uses its native script type:
 
 | Files Present | Unix Resolves To | Windows Resolves To |
 |---------------|------------------|---------------------|
 | `POLL.md` | `POLL.md` | `POLL.md` |
 | `POLL.sh` | `POLL.sh` | Error |
 | `POLL.bat` | Error | `POLL.bat` |
+| `POLL.ps1` | Error | `POLL.ps1` |
 | `POLL.sh`, `POLL.bat` | `POLL.sh` | `POLL.bat` |
+| `POLL.sh`, `POLL.ps1` | `POLL.sh` | `POLL.ps1` |
+| `POLL.bat`, `POLL.ps1` | Error | Error (ambiguous) |
 | `POLL.md`, `POLL.sh` | Error (ambiguous) | `POLL.md` |
 | `POLL.md`, `POLL.bat` | `POLL.md` | Error (ambiguous) |
+| `POLL.md`, `POLL.ps1` | `POLL.md` | Error (ambiguous) |
+| `POLL.sh`, `POLL.bat`, `POLL.ps1` | `POLL.sh` | Error (ambiguous) |
 
 **Execution:**
 
 - On Unix: `.sh` files are executed with `/bin/bash`
-- On Windows: `.bat` files are executed with `cmd.exe`
+- On Windows: `.bat` files are executed with `cmd.exe /c`; `.ps1` files are executed with PowerShell
 
 ### Error Handling
 
@@ -219,7 +227,7 @@ permitted, but because there is no policy defining allowed transitions, no
 The orchestrator's state resolution logic needs to:
 
 1. Accept state names without extensions in transition targets
-2. Search for `.md`, `.sh`, `.bat` files in resolution order
+2. Search for `.md`, `.sh`, `.bat`, `.ps1` files in resolution order
 3. Dispatch to appropriate executor based on file type
 4. Parse transition tags from script stdout
 

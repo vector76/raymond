@@ -17,7 +17,7 @@ your prompts declare. The collection may be a plain directory or a zip archive.
 
 A **state file** is either:
 - A **markdown prompt** (`.md`) — sent to Claude Code for LLM interpretation
-- A **shell script** (`.sh` on Unix, `.bat` on Windows) — executed directly,
+- A **shell script** (`.sh` on Unix, `.bat` or `.ps1` on Windows) — executed directly,
   no LLM involved
 
 An **agent** is a logical thread of execution within a workflow. Workflows
@@ -281,17 +281,20 @@ terminates. Ensure all code paths emit exactly one valid transition tag.
 
 ### Cross-Platform Scripts
 
-Provide both `.sh` and `.bat` for the same state name to support both
-platforms. Each platform uses its native version:
+Provide `.sh` for Unix and `.bat` or `.ps1` for Windows with the same state name.
+Each platform uses its native version:
 
 | Files present | Unix resolves to | Windows resolves to |
 |---------------|-----------------|-------------------|
 | `POLL.sh` | `POLL.sh` | Error |
 | `POLL.bat` | Error | `POLL.bat` |
+| `POLL.ps1` | Error | `POLL.ps1` |
 | `POLL.sh` + `POLL.bat` | `POLL.sh` | `POLL.bat` |
+| `POLL.sh` + `POLL.ps1` | `POLL.sh` | `POLL.ps1` |
+| `POLL.bat` + `POLL.ps1` | Error | Error (ambiguous) |
 
 On Unix, `.sh` files run with `/bin/bash`. On Windows, `.bat` files run with
-`cmd.exe`.
+`cmd.exe /c`; `.ps1` files run with PowerShell.
 
 ## Transition Tags
 
@@ -576,7 +579,7 @@ The orchestrator resolves the name by checking (in order):
 
 **On Unix:** `POLL.md` → `POLL.sh`
 
-**On Windows:** `POLL.md` → `POLL.bat`
+**On Windows:** `POLL.md` → `POLL.ps1` → `POLL.bat`
 
 If both `.md` and a script exist for the same name on the same platform, that's
 an ambiguity error. If you specify an explicit extension

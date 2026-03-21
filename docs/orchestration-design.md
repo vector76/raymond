@@ -4,7 +4,7 @@
 
 | Term | Meaning |
 |------|---------|
-| **Prompt folder** | A directory (or zip archive) of state files (`.md` prompts or `.sh`/`.bat` scripts) that reference each other via transition tags. Represents the static definition of a workflow. |
+| **Prompt folder** | A directory (or zip archive) of state files (`.md` prompts or `.sh`/`.bat`/`.ps1` scripts) that reference each other via transition tags. Represents the static definition of a workflow. |
 | **Orchestrator** | The running Go program (`raymond` binary). Manages agents in a sequential round-robin loop. Each orchestrator instance manages exactly one state file. |
 | **State file** | JSON file persisting all agent state for one orchestrator run. One orchestrator = one state file. It is an error for multiple orchestrators to access the same state file. |
 | **Agent** | A logical thread of execution within the orchestrator. Has a current state (prompt filename) and a return stack. Created initially or via `<fork>`. Terminates when it emits `<result>` with an empty stack. |
@@ -33,7 +33,7 @@ Limitations:
 ## Raymond's State Machine Model
 
 Raymond treats workflows as a state machine where:
-- Each state is a markdown prompt file (`.md`) or a shell script (`.sh`/`.bat`)
+- Each state is a markdown prompt file (`.md`) or a shell script (`.sh`/`.bat`/`.ps1`)
 - Transitions are declared within the prompts/scripts themselves
 - The orchestrator parses transition tags and routes accordingly
 

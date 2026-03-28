@@ -281,6 +281,172 @@ func TestInvalidEffort(t *testing.T) {
 	assert.Fail(t, "expected diagnostic with Check==\"invalid-effort\" and Severity==Error, got", diags)
 }
 
+// writeTestYaml writes a YAML workflow file to dir and returns its path.
+func writeTestYaml(t *testing.T, dir string, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
+}
+
+func TestYamlScopeValidWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writeTestYaml(t, dir, `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: DONE.md }
+  DONE:
+    prompt: |
+      Finished.
+    allowed_transitions:
+      - { tag: result }
+`)
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Severity == lint.Error {
+			assert.Fail(t, "expected no error-severity diagnostics for valid YAML workflow", d)
+		}
+	}
+}
+
+func TestYamlScopeNoEntryPoint(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writeTestYaml(t, dir, `states:
+  REVIEW:
+    prompt: |
+      Review the work.
+    allowed_transitions:
+      - { tag: goto, target: DONE.md }
+  DONE:
+    prompt: |
+      Finished.
+    allowed_transitions:
+      - { tag: result }
+`)
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "no-entry-point" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"no-entry-point\" and Severity==Error, got", diags)
+}
+
+func TestYamlScopeAmbiguousEntryPoint(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writeTestYaml(t, dir, `states:
+  1_START:
+    prompt: |
+      First entry.
+    allowed_transitions:
+      - { tag: goto, target: DONE.md }
+  START:
+    prompt: |
+      Second entry.
+    allowed_transitions:
+      - { tag: goto, target: DONE.md }
+  DONE:
+    prompt: |
+      Finished.
+    allowed_transitions:
+      - { tag: result }
+`)
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "ambiguous-entry-point" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"ambiguous-entry-point\" and Severity==Error, got", diags)
+}
+
+func TestYamlScopeMissingTarget(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writeTestYaml(t, dir, `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: NONEXISTENT.md }
+`)
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "missing-target" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"missing-target\" and Severity==Error, got", diags)
+}
+
+func TestYamlScopeUnreachableState(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writeTestYaml(t, dir, `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: REACHABLE.md }
+  REACHABLE:
+    prompt: |
+      Reachable state.
+    allowed_transitions:
+      - { tag: result }
+  ORPHAN:
+    prompt: |
+      Orphan state.
+    allowed_transitions:
+      - { tag: result }
+`)
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "unreachable-state" && d.Severity == lint.Warning {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"unreachable-state\" and Severity==Warning, got", diags)
+}
+
+func TestYamlScopeDeadEnd(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writeTestYaml(t, dir, `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: STUCK.md }
+  STUCK:
+    prompt: |
+      No transitions here.
+`)
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "dead-end-state" && d.Severity == lint.Warning {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"dead-end-state\" and Severity==Warning, got", diags)
+}
+
 func TestZipScopeNoEntryPoint(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := writeTestZip(t, dir, map[string]string{

@@ -438,6 +438,68 @@ If B: <goto>NEXT.md</goto>`)
 	assert.Equal(t, 1, count, "duplicate edge should be deduplicated")
 }
 
+func TestYamlScopeMultiState(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(yamlPath, []byte(`states:
+  1_START:
+    prompt: |
+      Begin work.
+    allowed_transitions:
+      - { tag: goto, target: REVIEW.md }
+  REVIEW:
+    prompt: |
+      Review the work.
+    allowed_transitions:
+      - { tag: call, target: FORK_STATE.md, return: DONE.md }
+  FORK_STATE:
+    prompt: |
+      Fork processing.
+    allowed_transitions:
+      - { tag: result }
+  DONE:
+    prompt: |
+      All done.
+    allowed_transitions:
+      - { tag: result }
+`), 0o644))
+
+	result, err := GenerateDiagram(yamlPath, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	assert.Contains(t, m, "flowchart TD")
+	assert.Contains(t, m, `1_START["1_START"]`)
+	assert.Contains(t, m, `REVIEW["REVIEW"]`)
+	assert.Contains(t, m, `FORK_STATE["FORK_STATE"]`)
+	assert.Contains(t, m, `DONE["DONE"]`)
+	assert.Contains(t, m, "1_START -->|goto| REVIEW")
+	assert.Contains(t, m, "REVIEW -->|call| FORK_STATE")
+	// FORK_STATE emits result inside call → return edge to DONE.
+	assert.Contains(t, m, "FORK_STATE -.->|return #40;REVIEW#41;| DONE")
+	// DONE emits result at top level → terminal node.
+	assert.Contains(t, m, "DONE -->|result|")
+}
+
+func TestYamlScopeEntryPointDetection(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(yamlPath, []byte(`states:
+  1_START:
+    prompt: |
+      Entry state.
+    allowed_transitions:
+      - { tag: result }
+`), 0o644))
+
+	result, err := GenerateDiagram(yamlPath, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	assert.Contains(t, m, `__start__((" "))`)
+	assert.Contains(t, m, "__start__ --> 1_START")
+}
+
 func TestFilterStateFiles(t *testing.T) {
 	names := []string{
 		"START.md", "POLL.sh", "BUILD.bat", "SCRIPT.ps1",

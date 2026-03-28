@@ -30,6 +30,7 @@ import (
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/version"
+	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -585,9 +586,9 @@ func truncate(s string, maxLen int) string {
 // newDiagramCmd builds the "diagram" subcommand.
 func (c *CLI) newDiagramCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "diagram <path>",
+		Use:   "diagram <path (directory, .zip, or .yaml/.yml)>",
 		Short: "Generate a Mermaid flowchart of workflow transitions",
-		Long: `Scan a workflow directory or zip archive and generate a Mermaid flowchart.
+		Long: `Scan a workflow directory, zip archive, or YAML file and generate a Mermaid flowchart.
 
 Flags:
   --win     Include Windows scripts (.bat, .ps1) and exclude Unix scripts (.sh).
@@ -621,7 +622,11 @@ func (c *CLI) cmdDiagram(cmd *cobra.Command, arg string) error {
 		return fmt.Errorf("cannot resolve path %q: %w", arg, err)
 	}
 
-	if zipscope.IsZipScope(absArg) {
+	if yamlscope.IsYamlScope(absArg) {
+		if _, err := yamlscope.Parse(absArg); err != nil {
+			return fmt.Errorf("YAML workflow invalid: %w", err)
+		}
+	} else if zipscope.IsZipScope(absArg) {
 		if err := zipscope.VerifyZipHash(absArg); err != nil {
 			return fmt.Errorf("zip hash validation failed: %w", err)
 		}
@@ -634,7 +639,7 @@ func (c *CLI) cmdDiagram(cmd *cobra.Command, arg string) error {
 			return fmt.Errorf("cannot access %q: %w", arg, statErr)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("%q is not a directory or zip archive", arg)
+			return fmt.Errorf("%q is not a directory, zip archive, or YAML workflow", arg)
 		}
 	}
 

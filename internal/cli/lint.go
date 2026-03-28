@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/vector76/raymond/internal/lint"
+	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -22,7 +23,7 @@ func (e LintFoundErrorsError) Error() string { return "" }
 // newLintCmd builds the "lint" subcommand.
 func (c *CLI) newLintCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "lint <path>",
+		Use:   "lint <path (directory, .zip, or .yaml/.yml)>",
 		Short: "Validate workflow definitions and report issues",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -35,7 +36,7 @@ func (c *CLI) newLintCmd() *cobra.Command {
 	return cmd
 }
 
-// cmdLint validates a workflow directory or zip archive and reports issues.
+// cmdLint validates a workflow directory, zip archive, or YAML file and reports issues.
 func (c *CLI) cmdLint(cmd *cobra.Command, arg string) error {
 	win, _ := cmd.Flags().GetBool("win")
 	jsonOut, _ := cmd.Flags().GetBool("json")
@@ -51,13 +52,17 @@ func (c *CLI) cmdLint(cmd *cobra.Command, arg string) error {
 		return fmt.Errorf("cannot resolve path %q: %w", arg, err)
 	}
 
-	// Validate: must be a directory or .zip file.
+	// Validate: must be a directory, .zip file, or .yaml/.yml file.
 	info, statErr := os.Stat(absPath)
 	if statErr != nil {
 		return fmt.Errorf("cannot access %q: %w", arg, statErr)
 	}
 	if !info.IsDir() {
-		if zipscope.IsZipScope(absPath) {
+		if yamlscope.IsYamlScope(absPath) {
+			if _, err := yamlscope.Parse(absPath); err != nil {
+				return fmt.Errorf("YAML workflow invalid: %w", err)
+			}
+		} else if zipscope.IsZipScope(absPath) {
 			if err := zipscope.VerifyZipHash(absPath); err != nil {
 				return fmt.Errorf("zip hash validation failed: %w", err)
 			}
@@ -65,7 +70,7 @@ func (c *CLI) cmdLint(cmd *cobra.Command, arg string) error {
 				return fmt.Errorf("zip layout invalid: %w", err)
 			}
 		} else {
-			return fmt.Errorf("%q is not a directory or zip archive", arg)
+			return fmt.Errorf("%q is not a directory, zip archive, or YAML workflow", arg)
 		}
 	}
 

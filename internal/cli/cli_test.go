@@ -1156,7 +1156,7 @@ func TestDiagramFileNotDir(t *testing.T) {
 
 	_, _, err := run(t, "diagram", f)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not a directory or zip archive")
+	assert.Contains(t, err.Error(), "not a directory, zip archive, or YAML workflow")
 }
 
 func TestDiagramNonexistentPath(t *testing.T) {
@@ -1397,4 +1397,79 @@ func TestLintWinFlag(t *testing.T) {
 	out, _, err = run(t, "lint", "--win", "--json", dir)
 	require.True(t, isLintSentinel(err), "expected LintFoundErrorsError sentinel with --win, got: %v", err)
 	assert.Contains(t, out, "ambiguous-state-resolution")
+}
+
+// writeTestYaml writes a YAML workflow file and returns its path.
+func writeTestYaml(t *testing.T, dir, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
+}
+
+// --------------------------------------------------------------------------
+// lint — YAML scope
+// --------------------------------------------------------------------------
+
+func TestLintYamlValid(t *testing.T) {
+	yamlPath := writeTestYaml(t, t.TempDir(), `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: DONE.md }
+  DONE:
+    prompt: |
+      Finished.
+    allowed_transitions:
+      - { tag: result }
+`)
+	out, _, err := run(t, "lint", yamlPath)
+	require.NoError(t, err)
+	// No error-severity diagnostics — cmdLint returns nil (exit 0).
+	assert.NotContains(t, out, "error:")
+}
+
+func TestLintYamlInvalid(t *testing.T) {
+	yamlPath := writeTestYaml(t, t.TempDir(), `not_states: true`)
+	_, _, err := run(t, "lint", yamlPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "YAML workflow invalid")
+}
+
+func TestLintYamlWithDiagnostics(t *testing.T) {
+	yamlPath := writeTestYaml(t, t.TempDir(), `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: NONEXISTENT.md }
+`)
+	out, _, err := run(t, "lint", "--json", yamlPath)
+	require.True(t, isLintSentinel(err), "expected LintFoundErrorsError sentinel, got: %v", err)
+	assert.Contains(t, out, "missing-target")
+}
+
+// --------------------------------------------------------------------------
+// diagram — YAML scope
+// --------------------------------------------------------------------------
+
+func TestDiagramYamlFile(t *testing.T) {
+	yamlPath := writeTestYaml(t, t.TempDir(), `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: NEXT.md }
+  NEXT:
+    prompt: |
+      Finished.
+    allowed_transitions:
+      - { tag: result }
+`)
+	out, _, err := run(t, "diagram", yamlPath)
+	require.NoError(t, err)
+	assert.Contains(t, out, "flowchart TD")
+	assert.Contains(t, out, "1_START")
+	assert.Contains(t, out, "NEXT")
 }

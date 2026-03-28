@@ -26,6 +26,7 @@ import (
 	"github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/observers/titlebar"
 	"github.com/vector76/raymond/internal/orchestrator"
+	"github.com/vector76/raymond/internal/prompts"
 	"github.com/vector76/raymond/internal/registry"
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
@@ -381,6 +382,28 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		initialState = entry
 	}
 
+	// For YAML scopes, parse/validate and resolve the entry point or state name.
+	if yamlscope.IsYamlScope(scopeDir) {
+		if _, err := yamlscope.Parse(scopeDir); err != nil {
+			return fmt.Errorf("YAML workflow invalid: %w", err)
+		}
+		if initialState == "" {
+			// Bare "workflow.yaml" — resolve entry point (1_START or START).
+			entry, resolveErr := specifier.ResolveEntryPoint(scopeDir)
+			if resolveErr != nil {
+				return fmt.Errorf("cannot resolve entry point in %q: %w", scopeDir, resolveErr)
+			}
+			initialState = entry
+		} else {
+			// "workflow.yaml/STATE" — resolve bare state name to virtual filename.
+			resolved, resolveErr := prompts.ResolveState(scopeDir, initialState)
+			if resolveErr != nil {
+				return fmt.Errorf("cannot resolve state %q in %q: %w", initialState, scopeDir, resolveErr)
+			}
+			initialState = resolved
+		}
+	}
+
 	resolvedStateDir := wfstate.GetStateDir(opts.StateDir)
 
 	var workflowID string
@@ -435,6 +458,16 @@ func (c *CLI) cmdResume(workflowID string, opts orchestrator.RunOptions) error {
 				return fmt.Errorf("zip archive not found for workflow %q: %s", workflowID, ws.ScopeDir)
 			}
 			return fmt.Errorf("zip archive layout invalid for workflow %q: %w", workflowID, err)
+		}
+	}
+
+	// For YAML scopes, re-validate the file on resume.
+	if yamlscope.IsYamlScope(ws.ScopeDir) {
+		if _, statErr := os.Stat(ws.ScopeDir); statErr != nil && errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("yaml workflow not found for workflow %q: %s", workflowID, ws.ScopeDir)
+		}
+		if _, err := yamlscope.Parse(ws.ScopeDir); err != nil {
+			return fmt.Errorf("YAML workflow invalid for workflow %q: %w", workflowID, err)
 		}
 	}
 
@@ -541,15 +574,39 @@ func (c *CLI) cmdInitUnsafeDefaults(cmd *cobra.Command) error {
 
 // parseScopeAndState resolves a CLI argument to (scopeDir, initialState).
 //
-//   - Directory  → scope=arg, state=resolved entry point (1_START or START)
-//   - .zip file  → scope=arg, state="" (resolved later after hash/layout validation)
-//   - Other file → scope=dirname(arg), state=basename(arg)
+//   - .yaml/.yml file      → scope=arg, state="" (resolved later in cmdStart)
+//   - .yaml/.yml/STATE     → scope=yamlPath, state=stateName
+//   - Directory             → scope=arg, state=resolved entry point (1_START or START)
+//   - .zip file             → scope=arg, state="" (resolved later after hash/layout validation)
+//   - Other file            → scope=dirname(arg), state=basename(arg)
 //
-// The returned scopeDir is always an absolute path.
+// YAML is checked before os.Stat because "workflow.yaml/STATE" is not a real
+// filesystem path. The returned scopeDir is always an absolute path.
 func parseScopeAndState(arg string) (scopeDir, initialState string, err error) {
 	absArg, absErr := filepath.Abs(arg)
 	if absErr != nil {
 		return "", "", fmt.Errorf("cannot resolve absolute path for %q: %w", arg, absErr)
+	}
+
+	// YAML scopes must be checked before os.Stat because the
+	// "workflow.yaml/STATE" syntax is not a real filesystem path.
+	if yamlscope.IsYamlScope(absArg) {
+		// Bare YAML file path (e.g. "workflow.yaml").
+		if _, statErr := os.Stat(arg); statErr != nil {
+			return "", "", fmt.Errorf("cannot access %q: %w", arg, statErr)
+		}
+		// Entry point resolution deferred to cmdStart (same pattern as zip).
+		return absArg, "", nil
+	}
+
+	// Check if the directory component is a YAML file — handles
+	// "workflow.yaml/STATE" syntax (parallel to "archive.zip/STATE").
+	dirPart := filepath.Dir(absArg)
+	if yamlscope.IsYamlScope(dirPart) {
+		if _, statErr := os.Stat(dirPart); statErr != nil {
+			return "", "", fmt.Errorf("cannot access %q: %w", filepath.Dir(arg), statErr)
+		}
+		return dirPart, filepath.Base(absArg), nil
 	}
 
 	info, statErr := os.Stat(arg)

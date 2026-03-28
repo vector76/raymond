@@ -1473,3 +1473,161 @@ func TestDiagramYamlFile(t *testing.T) {
 	assert.Contains(t, out, "1_START")
 	assert.Contains(t, out, "NEXT")
 }
+
+// --------------------------------------------------------------------------
+// Start/Resume — YAML scope
+// --------------------------------------------------------------------------
+
+const testYamlWorkflow = `states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: goto, target: DONE.md }
+  DONE:
+    prompt: |
+      Finished.
+    allowed_transitions:
+      - { tag: result }
+`
+
+func TestParseScopeAndState_YamlFile(t *testing.T) {
+	stateDir := makeStateDir(t)
+	yamlPath := writeTestYaml(t, t.TempDir(), testYamlWorkflow)
+
+	_, _, err := run(t, yamlPath, "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	assert.Equal(t, yamlPath, ws.ScopeDir)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "1_START.md", ws.Agents[0].CurrentState,
+		"entry point should be resolved to 1_START.md virtual file")
+}
+
+func TestParseScopeAndState_YmlExtension(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	ymlPath := filepath.Join(dir, "workflow.yml")
+	require.NoError(t, os.WriteFile(ymlPath, []byte(testYamlWorkflow), 0o644))
+
+	_, _, err := run(t, ymlPath, "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	assert.Equal(t, ymlPath, ws.ScopeDir)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "1_START.md", ws.Agents[0].CurrentState)
+}
+
+func TestParseScopeAndState_YamlSlashState(t *testing.T) {
+	stateDir := makeStateDir(t)
+	yamlPath := writeTestYaml(t, t.TempDir(), testYamlWorkflow)
+
+	// Use "workflow.yaml/DONE" syntax to specify an initial state.
+	_, _, err := run(t, yamlPath+"/DONE", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	assert.Equal(t, yamlPath, ws.ScopeDir)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "DONE.md", ws.Agents[0].CurrentState,
+		"state name should be resolved to DONE.md virtual file")
+}
+
+func TestStartYamlValidFile(t *testing.T) {
+	stateDir := makeStateDir(t)
+	yamlPath := writeTestYaml(t, t.TempDir(), testYamlWorkflow)
+
+	_, _, err := run(t, yamlPath, "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	assert.True(t, filepath.IsAbs(ws.ScopeDir), "scope dir should be absolute")
+	assert.Equal(t, "1_START.md", ws.Agents[0].CurrentState)
+}
+
+func TestStartYamlSlashStateResolution(t *testing.T) {
+	stateDir := makeStateDir(t)
+	yamlPath := writeTestYaml(t, t.TempDir(), testYamlWorkflow)
+
+	captured, err := runCapturing(t, yamlPath+"/DONE", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1, "runner should have been invoked once")
+}
+
+func TestStartYamlInvalidFile(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	badYaml := filepath.Join(dir, "bad.yaml")
+	require.NoError(t, os.WriteFile(badYaml, []byte("not_states: true"), 0o644))
+
+	_, _, err := run(t, badYaml, "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "YAML workflow invalid")
+}
+
+func TestStartYamlFileNotFound(t *testing.T) {
+	stateDir := makeStateDir(t)
+	_, _, err := run(t, "/nonexistent/workflow.yaml", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot access")
+}
+
+func TestResumeYamlScope(t *testing.T) {
+	stateDir := makeStateDir(t)
+	yamlPath := writeTestYaml(t, t.TempDir(), testYamlWorkflow)
+
+	// Create a workflow state that references the YAML scope.
+	ws := wfstate.CreateInitialState("wf-yaml-resume", yamlPath, "1_START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState("wf-yaml-resume", ws, stateDir))
+
+	_, _, err := run(t, "--resume", "wf-yaml-resume", "--state-dir", stateDir)
+	require.NoError(t, err)
+}
+
+func TestResumeYamlNotFound(t *testing.T) {
+	stateDir := makeStateDir(t)
+	missingYaml := filepath.Join(t.TempDir(), "gone.yaml")
+
+	ws := wfstate.CreateInitialState("wf-yaml-gone", missingYaml, "1_START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState("wf-yaml-gone", ws, stateDir))
+
+	_, _, err := run(t, "--resume", "wf-yaml-gone", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "yaml workflow not found")
+}
+
+func TestResumeYamlInvalid(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	badYaml := filepath.Join(dir, "bad.yaml")
+	require.NoError(t, os.WriteFile(badYaml, []byte("not_states: true"), 0o644))
+
+	ws := wfstate.CreateInitialState("wf-yaml-bad", badYaml, "1_START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState("wf-yaml-bad", ws, stateDir))
+
+	_, _, err := run(t, "--resume", "wf-yaml-bad", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "YAML workflow invalid")
+}

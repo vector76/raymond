@@ -12,6 +12,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+
+	"github.com/vector76/raymond/internal/yamlscope"
 )
 
 // writeFile is a test helper that writes content to a file in dir.
@@ -441,4 +444,394 @@ func TestResolveEntryPoint_MultipleSTART(t *testing.T) {
 	_, err := resolveEntryPoint([]string{"START.md", "START.sh"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "multiple START")
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for structural YAML comparison
+// ---------------------------------------------------------------------------
+
+// extractStateNames returns state name keys in order from YAML output.
+// State names appear at 2-space indentation under "states:".
+func extractStateNames(t *testing.T, yamlStr string) []string {
+	t.Helper()
+	var names []string
+	for _, line := range strings.Split(yamlStr, "\n") {
+		trimmed := strings.TrimRight(line, " ")
+		if strings.HasPrefix(trimmed, "  ") && !strings.HasPrefix(trimmed, "    ") && strings.HasSuffix(trimmed, ":") {
+			name := strings.TrimSpace(strings.TrimSuffix(trimmed, ":"))
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// parseStates unmarshals the YAML output and returns the states mapping.
+func parseStates(t *testing.T, yamlStr string) map[string]interface{} {
+	t.Helper()
+	var out map[string]interface{}
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &out))
+	states, ok := out["states"].(map[string]interface{})
+	require.True(t, ok, "expected 'states' key in YAML output")
+	return states
+}
+
+// ---------------------------------------------------------------------------
+// Specified test cases (1–13)
+// ---------------------------------------------------------------------------
+
+// Test 1: Basic markdown workflow
+func TestConvert_BasicMarkdownWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: REVIEW.md
+model: opus
+---
+Start prompt content.
+`)
+	writeFile(t, dir, "REVIEW.md", "Review body text.\n")
+
+	yamlStr, warnings, err := Convert(dir)
+	require.NoError(t, err)
+	assert.Empty(t, warnings)
+
+	// State order
+	names := extractStateNames(t, yamlStr)
+	require.Equal(t, []string{"1_START", "REVIEW"}, names)
+
+	// Structural check
+	states := parseStates(t, yamlStr)
+
+	startState := states["1_START"].(map[string]interface{})
+	assert.Contains(t, startState, "prompt")
+	assert.Contains(t, startState, "allowed_transitions")
+	assert.Contains(t, startState, "model")
+	assert.Equal(t, "opus", startState["model"])
+
+	trans := startState["allowed_transitions"].([]interface{})
+	require.Len(t, trans, 1)
+	entry := trans[0].(map[string]interface{})
+	assert.Equal(t, "goto", entry["tag"])
+	assert.Equal(t, "REVIEW", entry["target"]) // normalized from REVIEW.md
+
+	reviewState := states["REVIEW"].(map[string]interface{})
+	assert.Contains(t, reviewState, "prompt")
+	assert.NotContains(t, reviewState, "allowed_transitions")
+	assert.NotContains(t, reviewState, "model")
+	assert.NotContains(t, reviewState, "effort")
+}
+
+// Test 2: Script states
+func TestConvert_ScriptStates(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: BUILD.sh
+---
+Start state.
+`)
+	writeFile(t, dir, "BUILD.sh", "#!/bin/bash\necho \"building\"\n# <result>done</result>")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	states := parseStates(t, yamlStr)
+	buildState := states["BUILD"].(map[string]interface{})
+	assert.Contains(t, buildState, "sh")
+	assert.Contains(t, buildState["sh"], "#!/bin/bash")
+	assert.NotContains(t, buildState, "prompt")
+}
+
+// Test 3: Multi-platform merge
+func TestConvert_MultiPlatformMerge(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: BUILD
+---
+Start.
+`)
+	writeFile(t, dir, "BUILD.sh", "#!/bin/bash\necho build")
+	writeFile(t, dir, "BUILD.ps1", "Write-Host build")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	states := parseStates(t, yamlStr)
+	buildState := states["BUILD"].(map[string]interface{})
+	assert.Contains(t, buildState, "sh")
+	assert.Contains(t, buildState, "ps1")
+	assert.NotContains(t, buildState, "prompt")
+}
+
+// Test 4: Same-stem conflict
+func TestConvert_SameStemConflict(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: BUILD
+---
+Start.
+`)
+	writeFile(t, dir, "BUILD.md", "Build prompt.")
+	writeFile(t, dir, "BUILD.sh", "#!/bin/bash\necho build")
+
+	_, _, err := Convert(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BUILD.md")
+	assert.Contains(t, err.Error(), "BUILD.sh")
+}
+
+// Test 5: Frontmatter with all policy fields
+func TestConvert_AllPolicyFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: NEXT.md
+model: opus
+effort: high
+---
+All fields present.
+`)
+	writeFile(t, dir, "NEXT.md", "<result>done</result>")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	states := parseStates(t, yamlStr)
+	startState := states["1_START"].(map[string]interface{})
+	assert.Contains(t, startState, "allowed_transitions")
+	assert.Equal(t, "opus", startState["model"])
+	assert.Equal(t, "high", startState["effort"])
+}
+
+// Test 6: Transition target normalization
+func TestConvert_TransitionTargetNormalization(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: REVIEW.md
+  - tag: call-workflow
+    target: other/workflow
+    return: DONE.md
+  - tag: fork
+    target: WORKER.md
+    next: CONTINUE.md
+model: opus
+---
+Body with <goto>REVIEW.md</goto> tag left as-is.
+`)
+	writeFile(t, dir, "REVIEW.md", "<result>done</result>")
+	writeFile(t, dir, "DONE.md", "<result>done</result>")
+	writeFile(t, dir, "WORKER.md", "<result>done</result>")
+	writeFile(t, dir, "CONTINUE.md", "<result>done</result>")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	states := parseStates(t, yamlStr)
+	startState := states["1_START"].(map[string]interface{})
+	trans := startState["allowed_transitions"].([]interface{})
+
+	// goto: target normalized from REVIEW.md → REVIEW
+	gotoEntry := trans[0].(map[string]interface{})
+	assert.Equal(t, "goto", gotoEntry["tag"])
+	assert.Equal(t, "REVIEW", gotoEntry["target"])
+
+	// call-workflow: target preserved, return normalized
+	cwEntry := trans[1].(map[string]interface{})
+	assert.Equal(t, "call-workflow", cwEntry["tag"])
+	assert.Equal(t, "other/workflow", cwEntry["target"]) // cross-workflow preserved
+	assert.Equal(t, "DONE", cwEntry["return"])            // return normalized
+
+	// fork: target and next normalized
+	forkEntry := trans[2].(map[string]interface{})
+	assert.Equal(t, "fork", forkEntry["tag"])
+	assert.Equal(t, "WORKER", forkEntry["target"])
+	assert.Equal(t, "CONTINUE", forkEntry["next"])
+
+	// Body text tags left as-is (REVIEW.md not stripped in prompt)
+	prompt := startState["prompt"].(string)
+	assert.Contains(t, prompt, "<goto>REVIEW.md</goto>")
+}
+
+// Test 7: BFS ordering with call/result chain
+func TestConvert_BFSCallResultChain(t *testing.T) {
+	dir := t.TempDir()
+	// S1 (1_START) calls S2 with return S3
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: call
+    target: S2.md
+    return: S3.md
+---
+S1 state.
+`)
+	// S2 goto S4
+	writeFile(t, dir, "S2.md", "<goto>S4.md</goto>")
+	// S4 has result transition
+	writeFile(t, dir, "S4.md", "<result>done</result>")
+	// S3 is plain state
+	writeFile(t, dir, "S3.md", "S3 plain state.\n<result>final</result>")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	// BFS: 1_START(0) → S2(1) → S4(2), S4→result→S3(3)
+	names := extractStateNames(t, yamlStr)
+	require.Equal(t, []string{"1_START", "S2", "S4", "S3"}, names)
+}
+
+// Test 8: Unreachable states appear last
+func TestConvert_UnreachableStatesLast(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", "<goto>REACHABLE.md</goto>")
+	writeFile(t, dir, "REACHABLE.md", "<result>done</result>")
+	writeFile(t, dir, "ORPHAN.md", "Not reachable from start.")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	names := extractStateNames(t, yamlStr)
+	require.Len(t, names, 3)
+	assert.Equal(t, "ORPHAN", names[len(names)-1])
+}
+
+// Test 9: Equal-distance states sorted alphabetically
+func TestConvert_EqualDistanceAlphabetical(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", "<goto>BETA.md</goto>\n<goto>ALPHA.md</goto>")
+	writeFile(t, dir, "ALPHA.md", "<result>done</result>")
+	writeFile(t, dir, "BETA.md", "<result>done</result>")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	names := extractStateNames(t, yamlStr)
+	// ALPHA and BETA at same distance from 1_START; alphabetical order
+	require.Equal(t, []string{"1_START", "ALPHA", "BETA"}, names)
+}
+
+// Test 10: Non-state file warnings and README silent skip
+func TestConvert_NonStateFileWarnings(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", "<result>done</result>")
+	writeFile(t, dir, "something.txt", "text file")
+	writeFile(t, dir, "README.md", "# Readme")
+
+	_, warnings, err := Convert(dir)
+	require.NoError(t, err)
+
+	// .txt generates warning
+	require.Len(t, warnings, 1)
+	assert.Equal(t, "skipping non-state file: something.txt", warnings[0])
+}
+
+// Test 11: No-frontmatter state has only prompt key
+func TestConvert_NoFrontmatterState(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", "Just a plain prompt with no frontmatter.\n<result>done</result>")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	states := parseStates(t, yamlStr)
+	startState := states["1_START"].(map[string]interface{})
+	assert.Contains(t, startState, "prompt")
+	assert.NotContains(t, startState, "allowed_transitions")
+	assert.NotContains(t, startState, "model")
+	assert.NotContains(t, startState, "effort")
+}
+
+// Test 12: Round-trip through yamlscope.Parse
+func TestConvert_RoundTripValidation(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: REVIEW.md
+model: opus
+---
+Start prompt.
+`)
+	writeFile(t, dir, "REVIEW.md", "Review body.\n<result>done</result>")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	// Write YAML to temp file and parse with yamlscope.Parse
+	yamlFile := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(yamlFile, []byte(yamlStr), 0644))
+
+	wf, err := yamlscope.Parse(yamlFile)
+	require.NoError(t, err, "round-trip through yamlscope.Parse should succeed")
+	assert.Contains(t, wf.States, "1_START")
+	assert.Contains(t, wf.States, "REVIEW")
+}
+
+// Test 13: End-to-end feature spec example
+func TestConvert_EndToEndFeatureSpec(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - tag: goto
+    target: REVIEW.md
+model: opus
+---
+Start prompt content.
+`)
+	writeFile(t, dir, "REVIEW.md", "Review content.\n<goto>BUILD.sh</goto>")
+	writeFile(t, dir, "BUILD.sh", "#!/bin/bash\necho build")
+	writeFile(t, dir, "BUILD.ps1", "Write-Host build")
+	writeFile(t, dir, "README.md", "# Project README")
+
+	yamlStr, warnings, err := Convert(dir)
+	require.NoError(t, err)
+
+	// README should not produce a warning
+	for _, w := range warnings {
+		assert.NotContains(t, w, "README")
+	}
+
+	// State order: 1_START, REVIEW, BUILD
+	names := extractStateNames(t, yamlStr)
+	require.Equal(t, []string{"1_START", "REVIEW", "BUILD"}, names)
+
+	// Structural comparison
+	states := parseStates(t, yamlStr)
+
+	// 1_START: prompt, allowed_transitions (target=REVIEW), model
+	startState := states["1_START"].(map[string]interface{})
+	assert.Contains(t, startState, "prompt")
+	assert.Contains(t, startState, "allowed_transitions")
+	assert.Contains(t, startState, "model")
+	trans := startState["allowed_transitions"].([]interface{})
+	require.Len(t, trans, 1)
+	gotoEntry := trans[0].(map[string]interface{})
+	assert.Equal(t, "REVIEW", gotoEntry["target"]) // normalized
+
+	// REVIEW: only prompt
+	reviewState := states["REVIEW"].(map[string]interface{})
+	assert.Contains(t, reviewState, "prompt")
+	assert.NotContains(t, reviewState, "allowed_transitions")
+
+	// BUILD: sh and ps1
+	buildState := states["BUILD"].(map[string]interface{})
+	assert.Contains(t, buildState, "sh")
+	assert.Contains(t, buildState, "ps1")
+	assert.NotContains(t, buildState, "prompt")
+
+	// Round-trip through yamlscope.Parse
+	yamlFile := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(yamlFile, []byte(yamlStr), 0644))
+
+	wf, err := yamlscope.Parse(yamlFile)
+	require.NoError(t, err, "round-trip through yamlscope.Parse should succeed")
+	assert.Len(t, wf.States, 3)
 }

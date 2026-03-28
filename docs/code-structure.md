@@ -44,6 +44,7 @@ raymond/
 │   ├── transitions/             # Transition application logic (all 6 types)
 │   ├── version/                 # Build version string
 │   ├── workflow/                # State file enumeration, data extraction, and graph traversal
+│   ├── yamlscope/               # Single-file YAML workflow scope support
 │   └── zipscope/                # ZIP archive workflow scope support
 │
 ├── tests/
@@ -116,13 +117,14 @@ on higher-level orchestration code.
 | `parsing` | Parse `<goto>`, `<reset>`, `<call>`, `<fork>`, `<function>`, `<result>` tags |
 | `platform` | Build and run `exec.Cmd` for .sh (bash) or .bat (cmd.exe); merge env |
 | `policy` | Resolve effective model and effort level from config + defaults |
-| `prompts` | Load prompt files from directory or ZIP scope; resolve state names |
+| `prompts` | Load prompt files from directory, ZIP, or YAML scope; resolve state names |
 | `registry` | Local cache for workflow zip files downloaded from URLs; validates SHA256 hashes |
 | `specifier` | Resolve raw workflow specifier strings to absolute scope directories and entry points |
 | `state` | Read/write `WorkflowState` JSON; atomic writes via temp+rename |
 | `transitions` | Apply each of the 6 transition types to `WorkflowState` |
 | `version` | Build version string injected at link time |
-| `workflow` | List state files, read content, extract transitions and policy data, and BFS graph helpers |
+| `workflow` | List state files, read content from directory/ZIP/YAML scopes, extract transitions and policy data, and BFS graph helpers |
+| `yamlscope` | Treat single-file YAML workflows as virtual workflow scope directories |
 | `zipscope` | Treat ZIP archives as read-only workflow scope directories |
 
 ## Testing
@@ -173,8 +175,10 @@ go build ./...
 ## Running the Application
 
 ```bash
-# Run a workflow
+# Run a workflow (directory, YAML, or ZIP scope)
 raymond path/to/workflow/START.md
+raymond workflow.yaml
+raymond workflow.yaml/REVIEW
 
 # Resume a paused workflow
 raymond --resume workflow-id
@@ -187,10 +191,12 @@ raymond --quiet path/to/workflow/START.md
 
 # Lint a workflow for static analysis issues
 raymond lint path/to/workflow/
+raymond lint workflow.yaml
 raymond lint --json --level error path/to/workflow/
 
 # Generate a workflow diagram
 raymond diagram path/to/workflow/
+raymond diagram workflow.yaml
 raymond diagram --html --output my-diagram.html path/to/workflow/
 ```
 
@@ -230,7 +236,8 @@ Dependencies are declared in `go.mod` and pinned in `go.sum`:
 |-----------|---------|
 | `github.com/spf13/cobra` | CLI flag parsing and subcommand structure |
 | `github.com/BurntSushi/toml` | `.raymond.toml` configuration file parsing |
+| `gopkg.in/yaml.v3` | YAML parsing for workflow scopes and frontmatter |
 | `github.com/stretchr/testify` | Test assertions (`assert`, `require`) |
 
-No runtime dependencies beyond the Go standard library and the above three
+No runtime dependencies beyond the Go standard library and the above four
 packages.

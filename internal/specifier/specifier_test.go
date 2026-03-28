@@ -855,3 +855,224 @@ func TestResolve_ZipWithExplicitEntry(t *testing.T) {
 		assert.Equal(t, "longwo", res.Abbrev)
 	})
 }
+
+// --------------------------------------------------------------------------
+// YAML specifier helpers
+// --------------------------------------------------------------------------
+
+// mkYaml creates a YAML workflow file with the given name inside a temp
+// directory and writes the provided YAML content. Returns the YAML file path.
+func mkYaml(t *testing.T, name, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+	return path
+}
+
+// validYamlWith1Start is a minimal valid YAML workflow with a 1_START state.
+const validYamlWith1Start = `states:
+  1_START:
+    prompt: "Hello, start here."
+`
+
+// validYamlWithSTART is a minimal valid YAML workflow with a START state.
+const validYamlWithSTART = `states:
+  START:
+    prompt: "Hello, start here."
+`
+
+// validYamlWithMultipleStates has 1_START and additional states.
+const validYamlWithMultipleStates = `states:
+  1_START:
+    prompt: "Start."
+  PROCESS:
+    prompt: "Process step."
+  FINISH:
+    sh: "echo done"
+`
+
+// --------------------------------------------------------------------------
+// YAML specifier — Resolve
+// --------------------------------------------------------------------------
+
+func TestResolveYaml_Absolute(t *testing.T) {
+	yamlPath := mkYaml(t, "workflow.yaml", validYamlWith1Start)
+
+	res, err := specifier.Resolve(yamlPath, "/caller/scope")
+
+	require.NoError(t, err)
+	assert.Equal(t, yamlPath, res.ScopeDir)
+	assert.Equal(t, "1_START.md", res.EntryPoint)
+	assert.Equal(t, "workfl", res.Abbrev) // "workflow" → 6 chars
+}
+
+func TestResolveYaml_YmlExtension(t *testing.T) {
+	yamlPath := mkYaml(t, "mywf.yml", validYamlWith1Start)
+
+	res, err := specifier.Resolve(yamlPath, "/caller/scope")
+
+	require.NoError(t, err)
+	assert.Equal(t, yamlPath, res.ScopeDir)
+	assert.Equal(t, "1_START.md", res.EntryPoint)
+	assert.Equal(t, "mywf", res.Abbrev)
+}
+
+func TestResolveYaml_Relative(t *testing.T) {
+	parent := t.TempDir()
+	yamlPath := filepath.Join(parent, "workflow.yaml")
+	require.NoError(t, os.WriteFile(yamlPath, []byte(validYamlWith1Start), 0600))
+
+	res, err := specifier.Resolve("workflow.yaml", parent)
+
+	require.NoError(t, err)
+	assert.Equal(t, yamlPath, res.ScopeDir)
+	assert.Equal(t, "1_START.md", res.EntryPoint)
+}
+
+func TestResolveYaml_InvalidYaml(t *testing.T) {
+	yamlPath := mkYaml(t, "bad.yaml", "not: valid: yaml: [")
+
+	_, err := specifier.Resolve(yamlPath, "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid yaml workflow")
+}
+
+func TestResolveYaml_NoEntryPoint(t *testing.T) {
+	// Valid YAML but no 1_START or START state.
+	yamlPath := mkYaml(t, "noentry.yaml", `states:
+  PROCESS:
+    prompt: "No entry point here."
+`)
+
+	_, err := specifier.Resolve(yamlPath, "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "entry point")
+}
+
+func TestResolveYaml_NonExistent(t *testing.T) {
+	_, err := specifier.Resolve("/nonexistent/path/workflow.yaml", "")
+
+	require.Error(t, err)
+}
+
+func TestResolveYaml_StartFallback(t *testing.T) {
+	yamlPath := mkYaml(t, "wf.yaml", validYamlWithSTART)
+
+	res, err := specifier.Resolve(yamlPath, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "START.md", res.EntryPoint)
+}
+
+// --------------------------------------------------------------------------
+// YAML inner-component (workflow.yaml/STATE)
+// --------------------------------------------------------------------------
+
+func TestResolveYaml_InnerComponent_HappyPath(t *testing.T) {
+	yamlPath := mkYaml(t, "workflow.yaml", validYamlWithMultipleStates)
+	spec := filepath.Join(yamlPath, "PROCESS")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, yamlPath, res.ScopeDir)
+	assert.Equal(t, "PROCESS.md", res.EntryPoint)
+	assert.Equal(t, "workfl", res.Abbrev) // from "workflow" stem
+}
+
+func TestResolveYaml_InnerComponent_YmlExtension(t *testing.T) {
+	yamlPath := mkYaml(t, "mywf.yml", validYamlWithMultipleStates)
+	spec := filepath.Join(yamlPath, "PROCESS")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, yamlPath, res.ScopeDir)
+	assert.Equal(t, "PROCESS.md", res.EntryPoint)
+}
+
+func TestResolveYaml_InnerComponent_TrailingSlash(t *testing.T) {
+	parent := t.TempDir()
+	yamlPath := filepath.Join(parent, "workflow.yaml")
+	require.NoError(t, os.WriteFile(yamlPath, []byte(validYamlWithMultipleStates), 0600))
+
+	_, err := specifier.Resolve("workflow.yaml/PROCESS/", parent)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trailing slash")
+}
+
+func TestResolveYaml_InnerComponent_StateNotFound(t *testing.T) {
+	yamlPath := mkYaml(t, "workflow.yaml", validYamlWith1Start)
+	spec := filepath.Join(yamlPath, "NONEXISTENT")
+
+	_, err := specifier.Resolve(spec, "")
+
+	require.Error(t, err)
+}
+
+func TestResolveYaml_InnerComponent_AbbrevFromStem(t *testing.T) {
+	yamlPath := mkYaml(t, "MyPipeline.yaml", validYamlWithMultipleStates)
+	spec := filepath.Join(yamlPath, "PROCESS")
+
+	res, err := specifier.Resolve(spec, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "mypipe", res.Abbrev) // "MyPipeline" → lowercase → truncate to 6
+}
+
+// --------------------------------------------------------------------------
+// Relative path resolution from YAML caller
+// --------------------------------------------------------------------------
+
+func TestResolveDir_RelativeFromYamlCaller(t *testing.T) {
+	// Layout: /base/caller.yaml (the caller) and /base/sibling/ (the target).
+	// The YAML file is treated as a virtual directory at its stem (/base/caller/),
+	// so "../sibling" navigates up to /base/ and then into sibling/.
+	base := t.TempDir()
+	sibling := filepath.Join(base, "sibling")
+	require.NoError(t, os.MkdirAll(sibling, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(sibling, "1_START.md"), []byte("start"), 0600))
+	callerYaml := filepath.Join(base, "caller.yaml") // need not exist; only used as path
+
+	res, err := specifier.Resolve("../sibling", callerYaml)
+
+	require.NoError(t, err)
+	assert.Equal(t, sibling, res.ScopeDir)
+	assert.Equal(t, "1_START.md", res.EntryPoint)
+}
+
+func TestResolveYaml_RelativeFromYamlCaller(t *testing.T) {
+	// Layout: /base/caller.yaml (the caller) and /base/target.yaml (the target).
+	// "../target.yaml" from the virtual stem /base/caller/ resolves to /base/target.yaml.
+	base := t.TempDir()
+	targetYaml := filepath.Join(base, "target.yaml")
+	require.NoError(t, os.WriteFile(targetYaml, []byte(validYamlWith1Start), 0600))
+	callerYaml := filepath.Join(base, "caller.yaml") // path only, need not exist
+
+	res, err := specifier.Resolve("../target.yaml", callerYaml)
+
+	require.NoError(t, err)
+	assert.Equal(t, targetYaml, res.ScopeDir)
+	assert.Equal(t, "1_START.md", res.EntryPoint)
+}
+
+func TestResolveMd_RelativeFromYamlCaller(t *testing.T) {
+	// Layout: /base/caller.yaml (the caller) and /base/sibling/STATE.md (the target).
+	// "../sibling/STATE.md" from virtual stem /base/caller/ resolves to /base/sibling/STATE.md.
+	base := t.TempDir()
+	sibling := filepath.Join(base, "sibling")
+	require.NoError(t, os.MkdirAll(sibling, 0700))
+	mdPath := filepath.Join(sibling, "STATE.md")
+	require.NoError(t, os.WriteFile(mdPath, []byte("state"), 0600))
+	callerYaml := filepath.Join(base, "caller.yaml") // path only, need not exist
+
+	res, err := specifier.Resolve("../sibling/STATE.md", callerYaml)
+
+	require.NoError(t, err)
+	assert.Equal(t, sibling, res.ScopeDir)
+	assert.Equal(t, "STATE.md", res.EntryPoint)
+}

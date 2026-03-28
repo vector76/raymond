@@ -37,6 +37,7 @@ import (
 	"syscall"
 
 	"github.com/vector76/raymond/internal/prompts"
+	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -74,7 +75,12 @@ func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 	// 2. Resolve relative paths.
 	if !filepath.IsAbs(spec) {
 		base := callerScopeDir
-		if zipscope.IsZipScope(callerScopeDir) {
+		if yamlscope.IsYamlScope(callerScopeDir) {
+			// Treat the YAML file as a virtual directory at its stem path, so
+			// that "../sibling/" works the same way for YAML callers as for
+			// directory callers.  E.g. /wf/workflow.yaml → virtual base /wf/workflow/.
+			base = strings.TrimSuffix(callerScopeDir, filepath.Ext(callerScopeDir))
+		} else if zipscope.IsZipScope(callerScopeDir) {
 			// Treat the zip as a virtual directory at its stem path, so that
 			// "../sibling/" works the same way for zip callers as for directory
 			// callers.  E.g. /wf/workflow1.zip → virtual base /wf/workflow1/.
@@ -85,6 +91,8 @@ func Resolve(rawSpecifier string, callerScopeDir string) (Resolution, error) {
 
 	// 3. Classify and validate.
 	switch strings.ToLower(filepath.Ext(spec)) {
+	case ".yaml", ".yml":
+		return resolveYaml(spec)
 	case ".zip":
 		return resolveZip(spec)
 	case ".md":
@@ -109,6 +117,23 @@ func resolveZip(zipPath string) (Resolution, error) {
 	stem := base[:len(base)-len(filepath.Ext(base))]
 	return Resolution{
 		ScopeDir:   zipPath,
+		EntryPoint: entryPoint,
+		Abbrev:     abbrev(stem),
+	}, nil
+}
+
+func resolveYaml(yamlPath string) (Resolution, error) {
+	if _, err := yamlscope.Parse(yamlPath); err != nil {
+		return Resolution{}, fmt.Errorf("invalid yaml workflow %q: %w", yamlPath, err)
+	}
+	entryPoint, err := ResolveEntryPoint(yamlPath)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("cannot resolve entry point in yaml workflow %q: %w", yamlPath, err)
+	}
+	base := filepath.Base(yamlPath)
+	stem := base[:len(base)-len(filepath.Ext(base))]
+	return Resolution{
+		ScopeDir:   yamlPath,
 		EntryPoint: entryPoint,
 		Abbrev:     abbrev(stem),
 	}, nil
@@ -165,6 +190,22 @@ func resolveStateInDir(dirPath string, trailingSlash bool) (Resolution, error) {
 			return Resolution{}, fmt.Errorf("scope directory does not exist: %s", scopeDir)
 		}
 		return Resolution{}, fmt.Errorf("cannot access scope directory %s: %w", scopeDir, err)
+	}
+
+	if yamlscope.IsYamlScope(scopeDir) {
+		if trailingSlash {
+			return Resolution{}, fmt.Errorf("trailing slash on inner component of yaml specifier is not allowed: %q", dirPath)
+		}
+		if _, err := yamlscope.Parse(scopeDir); err != nil {
+			return Resolution{}, fmt.Errorf("invalid yaml workflow %q: %w", scopeDir, err)
+		}
+		entryPoint, err := prompts.ResolveState(scopeDir, stateName)
+		if err != nil {
+			return Resolution{}, fmt.Errorf("cannot resolve state %q in %s: %w", stateName, scopeDir, err)
+		}
+		base := filepath.Base(scopeDir)
+		stem := base[:len(base)-len(filepath.Ext(base))]
+		return Resolution{ScopeDir: scopeDir, EntryPoint: entryPoint, Abbrev: abbrev(stem)}, nil
 	}
 
 	if strings.ToLower(filepath.Ext(scopeDir)) == ".zip" {

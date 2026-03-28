@@ -949,3 +949,315 @@ func TestGetStateType_Ps1UppercaseOnWindows(t *testing.T) {
 		t.Errorf("got %q, want script", got)
 	}
 }
+
+// --------------------------------------------------------------------------
+// YAML scope helpers
+// --------------------------------------------------------------------------
+
+// makeYaml creates a temp YAML file with the given content and returns its path.
+func makeYaml(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// --------------------------------------------------------------------------
+// LoadPrompt — YAML scope
+// --------------------------------------------------------------------------
+
+func TestLoadPrompt_FromYaml(t *testing.T) {
+	yp := makeYaml(t, `states:
+  START:
+    prompt: "# Welcome\n\nBegin the workflow."
+`)
+	body, pol, err := LoadPrompt(yp, "START.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(body, "Welcome") {
+		t.Errorf("body should contain prompt text, got %q", body)
+	}
+	if pol != nil {
+		t.Errorf("policy = %v, want nil (no frontmatter)", pol)
+	}
+}
+
+func TestLoadPrompt_FromYaml_WithPolicy(t *testing.T) {
+	yp := makeYaml(t, `states:
+  START:
+    prompt: "Do the task."
+    allowed_transitions:
+      - { tag: goto, target: NEXT.md }
+    model: claude-sonnet-4-20250514
+    effort: high
+`)
+	body, pol, err := LoadPrompt(yp, "START.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(body, "Do the task.") {
+		t.Errorf("body should contain prompt text, got %q", body)
+	}
+	if pol == nil {
+		t.Fatal("expected non-nil policy from frontmatter")
+	}
+	if len(pol.AllowedTransitions) != 1 {
+		t.Errorf("expected 1 allowed transition, got %d", len(pol.AllowedTransitions))
+	}
+	if pol.Model != "claude-sonnet-4-20250514" {
+		t.Errorf("expected model claude-sonnet-4-20250514, got %q", pol.Model)
+	}
+	if pol.Effort != "high" {
+		t.Errorf("expected effort high, got %q", pol.Effort)
+	}
+}
+
+func TestLoadPrompt_FromYaml_MissingFile(t *testing.T) {
+	yp := makeYaml(t, `states:
+  START:
+    prompt: "hello"
+`)
+	_, _, err := LoadPrompt(yp, "MISSING.md")
+	if err == nil {
+		t.Fatal("expected error for missing file in yaml scope")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ResolveState — YAML scope
+// --------------------------------------------------------------------------
+
+func TestResolveState_YamlFindsMd(t *testing.T) {
+	yp := makeYaml(t, `states:
+  NEXT:
+    prompt: "Next step."
+`)
+	got, err := ResolveState(yp, "NEXT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "NEXT.md" {
+		t.Errorf("got %q, want NEXT.md", got)
+	}
+}
+
+func TestResolveState_YamlFindsSh(t *testing.T) {
+	skipWindows(t)
+	yp := makeYaml(t, `states:
+  CHECK:
+    sh: |
+      #!/bin/sh
+      echo done
+`)
+	got, err := ResolveState(yp, "CHECK")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "CHECK.sh" {
+		t.Errorf("got %q, want CHECK.sh", got)
+	}
+}
+
+func TestResolveState_YamlExplicitExtension(t *testing.T) {
+	yp := makeYaml(t, `states:
+  NEXT:
+    prompt: "Next step."
+`)
+	got, err := ResolveState(yp, "NEXT.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "NEXT.md" {
+		t.Errorf("got %q, want NEXT.md", got)
+	}
+}
+
+func TestResolveState_YamlExtensionStripping_MdOnScriptState(t *testing.T) {
+	// REVIEW.md requested where REVIEW is a script state → strip .md, find .sh
+	skipWindows(t)
+	yp := makeYaml(t, `states:
+  REVIEW:
+    sh: |
+      #!/bin/sh
+      echo '<goto>DONE.md</goto>'
+`)
+	got, err := ResolveState(yp, "REVIEW.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "REVIEW.sh" {
+		t.Errorf("got %q, want REVIEW.sh", got)
+	}
+}
+
+func TestResolveState_YamlExtensionStripping_ShOnMarkdownState(t *testing.T) {
+	// REVIEW.sh requested where REVIEW is a markdown state → strip .sh, find .md
+	yp := makeYaml(t, `states:
+  REVIEW:
+    prompt: "Review the code."
+`)
+	got, err := ResolveState(yp, "REVIEW.sh")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "REVIEW.md" {
+		t.Errorf("got %q, want REVIEW.md", got)
+	}
+}
+
+func TestResolveState_YamlMissing(t *testing.T) {
+	yp := makeYaml(t, `states:
+  START:
+    prompt: "hello"
+`)
+	_, err := ResolveState(yp, "MISSING")
+	if err == nil {
+		t.Fatal("expected error for missing state in yaml scope")
+	}
+}
+
+func TestResolveState_YamlEntryPoint_START(t *testing.T) {
+	yp := makeYaml(t, `states:
+  START:
+    prompt: "begin"
+`)
+	got, err := ResolveState(yp, "START")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "START.md" {
+		t.Errorf("got %q, want START.md", got)
+	}
+}
+
+func TestResolveState_YamlEntryPoint_1_START(t *testing.T) {
+	yp := makeYaml(t, `states:
+  1_START:
+    prompt: "begin"
+`)
+	got, err := ResolveState(yp, "1_START")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "1_START.md" {
+		t.Errorf("got %q, want 1_START.md", got)
+	}
+}
+
+func TestResolveState_YamlEntryPoint_BothPresent(t *testing.T) {
+	yp := makeYaml(t, `states:
+  1_START:
+    prompt: "numbered start"
+  START:
+    prompt: "plain start"
+`)
+	// Both resolve independently.
+	got1, err := ResolveState(yp, "1_START")
+	if err != nil {
+		t.Fatalf("unexpected error for 1_START: %v", err)
+	}
+	if got1 != "1_START.md" {
+		t.Errorf("got %q, want 1_START.md", got1)
+	}
+
+	got2, err := ResolveState(yp, "START")
+	if err != nil {
+		t.Fatalf("unexpected error for START: %v", err)
+	}
+	if got2 != "START.md" {
+		t.Errorf("got %q, want START.md", got2)
+	}
+}
+
+func TestResolveState_YamlEntryPoint_NeitherPresent(t *testing.T) {
+	yp := makeYaml(t, `states:
+  REVIEW:
+    prompt: "review step"
+`)
+	_, err := ResolveState(yp, "1_START")
+	if err == nil {
+		t.Fatal("expected error when 1_START not present")
+	}
+	_, err = ResolveState(yp, "START")
+	if err == nil {
+		t.Fatal("expected error when START not present")
+	}
+}
+
+func TestResolveState_YamlExtensionStrippingDoesNotAffectZip(t *testing.T) {
+	// In zip scope, REVIEW.md should NOT have extension stripping
+	zp := makeZip(t, map[string]string{"REVIEW.md": "# Review"})
+	got, err := ResolveState(zp, "REVIEW.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// zip resolves explicit extension as-is
+	if got != "REVIEW.md" {
+		t.Errorf("got %q, want REVIEW.md", got)
+	}
+}
+
+func TestResolveState_YamlExtensionStrippingDoesNotAffectDirectory(t *testing.T) {
+	// In directory scope, REVIEW.sh with no REVIEW.sh file should error, NOT strip and find .md
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "REVIEW.md"), []byte("# Review"), 0o644)
+	_, err := ResolveState(dir, "REVIEW.sh")
+	if runtime.GOOS == "windows" {
+		// On Windows, .sh is wrong platform — error expected
+		if err == nil {
+			t.Fatal("expected error for .sh on Windows")
+		}
+	} else {
+		// On Unix, explicit .sh with no file should error
+		if err == nil {
+			t.Fatal("expected error when REVIEW.sh doesn't exist")
+		}
+	}
+}
+
+// --------------------------------------------------------------------------
+// Template variable round-trip: YAML scope
+// --------------------------------------------------------------------------
+
+func TestRenderPrompt_YamlScopeRoundTrip(t *testing.T) {
+	yp := makeYaml(t, `states:
+  TASK:
+    prompt: "Result: {{result}}\nWorkflow: {{workflow_id}}\nAgent: {{agent_id}}"
+`)
+	body, _, err := LoadPrompt(yp, "TASK.md")
+	if err != nil {
+		t.Fatalf("LoadPrompt error: %v", err)
+	}
+
+	rendered := RenderPrompt(body, map[string]any{
+		"result":      "success",
+		"workflow_id": "wf-123",
+		"agent_id":    "agent-A",
+	})
+
+	if !strings.Contains(rendered, "success") {
+		t.Error("should contain result value")
+	}
+	if !strings.Contains(rendered, "wf-123") {
+		t.Error("should contain workflow_id value")
+	}
+	if !strings.Contains(rendered, "agent-A") {
+		t.Error("should contain agent_id value")
+	}
+	if strings.Contains(rendered, "{{result}}") {
+		t.Error("{{result}} placeholder should be replaced")
+	}
+	if strings.Contains(rendered, "{{workflow_id}}") {
+		t.Error("{{workflow_id}} placeholder should be replaced")
+	}
+	if strings.Contains(rendered, "{{agent_id}}") {
+		t.Error("{{agent_id}} placeholder should be replaced")
+	}
+}

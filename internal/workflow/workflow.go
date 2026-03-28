@@ -12,6 +12,7 @@ import (
 
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/policy"
+	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -24,7 +25,13 @@ var StateExtensions = map[string]bool{
 // winMode selects Windows script extensions (.bat/.ps1) over Unix (.sh).
 func ListStateFiles(scopeDir string, winMode bool) ([]string, error) {
 	var names []string
-	if zipscope.IsZipScope(scopeDir) {
+	if yamlscope.IsYamlScope(scopeDir) {
+		files, err := yamlscope.ListFiles(scopeDir)
+		if err != nil {
+			return nil, err
+		}
+		names = files
+	} else if zipscope.IsZipScope(scopeDir) {
 		files, err := zipscope.ListFiles(scopeDir)
 		if err != nil {
 			return nil, err
@@ -72,8 +79,11 @@ func FilterStateFiles(files []string, winMode bool) []string {
 	return result
 }
 
-// ReadFileContent reads a file from either a directory or zip scope.
+// ReadFileContent reads a file from a YAML, zip, or directory scope.
 func ReadFileContent(scopeDir, filename string) (string, error) {
+	if yamlscope.IsYamlScope(scopeDir) {
+		return yamlscope.ReadText(scopeDir, filename)
+	}
 	if zipscope.IsZipScope(scopeDir) {
 		return zipscope.ReadText(scopeDir, filename)
 	}

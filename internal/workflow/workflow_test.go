@@ -211,3 +211,77 @@ func TestExtractFileData_ResultTransition(t *testing.T) {
 	require.Len(t, transitions, 1)
 	assert.Equal(t, "result", transitions[0].Tag)
 }
+
+// --- YAML scope helpers ---
+
+// writeYaml creates a temp YAML file with the given content and returns its path.
+func writeYaml(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
+}
+
+// --- ListStateFiles — YAML scope ---
+
+func TestListStateFiles_YamlScope(t *testing.T) {
+	yamlPath := writeYaml(t, `states:
+  START:
+    prompt: "Start the workflow."
+  CHECK:
+    sh: |
+      #!/bin/sh
+      echo '<goto>DONE.md</goto>'
+  DONE:
+    prompt: "All done."
+`)
+	got, err := workflow.ListStateFiles(yamlPath, false)
+	require.NoError(t, err)
+	// On Unix: .sh is kept, .md is kept. Sorted.
+	assert.Equal(t, []string{"CHECK.sh", "DONE.md", "START.md"}, got)
+}
+
+func TestListStateFiles_YamlScope_WindowsMode(t *testing.T) {
+	yamlPath := writeYaml(t, `states:
+  START:
+    prompt: "Start the workflow."
+  CHECK:
+    sh: |
+      #!/bin/sh
+      echo hi
+    ps1: |
+      Write-Host "hi"
+  DONE:
+    prompt: "All done."
+`)
+	got, err := workflow.ListStateFiles(yamlPath, true)
+	require.NoError(t, err)
+	// Windows mode: .sh filtered out, .ps1 kept, .md kept. Sorted.
+	assert.Equal(t, []string{"CHECK.ps1", "DONE.md", "START.md"}, got)
+}
+
+// --- ReadFileContent — YAML scope ---
+
+func TestReadFileContent_YamlScope_Markdown(t *testing.T) {
+	yamlPath := writeYaml(t, `states:
+  START:
+    prompt: "Hello from YAML."
+`)
+	got, err := workflow.ReadFileContent(yamlPath, "START.md")
+	require.NoError(t, err)
+	assert.Contains(t, got, "Hello from YAML.")
+}
+
+func TestReadFileContent_YamlScope_Script(t *testing.T) {
+	yamlPath := writeYaml(t, `states:
+  CHECK:
+    sh: |
+      #!/bin/sh
+      echo done
+`)
+	got, err := workflow.ReadFileContent(yamlPath, "CHECK.sh")
+	require.NoError(t, err)
+	assert.Contains(t, got, "#!/bin/sh")
+	assert.Contains(t, got, "echo done")
+}

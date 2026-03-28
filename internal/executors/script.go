@@ -13,6 +13,7 @@ import (
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/platform"
 	wfstate "github.com/vector76/raymond/internal/state"
+	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -44,9 +45,28 @@ func (e *ScriptExecutor) Execute(
 	// Build full path to the script.
 	scriptPath := filepath.Join(scopeDir, currentState)
 
-	// For zip scopes: extract the script to a temp file.
+	// For YAML scopes: extract the script to a temp file.
 	var tmpPath string
-	if zipscope.IsZipScope(scopeDir) {
+	if yamlscope.IsYamlScope(scopeDir) {
+		var err error
+		tmpPath, err = yamlscope.ExtractScript(scopeDir, currentState)
+		if err != nil {
+			return ExecutionResult{}, &ScriptError{
+				Msg: fmt.Sprintf("failed to extract script from yaml: %v", err),
+			}
+		}
+		defer os.Remove(tmpPath)
+
+		if runtime.GOOS != "windows" {
+			if err := os.Chmod(tmpPath, 0o755); err != nil {
+				return ExecutionResult{}, &ScriptError{
+					Msg: fmt.Sprintf("failed to chmod extracted script: %v", err),
+				}
+			}
+		}
+		scriptPath = tmpPath
+	} else if zipscope.IsZipScope(scopeDir) {
+		// For zip scopes: extract the script to a temp file.
 		var err error
 		tmpPath, err = zipscope.ExtractScript(scopeDir, currentState)
 		if err != nil {

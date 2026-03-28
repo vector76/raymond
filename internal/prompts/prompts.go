@@ -2,8 +2,8 @@
 //
 // Four public functions:
 //
-//   - LoadPrompt  — reads a state file from a directory or zip scope and
-//     splits out any YAML frontmatter into a Policy.
+//   - LoadPrompt  — reads a state file from a YAML, zip, or directory scope
+//     and splits out any YAML frontmatter into a Policy.
 //   - RenderPrompt — replaces {{key}} template placeholders with values.
 //   - ResolveState — maps an abstract state name (e.g. "NEXT") to a concrete
 //     filename (e.g. "NEXT.md"), applying platform and priority rules.
@@ -18,8 +18,9 @@
 // Explicit filenames (e.g. "NEXT.md", "NEXT.sh") skip the search but are still
 // validated for platform compatibility.
 //
-// Zip scopes: when scopeDir ends in ".zip", all file operations are redirected
-// to the zip archive via the zipscope package.
+// Scope dispatch order: YAML (.yaml/.yml) → zip (.zip) → directory. YAML scopes
+// strip recognized state-file extensions before resolution so that "REVIEW.md"
+// and "REVIEW" resolve identically.
 package prompts
 
 import (
@@ -32,12 +33,13 @@ import (
 
 	"github.com/vector76/raymond/internal/platform"
 	"github.com/vector76/raymond/internal/policy"
+	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
-// LoadPrompt reads filename from scopeDir (or a zip archive) and parses any
-// YAML frontmatter. It returns the body (with frontmatter stripped), the
-// Policy (nil when no frontmatter is present), and any error.
+// LoadPrompt reads filename from scopeDir (YAML, zip, or directory scope) and
+// parses any YAML frontmatter. It returns the body (with frontmatter stripped),
+// the Policy (nil when no frontmatter is present), and any error.
 //
 // filename must not contain "/" or "\" (path traversal defense).
 func LoadPrompt(scopeDir, filename string) (string, *policy.Policy, error) {
@@ -50,7 +52,17 @@ func LoadPrompt(scopeDir, filename string) (string, *policy.Policy, error) {
 	var content string
 	var err error
 
-	if zipscope.IsZipScope(scopeDir) {
+	if yamlscope.IsYamlScope(scopeDir) {
+		content, err = yamlscope.ReadText(scopeDir, filename)
+		if err != nil {
+			var ynf *yamlscope.YamlFileNotFoundError
+			if errors.As(err, &ynf) {
+				return "", nil, fmt.Errorf(
+					"State file not found in yaml scope: %s (in %s)", filename, scopeDir)
+			}
+			return "", nil, err
+		}
+	} else if zipscope.IsZipScope(scopeDir) {
 		content, err = zipscope.ReadText(scopeDir, filename)
 		if err != nil {
 			var znf *zipscope.ZipFileNotFoundError
@@ -128,6 +140,10 @@ func ResolveState(scopeDir, stateName string) (string, error) {
 		return "", fmt.Errorf(
 			"State name %q contains path separator. State names must not contain / or \\",
 			stateName)
+	}
+
+	if yamlscope.IsYamlScope(scopeDir) {
+		return resolveStateFromYaml(scopeDir, stateName)
 	}
 
 	if zipscope.IsZipScope(scopeDir) {
@@ -366,6 +382,124 @@ func resolveStateFromZip(zipPath, stateName string) (string, error) {
 	return "", fmt.Errorf(
 		"State %q not found in %s. Looked for: %s, %s",
 		stateName, zipPath, mdName, shName)
+}
+
+// stateFileExtensions lists recognized extensions for state files, used by
+// resolveStateFromYaml to strip explicit extensions before resolution.
+var stateFileExtensions = map[string]bool{
+	".md": true, ".sh": true, ".ps1": true, ".bat": true,
+}
+
+// resolveStateFromYaml applies state resolution logic for YAML scopes.
+//
+// Before resolving, any recognized state-file extension (.md, .sh, .ps1, .bat)
+// is stripped from stateName so that "REVIEW.md" and "REVIEW" resolve
+// identically. This matches the YAML scope convention where states are
+// referenced by bare name.
+func resolveStateFromYaml(yamlPath, stateName string) (string, error) {
+	// Strip recognized extension if present.
+	rawExt := filepath.Ext(stateName)
+	if stateFileExtensions[strings.ToLower(rawExt)] {
+		stateName = strings.TrimSuffix(stateName, rawExt)
+	}
+
+	// List all virtual files in the YAML scope.
+	available, err := yamlscope.ListFiles(yamlPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to list yaml scope contents: %w", err)
+	}
+	avail := make(map[string]bool, len(available))
+	for _, f := range available {
+		avail[f] = true
+	}
+
+	mdName := stateName + ".md"
+	mdExists := avail[mdName]
+
+	if platform.IsWindows() {
+		ps1Name := stateName + ".ps1"
+		batName := stateName + ".bat"
+		shName := stateName + ".sh"
+		ps1Exists := avail[ps1Name]
+		batExists := avail[batName]
+		shExists := avail[shName]
+
+		if mdExists && (ps1Exists || batExists) {
+			switch {
+			case ps1Exists && batExists:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: %s, %s, and %s all exist. Use explicit extension.",
+					stateName, mdName, ps1Name, batName)
+			case ps1Exists:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
+					stateName, mdName, ps1Name)
+			default:
+				return "", fmt.Errorf(
+					"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
+					stateName, mdName, batName)
+			}
+		}
+		if mdExists {
+			return mdName, nil
+		}
+		if ps1Exists && batExists {
+			return "", fmt.Errorf(
+				"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
+				stateName, ps1Name, batName)
+		}
+		if ps1Exists {
+			return ps1Name, nil
+		}
+		if batExists {
+			return batName, nil
+		}
+		if shExists {
+			return "", fmt.Errorf(
+				"State %q not found. Only %s exists, which is not compatible with Windows.",
+				stateName, shName)
+		}
+		return "", fmt.Errorf(
+			"State %q not found in %s. Looked for: %s, %s, %s",
+			stateName, yamlPath, mdName, ps1Name, batName)
+	}
+
+	// Unix path.
+	shName := stateName + ".sh"
+	batName := stateName + ".bat"
+	ps1Name := stateName + ".ps1"
+	shExists := avail[shName]
+	batExists := avail[batName]
+	ps1Exists := avail[ps1Name]
+
+	if mdExists && shExists {
+		return "", fmt.Errorf(
+			"Ambiguous state %q: both %s and %s exist. Use explicit extension.",
+			stateName, mdName, shName)
+	}
+	if mdExists {
+		return mdName, nil
+	}
+	if shExists {
+		return shName, nil
+	}
+	switch {
+	case batExists && ps1Exists:
+		return "", fmt.Errorf(
+			"State %q not found. Only Windows scripts (%s, %s) exist, which are not compatible with this platform.",
+			stateName, batName, ps1Name)
+	case batExists:
+		return "", fmt.Errorf(
+			"State %q not found. Only %s exists, which is not compatible with this platform.",
+			stateName, batName)
+	case ps1Exists:
+		return "", fmt.Errorf(
+			"State %q not found. Only %s exists, which is not compatible with this platform.",
+			stateName, ps1Name)
+	}
+	return "", fmt.Errorf(
+		"State %q not found in %s. Looked for: %s, %s",
+		stateName, yamlPath, mdName, shName)
 }
 
 // GetStateType returns "markdown" for .md files or "script" for the

@@ -200,6 +200,7 @@ func listAllFiles(scopeDir string) ([]string, error) {
 }
 
 // resolveEntryPoint finds the entry point file among stateFiles (platform-neutral).
+// Multiple files for the same state (e.g. START.sh and START.ps1) are allowed.
 func resolveEntryPoint(stateFiles []string) (string, error) {
 	var startFile, oneStartFile string
 	for _, f := range stateFiles {
@@ -207,15 +208,13 @@ func resolveEntryPoint(stateFiles []string) (string, error) {
 		upper := strings.ToUpper(stem)
 		switch upper {
 		case "1_START":
-			if oneStartFile != "" {
-				return "", fmt.Errorf("multiple 1_START files found: %s and %s", oneStartFile, f)
+			if oneStartFile == "" {
+				oneStartFile = f
 			}
-			oneStartFile = f
 		case "START":
-			if startFile != "" {
-				return "", fmt.Errorf("multiple START files found: %s and %s", startFile, f)
+			if startFile == "" {
+				startFile = f
 			}
-			startFile = f
 		}
 	}
 	if oneStartFile != "" && startFile != "" {

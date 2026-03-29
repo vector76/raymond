@@ -435,15 +435,21 @@ func TestConvert_ScriptEntryPoint(t *testing.T) {
 }
 
 func TestResolveEntryPoint_Multiple1START(t *testing.T) {
-	_, err := resolveEntryPoint([]string{"1_START.md", "1_START.sh"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "multiple 1_START")
+	got, err := resolveEntryPoint([]string{"1_START.md", "1_START.sh"})
+	require.NoError(t, err)
+	assert.Equal(t, "1_START.md", got)
 }
 
 func TestResolveEntryPoint_MultipleSTART(t *testing.T) {
-	_, err := resolveEntryPoint([]string{"START.md", "START.sh"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "multiple START")
+	got, err := resolveEntryPoint([]string{"START.md", "START.sh"})
+	require.NoError(t, err)
+	assert.Equal(t, "START.md", got)
+}
+
+func TestResolveEntryPoint_MultipleSTARTScriptsOnly(t *testing.T) {
+	got, err := resolveEntryPoint([]string{"START.ps1", "START.sh"})
+	require.NoError(t, err)
+	assert.Equal(t, "START.ps1", got)
 }
 
 // ---------------------------------------------------------------------------

@@ -68,6 +68,7 @@ states:
 | `allowed_transitions` | list | no | Constrains which transitions the model may use |
 | `model` | string | no | Model override (`opus`, `sonnet`, `haiku`) |
 | `effort` | string | no | Extended thinking level (`low`, `medium`, `high`) |
+| `timeout` | number | no | Per-state timeout in seconds; overrides the global `--timeout` flag for this state. `0` means no timeout. Negative values are a validation error. |
 
 Each entry in `allowed_transitions` is a mapping with a `tag` key and optional
 attributes like `target`, `payload`, `return`, etc. — the same attributes used
@@ -98,6 +99,7 @@ At least one platform key must be present:
 | `sh` | string | Shell script (Unix) |
 | `ps1` | string | PowerShell script (Windows) |
 | `bat` | string | Batch script (Windows) |
+| `timeout` | number | Per-state timeout in seconds (same semantics as on markdown states) |
 
 **Restrictions:** Script states must not have `allowed_transitions`, `model`,
 or `effort` — these policy fields apply only to markdown states.
@@ -208,7 +210,7 @@ parser detects common state-like keys and suggests adding the wrapper.
 | **One file per state** | yes | yes (inside archive) | no — all states in one file |
 | **Best for** | Large workflows, version control | Distribution, immutable snapshots | Small workflows, prototyping |
 | **Script support** | `.sh`/`.bat`/`.ps1` files | Same, inside archive | `sh`/`ps1`/`bat` keys in state definition |
-| **Policy via frontmatter** | In each `.md` file | Same | `allowed_transitions`, `model`, `effort` keys |
+| **Policy via frontmatter** | In each `.md` file | Same | `allowed_transitions`, `model`, `effort`, `timeout` keys |
 | **CLI syntax** | `raymond dir/` or `raymond dir/FILE.md` | `raymond archive.zip` | `raymond workflow.yaml` or `raymond workflow.yaml/STATE` |
 
 ## Complete example
@@ -228,6 +230,7 @@ states:
         target: REPORT.md
     model: sonnet
     effort: high
+    timeout: 120
 
   FIX:
     prompt: |

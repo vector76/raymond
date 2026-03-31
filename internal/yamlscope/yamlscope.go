@@ -65,6 +65,7 @@ type yamlState struct {
 	AllowedTransitions []map[string]string `yaml:"allowed_transitions"`
 	Model              string              `yaml:"model"`
 	Effort             string              `yaml:"effort"`
+	Timeout            *float64            `yaml:"timeout"`
 }
 
 // YamlWorkflow is the validated, parsed representation of a YAML workflow file.
@@ -234,6 +235,13 @@ func Parse(yamlPath string) (*YamlWorkflow, error) {
 				return nil, &YamlValidationError{
 					msg: fmt.Sprintf("script state %q in %s must not have 'effort'", name, yamlPath),
 				}
+			}
+		}
+
+		// Timeout must not be negative if set.
+		if st.Timeout != nil && *st.Timeout < 0 {
+			return nil, &YamlValidationError{
+				msg: fmt.Sprintf("state %q in %s: timeout must not be negative", name, yamlPath),
 			}
 		}
 
@@ -445,4 +453,30 @@ func ExtractScript(yamlPath, filename string) (string, error) {
 		return "", fmt.Errorf("failed to close temp script file: %w", err)
 	}
 	return tmp.Name(), nil
+}
+
+// GetStateTimeout returns the per-state timeout for a named state in the YAML
+// workflow if explicitly set, or nil if the field was omitted. If the state
+// name is not present in the workflow, returns nil (same as omitted).
+// Returns a non-nil error only if the YAML file cannot be read or parsed.
+func GetStateTimeout(yamlPath, stateName string) (*float64, error) {
+	wf, err := Parse(yamlPath)
+	if err != nil {
+		return nil, err
+	}
+
+	st, ok := wf.States[stateName]
+	if !ok {
+		// State not found; treat same as omitted timeout field.
+		return nil, nil
+	}
+
+	if st.Timeout == nil {
+		// State found but timeout field was omitted.
+		return nil, nil
+	}
+
+	// State found and timeout field is set; return a copy of the value.
+	v := *st.Timeout
+	return &v, nil
 }

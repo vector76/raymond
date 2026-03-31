@@ -996,3 +996,191 @@ states:
 	assert.Empty(t, pol.Model)
 	assert.Empty(t, pol.Effort)
 }
+
+// --- Parse: timeout field ---
+
+func TestParse_TimeoutIntegerValue(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: 30
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	st := wf.States["work"]
+	require.NotNil(t, st.Timeout)
+	assert.Equal(t, 30.0, *st.Timeout)
+}
+
+func TestParse_TimeoutFloatValue(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: 30.5
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	st := wf.States["work"]
+	require.NotNil(t, st.Timeout)
+	assert.Equal(t, 30.5, *st.Timeout)
+}
+
+func TestParse_TimeoutZeroIsExplicit(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: 0
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	st := wf.States["work"]
+	require.NotNil(t, st.Timeout)
+	assert.Equal(t, 0.0, *st.Timeout)
+}
+
+func TestParse_TimeoutOmittedIsNil(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	st := wf.States["work"]
+	assert.Nil(t, st.Timeout)
+}
+
+func TestParse_TimeoutNegativeReturnsValidationError(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: -1
+`)
+	_, err := Parse(p)
+	require.Error(t, err)
+	var ve *YamlValidationError
+	assert.ErrorAs(t, err, &ve)
+	assert.Contains(t, err.Error(), "work")
+	assert.Contains(t, err.Error(), "timeout")
+}
+
+func TestParse_TimeoutValidOnMarkdownState(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: 45.5
+    model: sonnet
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	st := wf.States["work"]
+	require.NotNil(t, st.Timeout)
+	assert.Equal(t, 45.5, *st.Timeout)
+	assert.Equal(t, "sonnet", st.Model)
+}
+
+func TestParse_TimeoutValidOnScriptState(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  build:
+    sh: "make build"
+    timeout: 120
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	st := wf.States["build"]
+	require.NotNil(t, st.Timeout)
+	assert.Equal(t, 120.0, *st.Timeout)
+}
+
+// --- GetStateTimeout accessor ---
+
+func TestGetStateTimeout_StateWithTimeout(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: 30
+`)
+	result, err := GetStateTimeout(p, "work")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, 30.0, *result)
+}
+
+func TestGetStateTimeout_StateWithZeroTimeout(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: 0
+`)
+	result, err := GetStateTimeout(p, "work")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, 0.0, *result)
+}
+
+func TestGetStateTimeout_StateWithoutTimeout(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+`)
+	result, err := GetStateTimeout(p, "work")
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestGetStateTimeout_StateNotPresent(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  work:
+    prompt: "Do something"
+    timeout: 30
+`)
+	result, err := GetStateTimeout(p, "nonexistent")
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestGetStateTimeout_ParseError(t *testing.T) {
+	result, err := GetStateTimeout("/nonexistent/path.yaml", "work")
+	assert.Error(t, err)
+	assert.Nil(t, result)
+}
+
+func TestGetStateTimeout_MultipleStates(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  first:
+    prompt: "First"
+    timeout: 60
+  second:
+    prompt: "Second"
+    timeout: 30
+  third:
+    prompt: "Third"
+`)
+	// Query first state.
+	result1, err := GetStateTimeout(p, "first")
+	require.NoError(t, err)
+	require.NotNil(t, result1)
+	assert.Equal(t, 60.0, *result1)
+
+	// Query second state.
+	result2, err := GetStateTimeout(p, "second")
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+	assert.Equal(t, 30.0, *result2)
+
+	// Query third state (no timeout).
+	result3, err := GetStateTimeout(p, "third")
+	require.NoError(t, err)
+	assert.Nil(t, result3)
+}

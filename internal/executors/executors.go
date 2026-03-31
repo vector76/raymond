@@ -23,6 +23,13 @@ type ExecutionResult struct {
 	CostUSD     float64              // 0.0 for script states
 }
 
+// sharedStepState holds the shared mutable step counter state that must be
+// shared across all copies of an ExecutionContext.
+type sharedStepState struct {
+	mu sync.Mutex
+	m  map[string]int // per-agent step counter for debug filenames
+}
+
 // ExecutionContext holds shared configuration and mutable step-counters passed
 // to every executor invocation.
 type ExecutionContext struct {
@@ -35,21 +42,32 @@ type ExecutionContext struct {
 	Timeout                    float64 // ≤ 0 = no timeout
 	DangerouslySkipPermissions bool
 
-	stepMu       sync.Mutex
-	StepCounters map[string]int // per-agent step counter for debug filenames; guarded by stepMu
+	steps *sharedStepState // shared mutable state for step counters
 }
 
 // GetNextStepNumber increments and returns the step counter for agentID.
 // Step numbers are 1-indexed and tracked separately per agent.
 // Safe for concurrent calls.
 func (c *ExecutionContext) GetNextStepNumber(agentID string) int {
-	c.stepMu.Lock()
-	defer c.stepMu.Unlock()
-	if c.StepCounters == nil {
-		c.StepCounters = make(map[string]int)
+	if c.steps == nil {
+		panic("ExecutionContext.GetNextStepNumber: steps is nil; ExecutionContext must be initialized via NewExecutionContext()")
 	}
-	c.StepCounters[agentID]++
-	return c.StepCounters[agentID]
+	c.steps.mu.Lock()
+	defer c.steps.mu.Unlock()
+	c.steps.m[agentID]++
+	return c.steps.m[agentID]
+}
+
+// NewExecutionContext creates a new ExecutionContext with the shared step
+// counter state properly initialized. The caller should then set any desired
+// fields on the returned context before using it. All copies of the context
+// will share the same underlying step counter state.
+func NewExecutionContext() *ExecutionContext {
+	return &ExecutionContext{
+		steps: &sharedStepState{
+			m: make(map[string]int),
+		},
+	}
 }
 
 // StateExecutor is the common interface for MarkdownExecutor and ScriptExecutor.

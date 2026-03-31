@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,26 +114,21 @@ func TestExecutionContext_Creation(t *testing.T) {
 	if ctx.DangerouslySkipPermissions {
 		t.Error("DangerouslySkipPermissions should default to false")
 	}
-	if ctx.StepCounters != nil {
-		t.Error("StepCounters should default to nil")
-	}
 }
 
 func TestExecutionContext_WithAllFields(t *testing.T) {
 	b := newBus()
 	debugDir := t.TempDir()
 
-	ctx := &executors.ExecutionContext{
-		Bus:                        b,
-		WorkflowID:                 "test-002",
-		DebugDir:                   debugDir,
-		StateDir:                   "/path/to/state",
-		DefaultModel:               "sonnet",
-		DefaultEffort:              "high",
-		Timeout:                    300.0,
-		DangerouslySkipPermissions: true,
-		StepCounters:               map[string]int{"main": 5},
-	}
+	ctx := executors.NewExecutionContext()
+	ctx.Bus = b
+	ctx.WorkflowID = "test-002"
+	ctx.DebugDir = debugDir
+	ctx.StateDir = "/path/to/state"
+	ctx.DefaultModel = "sonnet"
+	ctx.DefaultEffort = "high"
+	ctx.Timeout = 300.0
+	ctx.DangerouslySkipPermissions = true
 
 	if ctx.DebugDir != debugDir {
 		t.Errorf("DebugDir = %q, want %q", ctx.DebugDir, debugDir)
@@ -152,20 +148,19 @@ func TestExecutionContext_WithAllFields(t *testing.T) {
 	if !ctx.DangerouslySkipPermissions {
 		t.Error("DangerouslySkipPermissions should be true")
 	}
-	if ctx.StepCounters["main"] != 5 {
-		t.Errorf("StepCounters[main] = %d, want 5", ctx.StepCounters["main"])
-	}
 }
 
 func TestExecutionContext_GetNextStepNumber_First(t *testing.T) {
-	ctx := &executors.ExecutionContext{Bus: newBus()}
+	ctx := executors.NewExecutionContext()
+	ctx.Bus = newBus()
 	if n := ctx.GetNextStepNumber("main"); n != 1 {
 		t.Errorf("first step = %d, want 1", n)
 	}
 }
 
 func TestExecutionContext_GetNextStepNumber_Increments(t *testing.T) {
-	ctx := &executors.ExecutionContext{Bus: newBus()}
+	ctx := executors.NewExecutionContext()
+	ctx.Bus = newBus()
 	if n := ctx.GetNextStepNumber("main"); n != 1 {
 		t.Errorf("step 1 = %d", n)
 	}
@@ -178,7 +173,8 @@ func TestExecutionContext_GetNextStepNumber_Increments(t *testing.T) {
 }
 
 func TestExecutionContext_GetNextStepNumber_PerAgent(t *testing.T) {
-	ctx := &executors.ExecutionContext{Bus: newBus()}
+	ctx := executors.NewExecutionContext()
+	ctx.Bus = newBus()
 	if n := ctx.GetNextStepNumber("main"); n != 1 {
 		t.Errorf("main step 1 = %d", n)
 	}
@@ -190,6 +186,75 @@ func TestExecutionContext_GetNextStepNumber_PerAgent(t *testing.T) {
 	}
 	if n := ctx.GetNextStepNumber("worker"); n != 2 {
 		t.Errorf("worker step 2 = %d", n)
+	}
+}
+
+func TestExecutionContext_CopySharesStepCounters(t *testing.T) {
+	// Create an ExecutionContext via NewExecutionContext.
+	original := executors.NewExecutionContext()
+	original.Bus = newBus()
+
+	// Make a struct copy (shallow copy).
+	copy := *original
+
+	// Concurrently call GetNextStepNumber on both the original and the copy.
+	// Collect results to verify they form a single shared sequence.
+	results := make([]int, 0, 4)
+	var resultsMu sync.Mutex
+	var wg sync.WaitGroup
+
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		n := original.GetNextStepNumber("agent1")
+		resultsMu.Lock()
+		results = append(results, n)
+		resultsMu.Unlock()
+	}()
+
+	go func() {
+		defer wg.Done()
+		n := copy.GetNextStepNumber("agent1")
+		resultsMu.Lock()
+		results = append(results, n)
+		resultsMu.Unlock()
+	}()
+
+	go func() {
+		defer wg.Done()
+		n := original.GetNextStepNumber("agent1")
+		resultsMu.Lock()
+		results = append(results, n)
+		resultsMu.Unlock()
+	}()
+
+	go func() {
+		defer wg.Done()
+		n := copy.GetNextStepNumber("agent1")
+		resultsMu.Lock()
+		results = append(results, n)
+		resultsMu.Unlock()
+	}()
+
+	// Wait for all goroutines to complete.
+	wg.Wait()
+
+	// Verify all 4 values are present and distinct (1, 2, 3, 4).
+	// If they weren't sharing state, we'd see duplicates.
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(results))
+	}
+
+	// Check that we have exactly {1, 2, 3, 4} in any order.
+	seen := make(map[int]bool)
+	for _, v := range results {
+		if v < 1 || v > 4 {
+			t.Errorf("unexpected step number: %d", v)
+		}
+		if seen[v] {
+			t.Errorf("step number %d appears more than once — copies are not sharing counters", v)
+		}
+		seen[v] = true
 	}
 }
 
@@ -712,11 +777,10 @@ func TestScriptExecutor_EmitsScriptOutputEventWithDebug(t *testing.T) {
 	scriptOutputs, cancel := collectEvents[events.ScriptOutput](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{
-		Bus:        b,
-		WorkflowID: wfState.WorkflowID,
-		DebugDir:   debugDir,
-	}
+	execCtx := executors.NewExecutionContext()
+	execCtx.Bus = b
+	execCtx.WorkflowID = wfState.WorkflowID
+	execCtx.DebugDir = debugDir
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{
@@ -780,10 +844,9 @@ func TestScriptExecutor_WritesDebugFiles(t *testing.T) {
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
 	debugDir := t.TempDir()
 
-	execCtx := &executors.ExecutionContext{
-		Bus:      newBus(),
-		DebugDir: debugDir,
-	}
+	execCtx := executors.NewExecutionContext()
+	execCtx.Bus = newBus()
+	execCtx.DebugDir = debugDir
 
 	executors.SetRunScriptFn(makeMockRunScript(
 		&platform.ScriptResult{
@@ -1100,10 +1163,9 @@ func TestMarkdownExecutor_EmitsClaudeStreamOutputWithDebug(t *testing.T) {
 	streamOutputs, cancel := collectEvents[events.ClaudeStreamOutput](b)
 	defer cancel()
 
-	execCtx := &executors.ExecutionContext{
-		Bus:      b,
-		DebugDir: debugDir,
-	}
+	execCtx := executors.NewExecutionContext()
+	execCtx.Bus = b
+	execCtx.DebugDir = debugDir
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{
@@ -1154,10 +1216,9 @@ func TestMarkdownExecutor_WritesJSONLDebugFile(t *testing.T) {
 	defer obs.Close()
 	b.Emit(events.WorkflowStarted{DebugDir: debugDir})
 
-	execCtx := &executors.ExecutionContext{
-		Bus:      b,
-		DebugDir: debugDir,
-	}
+	execCtx := executors.NewExecutionContext()
+	execCtx.Bus = b
+	execCtx.DebugDir = debugDir
 
 	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
 		return makeMockStream([]map[string]any{

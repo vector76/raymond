@@ -33,22 +33,24 @@ import (
 
 // mockExec is a StateExecutor whose results are pre-programmed.
 type mockExec struct {
-	mu      sync.Mutex
-	results []executors.ExecutionResult
-	errs    []error
-	idx     int
+	mu           sync.Mutex
+	results      []executors.ExecutionResult
+	errs         []error
+	idx          int
+	capturedCtx  []*executors.ExecutionContext // captured contexts for inspection
 }
 
 func (m *mockExec) Execute(
 	_ context.Context,
 	_ *wfstate.AgentState,
 	wfState *wfstate.WorkflowState,
-	_ *executors.ExecutionContext,
+	execCtx *executors.ExecutionContext,
 ) (executors.ExecutionResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	i := m.idx
 	m.idx++
+	m.capturedCtx = append(m.capturedCtx, execCtx)
 	if m.errs != nil && i < len(m.errs) && m.errs[i] != nil {
 		return executors.ExecutionResult{}, m.errs[i]
 	}
@@ -64,6 +66,17 @@ func (m *mockExec) Execute(
 		return res, nil
 	}
 	return executors.ExecutionResult{}, errors.New("mock: no more results configured")
+}
+
+// capturedTimeouts returns the Timeout values from all captured execution contexts.
+func (m *mockExec) capturedTimeouts() []float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var timeouts []float64
+	for _, ctx := range m.capturedCtx {
+		timeouts = append(timeouts, ctx.Timeout)
+	}
+	return timeouts
 }
 
 // newMock returns a mockExec whose calls succeed in order.
@@ -132,6 +145,25 @@ func setupWorkflow(t *testing.T, agentState string) (stateDir, workflowID string
 	ws := wfstate.CreateInitialState(workflowID, "workflows/test", agentState, 0, nil, "")
 	require.NoError(t, wfstate.WriteState(workflowID, ws, dir))
 	return dir, workflowID
+}
+
+// setupYamlWorkflow creates a YAML workflow file and state file, returning the
+// state directory and workflow ID. The YAML file path is used as the ScopeDir.
+func setupYamlWorkflow(t *testing.T, yamlContent, initialState string) (stateDir, workflowID string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	stateDir = filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	// Write YAML workflow file.
+	yamlPath := filepath.Join(tmpDir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(yamlPath, []byte(yamlContent), 0o644))
+
+	// Create initial state with YAML file path as ScopeDir.
+	workflowID = "test-wf-yaml"
+	ws := wfstate.CreateInitialState(workflowID, yamlPath, initialState, 0, nil, "")
+	require.NoError(t, wfstate.WriteState(workflowID, ws, stateDir))
+	return stateDir, workflowID
 }
 
 // defaultOpts returns minimal RunOptions pointing at dir.
@@ -2064,4 +2096,121 @@ func TestURLScope_ErrorPath(t *testing.T) {
 	assert.Equal(t, "paused", ws.Agents[0].Status)
 	assert.Contains(t, ws.Agents[0].Error, "no-hash.zip",
 		"error should mention the problematic URL/filename")
+}
+
+// --- Per-state timeout tests ---
+
+func TestPerStateTimeout_YamlScope_ExplicitTimeout(t *testing.T) {
+	yamlContent := `
+states:
+  WORK:
+    prompt: "Do work"
+    timeout: 120
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "WORK.md")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	// Executor should receive the per-state timeout (120), not the global timeout (60).
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 1)
+	assert.Equal(t, 120.0, timeouts[0])
+}
+
+func TestPerStateTimeout_YamlScope_InheritsGlobal(t *testing.T) {
+	yamlContent := `
+states:
+  WORK:
+    prompt: "Do work"
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "WORK.md")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	// Executor should receive the global timeout (60) since state has no timeout field.
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 1)
+	assert.Equal(t, 60.0, timeouts[0])
+}
+
+func TestPerStateTimeout_YamlScope_ZeroMeansNoTimeout(t *testing.T) {
+	yamlContent := `
+states:
+  WORK:
+    prompt: "Do work"
+    timeout: 0
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "WORK.md")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	// Executor should receive 0 (no timeout), even though global timeout is 60.
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 1)
+	assert.Equal(t, 0.0, timeouts[0])
+}
+
+func TestPerStateTimeout_YamlScope_MixedStates(t *testing.T) {
+	yamlContent := `
+states:
+  FIRST:
+    prompt: "First task"
+    timeout: 999
+  SECOND:
+    prompt: "Second task"
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "FIRST.md")
+
+	mock := newMock(
+		gotoResult("SECOND.md"),
+		resultExecResult("done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 30
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	// First call should receive per-state timeout (999),
+	// second call should receive global timeout (30).
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 2)
+	assert.Equal(t, 999.0, timeouts[0])
+	assert.Equal(t, 30.0, timeouts[1])
+}
+
+func TestPerStateTimeout_NonYamlScope_UsesGlobal(t *testing.T) {
+	stateDir, wfID := setupWorkflow(t, "START.md")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 45
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	// Directory-scope workflows always use the global timeout.
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 1)
+	assert.Equal(t, 45.0, timeouts[0])
 }

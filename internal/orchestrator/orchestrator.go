@@ -36,6 +36,7 @@ import (
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/transitions"
+	"github.com/vector76/raymond/internal/yamlscope"
 )
 
 // MaxRetries is the number of retryable errors allowed before an agent is
@@ -150,16 +151,15 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		opts.ObserverSetup(b)
 	}
 
-	execCtx := &executors.ExecutionContext{
-		Bus:                        b,
-		WorkflowID:                 workflowID,
-		DebugDir:                   debugDir,
-		StateDir:                   stateDir,
-		DefaultModel:               opts.DefaultModel,
-		DefaultEffort:              opts.DefaultEffort,
-		Timeout:                    opts.Timeout,
-		DangerouslySkipPermissions: opts.DangerouslySkipPermissions,
-	}
+	execCtx := executors.NewExecutionContext()
+	execCtx.Bus = b
+	execCtx.WorkflowID = workflowID
+	execCtx.DebugDir = debugDir
+	execCtx.StateDir = stateDir
+	execCtx.DefaultModel = opts.DefaultModel
+	execCtx.DefaultEffort = opts.DefaultEffort
+	execCtx.Timeout = opts.Timeout
+	execCtx.DangerouslySkipPermissions = opts.DangerouslySkipPermissions
 
 	b.Emit(events.WorkflowStarted{
 		WorkflowID: workflowID,
@@ -192,8 +192,30 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			ScopeDir:     ws.ScopeDir,
 		}
 		exec := executorFactory(agentCopy.CurrentState)
+
+		// Compute the effective timeout for this state.
+		effectiveTimeout := execCtx.Timeout
+		if yamlscope.IsYamlScope(localWS.ScopeDir) {
+			stateName := executors.ExtractStateName(agentCopy.CurrentState)
+			perStateTimeout, err := yamlscope.GetStateTimeout(localWS.ScopeDir, stateName)
+			if err != nil {
+				resultCh <- stepResult{
+					agentID: agentCopy.ID,
+					err:     err,
+				}
+				return
+			}
+			if perStateTimeout != nil {
+				effectiveTimeout = *perStateTimeout
+			}
+		}
+
+		// Create a per-launch copy of execCtx with the effective timeout.
+		launchCtx := *execCtx
+		launchCtx.Timeout = effectiveTimeout
+
 		go func() {
-			execResult, execErr := exec.Execute(ctx, &agentCopy, localWS, execCtx)
+			execResult, execErr := exec.Execute(ctx, &agentCopy, localWS, &launchCtx)
 			resultCh <- stepResult{
 				agentID:    agentCopy.ID,
 				execResult: execResult,

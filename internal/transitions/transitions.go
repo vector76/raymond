@@ -227,6 +227,7 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 				Cwd:          frame.Cwd,
 				NestingDepth: frame.NestingDepth,
 				ScopeURL:     frame.ScopeURL,
+				TaskFolder:   frame.TaskFolder,
 			}
 		}
 	}
@@ -370,6 +371,7 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
+		TaskFolder:   agent.TaskFolder,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.SessionID = nil
@@ -407,6 +409,7 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
+		TaskFolder:   agent.TaskFolder,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.ForkSessionID = callerSession
@@ -656,6 +659,7 @@ func HandleCallWorkflow(
 		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
+		TaskFolder:   agent.TaskFolder,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.NestingDepth = agent.NestingDepth + 1
@@ -711,6 +715,7 @@ func HandleFunctionWorkflow(
 		ScopeURL:     agent.ScopeURL,
 		Cwd:          agent.Cwd,
 		NestingDepth: agent.NestingDepth,
+		TaskFolder:   agent.TaskFolder,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.NestingDepth = agent.NestingDepth + 1
@@ -776,6 +781,10 @@ func HandleResult(
 	// NestingDepth is always restored; 0 is the correct default for both old frames
 	// and frames saved from a depth-0 agent.
 	agent.NestingDepth = frame.NestingDepth
+	// TaskFolder: migration-safe restore; empty means old state file predating this field.
+	if frame.TaskFolder != "" {
+		agent.TaskFolder = frame.TaskFolder
+	}
 
 	return TransitionResult{Agent: &agent}
 }

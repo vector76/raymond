@@ -2765,3 +2765,104 @@ func TestFunctionWorkflowResultClearsScopeURLForFilesystemCaller(t *testing.T) {
 	assert.Equal(t, "", r2.Agent.ScopeURL) // restored to filesystem caller's ""
 }
 
+// ----------------------------------------------------------------------------
+// TaskFolder propagation: HandleFunction, HandleCall, HandleResult,
+// HandleCallWorkflow, HandleFunctionWorkflow
+// ----------------------------------------------------------------------------
+
+func TestHandleFunctionPushesTaskFolderInFrame(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "tasks/my-task"
+	tr := parsing.Transition{Tag: "function", Target: "EVAL.md", Attributes: map[string]string{"return": "NEXT.md"}}
+
+	result, err := transitions.HandleFunction(agent, tr)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "tasks/my-task", result.Agent.Stack[0].TaskFolder)
+}
+
+func TestHandleCallPushesTaskFolderInFrame(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "tasks/my-task"
+	tr := parsing.Transition{Tag: "call", Target: "CHILD.md", Attributes: map[string]string{"return": "NEXT.md"}}
+
+	result, err := transitions.HandleCall(agent, tr)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "tasks/my-task", result.Agent.Stack[0].TaskFolder)
+}
+
+func TestHandleResultRestoresTaskFolderFromFrame(t *testing.T) {
+	agent := makeAgent("main", "EVAL.md", strPtr("session_sub"))
+	agent.TaskFolder = "tasks/current"
+	agent.Stack = []wfstate.StackFrame{
+		{
+			Session:    strPtr("session_caller"),
+			State:      "NEXT.md",
+			TaskFolder: "tasks/caller",
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+
+	result := transitions.HandleResult(agent, tr, wfState)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "tasks/caller", result.Agent.TaskFolder)
+}
+
+func TestHandleResultPreservesTaskFolderWhenFrameEmpty(t *testing.T) {
+	// Migration case: frame from old state file has empty TaskFolder.
+	// Agent's existing TaskFolder must be preserved unchanged.
+	agent := makeAgent("main", "EVAL.md", strPtr("session_sub"))
+	agent.TaskFolder = "tasks/current"
+	agent.Stack = []wfstate.StackFrame{
+		{
+			Session:    strPtr("session_caller"),
+			State:      "NEXT.md",
+			TaskFolder: "", // old state file — field absent
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+
+	result := transitions.HandleResult(agent, tr, wfState)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "tasks/current", result.Agent.TaskFolder)
+}
+
+func TestHandleCallWorkflowPushesTaskFolderInFrame(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/workflows/caller"
+	agent.Cwd = "/repo/caller"
+	agent.TaskFolder = "tasks/my-task"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := callWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleCallWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "tasks/my-task", result.Agent.Stack[0].TaskFolder)
+}
+
+func TestHandleFunctionWorkflowPushesTaskFolderInFrame(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = "/workflows/caller"
+	agent.Cwd = "/repo/caller"
+	agent.TaskFolder = "tasks/my-task"
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	wfState := &wfstate.WorkflowState{}
+	tr := functionWorkflowTransition(map[string]string{"return": "AFTER.md"})
+
+	result, err := transitions.HandleFunctionWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, "tasks/my-task", result.Agent.Stack[0].TaskFolder)
+}
+

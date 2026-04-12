@@ -115,11 +115,11 @@ type stepResult struct {
 // recovery, and launches goroutines for any new or reactivated agents.
 func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error {
 	stateDir := wfstate.GetStateDir(opts.StateDir)
+	raymondDir := filepath.Dir(stateDir)
 
 	// Resolve the fetcher: use the injected one or construct from the registry.
 	fetch := opts.Fetcher
 	if fetch == nil {
-		raymondDir := filepath.Dir(stateDir)
 		reg := registry.New(raymondDir)
 		fetch = reg.Fetch
 	}
@@ -136,6 +136,20 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// Initialise transient map that is never persisted (json:"-") but must be
 	// writable from the first HandleResult call.
 	ws.AgentTerminationResults = make(map[string]string)
+
+	// Resolve and store the task folder pattern.
+	pattern := opts.TaskFolderPattern
+	if pattern == "" {
+		pattern = filepath.Join(raymondDir, "tasks", "{{workflow_id}}", "{{agent_id}}")
+	}
+	if !filepath.IsAbs(pattern) {
+		pattern = filepath.Join(raymondDir, pattern)
+	}
+	ws.TaskFolderPattern = pattern
+
+	if err := initTaskFolders(ws); err != nil {
+		return fmt.Errorf("init task folders: %w", err)
+	}
 
 	// Create debug directory if debug is enabled.
 	debugDir := ""
@@ -232,16 +246,22 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// launchActive launches goroutines for all active agents that don't already
 	// have one running. Called after every state change to ensure all active
 	// agents (including newly spawned workers) are running.
-	launchActive := func() {
+	launchActive := func() error {
+		if err := initTaskFolders(ws); err != nil {
+			return err
+		}
 		for i, a := range ws.Agents {
 			if a.Status != wfstate.AgentStatusPaused && !running[a.ID] {
 				launch(ws.Agents[i])
 			}
 		}
+		return nil
 	}
 
 	// Start: launch goroutines for all initial active agents.
-	launchActive()
+	if err := launchActive(); err != nil {
+		return err
+	}
 
 	for {
 		// When no goroutines are in flight, evaluate terminal conditions.
@@ -281,7 +301,9 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 						}
 						b.Emit(events.WorkflowResuming{WorkflowID: workflowID, Timestamp: time.Now()})
 						resetPausedAgents(ws)
-						launchActive()
+						if err := launchActive(); err != nil {
+							return err
+						}
 						continue
 					}
 				}
@@ -312,7 +334,9 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			agentIdx := findAgentByID(ws.Agents, result.agentID)
 			if agentIdx < 0 {
 				// Agent was already removed (shouldn't happen).
-				launchActive()
+				if err := launchActive(); err != nil {
+					return err
+				}
 				continue
 			}
 
@@ -363,12 +387,34 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 			// Launch goroutines for all active agents that don't have one yet
 			// (includes any new workers just appended to ws.Agents).
-			launchActive()
+			if err := launchActive(); err != nil {
+				return err
+			}
 
 			// Write state for crash recovery.
 			if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
 				return fmt.Errorf("write state: %w", err)
 			}
+		}
+	}
+	return nil
+}
+
+// initTaskFolders assigns and creates on-disk task folders for every agent in
+// ws that does not already have one. Called at startup and before each
+// launchActive to cover newly spawned workers.
+func initTaskFolders(ws *wfstate.WorkflowState) error {
+	for i := range ws.Agents {
+		if ws.Agents[i].TaskFolder == "" {
+			ws.Agents[i].TaskFolder = wfstate.ComputeTaskFolderPath(
+				ws.TaskFolderPattern,
+				ws.WorkflowID,
+				ws.Agents[i].ID,
+				ws.Agents[i].TaskCount,
+			)
+		}
+		if err := os.MkdirAll(ws.Agents[i].TaskFolder, 0o755); err != nil {
+			return fmt.Errorf("create task folder %s: %w", ws.Agents[i].TaskFolder, err)
 		}
 	}
 	return nil

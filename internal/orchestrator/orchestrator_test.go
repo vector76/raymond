@@ -2214,3 +2214,50 @@ func TestPerStateTimeout_NonYamlScope_UsesGlobal(t *testing.T) {
 	require.Len(t, timeouts, 1)
 	assert.Equal(t, 45.0, timeouts[0])
 }
+
+// ----------------------------------------------------------------------------
+// Task folder bootstrapping
+// ----------------------------------------------------------------------------
+
+func TestTaskFolderCreated_OnRun(t *testing.T) {
+	stateDir, wfID := setupWorkflow(t, "START.md")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(stateDir)))
+
+	// Default pattern: <raymondDir>/tasks/<workflowID>/main
+	raymondDir := filepath.Dir(stateDir)
+	expectedFolder := filepath.Join(raymondDir, "tasks", wfID, "main")
+	_, err := os.Stat(expectedFolder)
+	require.NoError(t, err, "task folder should exist on disk after RunAllAgents")
+}
+
+func TestTaskFolderRecreated_OnResume(t *testing.T) {
+	stateDir, wfID := setupWorkflow(t, "START.md")
+
+	// Pre-assign a TaskFolder in the state so it simulates a prior run.
+	ws, err := wfstate.ReadState(wfID, stateDir)
+	require.NoError(t, err)
+	require.NotEmpty(t, ws.Agents)
+	customFolder := filepath.Join(t.TempDir(), "my-task-folder")
+	ws.Agents[0].TaskFolder = customFolder
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	// Delete the folder to simulate it being absent at resume time.
+	require.NoError(t, os.MkdirAll(customFolder, 0o755))
+	require.NoError(t, os.Remove(customFolder))
+	_, err = os.Stat(customFolder)
+	require.True(t, os.IsNotExist(err), "folder should not exist before resume")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(stateDir)))
+
+	_, err = os.Stat(customFolder)
+	require.NoError(t, err, "task folder should be recreated on resume")
+}

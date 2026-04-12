@@ -83,6 +83,11 @@ type RunOptions struct {
 	// to simulate a mid-run resume without the initial status clearing).
 	NoResetPaused bool
 
+	// TaskFolderPattern overrides the task folder location pattern.
+	// Supports {{workflow_id}} and {{agent_id}} template variables.
+	// Empty string uses the default (.raymond/tasks/{{workflow_id}}/{{agent_id}}).
+	TaskFolderPattern string
+
 	// Fetcher is the function used to download remote workflow zip files.
 	// If nil, a registry.Registry rooted at the state directory's parent is used.
 	Fetcher specifier.Fetcher

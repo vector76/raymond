@@ -244,6 +244,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				Quiet:                      quiet,
 				Debug:                      !merged.NoDebug,
 				NoWait:                     merged.NoWait,
+				TaskFolderPattern:          merged.TaskFolderPattern,
 			}
 			opts.ObserverSetup = func(b *bus.Bus) {
 				console.New(b, quiet, 0)

@@ -333,6 +333,32 @@ func TestValidateConfigAllValidValues(t *testing.T) {
 	assert.Equal(t, "high", result["effort"])
 }
 
+func TestValidateConfigTaskFolderPatternValidString(t *testing.T) {
+	result, err := config.ValidateConfig(map[string]any{"task_folder_pattern": ".tasks/{{workflow_id}}/{{agent_id}}"}, "config.toml")
+	require.NoError(t, err)
+	assert.Equal(t, ".tasks/{{workflow_id}}/{{agent_id}}", result["task_folder_pattern"])
+}
+
+func TestValidateConfigTaskFolderPatternEmptyStringAccepted(t *testing.T) {
+	result, err := config.ValidateConfig(map[string]any{"task_folder_pattern": ""}, "config.toml")
+	require.NoError(t, err)
+	assert.Equal(t, "", result["task_folder_pattern"])
+}
+
+func TestValidateConfigTaskFolderPatternNonStringReturnsError(t *testing.T) {
+	_, err := config.ValidateConfig(map[string]any{"task_folder_pattern": 42}, "config.toml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "task_folder_pattern")
+	assert.Contains(t, err.Error(), "expected string")
+	assert.Contains(t, err.Error(), "int")
+}
+
+func TestValidateConfigTaskFolderPatternAbsentNotInResult(t *testing.T) {
+	result, err := config.ValidateConfig(map[string]any{"budget": float64(10)}, "config.toml")
+	require.NoError(t, err)
+	assert.NotContains(t, result, "task_folder_pattern")
+}
+
 // ----------------------------------------------------------------------------
 // LoadConfig
 // ----------------------------------------------------------------------------
@@ -588,6 +614,30 @@ func TestMergeConfigFillsMissingNameFromConfig(t *testing.T) {
 
 	result := config.MergeConfig(fileConfig, args)
 	assert.Equal(t, "my-project", result.Name)
+}
+
+func TestMergeConfigFillsTaskFolderPatternFromConfig(t *testing.T) {
+	args := config.CLIArgs{} // TaskFolderPattern is ""
+	fileConfig := map[string]any{"task_folder_pattern": ".custom/{{workflow_id}}/{{agent_id}}"}
+
+	result := config.MergeConfig(fileConfig, args)
+	assert.Equal(t, ".custom/{{workflow_id}}/{{agent_id}}", result.TaskFolderPattern)
+}
+
+func TestMergeConfigTaskFolderPatternNotOverriddenWhenAlreadySet(t *testing.T) {
+	args := config.CLIArgs{TaskFolderPattern: "existing-pattern"}
+	fileConfig := map[string]any{"task_folder_pattern": "config-pattern"}
+
+	result := config.MergeConfig(fileConfig, args)
+	assert.Equal(t, "existing-pattern", result.TaskFolderPattern)
+}
+
+func TestMergeConfigTaskFolderPatternEmptyStringInConfigNotApplied(t *testing.T) {
+	args := config.CLIArgs{}
+	fileConfig := map[string]any{"task_folder_pattern": ""}
+
+	result := config.MergeConfig(fileConfig, args)
+	assert.Equal(t, "", result.TaskFolderPattern)
 }
 
 func TestMergeConfigEmptyFileConfig(t *testing.T) {

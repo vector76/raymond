@@ -49,6 +49,7 @@ type CLIArgs struct {
 	NoDebug                    bool
 	NoWait                     bool
 	Verbose                    bool
+	TaskFolderPattern          string // "" if not specified; config-file-only
 }
 
 // FindProjectRoot returns the directory containing .git, searching upward from
@@ -158,6 +159,7 @@ var knownKeys = map[string]bool{
 	"no_debug":                    true,
 	"no_wait":                     true,
 	"verbose":                     true,
+	"task_folder_pattern":         true,
 }
 
 // ValidateConfig validates the configuration values in config, filters out
@@ -238,6 +240,15 @@ func ValidateConfig(config map[string]any, configFile string) (map[string]any, e
 		if _, isStr := v.(string); !isStr {
 			return nil, &ConfigError{msg: fmt.Sprintf(
 				"Invalid value for 'name' in %s: expected string, got %T", configFile, v,
+			)}
+		}
+	}
+
+	// task_folder_pattern: must be a string (empty string is accepted).
+	if v, ok := validated["task_folder_pattern"]; ok {
+		if _, isStr := v.(string); !isStr {
+			return nil, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'task_folder_pattern' in %s: expected string, got %T", configFile, v,
 			)}
 		}
 	}
@@ -400,6 +411,13 @@ func MergeConfig(fileConfig map[string]any, args CLIArgs) CLIArgs {
 		}
 	}
 
+	// TaskFolderPattern: fill from config when not specified.
+	if result.TaskFolderPattern == "" {
+		if v, ok := fileConfig["task_folder_pattern"].(string); ok && v != "" {
+			result.TaskFolderPattern = v
+		}
+	}
+
 	return result
 }
 
@@ -436,6 +454,9 @@ const configTemplate = `# Raymond configuration file
 
 # Enable verbose logging (default: false)
 # verbose = false
+
+# Task folder location pattern; supports {{workflow_id}} and {{agent_id}} (default: .raymond/tasks/{{workflow_id}}/{{agent_id}})
+# task_folder_pattern = ".raymond/tasks/{{workflow_id}}/{{agent_id}}"
 `
 
 // configUnsafeDefaultsTemplate is structurally identical to configTemplate but
@@ -471,6 +492,9 @@ dangerously_skip_permissions = true
 
 # Enable verbose logging (default: false)
 # verbose = false
+
+# Task folder location pattern; supports {{workflow_id}} and {{agent_id}} (default: .raymond/tasks/{{workflow_id}}/{{agent_id}})
+# task_folder_pattern = ".raymond/tasks/{{workflow_id}}/{{agent_id}}"
 `
 
 // InitConfig creates .raymond/config.toml at the project root with all options

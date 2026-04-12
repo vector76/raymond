@@ -385,3 +385,47 @@ func TestMarkdownExecutor_AgentIDSubstitutedInImplicitInput(t *testing.T) {
 		t.Errorf("input attribute = %q, want %q", got, "id=test-agent-42")
 	}
 }
+
+// TestMarkdownExecutor_TaskFolderSubstitutedInBody verifies that {{task_folder}}
+// in the prompt body is replaced with the agent's TaskFolder value.
+func TestMarkdownExecutor_TaskFolderSubstitutedInBody(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "Output dir: {{task_folder}}")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-tf-1",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:           "main",
+			CurrentState: "START.md",
+			ScopeDir:     dir,
+			TaskFolder:   "/output/main_task1",
+			Stack:        []wfstate.StackFrame{},
+		}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if !strings.Contains(capturedPrompt, "Output dir: /output/main_task1") {
+		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "Output dir: /output/main_task1")
+	}
+	if strings.Contains(capturedPrompt, "{{task_folder}}") {
+		t.Errorf("prompt still contains literal {{task_folder}}: %q", capturedPrompt)
+	}
+}

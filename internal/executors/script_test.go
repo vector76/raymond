@@ -146,3 +146,54 @@ func TestScriptExecutor_YamlScope_EnvVars(t *testing.T) {
 		t.Errorf("RAYMOND_RESULT = %q, want prev-result", capturedEnv["RAYMOND_RESULT"])
 	}
 }
+
+func TestScriptExecutor_YamlScope_TaskFolderEnvVar(t *testing.T) {
+	yamlPath := makeYamlFile(t, `states:
+  NEXT:
+    prompt: "next"
+  CHECK:
+    sh: |
+      #!/bin/sh
+      echo '<goto>NEXT.md</goto>'
+`)
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "yaml-tf-test",
+		ScopeDir:   yamlPath,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:           "agent-B",
+			CurrentState: "CHECK.sh",
+			ScopeDir:     yamlPath,
+			TaskFolder:   "/output/agent-B_task2",
+			Stack:        []wfstate.StackFrame{},
+		}},
+	}
+
+	b := newBus()
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: ws.WorkflowID}
+
+	var capturedEnv map[string]string
+	executors.SetRunScriptFn(func(
+		ctx context.Context, scriptPath string, timeout float64,
+		env map[string]string, cwd string,
+	) (*platform.ScriptResult, error) {
+		capturedEnv = env
+		return &platform.ScriptResult{
+			Stdout:   "<goto>NEXT.md</goto>\n",
+			ExitCode: 0,
+		}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	_, err := executors.NewScriptExecutor().Execute(
+		context.Background(), &ws.Agents[0], ws, execCtx,
+	)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if capturedEnv["RAYMOND_TASK_FOLDER"] != "/output/agent-B_task2" {
+		t.Errorf("RAYMOND_TASK_FOLDER = %q, want /output/agent-B_task2", capturedEnv["RAYMOND_TASK_FOLDER"])
+	}
+}

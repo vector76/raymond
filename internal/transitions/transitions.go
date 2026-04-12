@@ -100,7 +100,7 @@ func ApplyTransition(
 	case "fork":
 		return HandleFork(copy, transition, wfState)
 	case "reset-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -115,7 +115,7 @@ func ApplyTransition(
 		}
 		return HandleResetWorkflow(copy, tr, wfState, res), nil
 	case "fork-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -136,7 +136,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "call-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -157,7 +157,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "function-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -248,6 +248,7 @@ func withRenderedInput(
 	forkAttributes map[string]string,
 	workflowID string,
 	agentID string,
+	taskFolder string,
 ) parsing.Transition {
 	input, ok := transition.Attributes["input"]
 	if !ok || input == "" {
@@ -263,6 +264,7 @@ func withRenderedInput(
 	}
 	variables["workflow_id"] = workflowID
 	variables["agent_id"] = agentID
+	variables["task_folder"] = taskFolder
 
 	rendered := prompts.RenderPrompt(input, variables)
 	if rendered == input {

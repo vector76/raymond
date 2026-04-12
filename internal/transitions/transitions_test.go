@@ -2465,6 +2465,105 @@ func TestAgentIDSubstitutedInResetWorkflowInput(t *testing.T) {
 	assert.NotContains(t, *result.Agent.PendingResult, "{{agent_id}}")
 }
 
+func TestTaskFolderSubstitutedInCallWorkflowInput(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.TaskFolder = "/output/main_task1"
+	tr := parsing.Transition{
+		Tag:    "call-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+			"input":  "folder={{task_folder}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "folder=/output/main_task1", *result.Agent.PendingResult)
+	assert.NotContains(t, *result.Agent.PendingResult, "{{task_folder}}")
+}
+
+func TestTaskFolderSubstitutedInFunctionWorkflowInput(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.TaskFolder = "/output/main_task2"
+	tr := parsing.Transition{
+		Tag:    "function-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"return": "NEXT.md",
+			"input":  "folder={{task_folder}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-test-42"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "folder=/output/main_task2", *result.Agent.PendingResult)
+	assert.NotContains(t, *result.Agent.PendingResult, "{{task_folder}}")
+}
+
+func TestTaskFolderSubstitutedInForkWorkflowInput(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("parent-agent", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.TaskFolder = "/output/parent_task3"
+	tr := parsing.Transition{
+		Tag:    "fork-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"next":  "CONTINUE.md",
+			"input": "folder={{task_folder}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-fork-7"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Worker)
+	require.NotNil(t, result.Worker.PendingResult)
+	assert.Equal(t, "folder=/output/parent_task3", *result.Worker.PendingResult)
+	assert.NotContains(t, *result.Worker.PendingResult, "{{task_folder}}")
+}
+
+func TestTaskFolderSubstitutedInResetWorkflowInput(t *testing.T) {
+	childDir := makeChildWorkflow(t)
+
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.ScopeDir = filepath.Dir(childDir)
+	agent.TaskFolder = "/output/main_task4"
+	tr := parsing.Transition{
+		Tag:    "reset-workflow",
+		Target: childDir,
+		Attributes: map[string]string{
+			"input": "folder={{task_folder}}",
+		},
+	}
+	wfState := &wfstate.WorkflowState{WorkflowID: "wf-reset-9"}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	require.NotNil(t, result.Agent.PendingResult)
+	assert.Equal(t, "folder=/output/main_task4", *result.Agent.PendingResult)
+	assert.NotContains(t, *result.Agent.PendingResult, "{{task_folder}}")
+}
+
 // ----------------------------------------------------------------------------
 // ApplyTransition: URL-scope resolution via ResolveFromURL
 // ----------------------------------------------------------------------------

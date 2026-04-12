@@ -90,82 +90,94 @@ func TestScriptResultFields(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestBuildScriptEnvSetsWorkflowID(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-123", "main", nil, nil)
+	env := platform.BuildScriptEnv("wf-123", "main", "", nil, nil)
 	assert.Equal(t, "wf-123", env["RAYMOND_WORKFLOW_ID"])
 }
 
 func TestBuildScriptEnvSetsAgentID(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-1", "worker_7", nil, nil)
+	env := platform.BuildScriptEnv("wf-1", "worker_7", "", nil, nil)
 	assert.Equal(t, "worker_7", env["RAYMOND_AGENT_ID"])
 }
 
 func TestBuildScriptEnvRequiredVarsPresent(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-abc", "agent-xyz", nil, nil)
+	env := platform.BuildScriptEnv("wf-abc", "agent-xyz", "", nil, nil)
 	assert.Contains(t, env, "RAYMOND_WORKFLOW_ID")
 	assert.Contains(t, env, "RAYMOND_AGENT_ID")
 }
 
 func TestBuildScriptEnvNoResultByDefault(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-1", "main", nil, nil)
+	env := platform.BuildScriptEnv("wf-1", "main", "", nil, nil)
 	assert.NotContains(t, env, "RAYMOND_RESULT")
 }
 
 func TestBuildScriptEnvResultSetWhenNonNil(t *testing.T) {
 	result := "Task completed"
-	env := platform.BuildScriptEnv("wf-1", "main", &result, nil)
+	env := platform.BuildScriptEnv("wf-1", "main", "", &result, nil)
 	assert.Equal(t, "Task completed", env["RAYMOND_RESULT"])
 }
 
 func TestBuildScriptEnvResultEmptyStringIncluded(t *testing.T) {
 	result := ""
-	env := platform.BuildScriptEnv("wf-1", "main", &result, nil)
+	env := platform.BuildScriptEnv("wf-1", "main", "", &result, nil)
 	assert.Contains(t, env, "RAYMOND_RESULT")
 	assert.Equal(t, "", env["RAYMOND_RESULT"])
 }
 
 func TestBuildScriptEnvNoResultWhenNil(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-1", "main", nil, nil)
+	env := platform.BuildScriptEnv("wf-1", "main", "", nil, nil)
 	assert.NotContains(t, env, "RAYMOND_RESULT")
 }
 
 func TestBuildScriptEnvResultJSONPayload(t *testing.T) {
 	payload := `{"status":"ok","count":42}`
-	env := platform.BuildScriptEnv("wf-1", "main", &payload, nil)
+	env := platform.BuildScriptEnv("wf-1", "main", "", &payload, nil)
 	assert.Equal(t, payload, env["RAYMOND_RESULT"])
 }
 
 func TestBuildScriptEnvSingleForkAttribute(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-1", "worker", nil, map[string]string{"item": "task1"})
+	env := platform.BuildScriptEnv("wf-1", "worker", "", nil, map[string]string{"item": "task1"})
 	assert.Equal(t, "task1", env["item"])
 }
 
 func TestBuildScriptEnvMultipleForkAttributes(t *testing.T) {
 	attrs := map[string]string{"item": "t1", "priority": "high", "index": "3"}
-	env := platform.BuildScriptEnv("wf-1", "w", nil, attrs)
+	env := platform.BuildScriptEnv("wf-1", "w", "", nil, attrs)
 	assert.Equal(t, "t1", env["item"])
 	assert.Equal(t, "high", env["priority"])
 	assert.Equal(t, "3", env["index"])
 }
 
 func TestBuildScriptEnvNoForkAttributesByDefault(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-1", "main", nil, nil)
+	env := platform.BuildScriptEnv("wf-1", "main", "", nil, nil)
 	assert.Equal(t, map[string]string{
 		"RAYMOND_WORKFLOW_ID": "wf-1",
 		"RAYMOND_AGENT_ID":    "main",
+		"RAYMOND_TASK_FOLDER": "",
 	}, env)
 }
 
 func TestBuildScriptEnvEmptyForkAttributes(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-1", "main", nil, map[string]string{})
+	env := platform.BuildScriptEnv("wf-1", "main", "", nil, map[string]string{})
 	assert.Equal(t, map[string]string{
 		"RAYMOND_WORKFLOW_ID": "wf-1",
 		"RAYMOND_AGENT_ID":    "main",
+		"RAYMOND_TASK_FOLDER": "",
 	}, env)
+}
+
+func TestBuildScriptEnvTaskFolderSet(t *testing.T) {
+	env := platform.BuildScriptEnv("wf-1", "main", "/output/main_task1", nil, nil)
+	assert.Equal(t, "/output/main_task1", env["RAYMOND_TASK_FOLDER"])
+}
+
+func TestBuildScriptEnvTaskFolderEmpty(t *testing.T) {
+	env := platform.BuildScriptEnv("wf-1", "main", "", nil, nil)
+	assert.Equal(t, "", env["RAYMOND_TASK_FOLDER"])
 }
 
 func TestBuildScriptEnvForkAttributesCoexistWithCoreVars(t *testing.T) {
 	attrs := map[string]string{"item": "val"}
-	env := platform.BuildScriptEnv("wf-1", "main", nil, attrs)
+	env := platform.BuildScriptEnv("wf-1", "main", "", nil, attrs)
 	assert.Equal(t, "wf-1", env["RAYMOND_WORKFLOW_ID"])
 	assert.Equal(t, "main", env["RAYMOND_AGENT_ID"])
 	assert.Equal(t, "val", env["item"])
@@ -173,7 +185,7 @@ func TestBuildScriptEnvForkAttributesCoexistWithCoreVars(t *testing.T) {
 
 func TestBuildScriptEnvResultAndForkAttributesTogether(t *testing.T) {
 	res := "some result"
-	env := platform.BuildScriptEnv("wf-1", "w1", &res, map[string]string{"item": "t1", "priority": "low"})
+	env := platform.BuildScriptEnv("wf-1", "w1", "", &res, map[string]string{"item": "t1", "priority": "low"})
 	assert.Equal(t, "wf-1", env["RAYMOND_WORKFLOW_ID"])
 	assert.Equal(t, "some result", env["RAYMOND_RESULT"])
 	assert.Equal(t, "t1", env["item"])
@@ -182,7 +194,7 @@ func TestBuildScriptEnvResultAndForkAttributesTogether(t *testing.T) {
 
 func TestBuildScriptEnvAllValuesAreStrings(t *testing.T) {
 	res := "result"
-	env := platform.BuildScriptEnv("wf-1", "main", &res, map[string]string{"k": "v"})
+	env := platform.BuildScriptEnv("wf-1", "main", "", &res, map[string]string{"k": "v"})
 	for k, v := range env {
 		assert.IsType(t, "", k)
 		assert.IsType(t, "", v)
@@ -190,7 +202,7 @@ func TestBuildScriptEnvAllValuesAreStrings(t *testing.T) {
 }
 
 func TestBuildScriptEnvStateVarsNotPresent(t *testing.T) {
-	env := platform.BuildScriptEnv("wf-1", "main", nil, nil)
+	env := platform.BuildScriptEnv("wf-1", "main", "", nil, nil)
 	assert.NotContains(t, env, "RAYMOND_STATE_DIR")
 	assert.NotContains(t, env, "RAYMOND_STATE_FILE")
 }
@@ -200,7 +212,7 @@ func TestBuildScriptEnvStateVarsNotPresent(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestRunScriptMissingFileError(t *testing.T) {
-	_, err := platform.RunScript(context.Background(),filepath.Join(t.TempDir(), "no_such_file.sh"), 0, nil, "")
+	_, err := platform.RunScript(context.Background(), filepath.Join(t.TempDir(), "no_such_file.sh"), 0, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Script not found")
 	assert.True(t, errors.Is(err, os.ErrNotExist))
@@ -209,7 +221,7 @@ func TestRunScriptMissingFileError(t *testing.T) {
 func TestRunScriptUnsupportedExtensionError(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.py", "print('hello')\n")
-	_, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "unsupported")
 }
@@ -217,7 +229,7 @@ func TestRunScriptUnsupportedExtensionError(t *testing.T) {
 func TestRunScriptTxtExtensionError(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.txt", "hello\n")
-	_, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "unsupported")
 }
@@ -231,7 +243,7 @@ func TestRunScriptShCapturesStdout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'Hello from bash'\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "Hello from bash")
 }
@@ -241,7 +253,7 @@ func TestRunScriptShMultilineStdout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'Line 1'\necho 'Line 2'\necho 'Line 3'\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "Line 1")
 	assert.Contains(t, result.Stdout, "Line 2")
@@ -254,7 +266,7 @@ func TestRunScriptShCapturesStderrSeparately(t *testing.T) {
 	script := writeScript(t, dir, "test.sh",
 		"#!/bin/bash\necho 'stdout message'\necho 'stderr message' >&2\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "stdout message")
 	assert.Contains(t, result.Stderr, "stderr message")
@@ -266,7 +278,7 @@ func TestRunScriptShExitCodeZero(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nexit 0\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode)
 }
@@ -276,7 +288,7 @@ func TestRunScriptShExitCodeNonZero(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nexit 42\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 42, result.ExitCode)
 }
@@ -286,7 +298,7 @@ func TestRunScriptShCompletesWithinTimeout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'fast'\n")
 
-	result, err := platform.RunScript(context.Background(),script, 10.0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 10.0, nil, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "fast")
 	assert.Equal(t, 0, result.ExitCode)
@@ -297,7 +309,7 @@ func TestRunScriptShTimeoutError(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nsleep 30\necho 'done'\n")
 
-	_, err := platform.RunScript(context.Background(),script, 0.3, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0.3, nil, "")
 	require.Error(t, err)
 	var timeoutErr *platform.ScriptTimeoutError
 	assert.True(t, errors.As(err, &timeoutErr), "expected ScriptTimeoutError, got %T: %v", err, err)
@@ -308,7 +320,7 @@ func TestRunScriptBatRaisesOnUnix(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.bat", "@echo off\necho test\n")
 
-	_, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.Error(t, err)
 	msg := strings.ToLower(err.Error())
 	assert.True(t,
@@ -323,8 +335,8 @@ func TestRunScriptShReceivesWorkflowIDEnv(t *testing.T) {
 	script := writeScript(t, dir, "test.sh", `#!/bin/bash
 echo "WORKFLOW_ID=$RAYMOND_WORKFLOW_ID"
 `)
-	env := platform.BuildScriptEnv("test-workflow-123", "main", nil, nil)
-	result, err := platform.RunScript(context.Background(),script, 0, env, "")
+	env := platform.BuildScriptEnv("test-workflow-123", "main", "", nil, nil)
+	result, err := platform.RunScript(context.Background(), script, 0, env, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "WORKFLOW_ID=test-workflow-123")
 }
@@ -335,8 +347,8 @@ func TestRunScriptShReceivesAgentIDEnv(t *testing.T) {
 	script := writeScript(t, dir, "test.sh", `#!/bin/bash
 echo "AGENT_ID=$RAYMOND_AGENT_ID"
 `)
-	env := platform.BuildScriptEnv("wf-1", "worker_7", nil, nil)
-	result, err := platform.RunScript(context.Background(),script, 0, env, "")
+	env := platform.BuildScriptEnv("wf-1", "worker_7", "", nil, nil)
+	result, err := platform.RunScript(context.Background(), script, 0, env, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "AGENT_ID=worker_7")
 }
@@ -348,8 +360,8 @@ func TestRunScriptShReceivesRaymondResult(t *testing.T) {
 echo "RESULT=$RAYMOND_RESULT"
 `)
 	res := "child task completed"
-	env := platform.BuildScriptEnv("wf-1", "main", &res, nil)
-	result, err := platform.RunScript(context.Background(),script, 0, env, "")
+	env := platform.BuildScriptEnv("wf-1", "main", "", &res, nil)
+	result, err := platform.RunScript(context.Background(), script, 0, env, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "RESULT=child task completed")
 }
@@ -362,9 +374,9 @@ echo "ITEM=$item"
 echo "PRIO=$priority"
 echo "IDX=$index"
 `)
-	env := platform.BuildScriptEnv("wf-1", "w", nil,
+	env := platform.BuildScriptEnv("wf-1", "w", "", nil,
 		map[string]string{"item": "task1", "priority": "high", "index": "5"})
-	result, err := platform.RunScript(context.Background(),script, 0, env, "")
+	result, err := platform.RunScript(context.Background(), script, 0, env, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "ITEM=task1")
 	assert.Contains(t, result.Stdout, "PRIO=high")
@@ -381,7 +393,7 @@ func TestRunScriptShRunsInOrchestratorDirectory(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, cwd)
 }
@@ -393,7 +405,7 @@ func TestRunScriptShWithCwdRunsInSpecifiedDirectory(t *testing.T) {
 	require.NoError(t, os.Mkdir(workdir, 0o755))
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\npwd\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, workdir)
+	result, err := platform.RunScript(context.Background(), script, 0, nil, workdir)
 	require.NoError(t, err)
 	// Resolve symlinks so /var/... vs /private/var/... don't cause false failures.
 	realWorkdir, _ := filepath.EvalSymlinks(workdir)
@@ -412,7 +424,7 @@ func TestRunScriptShCwdDoesNotChangeCallerDirectory(t *testing.T) {
 	originalCwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	_, err = platform.RunScript(context.Background(),script, 0, nil, workdir)
+	_, err = platform.RunScript(context.Background(), script, 0, nil, workdir)
 	require.NoError(t, err)
 	assert.Equal(t, originalCwd, func() string { d, _ := os.Getwd(); return d }())
 }
@@ -426,7 +438,7 @@ func TestRunScriptBatCapturesStdout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.bat", "@echo off\necho Hello from batch\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "Hello from batch")
 }
@@ -436,7 +448,7 @@ func TestRunScriptBatExitCodeNonZero(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.bat", "@echo off\nexit /b 42\n")
 
-	result, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 42, result.ExitCode)
 }
@@ -446,7 +458,7 @@ func TestRunScriptShRaisesOnWindows(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho test\n")
 
-	_, err := platform.RunScript(context.Background(),script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
 	require.Error(t, err)
 	msg := strings.ToLower(err.Error())
 	assert.True(t,

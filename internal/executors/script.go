@@ -90,7 +90,7 @@ func (e *ScriptExecutor) Execute(
 	// Build environment variables.
 	pendingResult := agent.PendingResult
 	forkAttributes := agent.ForkAttributes
-	env := platform.BuildScriptEnv(workflowID, agentID, pendingResult, forkAttributes)
+	env := platform.BuildScriptEnv(workflowID, agentID, agent.TaskFolder, pendingResult, forkAttributes)
 
 	// Emit StateStarted.
 	execCtx.Bus.Emit(events.StateStarted{

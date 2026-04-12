@@ -47,13 +47,15 @@ func (e *ScriptTimeoutError) Error() string {
 // Always sets:
 //   - RAYMOND_WORKFLOW_ID
 //   - RAYMOND_AGENT_ID
+//   - RAYMOND_TASK_FOLDER
 //
 // Sets RAYMOND_RESULT only when result is non-nil (including empty string).
 // Fork attributes are added directly as environment variables (key → value).
-func BuildScriptEnv(workflowID, agentID string, result *string, forkAttributes map[string]string) map[string]string {
+func BuildScriptEnv(workflowID, agentID, taskFolder string, result *string, forkAttributes map[string]string) map[string]string {
 	env := map[string]string{
 		"RAYMOND_WORKFLOW_ID": workflowID,
 		"RAYMOND_AGENT_ID":    agentID,
+		"RAYMOND_TASK_FOLDER": taskFolder,
 	}
 	if result != nil {
 		env["RAYMOND_RESULT"] = *result

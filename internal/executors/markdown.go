@@ -84,6 +84,7 @@ func (e *MarkdownExecutor) Execute(
 	}
 	variables["workflow_id"] = wfState.WorkflowID
 	variables["agent_id"] = agentID
+	variables["task_folder"] = agent.TaskFolder
 	basePrompt := prompts.RenderPrompt(body, variables)
 
 	// Determine model and effort (frontmatter takes precedence over defaults).
@@ -157,7 +158,7 @@ func (e *MarkdownExecutor) Execute(
 		ch := invokeStreamFn(ctx, prompt, model, effort, useSessionID,
 			execCtx.Timeout, execCtx.DangerouslySkipPermissions, useFork, agent.Cwd, useContinue)
 
-		streamLoop:
+	streamLoop:
 		for item := range ch {
 			if item.Err != nil {
 				streamErr = item.Err

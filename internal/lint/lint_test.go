@@ -466,3 +466,140 @@ func TestZipScopeNoEntryPoint(t *testing.T) {
 	}
 	assert.True(t, found, "expected no-entry-point diagnostic for zip missing entry point, got %v", diags)
 }
+
+// writeTaskWorkflow creates a temp dir with 1_START.md (the given content) and
+// DONE.md (<result>ok</result>) and returns the dir path.
+func writeTaskWorkflow(t *testing.T, startContent string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(startContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+	return dir
+}
+
+// hasTaskDiag returns true if diags contains a diagnostic with the given check name.
+func hasTaskDiag(diags []lint.Diagnostic, check string) bool {
+	for _, d := range diags {
+		if d.Check == check {
+			return true
+		}
+	}
+	return false
+}
+
+// Valid combinations: should produce no invalid-task-value or unsupported-task-attribute errors.
+
+func TestTaskNewOnReset(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<reset task="new">DONE.md</reset>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.False(t, hasTaskDiag(diags, "invalid-task-value"), "unexpected invalid-task-value: %v", diags)
+	assert.False(t, hasTaskDiag(diags, "unsupported-task-attribute"), "unexpected unsupported-task-attribute: %v", diags)
+}
+
+func TestTaskNewOnFork(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<fork task="new" next="DONE">DONE.md</fork>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.False(t, hasTaskDiag(diags, "invalid-task-value"), "unexpected invalid-task-value: %v", diags)
+	assert.False(t, hasTaskDiag(diags, "unsupported-task-attribute"), "unexpected unsupported-task-attribute: %v", diags)
+}
+
+func TestTaskInheritOnFork(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<fork task="inherit" next="DONE">DONE.md</fork>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.False(t, hasTaskDiag(diags, "invalid-task-value"), "unexpected invalid-task-value: %v", diags)
+	assert.False(t, hasTaskDiag(diags, "unsupported-task-attribute"), "unexpected unsupported-task-attribute: %v", diags)
+}
+
+func TestTaskNewOnResetWorkflow(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<reset-workflow task="new">/some/workflow</reset-workflow>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.False(t, hasTaskDiag(diags, "invalid-task-value"), "unexpected invalid-task-value: %v", diags)
+	assert.False(t, hasTaskDiag(diags, "unsupported-task-attribute"), "unexpected unsupported-task-attribute: %v", diags)
+}
+
+func TestTaskNewOnForkWorkflow(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<fork-workflow task="new" next="DONE">/some/workflow</fork-workflow>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.False(t, hasTaskDiag(diags, "invalid-task-value"), "unexpected invalid-task-value: %v", diags)
+	assert.False(t, hasTaskDiag(diags, "unsupported-task-attribute"), "unexpected unsupported-task-attribute: %v", diags)
+}
+
+func TestTaskInheritOnForkWorkflow(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<fork-workflow task="inherit" next="DONE">/some/workflow</fork-workflow>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.False(t, hasTaskDiag(diags, "invalid-task-value"), "unexpected invalid-task-value: %v", diags)
+	assert.False(t, hasTaskDiag(diags, "unsupported-task-attribute"), "unexpected unsupported-task-attribute: %v", diags)
+}
+
+// Invalid combinations: unsupported-task-attribute errors.
+
+func TestTaskInheritOnReset(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<reset task="inherit">DONE.md</reset>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+func TestTaskInheritOnResetWorkflow(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<reset-workflow task="inherit">/some/workflow</reset-workflow>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+func TestTaskNewOnGoto(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<goto task="new">DONE.md</goto>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+func TestTaskNewOnCall(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<call task="new" return="DONE">DONE.md</call>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+func TestTaskNewOnFunction(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<function task="new" return="DONE">DONE.md</function>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+func TestTaskNewOnResult(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<result task="new">ok</result>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+func TestTaskNewOnCallWorkflow(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<call-workflow task="new" return="DONE">/some/workflow</call-workflow>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+func TestTaskNewOnFunctionWorkflow(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<function-workflow task="new" return="DONE">/some/workflow</function-workflow>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute, got: %v", diags)
+}
+
+// Invalid value: invalid-task-value error.
+
+func TestTaskInvalidValueOnFork(t *testing.T) {
+	dir := writeTaskWorkflow(t, `<fork task="invalid" next="DONE">DONE.md</fork>`)
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "invalid-task-value"), "expected invalid-task-value, got: %v", diags)
+}

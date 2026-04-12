@@ -121,6 +121,11 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 	}
 	// Tags that require a "return" attribute.
 	returnTags := map[string]bool{"call": true, "function": true}
+	// Tags that do not support the "task" attribute at all.
+	unsupportedTaskTags := map[string]bool{
+		"goto": true, "call": true, "function": true, "result": true,
+		"call-workflow": true, "function-workflow": true,
+	}
 
 	// Deduplicate ambiguous stems across all files.
 	seenAmbiguousStems := make(map[string]bool)
@@ -343,6 +348,46 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 				Message:  fmt.Sprintf("%s is a script state; transitions are determined at runtime and cannot be fully validated statically", filename),
 				Check:    "script-state-no-static-analysis",
 			})
+		}
+
+		// invalid-task-value check: task attribute must be "new" or "inherit".
+		for _, t := range pf.transitions {
+			value := t.Attributes["task"]
+			if value == "" {
+				continue
+			}
+			if value != "new" && value != "inherit" {
+				diags = append(diags, Diagnostic{
+					Severity: Error,
+					File:     filename,
+					Message:  fmt.Sprintf("<%s> in %s has task=%q which is not a valid value; must be \"new\" or \"inherit\"", t.Tag, filename, value),
+					Check:    "invalid-task-value",
+				})
+			}
+		}
+
+		// unsupported-task-attribute check: task attribute is only valid on
+		// certain tags, and task="inherit" is not valid on reset/reset-workflow.
+		for _, t := range pf.transitions {
+			value := t.Attributes["task"]
+			if value == "" {
+				continue
+			}
+			if unsupportedTaskTags[t.Tag] {
+				diags = append(diags, Diagnostic{
+					Severity: Error,
+					File:     filename,
+					Message:  fmt.Sprintf("<%s> in %s does not support the \"task\" attribute", t.Tag, filename),
+					Check:    "unsupported-task-attribute",
+				})
+			} else if (t.Tag == "reset" || t.Tag == "reset-workflow") && value == "inherit" {
+				diags = append(diags, Diagnostic{
+					Severity: Error,
+					File:     filename,
+					Message:  fmt.Sprintf("<%s> in %s does not support task=\"inherit\"; task folder is preserved by default on reset", t.Tag, filename),
+					Check:    "unsupported-task-attribute",
+				})
+			}
 		}
 	}
 

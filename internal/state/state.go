@@ -62,6 +62,7 @@ type StackFrame struct {
 	Cwd          string  `json:"cwd,omitempty"`           // caller's working directory
 	NestingDepth int     `json:"nesting_depth,omitempty"` // caller's cross-workflow nesting depth at the time of the call
 	ScopeURL     string  `json:"scope_url,omitempty"`     // original URL when scope was fetched from a remote URL
+	TaskFolder   string  `json:"task_folder,omitempty"`   // output folder assigned to this call frame
 }
 
 // AgentState holds the persisted state of a single agent within a workflow.
@@ -88,6 +89,9 @@ type AgentState struct {
 	// on the very first invocation (continuing from the user's most recent
 	// interactive Claude session). Cleared after first successful use.
 	ContinueAndFork bool `json:"continue_and_fork,omitempty"`
+
+	TaskFolder string `json:"task_folder,omitempty"` // output folder for this agent's tasks
+	TaskCount  int    `json:"task_count,omitempty"`  // number of tasks spawned so far
 
 	// Transient execution fields — not persisted to JSON.
 	// Set by the orchestrator / transition handlers; consumed by the next executor step.
@@ -118,6 +122,7 @@ type WorkflowState struct {
 
 	// Transient: populated by HandleResult when an agent terminates; consumed by orchestrator.
 	AgentTerminationResults map[string]string `json:"-"`
+	TaskFolderPattern       string            `json:"-"` // pattern for computing per-task output folders
 }
 
 // GetStateDir returns the state directory to use. If stateDir is non-empty it

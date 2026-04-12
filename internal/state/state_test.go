@@ -611,3 +611,53 @@ func TestScopeURLEmptyOmittedFromStackFrameJSON(t *testing.T) {
 	_, hasScopeURL := raw["scope_url"]
 	assert.False(t, hasScopeURL, "scope_url should be absent from JSON when empty")
 }
+
+// ----------------------------------------------------------------------------
+// TaskFolder / TaskCount / TaskFolderPattern fields
+// ----------------------------------------------------------------------------
+
+func TestAgentStateTaskFieldsRoundTrip(t *testing.T) {
+	agent := state.AgentState{
+		ID:           "main",
+		CurrentState: "START.md",
+		Stack:        []state.StackFrame{},
+		TaskFolder:   "/output/main_task1",
+		TaskCount:    3,
+	}
+
+	data, err := json.Marshal(agent)
+	require.NoError(t, err)
+
+	var got state.AgentState
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "/output/main_task1", got.TaskFolder)
+	assert.Equal(t, 3, got.TaskCount)
+}
+
+func TestStackFrameTaskFolderRoundTrip(t *testing.T) {
+	frame := state.StackFrame{
+		State:      "NEXT.md",
+		ScopeDir:   "scope",
+		TaskFolder: "/output/main_task2",
+	}
+
+	data, err := json.Marshal(frame)
+	require.NoError(t, err)
+
+	var got state.StackFrame
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "/output/main_task2", got.TaskFolder)
+}
+
+func TestLegacyJSONMissingNewFieldsDeserializesToZeroValues(t *testing.T) {
+	// A JSON string without task_folder, task_count, or TaskFolderPattern (legacy).
+	raw := `{"workflow_id":"legacy","scope_dir":"scope","total_cost_usd":0,"budget_usd":10,"agents":[{"id":"main","current_state":"START.md","session_id":null,"stack":[]}]}`
+
+	var ws state.WorkflowState
+	require.NoError(t, json.Unmarshal([]byte(raw), &ws))
+
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "", ws.Agents[0].TaskFolder, "TaskFolder should be empty string for legacy JSON")
+	assert.Equal(t, 0, ws.Agents[0].TaskCount, "TaskCount should be zero for legacy JSON")
+	assert.Equal(t, "", ws.TaskFolderPattern, "TaskFolderPattern should be empty string (transient, not in JSON)")
+}

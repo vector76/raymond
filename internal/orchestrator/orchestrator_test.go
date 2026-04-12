@@ -2145,6 +2145,145 @@ states:
 	assert.Equal(t, 60.0, timeouts[0])
 }
 
+// ----------------------------------------------------------------------------
+// Task folder directory creation integration tests
+// ----------------------------------------------------------------------------
+
+// taskFolderCall records the agent ID, task folder, and whether the directory
+// existed on disk when the executor's Execute method was called.
+type taskFolderCall struct {
+	agentID      string
+	taskFolder   string
+	folderExists bool
+}
+
+// taskFolderCapturingMock is a StateExecutor that records each call's agent ID,
+// task folder path, and whether the folder existed at call time.
+type taskFolderCapturingMock struct {
+	mu       sync.Mutex
+	results  []executors.ExecutionResult
+	idx      int
+	captured []taskFolderCall
+}
+
+func (m *taskFolderCapturingMock) Execute(
+	_ context.Context,
+	agent *wfstate.AgentState,
+	wfState *wfstate.WorkflowState,
+	_ *executors.ExecutionContext,
+) (executors.ExecutionResult, error) {
+	m.mu.Lock()
+	i := m.idx
+	m.idx++
+	_, statErr := os.Stat(agent.TaskFolder)
+	m.captured = append(m.captured, taskFolderCall{
+		agentID:      agent.ID,
+		taskFolder:   agent.TaskFolder,
+		folderExists: statErr == nil,
+	})
+	m.mu.Unlock()
+
+	if i < len(m.results) {
+		res := m.results[i]
+		if res.CostUSD > 0 {
+			wfState.TotalCostUSD += res.CostUSD
+		}
+		return res, nil
+	}
+	return executors.ExecutionResult{}, errors.New("taskFolderCapturingMock: no more results")
+}
+
+// TestForkWorkerTaskFolderDirectoryCreatedBeforeWorkerExecutes verifies that
+// when a fork transition spawns a worker, the worker agent's task folder
+// directory exists on disk before the worker executes its first state.
+func TestForkWorkerTaskFolderDirectoryCreatedBeforeWorkerExecutes(t *testing.T) {
+	tmpDir := t.TempDir()
+	pattern := filepath.Join(tmpDir, "{{workflow_id}}", "{{agent_id}}")
+
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	mock := &taskFolderCapturingMock{
+		results: []executors.ExecutionResult{
+			forkResult("WORKER.md", "PARENT_NEXT.md"), // call 0: parent forks
+			resultExecResult("parent done"),             // call 1: parent continues
+			resultExecResult("worker done"),             // call 2: worker
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.TaskFolderPattern = pattern
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	require.Equal(t, 3, mock.idx)
+
+	// Find the worker call (any call where agentID != "main").
+	var workerCall *taskFolderCall
+	for i := range mock.captured {
+		if mock.captured[i].agentID != "main" {
+			workerCall = &mock.captured[i]
+			break
+		}
+	}
+	require.NotNil(t, workerCall, "expected at least one call for a worker agent")
+	assert.True(t, workerCall.folderExists,
+		"worker task folder %q must exist on disk before the worker executes",
+		workerCall.taskFolder)
+}
+
+// TestResetTaskNewDirectoryCreatedBeforeNextStateExecutes verifies that when an
+// agent executes a <reset task="new"> transition, the new task folder directory
+// is created on disk before the agent's next state executes.
+func TestResetTaskNewDirectoryCreatedBeforeNextStateExecutes(t *testing.T) {
+	tmpDir := t.TempDir()
+	pattern := filepath.Join(tmpDir, "{{workflow_id}}", "{{agent_id}}")
+
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	mock := &taskFolderCapturingMock{
+		results: []executors.ExecutionResult{
+			// Call 0: at START.md, issue reset task="new" to SECOND.md.
+			{Transition: parsing.Transition{
+				Tag:        "reset",
+				Target:     "SECOND.md",
+				Attributes: map[string]string{"task": "new"},
+			}},
+			// Call 1: at SECOND.md with new task folder; terminate.
+			resultExecResult("done"),
+		},
+	}
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.TaskFolderPattern = pattern
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	require.Equal(t, 2, mock.idx)
+
+	// Both calls are for the "main" agent.
+	assert.Equal(t, "main", mock.captured[0].agentID)
+	assert.Equal(t, "main", mock.captured[1].agentID)
+
+	// The initial task folder must exist before call 0.
+	assert.True(t, mock.captured[0].folderExists,
+		"initial task folder %q must exist before first call",
+		mock.captured[0].taskFolder)
+
+	// After reset task="new", a new task folder is assigned. It must exist before call 1.
+	assert.True(t, mock.captured[1].folderExists,
+		"new task folder %q must exist before second call after reset task=new",
+		mock.captured[1].taskFolder)
+
+	// The two calls must have different task folders (reset task="new" creates a new path).
+	assert.NotEqual(t, mock.captured[0].taskFolder, mock.captured[1].taskFolder,
+		"reset task=new must assign a different task folder")
+
+	// The new folder path must contain "_task1" (the first incremented task count).
+	assert.Contains(t, mock.captured[1].taskFolder, "_task1")
+}
+
 func TestPerStateTimeout_YamlScope_ZeroMeansNoTimeout(t *testing.T) {
 	yamlContent := `
 states:

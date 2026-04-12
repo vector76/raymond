@@ -92,7 +92,7 @@ func ApplyTransition(
 	case "goto":
 		return HandleGoto(copy, transition), nil
 	case "reset":
-		return HandleReset(copy, transition), nil
+		return HandleReset(copy, transition, wfState), nil
 	case "function":
 		return HandleFunction(copy, transition)
 	case "call":
@@ -113,7 +113,7 @@ func ApplyTransition(
 			copy.Error = fmt.Sprintf("reset-workflow: %s", err.Error())
 			return TransitionResult{Agent: &copy}, nil
 		}
-		return HandleResetWorkflow(copy, tr, res), nil
+		return HandleResetWorkflow(copy, tr, wfState, res), nil
 	case "fork-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID)
 		var res specifier.Resolution
@@ -301,12 +301,20 @@ func HandleGoto(agent wfstate.AgentState, transition parsing.Transition) Transit
 //   - Sets current_state to target
 //   - Clears session_id (fresh start)
 //   - Applies cd attribute if present
-func HandleReset(agent wfstate.AgentState, transition parsing.Transition) TransitionResult {
+//   - If task="new", increments TaskCount and computes a new TaskFolder
+func HandleReset(agent wfstate.AgentState, transition parsing.Transition, wfState *wfstate.WorkflowState) TransitionResult {
 	agent.CurrentState = transition.Target
 	agent.SessionID = nil
 
 	if cd, ok := transition.Attributes["cd"]; ok {
 		agent.Cwd = ResolveCd(cd, agent.Cwd)
+	}
+
+	if transition.Attributes["task"] == "new" {
+		agent.TaskCount++
+		agent.TaskFolder = wfstate.ComputeTaskFolderPath(
+			wfState.TaskFolderPattern, wfState.WorkflowID, agent.ID, agent.TaskCount,
+		)
 	}
 
 	if input, ok := transition.Attributes["input"]; ok && input != "" {
@@ -325,8 +333,9 @@ func HandleReset(agent wfstate.AgentState, transition parsing.Transition) Transi
 //   - Resets NestingDepth to 0
 //   - Sets ScopeDir and ScopeURL from the resolution
 //   - Applies cd attribute if non-empty
+//   - If task="new", increments TaskCount and computes a new TaskFolder
 //   - Sets PendingResult from input attribute if non-empty; otherwise nil
-func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, resolution specifier.Resolution) TransitionResult {
+func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, wfState *wfstate.WorkflowState, resolution specifier.Resolution) TransitionResult {
 	agent.CurrentState = resolution.EntryPoint
 	agent.SessionID = nil
 	agent.Stack = nil
@@ -336,6 +345,13 @@ func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, resolu
 
 	if cd := tr.Attributes["cd"]; cd != "" {
 		agent.Cwd = ResolveCd(cd, agent.Cwd)
+	}
+
+	if tr.Attributes["task"] == "new" {
+		agent.TaskCount++
+		agent.TaskFolder = wfstate.ComputeTaskFolderPath(
+			wfState.TaskFolderPattern, wfState.WorkflowID, agent.ID, agent.TaskCount,
+		)
 	}
 
 	if input := tr.Attributes["input"]; input != "" {
@@ -461,15 +477,25 @@ func CreateForkWorker(
 		worker.Cwd = ResolveCd(cd, agent.Cwd)
 	}
 
-	// Collect fork attributes (exclude "next" and "cd").
+	// Collect fork attributes (exclude "next", "cd", "input", and "task").
 	forkAttrs := make(map[string]string)
 	for k, v := range transition.Attributes {
-		if k != "next" && k != "cd" && k != "input" {
+		if k != "next" && k != "cd" && k != "input" && k != "task" {
 			forkAttrs[k] = v
 		}
 	}
 	if len(forkAttrs) > 0 {
 		worker.ForkAttributes = forkAttrs
+	}
+
+	// Set task folder: inherit from parent or compute a new one.
+	if transition.Attributes["task"] == "inherit" {
+		worker.TaskFolder = agent.TaskFolder
+	} else {
+		// default and task="new" both produce a new folder
+		worker.TaskFolder = wfstate.ComputeTaskFolderPath(
+			wfState.TaskFolderPattern, wfState.WorkflowID, worker.ID, 0,
+		)
 	}
 
 	if input, ok := transition.Attributes["input"]; ok && input != "" {
@@ -485,7 +511,8 @@ func CreateForkWorker(
 //   - Creates a new worker with a unique ID, empty stack, fresh session
 //   - Worker's current_state is the fork target
 //   - Applies cd attribute to worker if present
-//   - Attributes other than "next" and "cd" become the worker's ForkAttributes
+//   - Attributes other than "next", "cd", "input", and "task" become the worker's ForkAttributes
+//   - task="inherit" copies the parent's TaskFolder to the worker; otherwise a new folder is computed
 //   - Parent advances to the "next" state; its session and stack are preserved
 //
 // Worker IDs use compact hierarchical notation:
@@ -561,6 +588,16 @@ func CreateForkWorkflowWorker(
 		// Only blocking cross-workflow calls (call-workflow / function-workflow)
 		// consume a depth slot; non-blocking spawns do not add to the call tree.
 		NestingDepth: agent.NestingDepth,
+	}
+
+	// Set task folder: inherit from caller or compute a new one.
+	if transition.Attributes["task"] == "inherit" {
+		worker.TaskFolder = agent.TaskFolder
+	} else {
+		// default and task="new" both produce a new folder
+		worker.TaskFolder = wfstate.ComputeTaskFolderPath(
+			ws.TaskFolderPattern, ws.WorkflowID, worker.ID, 0,
+		)
 	}
 
 	// Set PendingResult from "input" attribute if present and non-empty.

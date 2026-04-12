@@ -633,13 +633,13 @@ func TestForkExtraAttributesBecomeWorkerForkAttributes(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{
 		Tag: "fork", Target: "WORKER.md",
-		Attributes: map[string]string{"next": "NEXT.md", "task": "build", "env": "prod"},
+		Attributes: map[string]string{"next": "NEXT.md", "label": "build", "env": "prod"},
 	}
 
 	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
 
 	require.NoError(t, err)
-	assert.Equal(t, "build", result.Worker.ForkAttributes["task"])
+	assert.Equal(t, "build", result.Worker.ForkAttributes["label"])
 	assert.Equal(t, "prod", result.Worker.ForkAttributes["env"])
 	_, hasNext := result.Worker.ForkAttributes["next"]
 	assert.False(t, hasNext, "'next' must not be in fork attributes")
@@ -1881,7 +1881,7 @@ func TestResetInputAttributeSetsPendingResult(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{Tag: "reset", Target: "START.md", Attributes: map[string]string{"input": "task data"}}
 
-	result := transitions.HandleReset(agent, tr)
+	result := transitions.HandleReset(agent, tr, &wfstate.WorkflowState{})
 
 	require.NotNil(t, result.Agent)
 	require.NotNil(t, result.Agent.PendingResult)
@@ -1892,7 +1892,7 @@ func TestResetAbsentInputLeavesNilPendingResult(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{Tag: "reset", Target: "START.md", Attributes: map[string]string{}}
 
-	result := transitions.HandleReset(agent, tr)
+	result := transitions.HandleReset(agent, tr, &wfstate.WorkflowState{})
 
 	require.NotNil(t, result.Agent)
 	assert.Nil(t, result.Agent.PendingResult)
@@ -1902,7 +1902,7 @@ func TestResetEmptyInputLeavesNilPendingResult(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	tr := parsing.Transition{Tag: "reset", Target: "START.md", Attributes: map[string]string{"input": ""}}
 
-	result := transitions.HandleReset(agent, tr)
+	result := transitions.HandleReset(agent, tr, &wfstate.WorkflowState{})
 
 	require.NotNil(t, result.Agent)
 	assert.Nil(t, result.Agent.PendingResult)
@@ -2069,7 +2069,7 @@ func TestResetWorkflowAgentIDPreserved(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	require.NotNil(t, result.Agent)
 	assert.Equal(t, "agent-42", result.Agent.ID)
@@ -2080,7 +2080,7 @@ func TestResetWorkflowSessionCleared(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Nil(t, result.Agent.SessionID)
 }
@@ -2094,7 +2094,7 @@ func TestResetWorkflowStackCleared(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Empty(t, result.Agent.Stack)
 }
@@ -2105,7 +2105,7 @@ func TestResetWorkflowNestingDepthReset(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Equal(t, 0, result.Agent.NestingDepth)
 }
@@ -2116,7 +2116,7 @@ func TestResetWorkflowScopeDirUpdated(t *testing.T) {
 	resolution := makeResolution("/new/scope", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Equal(t, "/new/scope", result.Agent.ScopeDir)
 }
@@ -2126,7 +2126,7 @@ func TestResetWorkflowCurrentStateUpdated(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "2_INIT.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Equal(t, "2_INIT.md", result.Agent.CurrentState)
 }
@@ -2137,7 +2137,7 @@ func TestResetWorkflowCwdPreservedWhenNoCd(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Equal(t, "/repo/project", result.Agent.Cwd)
 }
@@ -2148,7 +2148,7 @@ func TestResetWorkflowCwdUpdatedWithRelativeCd(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{"cd": "../other"})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Equal(t, "/repo/other", result.Agent.Cwd)
 }
@@ -2159,7 +2159,7 @@ func TestResetWorkflowCwdUpdatedWithAbsoluteCd(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{"cd": "/absolute/path"})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Equal(t, "/absolute/path", result.Agent.Cwd)
 }
@@ -2169,7 +2169,7 @@ func TestResetWorkflowInputSetsPendingResult(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{"input": "task data"})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	require.NotNil(t, result.Agent.PendingResult)
 	assert.Equal(t, "task data", *result.Agent.PendingResult)
@@ -2180,7 +2180,7 @@ func TestResetWorkflowNoInputNilPendingResult(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Nil(t, result.Agent.PendingResult)
 }
@@ -2190,7 +2190,7 @@ func TestResetWorkflowNoWorkerSpawned(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.Nil(t, result.Worker)
 }
@@ -2200,7 +2200,7 @@ func TestResetWorkflowAgentNonNil(t *testing.T) {
 	resolution := makeResolution("/workflows/child", "1_START.md", "child")
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	assert.NotNil(t, result.Agent)
 }
@@ -2482,7 +2482,7 @@ func TestResetWorkflowSetsScopeURL(t *testing.T) {
 	}
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	require.NotNil(t, result.Agent)
 	assert.Equal(t, "https://example.com/new.zip", result.Agent.ScopeURL)
@@ -2499,7 +2499,7 @@ func TestResetWorkflowClearsScopeURLForFilesystemResolution(t *testing.T) {
 	}
 	tr := resetWorkflowTransition(map[string]string{})
 
-	result := transitions.HandleResetWorkflow(agent, tr, resolution)
+	result := transitions.HandleResetWorkflow(agent, tr, &wfstate.WorkflowState{}, resolution)
 
 	require.NotNil(t, result.Agent)
 	assert.Equal(t, "", result.Agent.ScopeURL) // cleared
@@ -2864,5 +2864,259 @@ func TestHandleFunctionWorkflowPushesTaskFolderInFrame(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Agent.Stack, 1)
 	assert.Equal(t, "tasks/my-task", result.Agent.Stack[0].TaskFolder)
+}
+
+// ----------------------------------------------------------------------------
+// HandleReset: task="new" logic
+// ----------------------------------------------------------------------------
+
+func TestHandleResetWithoutTaskAttrPreservesTaskFolderAndCount(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tasks/wf1/main"
+	agent.TaskCount = 2
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	tr := parsing.Transition{Tag: "reset", Target: "FRESH.md", Attributes: map[string]string{}}
+
+	result := transitions.HandleReset(agent, tr, wfState)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "/tasks/wf1/main", result.Agent.TaskFolder)
+	assert.Equal(t, 2, result.Agent.TaskCount)
+}
+
+func TestHandleResetWithTaskNewIncrementsTaskCountAndUpdatesFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	agent.TaskCount = 0
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	tr := parsing.Transition{Tag: "reset", Target: "FRESH.md", Attributes: map[string]string{"task": "new"}}
+
+	result := transitions.HandleReset(agent, tr, wfState)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, 1, result.Agent.TaskCount)
+	assert.Contains(t, result.Agent.TaskFolder, "_task1")
+	assert.Contains(t, result.Agent.TaskFolder, "wf1")
+}
+
+func TestHandleResetTaskNewIncrementsTwice(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskCount = 1
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	tr := parsing.Transition{Tag: "reset", Target: "FRESH.md", Attributes: map[string]string{"task": "new"}}
+
+	result := transitions.HandleReset(agent, tr, wfState)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, 2, result.Agent.TaskCount)
+	assert.Contains(t, result.Agent.TaskFolder, "_task2")
+}
+
+// ----------------------------------------------------------------------------
+// HandleResetWorkflow: task="new" logic
+// ----------------------------------------------------------------------------
+
+func TestHandleResetWorkflowWithoutTaskAttrPreservesTaskFolderAndCount(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tasks/wf1/main"
+	agent.TaskCount = 3
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{})
+
+	result := transitions.HandleResetWorkflow(agent, tr, wfState, resolution)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, "/tasks/wf1/main", result.Agent.TaskFolder)
+	assert.Equal(t, 3, result.Agent.TaskCount)
+}
+
+func TestHandleResetWorkflowWithTaskNewIncrementsTaskCountAndUpdatesFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	agent.TaskCount = 0
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := resetWorkflowTransition(map[string]string{"task": "new"})
+
+	result := transitions.HandleResetWorkflow(agent, tr, wfState, resolution)
+
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, 1, result.Agent.TaskCount)
+	assert.Contains(t, result.Agent.TaskFolder, "_task1")
+	assert.Contains(t, result.Agent.TaskFolder, "wf1")
+}
+
+// ----------------------------------------------------------------------------
+// CreateForkWorker: task folder logic
+// ----------------------------------------------------------------------------
+
+func TestCreateForkWorkerDefaultGetsNewTaskFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	tr := parsing.Transition{
+		Tag:        "fork",
+		Target:     "WORKER.md",
+		Attributes: map[string]string{"next": "NEXT.md"},
+	}
+
+	worker, err := transitions.CreateForkWorker(agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, worker.TaskFolder)
+	assert.NotEqual(t, agent.TaskFolder, worker.TaskFolder)
+	assert.Contains(t, worker.TaskFolder, "wf1")
+}
+
+func TestCreateForkWorkerTaskNewGetsNewTaskFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	tr := parsing.Transition{
+		Tag:        "fork",
+		Target:     "WORKER.md",
+		Attributes: map[string]string{"next": "NEXT.md", "task": "new"},
+	}
+
+	worker, err := transitions.CreateForkWorker(agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, worker.TaskFolder)
+	assert.NotEqual(t, agent.TaskFolder, worker.TaskFolder)
+	_, hasTask := worker.ForkAttributes["task"]
+	assert.False(t, hasTask, "task must not be in worker.ForkAttributes")
+}
+
+func TestCreateForkWorkerTaskInheritCopiesParentTaskFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	tr := parsing.Transition{
+		Tag:        "fork",
+		Target:     "WORKER.md",
+		Attributes: map[string]string{"next": "NEXT.md", "task": "inherit"},
+	}
+
+	worker, err := transitions.CreateForkWorker(agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.Equal(t, agent.TaskFolder, worker.TaskFolder)
+	_, hasTask := worker.ForkAttributes["task"]
+	assert.False(t, hasTask, "task must not be in worker.ForkAttributes")
+}
+
+func TestHandleForkParentTaskFolderUnchanged(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	tr := parsing.Transition{
+		Tag:        "fork",
+		Target:     "WORKER.md",
+		Attributes: map[string]string{"next": "NEXT.md"},
+	}
+
+	result, err := transitions.HandleFork(agent, tr, wfState)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/tasks/wf1/main", result.Agent.TaskFolder)
+}
+
+// ----------------------------------------------------------------------------
+// CreateForkWorkflowWorker: task folder logic
+// ----------------------------------------------------------------------------
+
+func TestCreateForkWorkflowWorkerDefaultGetsNewTaskFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	worker, err := transitions.CreateForkWorkflowWorker(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, worker.TaskFolder)
+	assert.NotEqual(t, agent.TaskFolder, worker.TaskFolder)
+	assert.Contains(t, worker.TaskFolder, "wf1")
+}
+
+func TestCreateForkWorkflowWorkerTaskNewGetsNewTaskFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "task": "new"})
+
+	worker, err := transitions.CreateForkWorkflowWorker(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, worker.TaskFolder)
+	assert.NotEqual(t, agent.TaskFolder, worker.TaskFolder)
+}
+
+func TestCreateForkWorkflowWorkerTaskInheritCopiesCallerTaskFolder(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md", "task": "inherit"})
+
+	worker, err := transitions.CreateForkWorkflowWorker(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, agent.TaskFolder, worker.TaskFolder)
+}
+
+func TestHandleForkWorkflowParentTaskFolderUnchanged(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.TaskFolder = "/tmp/tasks/wf1/main"
+	wfState := &wfstate.WorkflowState{
+		WorkflowID:        "wf1",
+		TaskFolderPattern: "/tmp/tasks/{{workflow_id}}/{{agent_id}}",
+	}
+	resolution := makeResolution("/workflows/child", "1_START.md", "child")
+	tr := forkWorkflowTransition(map[string]string{"next": "AFTER.md"})
+
+	result, err := transitions.HandleForkWorkflow(agent, tr, wfState, resolution)
+
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/tasks/wf1/main", result.Agent.TaskFolder)
 }
 

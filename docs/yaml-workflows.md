@@ -203,6 +203,79 @@ The YAML scope produces three error types:
 When states are defined at the root level without a `states:` wrapper, the
 parser detects common state-like keys and suggests adding the wrapper.
 
+## Manifest Metadata for Daemon Discovery
+
+A YAML workflow may carry manifest metadata as top-level keys alongside
+`states`. When present, the daemon (`raymond serve`) discovers the file as a
+runnable workflow and exposes it through the HTTP API, MCP tools, and web UI.
+This makes the YAML file truly self-describing: definition, metadata, and
+discoverability in one file.
+
+The following top-level keys are recognized as manifest metadata. All are
+optional except `id`, which is required for daemon discovery. Omitting `id` is
+valid — the workflow simply won't be indexed by the daemon, but the file is
+still usable via direct CLI invocation.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | (none) | Unique identifier. Required for daemon discovery; used as the workflow ID in the HTTP API and MCP tools. |
+| `name` | string | `""` | Human-readable display name. |
+| `description` | string | `""` | Description shown in tool/endpoint documentation. |
+| `input_schema` | map[string]string | `nil` | Parameters the workflow accepts. |
+| `default_budget` | float64 | `0` | Default USD budget when callers don't specify one. |
+| `working_directory` | string | `""` | Default working directory for runs. |
+| `environment` | map[string]string | `nil` | Environment variables for runs. Supports `${VAR}` interpolation. |
+| `requires_human_input` | string | `"auto"` | `"auto"`, `"true"`, or `"false"`. Controls whether the daemon rejects the workflow from contexts that cannot deliver human input. At discovery time, `auto` resolves to `false` for YAML workflows, matching the behavior for directory and zip scopes. |
+
+Adding manifest fields has **no effect on CLI behavior**. `raymond
+workflow.yaml` runs the workflow identically whether or not `id` and its
+siblings are present — the CLI ignores manifest fields. They are consumed only
+by the daemon registry.
+
+### Example: self-describing YAML workflow
+
+```yaml
+id: vendor-approval
+name: Vendor Approval
+description: Evaluates a vendor proposal and routes through human approval
+default_budget: 5.0
+input_schema:
+  vendor_name: string
+  budget_limit: string
+requires_human_input: auto
+
+states:
+  1_START:
+    prompt: |
+      Research the vendor "{{result}}" and prepare an analysis covering
+      price, support SLA, and references.
+
+      STOP after writing your analysis. Do not make a recommendation yet.
+    allowed_transitions:
+      - tag: await
+        next: DECISION.md
+        timeout: "48h"
+        timeout_next: ESCALATE.md
+
+  DECISION:
+    prompt: |
+      The reviewer's decision: {{result}}
+
+      Execute the decision and produce a final report in vendor_report.md.
+    allowed_transitions:
+      - tag: result
+
+  ESCALATE:
+    prompt: |
+      The vendor decision timed out. Send an escalation notice and close.
+    allowed_transitions:
+      - tag: result
+```
+
+This file can be run directly (`raymond workflow.yaml`), discovered by the
+daemon (`raymond serve --root .`), linted (`raymond lint workflow.yaml`), and
+diagrammed (`raymond diagram workflow.yaml`).
+
 ## Comparison with other scope types
 
 | | Directory | ZIP | YAML |
@@ -211,6 +284,7 @@ parser detects common state-like keys and suggests adding the wrapper.
 | **Best for** | Large workflows, version control | Distribution, immutable snapshots | Small workflows, prototyping |
 | **Script support** | `.sh`/`.bat`/`.ps1` files | Same, inside archive | `sh`/`ps1`/`bat` keys in state definition |
 | **Policy via frontmatter** | In each `.md` file | Same | `allowed_transitions`, `model`, `effort`, `timeout` keys |
+| **Manifest** | Separate `workflow.yaml` file | `workflow.yaml` inside archive | Embedded in same file |
 | **CLI syntax** | `raymond dir/` or `raymond dir/FILE.md` | `raymond archive.zip` | `raymond workflow.yaml` or `raymond workflow.yaml/STATE` |
 
 ## Complete example

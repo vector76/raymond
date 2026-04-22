@@ -16,7 +16,7 @@ raymond serve --root <dir> [--root <dir2> ...] [flags]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--root` | string slice | (required) | One or more directories to scan for workflows. Each root is scanned for subdirectories and zip archives containing `workflow.yaml` manifests. |
+| `--root` | string slice | (required) | One or more directories to scan for workflows. Each root is scanned for subdirectories, zip archives, and YAML workflow files carrying manifest metadata. |
 | `--port` | int | 8080 | Port for the HTTP API server. |
 | `--mcp` | bool | false | Enable the MCP transport interface. |
 | `--no-http` | bool | false | Disable the HTTP server entirely. Requires `--mcp` — at least one transport must be active. |
@@ -51,19 +51,32 @@ startup (and on rescan). The discovery process:
 2. For each immediate child entry:
    - **Directories**: checks for a `workflow.yaml` manifest file inside the directory.
    - **Zip archives** (`.zip` files): checks for a `workflow.yaml` entry inside the archive.
+   - **YAML files** (`.yaml` / `.yml`): checks for embedded manifest metadata (top-level `id` alongside `states`). See [yaml-workflows.md](yaml-workflows.md#manifest-metadata-for-daemon-discovery).
 3. Parses the manifest and extracts metadata (ID, name, description, input schema, default budget, human-input requirements).
-4. Workflows without a valid `workflow.yaml` manifest are silently skipped.
+4. Entries without a valid manifest source are silently skipped. For YAML files, this means the file either lacks `states`, lacks `id`, or fails to parse.
 
 The registry supports rescanning at runtime to pick up newly added or removed
 workflows without restarting the daemon.
 
 ### Manifest requirements
 
-For a workflow to be discoverable by the daemon, it must include a
-`workflow.yaml` manifest with at least the `id` field. The manifest is distinct
-from YAML scope files (which define inline states) — it is a metadata
-descriptor. See the `internal/manifest` package for the full schema and
+For a workflow to be discoverable by the daemon, it must provide manifest
+metadata with at least an `id` field. There are three valid manifest sources:
+
+- A `workflow.yaml` file inside a directory scope.
+- A `workflow.yaml` entry inside a zip archive.
+- A YAML workflow file (`.yaml` / `.yml`) with top-level manifest fields
+  embedded alongside `states`. See
+  [yaml-workflows.md](yaml-workflows.md#manifest-metadata-for-daemon-discovery)
+  for the recognized fields.
+
+See the `internal/manifest` package for the full schema and
 [skill-packaging.md](skill-packaging.md) for the packaging conventions.
+
+`requires_human_input: auto` resolves to `false` at discovery time across all
+three scope types. The daemon does not perform dynamic await-scanning during
+indexing; workflows that need `auto` promoted to `true` must set the field
+explicitly.
 
 ## HTTP API
 

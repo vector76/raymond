@@ -964,3 +964,250 @@ func TestGetImplicitTransitionWithStaticInputAttribute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"input": "done"}, tr.Attributes)
 }
+
+// ----------------------------------------------------------------------------
+// Await policy validation
+// ----------------------------------------------------------------------------
+
+func TestValidateAwaitMatchesValidTransition(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "TARGET.md",
+		Attributes: map[string]string{"next": "TARGET.md"},
+		Payload:    "Please provide feedback",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+func TestValidateAwaitAbstractNextMatches(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "NEXT"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "NEXT.md",
+		Attributes: map[string]string{"next": "NEXT.md"},
+		Payload:    "Provide input",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+func TestValidateAwaitWrongNextRejects(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "WRONG.md",
+		Attributes: map[string]string{"next": "WRONG.md"},
+		Payload:    "Please provide feedback",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+func TestValidateAwaitTimeoutNextMatches(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md", "timeout_next": "TIMEOUT.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "TARGET.md",
+		Attributes: map[string]string{"next": "TARGET.md", "timeout_next": "TIMEOUT.md", "timeout": "300"},
+		Payload:    "Waiting for approval",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+func TestValidateAwaitTimeoutNextWrongRejects(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md", "timeout_next": "TIMEOUT.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "TARGET.md",
+		Attributes: map[string]string{"next": "TARGET.md", "timeout_next": "WRONG.md"},
+		Payload:    "Waiting for approval",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+func TestValidateAwaitTimeoutNextAbstractMatches(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET", "timeout_next": "TIMEOUT"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "TARGET.md",
+		Attributes: map[string]string{"next": "TARGET.md", "timeout_next": "TIMEOUT.sh"},
+		Payload:    "Waiting",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+// Await must be excluded from implicit transitions.
+func TestCannotUseImplicitAwait(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md"},
+		},
+	}
+	assert.False(t, policy.CanUseImplicitTransition(p))
+}
+
+func TestGetImplicitTransitionRejectsAwait(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md"},
+		},
+	}
+	_, err := policy.GetImplicitTransition(p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot get implicit transition")
+}
+
+// Reminder prompt renders await entries correctly.
+func TestGenerateReminderAwaitBasic(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md"},
+		},
+	}
+	out, err := policy.GenerateReminderPrompt(p)
+	require.NoError(t, err)
+	assert.Contains(t, out, `<await next="TARGET.md">[human-facing prompt here]</await>`)
+}
+
+func TestGenerateReminderAwaitWithTimeoutAttributes(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await", "next": "TARGET.md", "timeout": "300", "timeout_next": "TIMEOUT.md"},
+		},
+	}
+	out, err := policy.GenerateReminderPrompt(p)
+	require.NoError(t, err)
+	// Attributes are sorted: next, timeout, timeout_next
+	assert.Contains(t, out, `<await next="TARGET.md" timeout="300" timeout_next="TIMEOUT.md">[human-facing prompt here]</await>`)
+}
+
+// Mixed policy with await and non-await entries validates correctly.
+func TestValidateMixedPolicyAwaitAndGoto(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "goto", "target": "NEXT.md"},
+			{"tag": "await", "next": "REVIEW.md"},
+			{"tag": "result"},
+		},
+	}
+
+	// goto passes
+	err := policy.ValidateTransitionPolicy(parsing.Transition{
+		Tag: "goto", Target: "NEXT.md",
+	}, p)
+	assert.NoError(t, err)
+
+	// await passes
+	err = policy.ValidateTransitionPolicy(parsing.Transition{
+		Tag:        "await",
+		Target:     "REVIEW.md",
+		Attributes: map[string]string{"next": "REVIEW.md"},
+		Payload:    "Please review",
+	}, p)
+	assert.NoError(t, err)
+
+	// result passes
+	err = policy.ValidateTransitionPolicy(parsing.Transition{
+		Tag: "result", Payload: "done",
+	}, p)
+	assert.NoError(t, err)
+
+	// await with wrong target fails
+	err = policy.ValidateTransitionPolicy(parsing.Transition{
+		Tag:        "await",
+		Target:     "WRONG.md",
+		Attributes: map[string]string{"next": "WRONG.md"},
+		Payload:    "Please review",
+	}, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+
+	// disallowed tag fails
+	err = policy.ValidateTransitionPolicy(parsing.Transition{
+		Tag: "fork", Target: "WORKER.md",
+	}, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
+func TestGenerateReminderMixedWithAwait(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "goto", "target": "NEXT.md"},
+			{"tag": "await", "next": "REVIEW.md"},
+			{"tag": "result"},
+		},
+	}
+	out, err := policy.GenerateReminderPrompt(p)
+	require.NoError(t, err)
+	assert.Contains(t, out, "<goto>NEXT.md</goto>")
+	assert.Contains(t, out, `<await next="REVIEW.md">[human-facing prompt here]</await>`)
+	assert.Contains(t, out, "<result>...</result>")
+}
+
+// Await without next constraint in policy allows any next target.
+func TestValidateAwaitNoNextConstraintAllowsAny(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "await"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "ANYTHING.md",
+		Attributes: map[string]string{"next": "ANYTHING.md"},
+		Payload:    "prompt",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	assert.NoError(t, err)
+}
+
+// Await tag not in allowed list produces helpful error.
+func TestValidateAwaitNotAllowedShowsAllowedTags(t *testing.T) {
+	p := &policy.Policy{
+		AllowedTransitions: []map[string]string{
+			{"tag": "goto", "target": "NEXT.md"},
+		},
+	}
+	tr := parsing.Transition{
+		Tag:        "await",
+		Target:     "TARGET.md",
+		Attributes: map[string]string{"next": "TARGET.md"},
+		Payload:    "prompt",
+	}
+	err := policy.ValidateTransitionPolicy(tr, p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "await")
+	assert.Contains(t, err.Error(), "not allowed")
+}

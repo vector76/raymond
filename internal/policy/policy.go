@@ -188,9 +188,15 @@ func ValidateTransitionPolicy(transition parsing.Transition, p *Policy) error {
 				continue
 			}
 		}
-		// Check next attribute (fork).
+		// Check next attribute (fork, await).
 		if pn, ok := allowed["next"]; ok {
 			if !TargetsMatch(pn, transition.Attributes["next"]) {
+				continue
+			}
+		}
+		// Check timeout_next attribute (await).
+		if ptn, ok := allowed["timeout_next"]; ok {
+			if !TargetsMatch(ptn, transition.Attributes["timeout_next"]) {
 				continue
 			}
 		}
@@ -252,6 +258,11 @@ func CanUseImplicitTransition(p *Policy) bool {
 	if allowed["tag"] == "result" {
 		_, hasPayload := allowed["payload"]
 		return hasPayload
+	}
+	// Await transitions cannot be implicit — the LLM must compose the
+	// prompt inside the tag body.
+	if allowed["tag"] == "await" {
+		return false
 	}
 	_, hasTarget := allowed["target"]
 	return hasTarget
@@ -333,6 +344,15 @@ func GenerateReminderPrompt(p *Policy) (string, error) {
 				tagStr = fmt.Sprintf("<%s>%s</%s>", tag, payload, tag)
 			} else {
 				tagStr = fmt.Sprintf("<%s>...</%s>", tag, tag)
+			}
+		} else if tag == "await" {
+			// Await: all non-tag keys become attributes (next, timeout,
+			// timeout_next); the body is a prompt placeholder.  attrParts
+			// already contains these since await entries have no "target" key.
+			if len(attrParts) > 0 {
+				tagStr = fmt.Sprintf("<await %s>[human-facing prompt here]</await>", strings.Join(attrParts, " "))
+			} else {
+				tagStr = "<await>[human-facing prompt here]</await>"
 			}
 		} else {
 			if target == "" {

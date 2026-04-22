@@ -2,13 +2,18 @@ package daemon
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"reflect"
 	"strings"
 	"time"
 )
+
+//go:embed static
+var staticFiles embed.FS
 
 // Server is the HTTP REST API server for the Raymond daemon. It exposes
 // workflow discovery, run management, and SSE event streaming endpoints.
@@ -37,6 +42,10 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
 	mux.HandleFunc("GET /runs/{id}/pending-inputs", s.handleListPendingInputs)
 	mux.HandleFunc("POST /runs/{id}/inputs/{input_id}", s.handleDeliverInput)
+
+	// Serve embedded static UI files at root; API routes above take precedence.
+	staticSub, _ := fs.Sub(staticFiles, "static")
+	mux.Handle("/", http.FileServer(http.FS(staticSub)))
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Raymond Daemon</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Raymond Daemon</h1>
+    <span class="status" id="conn-status">Loading...</span>
+  </header>
+
+  <main>
+    <section id="active-runs-section">
+      <h2>Active Runs</h2>
+      <div id="active-runs"></div>
+    </section>
+
+    <section id="history-section">
+      <h2>Run History</h2>
+      <div id="history-runs"></div>
+    </section>
+
+    <section id="pending-inputs-section" style="display:none">
+      <h2>Pending Inputs</h2>
+      <div id="pending-inputs"></div>
+    </section>
+
+    <section id="output-section" style="display:none">
+      <div id="output-header">
+        <h2>Live Output &mdash; <span id="output-run-id"></span></h2>
+        <div class="cancel-btn-wrapper">
+          <button class="btn btn-danger" id="cancel-btn" style="display:none">Cancel Run</button>
+        </div>
+      </div>
+      <div id="output-log"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

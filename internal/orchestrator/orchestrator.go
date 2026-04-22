@@ -253,6 +253,13 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// Only accessed from the main goroutine.
 	running := make(map[string]bool)
 
+	// Quiesce state: when an agent hits <await> and OnAwait == "pause",
+	// pausing prevents launching new agent goroutines so the system can
+	// reach a clean quiesce point.
+	pausing := false
+	activeAwait := ""
+	var preAwaitQueue []string
+
 	// launch starts an executor goroutine for the given agent. It takes a
 	// snapshot of the mutable workflow fields needed by the executor (to avoid
 	// data races: ws is only accessed by the main goroutine).
@@ -306,6 +313,9 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		if err := initTaskFolders(ws); err != nil {
 			return err
 		}
+		if pausing {
+			return nil
+		}
 		for i, a := range ws.Agents {
 			if a.Status == "" && !running[a.ID] {
 				launch(ws.Agents[i])
@@ -330,6 +340,21 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				})
 				_ = wfstate.DeleteState(workflowID, stateDir)
 				return nil
+			}
+
+			// Quiesce point: all goroutines have drained while pausing was
+			// in effect (at least one agent hit <await>). The remaining
+			// agents are either awaiting or held at their next state
+			// boundary. Write state and exit so the caller can serve the
+			// await or resume later.
+			if pausing && opts.OnAwait == "pause" {
+				b.Emit(events.WorkflowPaused{
+					WorkflowID:       workflowID,
+					TotalCostUSD:     ws.TotalCostUSD,
+					PausedAgentCount: len(ws.Agents),
+					Timestamp:        time.Now(),
+				})
+				return wfstate.WriteState(workflowID, ws, stateDir)
 			}
 
 			if allPaused(ws.Agents) {
@@ -439,6 +464,30 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				// Apply transition result: update/remove agent in ws.Agents,
 				// append worker if present.
 				applyResult(tr, agentIdx, agentBefore.CurrentState, ws, b)
+
+				// Quiesce handling: when OnAwait == "pause" and an
+				// agent enters awaiting status, begin quiescing. The
+				// first agent to await is the active await; subsequent
+				// ones are queued.
+				if opts.OnAwait == "pause" {
+					idx := findAgentByID(ws.Agents, agentBefore.ID)
+					if idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAwaiting {
+						if activeAwait == "" {
+							activeAwait = ws.Agents[idx].ID
+						} else {
+							preAwaitQueue = append(preAwaitQueue, ws.Agents[idx].ID)
+						}
+						pausing = true
+						b.Emit(events.AgentAwaitStarted{
+							AgentID:   ws.Agents[idx].ID,
+							InputID:   ws.Agents[idx].AwaitInputID,
+							Prompt:    ws.Agents[idx].AwaitPrompt,
+							NextState: ws.Agents[idx].AwaitNextState,
+							Timeout:   ws.Agents[idx].AwaitTimeout,
+							Timestamp: time.Now(),
+						})
+					}
+				}
 
 				// Runtime enforcement: if an agent entered the awaiting state
 				// but --on-await is not "pause", fail the agent immediately

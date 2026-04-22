@@ -2697,3 +2697,362 @@ func TestTaskFolderRecreated_OnResume(t *testing.T) {
 	_, err = os.Stat(customFolder)
 	require.NoError(t, err, "task folder should be recreated on resume")
 }
+
+// --------------------------------------------------------------------------
+// Orchestrator quiesce mechanism
+// --------------------------------------------------------------------------
+
+// awaitResult returns an ExecutionResult carrying an await transition.
+func awaitResult(next, prompt string) executors.ExecutionResult {
+	return executors.ExecutionResult{
+		Transition: parsing.Transition{
+			Tag:     "await",
+			Target:  next,
+			Payload: prompt,
+			Attributes: map[string]string{
+				"next": next,
+			},
+		},
+	}
+}
+
+// funcExec is a StateExecutor backed by a closure, for flexible test mocking.
+type funcExec struct {
+	fn func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error)
+}
+
+func (f *funcExec) Execute(
+	ctx context.Context,
+	agent *wfstate.AgentState,
+	_ *wfstate.WorkflowState,
+	_ *executors.ExecutionContext,
+) (executors.ExecutionResult, error) {
+	return f.fn(ctx, agent)
+}
+
+// findTestAgent returns a pointer to the agent with the given ID, or nil.
+func findTestAgent(agents []wfstate.AgentState, id string) *wfstate.AgentState {
+	for i, a := range agents {
+		if a.ID == id {
+			return &agents[i]
+		}
+	}
+	return nil
+}
+
+// setupMultiAgentWorkflow creates a state file with multiple agents and returns
+// the state directory and workflow ID.
+func setupMultiAgentWorkflow(t *testing.T, agents []wfstate.AgentState) (stateDir, workflowID string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	stateDir = filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	scopeDir := filepath.Join(tmpDir, "scope")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+
+	for i := range agents {
+		if agents[i].ScopeDir == "" {
+			agents[i].ScopeDir = scopeDir
+		}
+		if agents[i].Stack == nil {
+			agents[i].Stack = []wfstate.StackFrame{}
+		}
+	}
+
+	workflowID = "test-quiesce"
+	ws := &wfstate.WorkflowState{
+		WorkflowID: workflowID,
+		ScopeDir:   scopeDir,
+		Agents:     agents,
+	}
+	require.NoError(t, wfstate.WriteState(workflowID, ws, stateDir))
+	return stateDir, workflowID
+}
+
+func TestQuiesceSingleAgentAwaits(t *testing.T) {
+	// Single agent hits await → quiesce point reached, agent kept in list
+	// with awaiting status, AgentAwaitStarted event emitted.
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	mock := newMock(awaitResult("NEXT.md", "Need input"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	var awaitEvents []events.AgentAwaitStarted
+	var pausedEvents []events.WorkflowPaused
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) { awaitEvents = append(awaitEvents, e) })
+		bus.Subscribe(b, func(e events.WorkflowPaused) { pausedEvents = append(pausedEvents, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Agent preserved in state with awaiting status.
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, wfstate.AgentStatusAwaiting, ws.Agents[0].Status)
+	assert.Equal(t, "START.md", ws.Agents[0].CurrentState) // await keeps current state
+	assert.Equal(t, "NEXT.md", ws.Agents[0].AwaitNextState)
+	assert.Equal(t, "Need input", ws.Agents[0].AwaitPrompt)
+	assert.NotEmpty(t, ws.Agents[0].AwaitInputID)
+
+	// AgentAwaitStarted emitted.
+	require.Len(t, awaitEvents, 1)
+	assert.Equal(t, "main", awaitEvents[0].AgentID)
+	assert.Equal(t, "Need input", awaitEvents[0].Prompt)
+	assert.Equal(t, "NEXT.md", awaitEvents[0].NextState)
+
+	// WorkflowPaused emitted for quiesce point.
+	require.Len(t, pausedEvents, 1)
+	assert.Equal(t, wfID, pausedEvents[0].WorkflowID)
+
+	// Executor called exactly once — no relaunch.
+	assert.Equal(t, 1, mock.idx)
+}
+
+func TestQuiesceAgentAwaitHoldsPeerAtBoundary(t *testing.T) {
+	// Two agents: alpha hits await, beta completes a goto → beta held at
+	// its next state boundary (not relaunched).
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B.md"},
+	})
+
+	var awaitProcessed atomic.Bool
+	var callCount atomic.Int32
+
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(_ events.AgentAwaitStarted) {
+			awaitProcessed.Store(true)
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			callCount.Add(1)
+			if agent.ID == "alpha" {
+				return awaitResult("ALPHA_NEXT.md", "Need input"), nil
+			}
+			// Beta waits for alpha's await to be processed before returning,
+			// so pausing is guaranteed to be set when beta's result arrives.
+			for !awaitProcessed.Load() {
+				select {
+				case <-ctx.Done():
+					return executors.ExecutionResult{}, ctx.Err()
+				default:
+					time.Sleep(time.Millisecond)
+				}
+			}
+			return gotoResult("BETA_NEXT.md"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 2)
+
+	alpha := findTestAgent(ws.Agents, "alpha")
+	beta := findTestAgent(ws.Agents, "beta")
+	require.NotNil(t, alpha)
+	require.NotNil(t, beta)
+
+	assert.Equal(t, wfstate.AgentStatusAwaiting, alpha.Status)
+	assert.Equal(t, "BETA_NEXT.md", beta.CurrentState)
+	assert.Equal(t, "", beta.Status) // held at boundary, not relaunched
+
+	// Exactly 2 executor calls — one per agent, beta was not relaunched.
+	assert.Equal(t, int32(2), callCount.Load())
+}
+
+func TestQuiesceTwoAgentsBothAwait(t *testing.T) {
+	// Two agents both hit await → both in awaiting state, two events emitted.
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B.md"},
+	})
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			if agent.ID == "alpha" {
+				return awaitResult("ALPHA_NEXT.md", "Input 1"), nil
+			}
+			return awaitResult("BETA_NEXT.md", "Input 2"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	var awaitEvents []events.AgentAwaitStarted
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+			awaitEvents = append(awaitEvents, e)
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 2)
+
+	for _, a := range ws.Agents {
+		assert.Equal(t, wfstate.AgentStatusAwaiting, a.Status,
+			"agent %s should be awaiting", a.ID)
+		assert.NotEmpty(t, a.AwaitInputID,
+			"agent %s should have AwaitInputID", a.ID)
+	}
+
+	// Two AgentAwaitStarted events emitted (one per agent).
+	require.Len(t, awaitEvents, 2)
+}
+
+func TestQuiesceThreeAgents_AwaitTerminateAwait(t *testing.T) {
+	// Three agents: alpha awaits, beta terminates normally, gamma awaits.
+	// Result: only alpha and gamma remain, both awaiting.
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B.md"},
+		{ID: "gamma", CurrentState: "C.md"},
+	})
+
+	var awaitProcessed atomic.Bool
+
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(_ events.AgentAwaitStarted) {
+			awaitProcessed.Store(true)
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			switch agent.ID {
+			case "alpha":
+				return awaitResult("ALPHA_NEXT.md", "Input alpha"), nil
+			case "beta":
+				// Wait for alpha's await before terminating.
+				for !awaitProcessed.Load() {
+					select {
+					case <-ctx.Done():
+						return executors.ExecutionResult{}, ctx.Err()
+					default:
+						time.Sleep(time.Millisecond)
+					}
+				}
+				return resultExecResult("beta done"), nil
+			default: // gamma
+				for !awaitProcessed.Load() {
+					select {
+					case <-ctx.Done():
+						return executors.ExecutionResult{}, ctx.Err()
+					default:
+						time.Sleep(time.Millisecond)
+					}
+				}
+				return awaitResult("GAMMA_NEXT.md", "Input gamma"), nil
+			}
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+
+	// Beta terminated and was removed; alpha and gamma remain.
+	require.Len(t, ws.Agents, 2)
+	for _, a := range ws.Agents {
+		assert.Contains(t, []string{"alpha", "gamma"}, a.ID)
+		assert.Equal(t, wfstate.AgentStatusAwaiting, a.Status,
+			"agent %s should be awaiting", a.ID)
+	}
+}
+
+func TestQuiescePointEmitsWorkflowPausedAndPersistsState(t *testing.T) {
+	// Verifies quiesce point: WorkflowPaused event emitted, state file written.
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B.md"},
+	})
+
+	var awaitProcessed atomic.Bool
+	var pausedEvents []events.WorkflowPaused
+
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(_ events.AgentAwaitStarted) {
+			awaitProcessed.Store(true)
+		})
+		bus.Subscribe(b, func(e events.WorkflowPaused) {
+			pausedEvents = append(pausedEvents, e)
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			if agent.ID == "alpha" {
+				return awaitResult("ALPHA_NEXT.md", "Need input"), nil
+			}
+			// Beta waits, then completes a goto → held at boundary.
+			for !awaitProcessed.Load() {
+				select {
+				case <-ctx.Done():
+					return executors.ExecutionResult{}, ctx.Err()
+				default:
+					time.Sleep(time.Millisecond)
+				}
+			}
+			return gotoResult("BETA_NEXT.md"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// WorkflowPaused emitted with correct agent count.
+	require.Len(t, pausedEvents, 1)
+	assert.Equal(t, wfID, pausedEvents[0].WorkflowID)
+	assert.Equal(t, 2, pausedEvents[0].PausedAgentCount)
+
+	// State persisted — both agents present.
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 2)
+
+	alpha := findTestAgent(ws.Agents, "alpha")
+	beta := findTestAgent(ws.Agents, "beta")
+	require.NotNil(t, alpha)
+	require.NotNil(t, beta)
+
+	assert.Equal(t, wfstate.AgentStatusAwaiting, alpha.Status)
+	assert.Equal(t, "", beta.Status) // active but held
+	assert.Equal(t, "BETA_NEXT.md", beta.CurrentState)
+}

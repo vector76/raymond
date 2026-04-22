@@ -58,7 +58,14 @@ func ParseManifest(path string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseManifestData(data)
+}
 
+// ParseManifestData parses and validates a workflow manifest from raw YAML
+// bytes. It returns ErrNotManifest if the data looks like a YAML scope
+// (contains "states"). This is useful when manifest content is read from
+// non-filesystem sources such as zip archives.
+func ParseManifestData(data []byte) (*Manifest, error) {
 	var raw rawManifest
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)

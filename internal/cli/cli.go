@@ -319,7 +319,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.StringVar(&stateDir, "state-dir", "", "")
 	_ = f.MarkHidden("state-dir")
 
-	root.AddCommand(c.newDiagramCmd(), c.newLintCmd(), c.newConvertCmd())
+	root.AddCommand(c.newDiagramCmd(), c.newLintCmd(), c.newConvertCmd(), c.newServeCmd())
 
 	root.SetOut(c.stdout)
 	root.SetErr(c.stderr)

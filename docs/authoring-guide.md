@@ -431,6 +431,62 @@ or terminates the agent if there's no caller.
 
 The payload text is passed as-is to the return state via `{{result}}`.
 
+### `<await next="NEXT" ...>prompt</await>` — Request Human Input
+
+Suspends the agent and requests human input. The text inside the tag is the
+human-facing prompt — what the human sees and responds to. When input arrives,
+the agent transitions to `NEXT` with the response available as `{{result}}`.
+
+```markdown
+<await next="HANDLE_DECISION.md" timeout="48h" timeout_next="ESCALATE.md">
+I have completed my analysis of the three proposals.
+
+My recommendation is Vendor B based on support requirements.
+
+Please respond with your decision:
+- "approve A/B/C" to select a vendor
+- "reject all" to restart sourcing
+- "more info [question]" to request additional analysis
+</await>
+```
+
+**Attributes:**
+- `next` (required) — state to transition to when input arrives
+- `timeout` (optional) — duration string (e.g., `30m`, `24h`, `7d`)
+- `timeout_next` (optional) — state to transition to on timeout; if omitted
+  and the timeout elapses, the workflow fails
+
+**Use when:** The workflow needs a human decision, approval, or external input
+before it can continue.
+
+**Context:** Preserved. The LLM session survives the await (like `goto`), so
+the agent has full history when it enters `next`.
+
+**Prompt authoring:** The tag content should be self-contained — include all
+context the human needs to make their decision. Text before the tag is internal
+reasoning visible in logs but not shown to the human.
+
+**Timeout handling:** When a timeout elapses, the agent transitions to
+`timeout_next` with `{{result}}` empty. Use this for escalation, fallback, or
+cleanup:
+
+```markdown
+---
+allowed_transitions:
+  - tag: await
+    next: HANDLE_DECISION.md
+    timeout: "48h"
+    timeout_next: ESCALATE.md
+---
+Analyze the proposals and request a decision from the human.
+```
+
+**`--on-await` CLI flag:** By default (`--on-await=reject`), workflows that
+emit `<await>` fail immediately — this protects automated/CI contexts from
+hanging. Use `--on-await=pause` for interactive use, or run via `raymond serve`
+for daemon mode. See [skill-packaging.md](skill-packaging.md) for the full
+exit code protocol.
+
 ## Choosing the Right Pattern
 
 | Question | If yes | If no |
@@ -442,6 +498,7 @@ The payload text is passed as-is to the return state via `{{result}}`.
 | Does the next step need this step's history? | `goto` | `function`, `call`, or `reset` |
 | Is prior work saved to files? | `reset` | `goto` |
 | Need parallel execution? | `fork` | Others |
+| Need a human decision before continuing? | `await` | Others |
 
 ### Combined Example
 
@@ -737,6 +794,54 @@ allowed_transitions:
 ---
 Process item: {{item}}
 When done: <result>Processed {{item}}</result>
+```
+
+### Pattern: Human Approval Gate
+
+```
+workflows/approval/
+  ANALYZE.md      # LLM analyzes the proposal
+  REVIEW.md       # Awaits human decision
+  APPROVED.md     # Proceeds with approved proposal
+  ESCALATE.md     # Handles timeout
+```
+
+**ANALYZE.md:**
+```markdown
+---
+allowed_transitions:
+  - { tag: goto, target: REVIEW.md }
+---
+Read the proposal documents in the working directory and prepare a summary
+with a recommendation.
+
+STOP after writing your analysis. Do not make the decision yet — a human
+reviewer will decide in a later step.
+```
+
+**REVIEW.md:**
+```markdown
+---
+allowed_transitions:
+  - tag: await
+    next: APPROVED.md
+    timeout: "48h"
+    timeout_next: ESCALATE.md
+---
+Present your analysis to the human and request their decision. Include all
+relevant context in the await prompt so the reviewer can decide without
+reading the raw documents.
+```
+
+**APPROVED.md:**
+```markdown
+---
+allowed_transitions:
+  - { tag: result }
+---
+The reviewer's decision: {{result}}
+
+Execute the decision and produce a final report.
 ```
 
 For more complete examples, see [sample-workflows.md](sample-workflows.md).

@@ -81,15 +81,22 @@ style missing_state stroke-dasharray: 5 5
 
 | Transition type | Arrow style |
 |-----------------|-------------|
-| `<goto>`, `<call>`, `<function>`, `<call-workflow>`, `<function-workflow>`, `fork-next`, `fork-workflow-next` | Solid `-->` |
-| `<fork>`, `<fork-workflow>`, `<reset>`, `<reset-workflow>`, return edges | Dashed `-.->` |
+| `<goto>`, `<call>`, `<function>`, `<call-workflow>`, `<function-workflow>`, `fork-next`, `fork-workflow-next`, `<await>` | Solid `-->` |
+| `<fork>`, `<fork-workflow>`, `<reset>`, `<reset-workflow>`, return edges, `<await>` timeout | Dashed `-.->` |
+
+**`<await>` edges:** An `<await>` transition produces a solid edge labeled
+`await` from the current state to the `next` target. If `timeout_next` is
+specified, a second dashed edge labeled `await timeout` is drawn to the timeout
+target. Both edges from frontmatter declarations and body-parsed `<await>` tags
+are rendered.
 
 **Return edges** come in two forms:
 
 - *Traced returns* (`<call>`, `<function>`) — raymond traces which states inside
   the called sub-graph eventually emit `<result>` and draws a dashed return edge
   from each such state back to the `return` state. The label is
-  `return (caller-name)`.
+  `return (caller-name)`. The tracing follows `<goto>`, `<reset>`, and `<await>`
+  edges when building the reachability graph.
 - *Explicit cross-workflow returns* (`<call-workflow>`, `<function-workflow>`) —
   when a `return` attribute is present, a single dashed edge is drawn from the
   calling state to the return state, labeled `call-workflow return` or

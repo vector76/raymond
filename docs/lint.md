@@ -117,11 +117,13 @@ severity appear in the array.
 | `frontmatter-parse-error` | A state file contains a YAML frontmatter block that cannot be parsed. |
 | `invalid-model` | A state file's frontmatter specifies a `model` value that is not one of `opus`, `sonnet`, `haiku`. |
 | `invalid-effort` | A state file's frontmatter specifies an `effort` value that is not one of `low`, `medium`, `high`. |
-| `missing-target` | A `<goto>`, `<reset>`, `<call>`, `<function>`, or `<fork>` tag references a state that does not exist in the workflow. Cross-workflow tags are excluded (see below). |
+| `missing-target` | A `<goto>`, `<reset>`, `<call>`, `<function>`, `<fork>`, or `<await>` tag references a state that does not exist in the workflow. For `<await>`, both the `next` and `timeout_next` attributes are validated. Cross-workflow tags are excluded (see below). |
 | `missing-return` | A `<call>` or `<function>` tag (non-cross-workflow) is missing a `return` attribute, or the `return` attribute references a state that does not exist. |
 | `missing-fork-next` | A state contains one or more `<fork>` tags, none of them have a `next` attribute, and there is no `<goto>` tag in the same state — meaning the parent agent has no continuation after the fork. |
 | `ambiguous-state-resolution` | An extensionless transition target (e.g., `<goto>REVIEW</goto>`) matches both a `.md` file and a platform script file (`.sh` on Linux/macOS, `.bat`/`.ps1` on Windows). The runtime would fail to resolve it. |
 | `ambiguous-entry-point` | Both `1_START` and `START` exist in the workflow directory, making the entry point ambiguous. |
+| `missing-await-next` | An `allowed_transitions` entry with `tag: await` is missing the required `next` attribute. |
+| `unsupported-cd-attribute` | An `<await>` tag uses the `cd` attribute, which is not supported on `<await>`. |
 | `no-entry-point` | No entry point file (`1_START` or `START`, with `.md`, `.sh`, `.bat`, or `.ps1` extension) was found in the workflow. |
 
 ### Warnings
@@ -129,9 +131,9 @@ severity appear in the array.
 | Check ID | What triggers it |
 |----------|-----------------|
 | `fork-next-mismatch` | A state has two or more `<fork>` tags with non-empty `next` attributes that disagree with each other. All forks in a state should send the parent to the same continuation. |
-| `unused-allowed-transition` | A state's `allowed_transitions` policy lists a target (excluding `result`) that does not appear anywhere in the prompt body text. Only fires when there are **two or more** allowed transitions; a single allowed transition is implicit and is not expected to be named in the prompt. |
+| `unused-allowed-transition` | A state's `allowed_transitions` policy lists a target (excluding `result` and `await`) that does not appear anywhere in the prompt body text. Only fires when there are **two or more** allowed transitions; a single allowed transition is implicit and is not expected to be named in the prompt. `<await>` entries are excluded because the prompt is composed by the LLM at runtime, not written statically. |
 | `unreachable-state` | No transition path from the entry point leads to this state. The state can never be visited during a workflow run. |
-| `dead-end-state` | A `.md` state file contains no outgoing transitions at all (no `<goto>`, `<result>`, `<call>`, etc.). An agent running this state would have no valid move. Script states (`.sh`, `.bat`, `.ps1`) are excluded because their transitions are determined at runtime. |
+| `dead-end-state` | A `.md` state file contains no outgoing transitions at all (no `<goto>`, `<result>`, `<call>`, `<await>`, etc.). An agent running this state would have no valid move. Script states (`.sh`, `.bat`, `.ps1`) are excluded because their transitions are determined at runtime. |
 | `call-without-result-path` | A `<call>` or `<function>` tag references a callee state that is present in this workflow, but no state reachable from the callee (via `<goto>`/`<reset>` edges) emits `<result>`. The call would therefore never return. |
 
 ### Info

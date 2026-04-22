@@ -16,6 +16,7 @@ Raymond interprets workflows as a sequence of Claude Code runs. Each run:
   - `<function ...>...</function>`
   - `<call ...>...</call>`
   - `<fork ...>...</fork>`
+  - `<await ...>...</await>`
   - `<result>...</result>`
 
 **Tag placement:** The single protocol tag may appear **anywhere** in the final
@@ -294,6 +295,44 @@ available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
 - **Payload**: The raw text between the tags is passed as-is (no summarization by
   the orchestrator). The return state's prompt receives it via `{{result}}`.
 
+### `<await next="NEXT.md" ...>prompt</await>`
+
+- **Meaning**: Suspend the agent and request human input. The tag content is the
+  human-facing prompt — presented to the human via the CLI, HTTP API, or MCP
+  elicitation. When input arrives, the agent transitions to `next` with the
+  response available as `{{result}}`.
+- **Required attribute**: `next="NEXT.md"` (the state to transition to when
+  input arrives)
+- **Optional attribute**: `timeout="24h"` — duration string. If no input arrives
+  within this window, the agent transitions to `timeout_next` instead.
+- **Optional attribute**: `timeout_next="ESCALATE.md"` — state to transition to
+  on timeout. If omitted and the timeout elapses, the workflow fails.
+- **Return stack**: Preserved unchanged.
+- **Session behavior**: The LLM session is preserved across the await (like
+  `<goto>`). The agent resumes into the same session that produced the await,
+  so the LLM has full history when it enters `next`.
+- **Tag content**: The text between `<await>` and `</await>` is the authoritative
+  human-facing prompt. Text the LLM writes *before* the tag is the reasoning
+  trail, visible in the console output but not presented to the human.
+- **Input delivery**: Depends on the launch context:
+  - **CLI with `--on-await=pause`**: Raymond quiesces all agents, writes
+    structured JSON to stdout, and exits with code 2. Input is delivered via
+    `raymond --resume <id> --input "..."`.
+  - **Daemon mode**: The pending input is registered and delivered via the HTTP
+    API (`POST /runs/{id}/inputs/{input_id}`) or MCP elicitation.
+- **`cd` attribute**: Not supported on `<await>`.
+
+**Example:**
+
+```
+<await next="HANDLE_DECISION.md" timeout="48h" timeout_next="ESCALATE.md">
+I have completed my analysis. Please respond with your decision:
+- "approve" to proceed
+- "reject" to cancel
+- "more info [question]" to request additional analysis
+</await>
+```
+
 ## Working Directory (`cd` Attribute)
 
 By default, all agents execute in the orchestrator's working directory (the
@@ -310,6 +349,7 @@ directory where `raymond` was launched). The `cd` attribute on `<fork>` and
 - `<call>` — branches from the caller's session context, which is tied to
   the original directory
 - `<function>` — not supported (could be added in future if needed)
+- `<await>` — suspends the agent; the directory is irrelevant during suspension
 
 **Behavior:**
 - The `cd` value is always resolved to an absolute, normalized path and stored
@@ -348,7 +388,7 @@ passed as a template variable or fork attribute.
 
 ## The `input` Attribute
 
-All transition tags except `<result>` support an optional `input` attribute
+All transition tags except `<result>` and `<await>` support an optional `input` attribute
 that injects a string as `{{result}}` into the target state's prompt:
 
 ```xml
@@ -455,6 +495,10 @@ allowed_transitions:
   - tag: fork
     target: WORKER.md
     next: CONTINUE.md
+  - tag: await
+    next: HANDLE_RESPONSE.md
+    timeout: "48h"
+    timeout_next: ESCALATE.md
   - { tag: result }
 ---
 ```

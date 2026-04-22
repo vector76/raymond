@@ -6,29 +6,39 @@ management — controlling what the agent remembers, forgets, and passes between
 steps.
 
 Claude Code excels at executing toward a single goal, but isn't built to chain
-tasks, run continuous loops, or manage context across phases without human
-interaction. Raymond fills that gap by treating workflows as state machines
-where each state is a markdown prompt or shell script, and transitions are
-declared within the prompts themselves.
+tasks, run continuous loops, or manage context across phases. Raymond fills
+that gap by treating workflows as state machines where each state is a markdown
+prompt or shell script, and transitions are declared within the prompts
+themselves.
 
 ## Key features
 
 - **State machine workflows** — Define multi-step workflows as directories of
   markdown prompts and shell scripts that reference each other via transition
   tags
-- **Context control** — Five invocation patterns (`goto`, `reset`, `call`,
-  `function`, `fork`) give precise control over what context carries forward,
-  gets discarded, or branches
+- **Context control** — Six transition types (`goto`, `reset`, `call`,
+  `function`, `fork`, `await`) give precise control over what context carries
+  forward, gets discarded, branches, or pauses for input
+- **Human-in-the-loop** — The `<await>` transition suspends an agent and
+  presents a prompt to a human; the workflow resumes when input arrives
 - **Shell script states** — Deterministic operations (polling, builds, data
   processing) run as shell scripts with zero token cost
 - **Multi-agent** — Fork independent agents that run in parallel within the
   same workflow
+- **Cross-workflow calls** — Invoke other workflows via `<call-workflow>`,
+  `<function-workflow>`, `<fork-workflow>`, and `<reset-workflow>` with shared
+  budget and state
+- **Daemon mode** — `raymond serve` exposes workflows via HTTP API and MCP
+  tools, with a web UI for monitoring runs and delivering human input
+- **Skill packaging** — Bundle workflows as self-contained skills with a
+  contract file (SKILL.md), entry point script, and manifest for daemon
+  discovery
 - **Cost budgets** — Set per-workflow spending limits that override transitions
   when exceeded
 - **Crash recovery** — Workflow state is persisted to disk; crashed workflows
   can be resumed
-- **Debug mode** — Full execution history preserved for analysis (enabled by
-  default)
+- **Static analysis** — `raymond lint` validates workflows statically;
+  `raymond diagram` generates Mermaid flowcharts
 
 ## Quick start
 
@@ -48,6 +58,18 @@ raymond workflows/test_cases/START.md --budget 5.0 --model sonnet
 
 # Resume a workflow
 raymond --resume workflow_2026-01-15_14-30-22
+
+# Run a workflow with human-in-the-loop support
+raymond workflow/ --on-await=pause
+# If it exits with code 2, deliver input and resume:
+raymond --resume <run_id> --input "approved"
+
+# Start the daemon (HTTP API + web UI)
+raymond serve --root ./workflows
+
+# Lint and diagram
+raymond lint ./my-workflow
+raymond diagram --html ./my-workflow
 
 # Generate a config file
 raymond --init-config
@@ -94,7 +116,13 @@ so the agent can see its previous attempts.
 | Document | Audience | Description |
 |----------|----------|-------------|
 | [Authoring Guide](docs/authoring-guide.md) | Workflow authors | How to write state files — the complete guide |
+| [Skill Packaging](docs/skill-packaging.md) | Workflow authors | Bundle workflows as skills with SKILL.md, run.sh, and manifest |
 | [Workflow Protocol](docs/workflow-protocol.md) | Reference | Authoritative protocol specification |
+| [Daemon Server](docs/daemon-server.md) | Reference | `raymond serve` — HTTP API, MCP tools, and web UI |
+| [Lint](docs/lint.md) | Reference | `raymond lint` — static analysis checks |
+| [Diagram](docs/diagram.md) | Reference | `raymond diagram` — Mermaid flowchart generation |
+| [Cross-Workflow Design](docs/cross-workflow-design.md) | Reference | Cross-workflow invocation tags |
+| [YAML Workflows](docs/yaml-workflows.md) | Reference | Single-file YAML workflow format |
 | [Orchestration Design](docs/orchestration-design.md) | Raymond developers | Architecture and internal design |
 | [Script States Design](docs/bash-states.md) | Raymond developers | Design rationale for shell script states |
 | [Implementation Assumptions](docs/implementation-assumptions.md) | Raymond developers | Design decision log |

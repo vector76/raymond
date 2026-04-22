@@ -15,6 +15,7 @@ import (
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/orchestrator"
+	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
 
@@ -670,4 +671,52 @@ func TestLaunchRun_EventsUpdateAgentInfo(t *testing.T) {
 	assert.Equal(t, "fork-1", info.Agents[1].ID)
 	assert.Equal(t, "WORKER.md", info.Agents[1].CurrentState)
 	assert.Equal(t, "terminated", info.Agents[1].Status)
+}
+
+// TestLaunchRun_YamlScopeFromRegistry is an end-to-end smoke test that pins the
+// registry→run-manager wiring for YAML scopes with embedded manifests. It
+// guards against regressions in the Phase 5 assumption that downstream
+// integration (LaunchRun → specifier.ResolveEntryPoint) is a no-op for YAML
+// scope paths.
+func TestLaunchRun_YamlScopeFromRegistry(t *testing.T) {
+	root := t.TempDir()
+	yamlPath := filepath.Join(root, "review.yaml")
+	yamlContent := `id: smoke-yaml
+name: Smoke YAML
+description: End-to-end smoke test workflow
+
+states:
+  1_START:
+    prompt: |
+      Do the work.
+    allowed_transitions:
+      - { tag: result }
+`
+	require.NoError(t, os.WriteFile(yamlPath, []byte(yamlContent), 0o644))
+
+	registry, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entry, ok := registry.GetWorkflow("smoke-yaml")
+	require.True(t, ok, "registry should discover YAML workflow with embedded manifest")
+	assert.Equal(t, yamlPath, entry.ScopeDir)
+	assert.Equal(t, yamlPath, entry.ManifestPath)
+
+	// Sanity-check that the specifier layer can resolve the discovered scope
+	// to a valid entry point — hardens against specifier-layer regressions.
+	res, err := specifier.Resolve(entry.ScopeDir, "")
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.EntryPoint)
+
+	stateDir := ensureStateDir(t)
+	fake := &fakeOrchestrator{}
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runID, err := rm.LaunchRun(ctx, *entry, "hello", 5.0, "", "", nil)
+	require.NoError(t, err)
+	assert.NotEmpty(t, runID)
 }

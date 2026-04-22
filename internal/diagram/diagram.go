@@ -180,7 +180,12 @@ func extractTransitions(scopeDir, filename string) ([]parsing.Transition, []stri
 			if tag == "" || tag == "result" {
 				continue
 			}
-			if entry["target"] == "" {
+			// Await uses "next" instead of "target" in frontmatter.
+			target := entry["target"]
+			if tag == "await" {
+				target = entry["next"]
+			}
+			if target == "" {
 				warnings = append(warnings, fmt.Sprintf(
 					"%s: frontmatter entry with tag=%q has no target; omitting from diagram",
 					filename, tag))
@@ -291,6 +296,22 @@ func transitionToEdges(fromID string, t parsing.Transition, nodes map[string]*no
 			edges = append(edges, edge{
 				from: fromID, to: nextID, tag: "fork",
 				label: "fork next", style: "solid",
+			})
+		}
+
+	case t.Tag == "await":
+		toID := normalizeTarget(t.Target)
+		missingWarn(toID)
+		edges = append(edges, edge{
+			from: fromID, to: toID, tag: "await",
+			label: "await" + labelSuffix, style: "solid",
+		})
+		if timeoutNext, ok := t.Attributes["timeout_next"]; ok && timeoutNext != "" {
+			tnID := normalizeTarget(timeoutNext)
+			missingWarn(tnID)
+			edges = append(edges, edge{
+				from: fromID, to: tnID, tag: "await",
+				label: "await timeout", style: "dotted",
 			})
 		}
 
@@ -551,11 +572,12 @@ func traceResults(
 	return insideCall, returnEdges, warnings
 }
 
-// buildGotoResetAdj builds an adjacency list from edges with goto or reset tags only.
+// buildGotoResetAdj builds an adjacency list from edges with forward-flow tags
+// (goto, reset, await) used for result-return tracing.
 func buildGotoResetAdj(edges []edge) map[string][]string {
 	adj := make(map[string][]string)
 	for _, e := range edges {
-		if e.tag == "goto" || e.tag == "reset" {
+		if e.tag == "goto" || e.tag == "reset" || e.tag == "await" {
 			adj[e.from] = append(adj[e.from], e.to)
 		}
 	}

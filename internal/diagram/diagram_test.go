@@ -815,3 +815,113 @@ echo "<result>done</result>"`
 	_, exists := result.FileContents[sanitizeID("MISSING")]
 	assert.False(t, exists)
 }
+
+func TestAwaitEdge(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - { tag: await, next: REVIEW.md }
+  - { tag: result }
+---
+Wait for review.`)
+	writeFile(t, dir, "REVIEW.md", `<result>approved</result>`)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	// Solid edge labeled "await" from START to REVIEW.
+	assert.Contains(t, m, "1_START -->|await| REVIEW")
+	// REVIEW node should be present.
+	assert.Contains(t, m, `REVIEW["REVIEW"]`)
+}
+
+func TestAwaitWithTimeoutNext(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `---
+allowed_transitions:
+  - { tag: await, next: APPROVED.md, timeout_next: ESCALATE.md }
+  - { tag: result }
+---
+Wait for approval.`)
+	writeFile(t, dir, "APPROVED.md", `<result>approved</result>`)
+	writeFile(t, dir, "ESCALATE.md", `<result>escalated</result>`)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	// Solid edge for the normal await path.
+	assert.Contains(t, m, "1_START -->|await| APPROVED")
+	// Dotted edge for the timeout fallback path.
+	assert.Contains(t, m, "1_START -.->|await timeout| ESCALATE")
+	// Both target nodes should be present.
+	assert.Contains(t, m, `APPROVED["APPROVED"]`)
+	assert.Contains(t, m, `ESCALATE["ESCALATE"]`)
+}
+
+func TestAwaitBodyParsed(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `Do something.
+<await next="REVIEW.md" timeout_next="TIMEOUT.md">Please review this.</await>`)
+	writeFile(t, dir, "REVIEW.md", `<result>approved</result>`)
+	writeFile(t, dir, "TIMEOUT.md", `<result>timed out</result>`)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	// Body-parsed await should produce the same edges as frontmatter.
+	assert.Contains(t, m, "1_START -->|await| REVIEW")
+	assert.Contains(t, m, "1_START -.->|await timeout| TIMEOUT")
+}
+
+func TestAwaitAlongsideOtherTransitions(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `Do work.
+<goto>WAIT.md</goto>`)
+	writeFile(t, dir, "WAIT.md", `---
+allowed_transitions:
+  - { tag: await, next: DONE.md, timeout_next: RETRY.md }
+  - { tag: goto, target: RETRY.md }
+---
+Waiting for input.`)
+	writeFile(t, dir, "DONE.md", `<result>complete</result>`)
+	writeFile(t, dir, "RETRY.md", `<goto>WAIT.md</goto>`)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	// Goto edge from START to WAIT.
+	assert.Contains(t, m, "1_START -->|goto| WAIT")
+	// Await edge from WAIT to DONE (solid).
+	assert.Contains(t, m, "WAIT -->|await| DONE")
+	// Await timeout edge from WAIT to RETRY (dotted).
+	assert.Contains(t, m, "WAIT -.->|await timeout| RETRY")
+	// Goto edge from WAIT to RETRY (solid).
+	assert.Contains(t, m, "WAIT -->|goto| RETRY")
+	// Goto edge from RETRY back to WAIT.
+	assert.Contains(t, m, "RETRY -->|goto| WAIT")
+}
+
+func TestAwaitResultTracing(t *testing.T) {
+	// call → AWAITER → (await) → FINISH → result
+	// The result from FINISH should trace back through the call.
+	dir := t.TempDir()
+	writeFile(t, dir, "1_START.md", `<call return="AFTER.md">AWAITER.md</call>`)
+	writeFile(t, dir, "AWAITER.md", `<await next="FINISH.md">Wait for input.</await>`)
+	writeFile(t, dir, "FINISH.md", `<result>done</result>`)
+	writeFile(t, dir, "AFTER.md", `<result>complete</result>`)
+
+	result, err := GenerateDiagram(dir, Options{})
+	require.NoError(t, err)
+
+	m := result.Mermaid
+	// FINISH emits result inside the call → should return to AFTER.
+	assert.Contains(t, m, "FINISH -.->|return #40;1_START#41;| AFTER")
+	// FINISH is inside a call → no terminal node.
+	assert.NotContains(t, m, "FINISH -->|result|")
+	// AFTER emits result at top level → terminal node.
+	assert.Contains(t, m, "AFTER -->|result|")
+}

@@ -20,6 +20,15 @@ func makeWorkflowDir(t *testing.T, root, dirName, manifestYAML string) string {
 	return dir
 }
 
+// makeWorkflowYaml writes yamlContent to <root>/<filename> and returns the
+// absolute file path. Used for YAML workflow files with embedded manifests.
+func makeWorkflowYaml(t *testing.T, root, filename, yamlContent string) string {
+	t.Helper()
+	path := filepath.Join(root, filename)
+	require.NoError(t, os.WriteFile(path, []byte(yamlContent), 0o644))
+	return path
+}
+
 // makeWorkflowZip creates a flat zip archive containing workflow.yaml at the
 // root level inside the given root directory. Returns the zip file path.
 func makeWorkflowZip(t *testing.T, root, zipName, manifestYAML string) string {
@@ -334,4 +343,230 @@ func TestNewRegistry_SkipsRegularFiles(t *testing.T) {
 	entries := reg.ListWorkflows()
 	require.Len(t, entries, 1)
 	assert.Equal(t, "valid", entries[0].ID)
+}
+
+func TestNewRegistry_ScansYamlWorkflows(t *testing.T) {
+	root := t.TempDir()
+	yamlPath := makeWorkflowYaml(t, root, "review.yaml", `
+id: review
+name: Review Workflow
+description: Embedded review workflow
+input_schema:
+  query: string
+default_budget: 7.5
+requires_human_input: "true"
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entries := reg.ListWorkflows()
+	require.Len(t, entries, 1)
+
+	e := entries[0]
+	assert.Equal(t, "review", e.ID)
+	assert.Equal(t, "Review Workflow", e.Name)
+	assert.Equal(t, "Embedded review workflow", e.Description)
+	assert.Equal(t, map[string]string{"query": "string"}, e.InputSchema)
+	assert.Equal(t, 7.5, e.DefaultBudget)
+	assert.True(t, e.RequiresHumanInput)
+	assert.Equal(t, yamlPath, e.ScopeDir)
+	assert.Equal(t, yamlPath, e.ManifestPath)
+}
+
+func TestNewRegistry_ScansMixedScopeTypes(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowDir(t, root, "wf-dir", `id: dir-wf
+name: Dir WF
+`)
+	makeWorkflowZip(t, root, "packed.zip", `id: zip-wf
+name: Zip WF
+`)
+	makeWorkflowYaml(t, root, "embedded.yaml", `
+id: yaml-wf
+name: Yaml WF
+states:
+  START:
+    prompt: Hi
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entries := reg.ListWorkflows()
+	require.Len(t, entries, 3)
+
+	_, ok := reg.GetWorkflow("dir-wf")
+	assert.True(t, ok)
+	_, ok = reg.GetWorkflow("zip-wf")
+	assert.True(t, ok)
+	_, ok = reg.GetWorkflow("yaml-wf")
+	assert.True(t, ok)
+}
+
+func TestNewRegistry_SkipsYamlWithoutId(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "no-id.yaml", `
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	assert.Empty(t, reg.ListWorkflows())
+}
+
+func TestNewRegistry_SkipsYamlWithoutStates(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "no-states.yaml", `
+id: looks-like-manifest
+name: No States Here
+description: Not a YAML workflow
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	assert.Empty(t, reg.ListWorkflows())
+}
+
+func TestNewRegistry_SkipsYamlWithEmptyId(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "empty-id.yaml", `
+id: ""
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	assert.Empty(t, reg.ListWorkflows())
+}
+
+func TestNewRegistry_SkipsYamlWithInvalidHumanInput(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "bad-human.yaml", `
+id: bad-human
+requires_human_input: "maybe"
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	assert.Empty(t, reg.ListWorkflows())
+}
+
+func TestNewRegistry_YamlExtensionYml(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "flow.yml", `
+id: yml-ext
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entry, ok := reg.GetWorkflow("yml-ext")
+	require.True(t, ok)
+	assert.Equal(t, "yml-ext", entry.ID)
+}
+
+func TestNewRegistry_YamlExtensionCaseInsensitive(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "Flow.YAML", `
+id: case-ext
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entry, ok := reg.GetWorkflow("case-ext")
+	require.True(t, ok)
+	assert.Equal(t, "case-ext", entry.ID)
+}
+
+func TestNewRegistry_YamlRequiresHumanInput_True(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "wf.yaml", `
+id: yaml-human-true
+requires_human_input: "true"
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entry, ok := reg.GetWorkflow("yaml-human-true")
+	require.True(t, ok)
+	assert.True(t, entry.RequiresHumanInput)
+}
+
+func TestNewRegistry_YamlRequiresHumanInput_False(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "wf.yaml", `
+id: yaml-human-false
+requires_human_input: "false"
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entry, ok := reg.GetWorkflow("yaml-human-false")
+	require.True(t, ok)
+	assert.False(t, entry.RequiresHumanInput)
+}
+
+func TestNewRegistry_YamlRequiresHumanInput_AutoResolvesToFalse(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "wf.yaml", `
+id: yaml-human-auto
+requires_human_input: "auto"
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entry, ok := reg.GetWorkflow("yaml-human-auto")
+	require.True(t, ok)
+	assert.False(t, entry.RequiresHumanInput)
+}
+
+func TestNewRegistry_YamlRequiresHumanInput_OmittedResolvesToFalse(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowYaml(t, root, "wf.yaml", `
+id: yaml-human-omitted
+states:
+  START:
+    prompt: Hello
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entry, ok := reg.GetWorkflow("yaml-human-omitted")
+	require.True(t, ok)
+	assert.False(t, entry.RequiresHumanInput)
 }

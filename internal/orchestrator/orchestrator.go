@@ -144,6 +144,11 @@ type RunOptions struct {
 	// resumes the matching agent.
 	AwaitInputCh <-chan AwaitInput
 
+	// AwaitInput is the --input value provided on --resume. When non-empty
+	// and agents are in the awaiting state, this value is delivered to the
+	// active await agent before the main loop starts.
+	AwaitInput string
+
 	// ObserverSetup, if non-nil, is called with the Bus immediately after it
 	// is created (before WorkflowStarted is emitted). Use it to register
 	// observers from production code (e.g. the CLI). Tests use SetBusHook
@@ -290,6 +295,80 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// Cancel context on exit so any still-running goroutines are signalled to stop.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Resume-from-await: when resuming a paused workflow, detect agents in
+	// the awaiting state and either deliver input or re-present the prompt.
+	if hasAwaitingAgents(ws.Agents) {
+		if opts.AwaitInput == "" {
+			// No input provided — re-present the active await's prompt so
+			// the caller can see what's pending.
+			activeAgent, pendingCount := firstAwaitingAndCount(ws.Agents)
+			return &AwaitingInputError{
+				Status:   "awaiting_input",
+				RunID:    workflowID,
+				Workflow: filepath.Base(ws.ScopeDir),
+				Awaiting: AwaitingInputDetail{
+					InputID: activeAgent.AwaitInputID,
+					AgentID: activeAgent.ID,
+					Prompt:  activeAgent.AwaitPrompt,
+				},
+				PendingCount: pendingCount - 1,
+				Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
+			}
+		}
+
+		// Deliver input to the first awaiting agent.
+		activeIdx := firstAwaitingIndex(ws.Agents)
+		a := &ws.Agents[activeIdx]
+		awaitInput := opts.AwaitInput
+		inputID := a.AwaitInputID
+		a.PendingResult = &awaitInput
+		a.CurrentState = a.AwaitNextState
+		a.AwaitPrompt = ""
+		a.AwaitNextState = ""
+		a.AwaitTimeout = ""
+		a.AwaitTimeoutNext = ""
+		a.AwaitInputID = ""
+		a.Status = ""
+
+		b.Emit(events.AgentAwaitResumed{
+			AgentID:   a.ID,
+			InputID:   inputID,
+			Timestamp: time.Now(),
+		})
+
+		// Check for remaining awaiting agents (pre-await queue).
+		if nextAgent, remaining := firstAwaitingAndCount(ws.Agents); nextAgent != nil {
+			// More awaiting agents remain. Persist the delivery and return
+			// the next agent's prompt — no agents proceed yet.
+			if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
+				return fmt.Errorf("write state: %w", err)
+			}
+			return &AwaitingInputError{
+				Status:   "awaiting_input",
+				RunID:    workflowID,
+				Workflow: filepath.Base(ws.ScopeDir),
+				Awaiting: AwaitingInputDetail{
+					InputID: nextAgent.AwaitInputID,
+					AgentID: nextAgent.ID,
+					Prompt:  nextAgent.AwaitPrompt,
+				},
+				PendingCount: remaining - 1,
+				Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
+			}
+		}
+
+		// No more awaiting agents — persist the delivery and let all agents
+		// proceed together in the normal main loop below.
+		if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
+			return fmt.Errorf("write state: %w", err)
+		}
+	} else if opts.AwaitInput != "" {
+		return fmt.Errorf(
+			"no agents are awaiting input; " +
+				"the --input flag on --resume is only valid when a workflow is paused at an <await> point",
+		)
+	}
 
 	// Buffered channel so goroutines can send results without blocking.
 	resultCh := make(chan stepResult, 64)
@@ -695,6 +774,33 @@ func hasAwaitingAgents(agents []wfstate.AgentState) bool {
 		}
 	}
 	return false
+}
+
+// firstAwaitingIndex returns the index of the first agent with awaiting status,
+// or -1 if none exists.
+func firstAwaitingIndex(agents []wfstate.AgentState) int {
+	for i, a := range agents {
+		if a.Status == wfstate.AgentStatusAwaiting {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstAwaitingAndCount returns the first awaiting agent and the total count of
+// awaiting agents. Returns (nil, 0) when none are awaiting.
+func firstAwaitingAndCount(agents []wfstate.AgentState) (*wfstate.AgentState, int) {
+	var first *wfstate.AgentState
+	count := 0
+	for i, a := range agents {
+		if a.Status == wfstate.AgentStatusAwaiting {
+			if first == nil {
+				first = &agents[i]
+			}
+			count++
+		}
+	}
+	return first, count
 }
 
 // findAwaitingAgent returns the index of the awaiting agent whose AwaitInputID

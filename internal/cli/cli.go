@@ -282,6 +282,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 
 			// ---- resume mode ----
 			if resume != "" {
+				if cmd.Flags().Changed("input") {
+					opts.AwaitInput = input
+				}
 				return c.cmdResume(resume, opts)
 			}
 

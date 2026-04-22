@@ -1631,3 +1631,100 @@ func TestResumeYamlInvalid(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "YAML workflow invalid")
 }
+
+// --------------------------------------------------------------------------
+// --on-await flag
+// --------------------------------------------------------------------------
+
+func TestOnAwaitPauseAcceptedAndPassedToRunOptions(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	captured, err := runCapturing(t, startFile, "--on-await", "pause", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "pause", captured[0].OnAwait)
+}
+
+func TestOnAwaitRejectAccepted(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	captured, err := runCapturing(t, startFile, "--on-await", "reject", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "reject", captured[0].OnAwait)
+}
+
+func TestOnAwaitDefaultIsReject(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	captured, err := runCapturing(t, startFile, "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "reject", captured[0].OnAwait)
+}
+
+func TestOnAwaitInvalidValueProducesError(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	_, _, err := run(t, startFile, "--on-await", "foo", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --on-await value")
+	assert.Contains(t, err.Error(), "foo")
+}
+
+func TestResumeRestoresOnAwaitFromLaunchParams(t *testing.T) {
+	stateDir := makeStateDir(t)
+	lp := &wfstate.LaunchParams{OnAwait: "pause"}
+	ws := wfstate.CreateInitialState("wf-await-restore", "scope", "START.md", 10.0, nil, "", lp)
+	require.NoError(t, wfstate.WriteState("wf-await-restore", ws, stateDir))
+
+	captured, err := runCapturing(t, "--resume", "wf-await-restore", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "pause", captured[0].OnAwait,
+		"resume should restore on-await from launch_params when --on-await not specified on CLI")
+}
+
+func TestResumeExplicitOnAwaitOverridesLaunchParams(t *testing.T) {
+	stateDir := makeStateDir(t)
+	lp := &wfstate.LaunchParams{OnAwait: "pause"}
+	ws := wfstate.CreateInitialState("wf-await-override", "scope", "START.md", 10.0, nil, "", lp)
+	require.NoError(t, wfstate.WriteState("wf-await-override", ws, stateDir))
+
+	captured, err := runCapturing(t, "--resume", "wf-await-override", "--on-await", "reject", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "reject", captured[0].OnAwait,
+		"CLI --on-await should override saved value on resume")
+}
+
+func TestStartSavesOnAwaitToLaunchParams(t *testing.T) {
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	_, _, err := run(t, startFile, "--on-await", "pause", "--state-dir", stateDir)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	require.NotNil(t, ws.LaunchParams)
+	assert.Equal(t, "pause", ws.LaunchParams.OnAwait)
+}

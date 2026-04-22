@@ -142,6 +142,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		stateDir                   string // hidden; for testing
 		workflowID                 string
 		continueSession            bool
+		onAwait                    string
 	)
 
 	root := &cobra.Command{
@@ -191,6 +192,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 					if !cmd.Flags().Changed("continue-session") && lp.ContinueAndFork {
 						continueSession = lp.ContinueAndFork
 					}
+					if !cmd.Flags().Changed("on-await") && lp.OnAwait != "" {
+						onAwait = lp.OnAwait
+					}
 				}
 			}
 
@@ -225,6 +229,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			if merged.Effort != "" && merged.Effort != "low" && merged.Effort != "medium" && merged.Effort != "high" {
 				return fmt.Errorf("invalid --effort value %q: must be one of 'low', 'medium', 'high'", merged.Effort)
 			}
+			if onAwait != "reject" && onAwait != "pause" {
+				return fmt.Errorf("invalid --on-await value %q: must be one of 'reject', 'pause'", onAwait)
+			}
 
 			effectiveBudget := defaultBudgetUSD
 			if merged.Budget != nil {
@@ -245,6 +252,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				Debug:                      !merged.NoDebug,
 				NoWait:                     merged.NoWait,
 				TaskFolderPattern:          merged.TaskFolderPattern,
+				OnAwait:                    onAwait,
 			}
 			opts.ObserverSetup = func(b *bus.Bus) {
 				console.New(b, quiet, 0)
@@ -277,6 +285,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				Effort:                     merged.Effort,
 				Timeout:                    effectiveTimeout,
 				ContinueAndFork:            continueSession,
+				OnAwait:                    onAwait,
 			}
 			return c.cmdStart(args[0], effectiveBudget, initialInput, opts, lp, workflowID)
 		},
@@ -303,6 +312,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.StringVar(&name, "name", "", "prefix label for the terminal title bar")
 	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
 	f.BoolVar(&continueSession, "continue-session", false, "continue from the most recent interactive Claude session")
+	f.StringVar(&onAwait, "on-await", "reject", "behaviour when workflow uses <await> (reject|pause)")
 
 	// Hidden flag: allows tests to control the state directory without
 	// requiring a real .raymond directory structure.

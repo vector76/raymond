@@ -125,13 +125,14 @@ func TestComputeAutoWait_NoPausedAgents(t *testing.T) {
 		{ID: "main", Status: ""}, // empty = running/active
 	}
 	_, ok := computeAutoWait(agents)
-	// No paused agents: returns max=0 and ok=true (nothing blocking).
-	assert.True(t, ok)
+	// No paused agents: nothing to wait for → false.
+	assert.False(t, ok)
 }
 
 func TestComputeAutoWait_EmptyAgents(t *testing.T) {
 	_, ok := computeAutoWait(nil)
-	assert.True(t, ok)
+	// No agents at all: nothing to wait for → false.
+	assert.False(t, ok)
 }
 
 func TestComputeAutoWait_PausedAgentWithNoParseableReset(t *testing.T) {

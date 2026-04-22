@@ -2374,6 +2374,174 @@ func TestTaskFolderCreated_OnRun(t *testing.T) {
 	require.NoError(t, err, "task folder should exist on disk after RunAllAgents")
 }
 
+// --------------------------------------------------------------------------
+// --on-await launch-time and runtime enforcement
+// --------------------------------------------------------------------------
+
+func TestOnAwaitRejectWithAwaitInFrontmatter(t *testing.T) {
+	// Workflow with await in frontmatter + OnAwait="reject" → launch-time rejection.
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	// Create a scope directory with a state file that declares await in frontmatter.
+	scopeDir := filepath.Join(tmpDir, "workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
+allowed_transitions:
+  - { tag: await, next: DONE.md }
+---
+Do work and maybe await.
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "DONE.md"), []byte(`---
+allowed_transitions:
+  - { tag: result }
+---
+Done.
+`), 0o644))
+
+	wfID := "test-await-reject"
+	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.OnAwait = "reject"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares <await> transitions")
+	assert.Contains(t, err.Error(), "START.md")
+	assert.Contains(t, err.Error(), "--on-await=pause")
+}
+
+func TestOnAwaitPauseWithAwaitInFrontmatter(t *testing.T) {
+	// Workflow with await in frontmatter + OnAwait="pause" → no rejection.
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	scopeDir := filepath.Join(tmpDir, "workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
+allowed_transitions:
+  - { tag: await, next: DONE.md }
+---
+Do work and maybe await.
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "DONE.md"), []byte(`---
+allowed_transitions:
+  - { tag: result }
+---
+Done.
+`), 0o644))
+
+	wfID := "test-await-pause"
+	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+}
+
+func TestOnAwaitRejectWithoutAwaitInFrontmatter(t *testing.T) {
+	// Workflow without await + OnAwait="reject" → normal execution.
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	scopeDir := filepath.Join(tmpDir, "workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
+allowed_transitions:
+  - { tag: goto, target: DONE.md }
+---
+Do work.
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "DONE.md"), []byte(`---
+allowed_transitions:
+  - { tag: result }
+---
+Done.
+`), 0o644))
+
+	wfID := "test-no-await"
+	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.OnAwait = "reject"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+}
+
+func TestOnAwaitRejectRuntimeEnforcement(t *testing.T) {
+	// Runtime reject: mock executor returns <await> transition, OnAwait="reject" → agent fails.
+	// Use a real scope directory without await in frontmatter so the launch-time
+	// check passes; the runtime enforcement catches the unexpected <await>.
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	scopeDir := filepath.Join(tmpDir, "workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+---
+Do work.
+`), 0o644))
+
+	wfID := "test-runtime-reject"
+	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	awaitExecResult := executors.ExecutionResult{
+		Transition: parsing.Transition{
+			Tag:     "await",
+			Target:  "NEXT.md",
+			Payload: "Please provide input",
+			Attributes: map[string]string{
+				"next": "NEXT.md",
+			},
+		},
+	}
+
+	mock := newMock(awaitExecResult)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.OnAwait = "reject"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	// The workflow should complete (the agent is failed/paused, not a fatal error).
+	require.NoError(t, err)
+
+	// Check that the agent was paused with a descriptive error.
+	ws2, readErr := wfstate.ReadState(wfID, stateDir)
+	require.NoError(t, readErr)
+	require.Len(t, ws2.Agents, 1)
+	assert.Equal(t, wfstate.AgentStatusPaused, ws2.Agents[0].Status)
+	assert.Contains(t, ws2.Agents[0].Error, "await")
+	assert.Contains(t, ws2.Agents[0].Error, "--on-await=reject")
+}
+
 func TestTaskFolderRecreated_OnResume(t *testing.T) {
 	stateDir, wfID := setupWorkflow(t, "START.md")
 

@@ -32,11 +32,13 @@ import (
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
 	"github.com/vector76/raymond/internal/parsing"
+	"github.com/vector76/raymond/internal/policy"
 	"github.com/vector76/raymond/internal/registry"
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/transitions"
 	"github.com/vector76/raymond/internal/yamlscope"
+	"github.com/vector76/raymond/internal/zipscope"
 )
 
 // MaxRetries is the number of retryable errors allowed before an agent is
@@ -92,6 +94,11 @@ type RunOptions struct {
 	// If nil, a registry.Registry rooted at the state directory's parent is used.
 	Fetcher specifier.Fetcher
 
+	// OnAwait controls behaviour when a workflow declares or produces <await>
+	// transitions. "pause" allows awaiting; "reject" (default when empty)
+	// rejects at launch time and at runtime.
+	OnAwait string
+
 	// ObserverSetup, if non-nil, is called with the Bus immediately after it
 	// is created (before WorkflowStarted is emitted). Use it to register
 	// observers from production code (e.g. the CLI). Tests use SetBusHook
@@ -131,6 +138,23 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 	if !opts.NoResetPaused {
 		resetPausedAgents(ws)
+	}
+
+	// Launch-time check: if OnAwait is "reject" (or empty, which defaults to
+	// reject), scan the workflow scope for states declaring <await> transitions
+	// and reject early with a helpful error.
+	if opts.OnAwait != "pause" {
+		awaitStates, scanErr := scanForAwaitTransitions(ws.ScopeDir)
+		if scanErr != nil {
+			return fmt.Errorf("scan for await transitions: %w", scanErr)
+		}
+		if len(awaitStates) > 0 {
+			return fmt.Errorf(
+				"workflow %q declares <await> transitions in state(s): %s. "+
+					"Use --on-await=pause to allow awaiting, or use `raymond serve` for interactive workflows",
+				workflowID, strings.Join(awaitStates, ", "),
+			)
+		}
 	}
 
 	// Initialise transient map that is never persisted (json:"-") but must be
@@ -245,13 +269,14 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 	// launchActive launches goroutines for all active agents that don't already
 	// have one running. Called after every state change to ensure all active
-	// agents (including newly spawned workers) are running.
+	// agents (including newly spawned workers) are running. Agents with any
+	// non-empty status (paused, awaiting, failed) are skipped.
 	launchActive := func() error {
 		if err := initTaskFolders(ws); err != nil {
 			return err
 		}
 		for i, a := range ws.Agents {
-			if a.Status != wfstate.AgentStatusPaused && !running[a.ID] {
+			if a.Status == "" && !running[a.ID] {
 				launch(ws.Agents[i])
 			}
 		}
@@ -383,6 +408,33 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				// Apply transition result: update/remove agent in ws.Agents,
 				// append worker if present.
 				applyResult(tr, agentIdx, agentBefore.CurrentState, ws, b)
+
+				// Runtime enforcement: if an agent entered the awaiting state
+				// but --on-await is not "pause", fail the agent immediately
+				// by setting it to paused with an error (the standard pattern
+				// for non-fatal agent termination in the orchestrator loop).
+				if opts.OnAwait != "pause" {
+					idx := findAgentByID(ws.Agents, agentBefore.ID)
+					if idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAwaiting {
+						ws.Agents[idx].Status = wfstate.AgentStatusPaused
+						ws.Agents[idx].Error = fmt.Sprintf(
+							"agent %q produced <await> but --on-await=reject is in effect; "+
+								"use --on-await=pause or `raymond serve`",
+							agentBefore.ID,
+						)
+						// Clear await fields since the await is being rejected.
+						ws.Agents[idx].AwaitPrompt = ""
+						ws.Agents[idx].AwaitNextState = ""
+						ws.Agents[idx].AwaitTimeout = ""
+						ws.Agents[idx].AwaitTimeoutNext = ""
+						ws.Agents[idx].AwaitInputID = ""
+						b.Emit(events.AgentPaused{
+							AgentID:   agentBefore.ID,
+							Reason:    "await_rejected",
+							Timestamp: time.Now(),
+						})
+					}
+				}
 			}
 
 			// Launch goroutines for all active agents that don't have one yet
@@ -817,13 +869,14 @@ func resetPausedAgents(ws *wfstate.WorkflowState) {
 	}
 }
 
-// allPaused reports whether every agent in the slice has status "paused".
+// allPaused reports whether every agent in the slice is quiesced (paused or
+// awaiting external input). Returns false for an empty slice.
 func allPaused(agents []wfstate.AgentState) bool {
 	if len(agents) == 0 {
 		return false
 	}
 	for _, a := range agents {
-		if a.Status != wfstate.AgentStatusPaused {
+		if a.Status != wfstate.AgentStatusPaused && a.Status != wfstate.AgentStatusAwaiting {
 			return false
 		}
 	}
@@ -894,14 +947,16 @@ func stateType(filename string) string {
 }
 
 // computeAutoWait inspects all paused agents for limit-reset times and returns
-// the longest wait in seconds plus true, or (0, false) if any agent has no
-// parseable reset time.
+// the longest wait in seconds plus true, or (0, false) if any paused agent has
+// no parseable reset time or if no paused agents exist (e.g. all awaiting).
 func computeAutoWait(agents []wfstate.AgentState) (float64, bool) {
 	var maxWait float64
+	found := false
 	for _, a := range agents {
 		if a.Status != wfstate.AgentStatusPaused {
 			continue
 		}
+		found = true
 		wait, ok := parseLimitResetWait(a.Error)
 		if !ok {
 			return 0, false
@@ -909,6 +964,9 @@ func computeAutoWait(agents []wfstate.AgentState) (float64, bool) {
 		if wait > maxWait {
 			maxWait = wait
 		}
+	}
+	if !found {
+		return 0, false
 	}
 	return maxWait, true
 }
@@ -928,6 +986,98 @@ func parseLimitResetWait(msg string) (float64, bool) {
 	// Delegate to the standalone helper so the logic is easy to unit-test.
 	secs, ok := parseResetWaitSeconds(msg, time.Now(), limitResetBufferMinutes)
 	return secs, ok
+}
+
+// scanForAwaitTransitions examines all state files in scopeDir for
+// allowed_transitions entries with tag "await". Returns the list of state
+// filenames that declare await transitions.
+//
+// Supports directory, zip, and YAML scopes.
+func scanForAwaitTransitions(scopeDir string) ([]string, error) {
+	if yamlscope.IsYamlScope(scopeDir) {
+		return scanYamlForAwait(scopeDir)
+	}
+
+	// List files in scope (zip or directory).
+	var files []string
+	var err error
+	if zipscope.IsZipScope(scopeDir) {
+		files, err = zipscope.ListFiles(scopeDir)
+	} else {
+		files, err = listDirMDFiles(scopeDir)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var awaitStates []string
+	for _, f := range files {
+		if !strings.HasSuffix(strings.ToLower(f), ".md") {
+			continue
+		}
+		var content string
+		if zipscope.IsZipScope(scopeDir) {
+			content, err = zipscope.ReadText(scopeDir, f)
+		} else {
+			var data []byte
+			data, err = os.ReadFile(filepath.Join(scopeDir, f))
+			if err == nil {
+				content = string(data)
+			}
+		}
+		if err != nil {
+			continue // skip unreadable files
+		}
+		p, _, parseErr := policy.ParseFrontmatter(content)
+		if parseErr != nil || p == nil {
+			continue
+		}
+		for _, entry := range p.AllowedTransitions {
+			if entry["tag"] == "await" {
+				awaitStates = append(awaitStates, f)
+				break
+			}
+		}
+	}
+	return awaitStates, nil
+}
+
+// scanYamlForAwait checks a YAML scope for states declaring await transitions.
+func scanYamlForAwait(yamlPath string) ([]string, error) {
+	wf, err := yamlscope.Parse(yamlPath)
+	if err != nil {
+		return nil, err
+	}
+	var awaitStates []string
+	for _, name := range wf.StateOrder {
+		st := wf.States[name]
+		for _, entry := range st.AllowedTransitions {
+			if entry["tag"] == "await" {
+				awaitStates = append(awaitStates, name+".md")
+				break
+			}
+		}
+	}
+	return awaitStates, nil
+}
+
+// listDirMDFiles lists .md files in a directory scope.
+// Returns nil (not an error) when the directory does not exist.
+func listDirMDFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			files = append(files, e.Name())
+		}
+	}
+	return files, nil
 }
 
 // createDebugDirectory creates and returns the path to the per-workflow debug

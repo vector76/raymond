@@ -3056,3 +3056,257 @@ func TestQuiescePointEmitsWorkflowPausedAndPersistsState(t *testing.T) {
 	assert.Equal(t, "", beta.Status) // active but held
 	assert.Equal(t, "BETA_NEXT.md", beta.CurrentState)
 }
+
+// --------------------------------------------------------------------------
+// Daemon-mode await strategy
+// --------------------------------------------------------------------------
+
+func TestDaemonModeAwaitSiblingsKeepRunning(t *testing.T) {
+	// In DaemonMode, when alpha hits <await>, beta must NOT be held at the
+	// boundary — it should complete its goto and be relaunched normally.
+	// We verify beta advances through two states while alpha is awaiting.
+
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B1.md"},
+	})
+
+	inputCh := make(chan orchestrator.AwaitInput, 1)
+
+	var betaSteps atomic.Int32
+
+	var awaitEvents []events.AgentAwaitStarted
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+			awaitEvents = append(awaitEvents, e)
+			// Once alpha is awaiting, deliver input so the workflow terminates.
+			inputCh <- orchestrator.AwaitInput{
+				InputID:  e.InputID,
+				Response: "user-response",
+			}
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			switch {
+			case agent.ID == "alpha" && agent.CurrentState == "A.md":
+				return awaitResult("ALPHA_NEXT.md", "Need input"), nil
+			case agent.ID == "alpha" && agent.CurrentState == "ALPHA_NEXT.md":
+				// After resume: terminate.
+				return resultExecResult("alpha-done"), nil
+			case agent.ID == "beta":
+				step := betaSteps.Add(1)
+				if step == 1 {
+					return gotoResult("B2.md"), nil
+				}
+				return resultExecResult("beta-done"), nil
+			default:
+				return executors.ExecutionResult{}, fmt.Errorf("unexpected: %s @ %s", agent.ID, agent.CurrentState)
+			}
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+	opts.DaemonMode = true
+	opts.AwaitInputCh = inputCh
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Beta should have progressed through B1→B2→terminated (2 executor calls).
+	assert.GreaterOrEqual(t, betaSteps.Load(), int32(2),
+		"beta should have run through both states, not been held at boundary")
+
+	// AgentAwaitStarted should have been emitted for alpha.
+	require.Len(t, awaitEvents, 1)
+	assert.Equal(t, "alpha", awaitEvents[0].AgentID)
+}
+
+func TestDaemonModeAwaitCallbackCalledWithCorrectParams(t *testing.T) {
+	// Verify AwaitCallback is called with the right agentID, inputID,
+	// prompt, and nextState when an agent hits <await> in daemon mode.
+
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	inputCh := make(chan orchestrator.AwaitInput, 1)
+
+	var cbAgentID, cbInputID, cbPrompt, cbNextState string
+	var cbCalled atomic.Bool
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			if agent.CurrentState == "START.md" {
+				return awaitResult("DONE.md", "Please provide data"), nil
+			}
+			// After resume.
+			return resultExecResult("finished"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+			// Deliver input so the workflow completes.
+			inputCh <- orchestrator.AwaitInput{InputID: e.InputID, Response: "data"}
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+	opts.DaemonMode = true
+	opts.AwaitInputCh = inputCh
+	opts.AwaitCallback = func(agentID, inputID, prompt, nextState string) {
+		cbAgentID = agentID
+		cbInputID = inputID
+		cbPrompt = prompt
+		cbNextState = nextState
+		cbCalled.Store(true)
+	}
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	assert.True(t, cbCalled.Load(), "AwaitCallback should have been called")
+	assert.Equal(t, "main", cbAgentID)
+	assert.NotEmpty(t, cbInputID)
+	assert.Equal(t, "Please provide data", cbPrompt)
+	assert.Equal(t, "DONE.md", cbNextState)
+}
+
+func TestDaemonModeInputResumesAwaitingAgent(t *testing.T) {
+	// Single agent awaits, input arrives on AwaitInputCh → agent resumes
+	// with PendingResult set, transitions to next state, and terminates.
+
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	inputCh := make(chan orchestrator.AwaitInput, 1)
+
+	var capturedPendingResult string
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			if agent.CurrentState == "START.md" {
+				return awaitResult("NEXT.md", "Enter value"), nil
+			}
+			// After resume at NEXT.md: capture PendingResult and terminate.
+			if agent.PendingResult != nil {
+				capturedPendingResult = *agent.PendingResult
+			}
+			return resultExecResult("done"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	var resumeEvents []events.AgentAwaitResumed
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+			inputCh <- orchestrator.AwaitInput{
+				InputID:  e.InputID,
+				Response: "user-typed-value",
+			}
+		})
+		bus.Subscribe(b, func(e events.AgentAwaitResumed) {
+			resumeEvents = append(resumeEvents, e)
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+	opts.DaemonMode = true
+	opts.AwaitInputCh = inputCh
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// AgentAwaitResumed emitted.
+	require.Len(t, resumeEvents, 1)
+	assert.Equal(t, "main", resumeEvents[0].AgentID)
+
+	// PendingResult was delivered.
+	assert.Equal(t, "user-typed-value", capturedPendingResult)
+}
+
+func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
+	// Two agents each hit await at different times. Each gets independent
+	// input delivery via AwaitInputCh, resumes, and terminates.
+
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B.md"},
+	})
+
+	inputCh := make(chan orchestrator.AwaitInput, 2)
+
+	var mu sync.Mutex
+	pendingResults := map[string]string{}
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			switch {
+			case agent.ID == "alpha" && agent.CurrentState == "A.md":
+				return awaitResult("A_NEXT.md", "Alpha input"), nil
+			case agent.ID == "alpha" && agent.CurrentState == "A_NEXT.md":
+				if agent.PendingResult != nil {
+					mu.Lock()
+					pendingResults["alpha"] = *agent.PendingResult
+					mu.Unlock()
+				}
+				return resultExecResult("alpha-done"), nil
+			case agent.ID == "beta" && agent.CurrentState == "B.md":
+				return awaitResult("B_NEXT.md", "Beta input"), nil
+			case agent.ID == "beta" && agent.CurrentState == "B_NEXT.md":
+				if agent.PendingResult != nil {
+					mu.Lock()
+					pendingResults["beta"] = *agent.PendingResult
+					mu.Unlock()
+				}
+				return resultExecResult("beta-done"), nil
+			default:
+				return executors.ExecutionResult{}, fmt.Errorf("unexpected: %s @ %s", agent.ID, agent.CurrentState)
+			}
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	var awaitMu sync.Mutex
+	var awaitEvents []events.AgentAwaitStarted
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+			awaitMu.Lock()
+			awaitEvents = append(awaitEvents, e)
+			awaitMu.Unlock()
+			// Deliver per-agent responses.
+			switch e.AgentID {
+			case "alpha":
+				inputCh <- orchestrator.AwaitInput{InputID: e.InputID, Response: "alpha-response"}
+			case "beta":
+				inputCh <- orchestrator.AwaitInput{InputID: e.InputID, Response: "beta-response"}
+			}
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+	opts.DaemonMode = true
+	opts.AwaitInputCh = inputCh
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Both agents should have awaited.
+	awaitMu.Lock()
+	assert.Len(t, awaitEvents, 2)
+	awaitMu.Unlock()
+
+	// Both agents received their individual responses.
+	mu.Lock()
+	assert.Equal(t, "alpha-response", pendingResults["alpha"])
+	assert.Equal(t, "beta-response", pendingResults["beta"])
+	mu.Unlock()
+}

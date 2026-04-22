@@ -54,6 +54,12 @@ var executorFactory func(string) executors.StateExecutor = executors.GetExecutor
 // Overridable in tests to subscribe to events before the workflow runs.
 var busHook func(*bus.Bus)
 
+// AwaitInput carries a response to a pending await from the daemon layer.
+type AwaitInput struct {
+	InputID  string
+	Response string
+}
+
 // RunOptions configures a RunAllAgents invocation.
 type RunOptions struct {
 	// StateDir is the directory that holds workflow state files.
@@ -100,6 +106,21 @@ type RunOptions struct {
 	// rejects at launch time and at runtime.
 	OnAwait string
 
+	// DaemonMode changes await behaviour: when true the orchestrator does NOT
+	// quiesce sibling agents when one hits <await>. Instead it calls
+	// AwaitCallback and keeps running. The awaiting agent stays idle until
+	// input arrives on AwaitInputCh.
+	DaemonMode bool
+
+	// AwaitCallback is called (from the main goroutine) when an agent enters
+	// <await> in daemon mode. It notifies the daemon layer of the new await.
+	AwaitCallback func(agentID, inputID, prompt, nextState string)
+
+	// AwaitInputCh delivers responses to pending awaits in daemon mode. The
+	// orchestrator reads from this channel in its main select loop and
+	// resumes the matching agent.
+	AwaitInputCh <-chan AwaitInput
+
 	// ObserverSetup, if non-nil, is called with the Bus immediately after it
 	// is created (before WorkflowStarted is emitted). Use it to register
 	// observers from production code (e.g. the CLI). Tests use SetBusHook
@@ -143,13 +164,14 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 	// Launch-time check: if OnAwait is "reject" (or empty, which defaults to
 	// reject), determine whether the workflow requires human input and reject
-	// early with a helpful error.
+	// early with a helpful error. Skipped when DaemonMode is true because
+	// daemon mode handles awaits natively.
 	//
 	// When the scope has a workflow manifest, use ResolveRequiresHumanInput
 	// (which honours the manifest's requires_human_input field and follows
 	// cross-workflow references transitively). Otherwise fall back to the
 	// simple frontmatter scan.
-	if opts.OnAwait != "pause" {
+	if opts.OnAwait != "pause" && !opts.DaemonMode {
 		manifestUsed := false
 		if manifestPath, ok := manifest.FindManifest(ws.ScopeDir); ok {
 			m, parseErr := manifest.ParseManifest(manifestPath)
@@ -257,6 +279,11 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// pausing prevents launching new agent goroutines so the system can
 	// reach a clean quiesce point.
 	pausing := false
+
+	// Resolved once: the channel for daemon-mode await input delivery.
+	// nil when not in daemon mode (nil channels block forever in select,
+	// effectively disabling the case).
+	daemonInputCh := awaitInputCh(opts)
 	activeAwait := ""
 	var preAwaitQueue []string
 
@@ -342,12 +369,17 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				return nil
 			}
 
-			// Quiesce point: all goroutines have drained while pausing was
-			// in effect (at least one agent hit <await>). The remaining
-			// agents are either awaiting or held at their next state
-			// boundary. Write state and exit so the caller can serve the
-			// await or resume later.
-			if pausing && opts.OnAwait == "pause" {
+			// Daemon mode: if agents are awaiting input, don't exit.
+			// Fall through to the select loop which will read from
+			// AwaitInputCh and resume agents as input arrives.
+			if opts.DaemonMode && hasAwaitingAgents(ws.Agents) {
+				// fall through to select
+			} else if pausing && opts.OnAwait == "pause" {
+				// Quiesce point: all goroutines have drained while pausing was
+				// in effect (at least one agent hit <await>). The remaining
+				// agents are either awaiting or held at their next state
+				// boundary. Write state and exit so the caller can serve the
+				// await or resume later.
 				b.Emit(events.WorkflowPaused{
 					WorkflowID:       workflowID,
 					TotalCostUSD:     ws.TotalCostUSD,
@@ -355,9 +387,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					Timestamp:        time.Now(),
 				})
 				return wfstate.WriteState(workflowID, ws, stateDir)
-			}
-
-			if allPaused(ws.Agents) {
+			} else if allPaused(ws.Agents) {
 				if !opts.NoWait {
 					if waitSec, ok := computeAutoWait(ws.Agents); ok {
 						now := time.Now()
@@ -396,18 +426,45 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					Timestamp:        time.Now(),
 				})
 				return wfstate.WriteState(workflowID, ws, stateDir)
+			} else {
+				// Active agents with no goroutines: should not be reachable since
+				// launchActive() is called before every check. Return an error
+				// rather than silently exiting with nil.
+				return fmt.Errorf("internal error: %d agents remain but no goroutines are running", len(ws.Agents))
 			}
-
-			// Active agents with no goroutines: should not be reachable since
-			// launchActive() is called before every check. Return an error
-			// rather than silently exiting with nil.
-			return fmt.Errorf("internal error: %d agents remain but no goroutines are running", len(ws.Agents))
 		}
 
-		// Wait for the next goroutine result.
+		// Wait for the next goroutine result or daemon-mode await input.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
+		case input := <-daemonInputCh:
+			idx := findAwaitingAgent(ws.Agents, input.InputID)
+			if idx < 0 {
+				continue // unknown InputID; ignore
+			}
+			a := &ws.Agents[idx]
+			pr := input.Response
+			a.PendingResult = &pr
+			a.CurrentState = a.AwaitNextState
+			a.Status = ""
+			a.AwaitPrompt = ""
+			a.AwaitNextState = ""
+			a.AwaitTimeout = ""
+			a.AwaitTimeoutNext = ""
+			a.AwaitInputID = ""
+			b.Emit(events.AgentAwaitResumed{
+				AgentID:   a.ID,
+				InputID:   input.InputID,
+				Timestamp: time.Now(),
+			})
+			if err := launchActive(); err != nil {
+				return err
+			}
+			if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
+				return fmt.Errorf("write state: %w", err)
+			}
 
 		case result := <-resultCh:
 			delete(running, result.agentID)
@@ -465,13 +522,34 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				// append worker if present.
 				applyResult(tr, agentIdx, agentBefore.CurrentState, ws, b)
 
-				// Quiesce handling: when OnAwait == "pause" and an
-				// agent enters awaiting status, begin quiescing. The
-				// first agent to await is the active await; subsequent
-				// ones are queued.
-				if opts.OnAwait == "pause" {
-					idx := findAgentByID(ws.Agents, agentBefore.ID)
-					if idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAwaiting {
+				// Await handling: detect when an agent enters awaiting
+				// status and apply the mode-specific strategy.
+				if idx := findAgentByID(ws.Agents, agentBefore.ID); idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAwaiting {
+					if opts.DaemonMode {
+						// Daemon mode: siblings keep running. Notify
+						// the daemon layer via callback; the agent
+						// stays awaiting until input arrives on
+						// AwaitInputCh.
+						b.Emit(events.AgentAwaitStarted{
+							AgentID:   ws.Agents[idx].ID,
+							InputID:   ws.Agents[idx].AwaitInputID,
+							Prompt:    ws.Agents[idx].AwaitPrompt,
+							NextState: ws.Agents[idx].AwaitNextState,
+							Timeout:   ws.Agents[idx].AwaitTimeout,
+							Timestamp: time.Now(),
+						})
+						if opts.AwaitCallback != nil {
+							opts.AwaitCallback(
+								ws.Agents[idx].ID,
+								ws.Agents[idx].AwaitInputID,
+								ws.Agents[idx].AwaitPrompt,
+								ws.Agents[idx].AwaitNextState,
+							)
+						}
+					} else if opts.OnAwait == "pause" {
+						// CLI pause mode: quiesce all agents. The
+						// first agent to await is the active await;
+						// subsequent ones are queued.
 						if activeAwait == "" {
 							activeAwait = ws.Agents[idx].ID
 						} else {
@@ -486,23 +564,14 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 							Timeout:   ws.Agents[idx].AwaitTimeout,
 							Timestamp: time.Now(),
 						})
-					}
-				}
-
-				// Runtime enforcement: if an agent entered the awaiting state
-				// but --on-await is not "pause", fail the agent immediately
-				// by setting it to paused with an error (the standard pattern
-				// for non-fatal agent termination in the orchestrator loop).
-				if opts.OnAwait != "pause" {
-					idx := findAgentByID(ws.Agents, agentBefore.ID)
-					if idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAwaiting {
+					} else {
+						// Runtime reject: fail the agent immediately.
 						ws.Agents[idx].Status = wfstate.AgentStatusPaused
 						ws.Agents[idx].Error = fmt.Sprintf(
 							"agent %q produced <await> but --on-await=reject is in effect; "+
 								"use --on-await=pause or `raymond serve`",
 							agentBefore.ID,
 						)
-						// Clear await fields since the await is being rejected.
 						ws.Agents[idx].AwaitPrompt = ""
 						ws.Agents[idx].AwaitNextState = ""
 						ws.Agents[idx].AwaitTimeout = ""
@@ -529,7 +598,6 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			}
 		}
 	}
-	return nil
 }
 
 // initTaskFolders assigns and creates on-disk task folders for every agent in
@@ -560,6 +628,36 @@ func findAgentByID(agents []wfstate.AgentState, id string) int {
 		}
 	}
 	return -1
+}
+
+// hasAwaitingAgents reports whether any agent in the slice has awaiting status.
+func hasAwaitingAgents(agents []wfstate.AgentState) bool {
+	for _, a := range agents {
+		if a.Status == wfstate.AgentStatusAwaiting {
+			return true
+		}
+	}
+	return false
+}
+
+// findAwaitingAgent returns the index of the awaiting agent whose AwaitInputID
+// matches inputID, or -1 if not found.
+func findAwaitingAgent(agents []wfstate.AgentState, inputID string) int {
+	for i, a := range agents {
+		if a.Status == wfstate.AgentStatusAwaiting && a.AwaitInputID == inputID {
+			return i
+		}
+	}
+	return -1
+}
+
+// awaitInputCh returns opts.AwaitInputCh when daemon mode is active, or a nil
+// channel (which blocks forever in select) when it is not.
+func awaitInputCh(opts RunOptions) <-chan AwaitInput {
+	if opts.DaemonMode && opts.AwaitInputCh != nil {
+		return opts.AwaitInputCh
+	}
+	return nil
 }
 
 // firstActiveIndex returns the index of the first non-paused agent, or -1.

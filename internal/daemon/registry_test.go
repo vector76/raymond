@@ -570,3 +570,120 @@ states:
 	require.True(t, ok)
 	assert.False(t, entry.RequiresHumanInput)
 }
+
+func TestNewRegistry_YamlAlongsideDirectoryAndZipWorkflows(t *testing.T) {
+	root := t.TempDir()
+
+	dirPath := makeWorkflowDir(t, root, "dirflow", `
+id: dir-flow
+name: Dir Flow
+`)
+
+	zipPath := makeWorkflowZip(t, root, "packed.zip", `
+id: zip-flow
+name: Zip Flow
+`)
+
+	yamlPath := makeWorkflowYaml(t, root, "review.yaml", `
+id: yaml-flow
+name: YAML Flow
+states:
+  START:
+    prompt: Hi
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	require.Len(t, reg.ListWorkflows(), 3)
+
+	dirEntry, ok := reg.GetWorkflow("dir-flow")
+	require.True(t, ok)
+	assert.Equal(t, dirPath, dirEntry.ScopeDir)
+
+	zipEntry, ok := reg.GetWorkflow("zip-flow")
+	require.True(t, ok)
+	assert.Equal(t, zipPath, zipEntry.ScopeDir)
+
+	yamlEntry, ok := reg.GetWorkflow("yaml-flow")
+	require.True(t, ok)
+	assert.Equal(t, yamlPath, yamlEntry.ScopeDir)
+
+	assert.NotEqual(t, dirEntry.ScopeDir, yamlEntry.ScopeDir)
+	assert.NotEqual(t, zipEntry.ScopeDir, yamlEntry.ScopeDir)
+	assert.NotEqual(t, dirEntry.ScopeDir, zipEntry.ScopeDir)
+}
+
+func TestNewRegistry_YamlScopeNamedWorkflowYaml(t *testing.T) {
+	root := t.TempDir()
+
+	yamlPath := makeWorkflowYaml(t, root, "workflow.yaml", `
+id: named-workflow
+name: Named Like A Manifest
+states:
+  START:
+    prompt: Hi
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entries := reg.ListWorkflows()
+	require.Len(t, entries, 1)
+	assert.Equal(t, "named-workflow", entries[0].ID)
+	assert.Equal(t, yamlPath, entries[0].ScopeDir)
+	assert.Equal(t, yamlPath, entries[0].ManifestPath)
+}
+
+func TestNewRegistry_YamlIdCollision_LastWins(t *testing.T) {
+	root := t.TempDir()
+
+	makeWorkflowDir(t, root, "dir-shared", `
+id: shared
+name: Dir Version
+`)
+	makeWorkflowYaml(t, root, "yaml-shared.yaml", `
+id: shared
+name: YAML Version
+states:
+  START:
+    prompt: Hi
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entries := reg.ListWorkflows()
+	count := 0
+	for _, e := range entries {
+		if e.ID == "shared" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count)
+
+	_, ok := reg.GetWorkflow("shared")
+	assert.True(t, ok)
+}
+
+func TestNewRegistry_YamlScopeInSubdirectoryIsNotDiscovered(t *testing.T) {
+	root := t.TempDir()
+
+	// Subdirectory with NO workflow.yaml manifest, but containing a YAML scope
+	// file. The registry's single-level scan must not recurse into it.
+	subdir := filepath.Join(root, "nested")
+	require.NoError(t, os.MkdirAll(subdir, 0o755))
+	makeWorkflowYaml(t, subdir, "hidden.yaml", `
+id: hidden-yaml
+states:
+  START:
+    prompt: Hi
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	assert.Empty(t, reg.ListWorkflows())
+	_, ok := reg.GetWorkflow("hidden-yaml")
+	assert.False(t, ok)
+}

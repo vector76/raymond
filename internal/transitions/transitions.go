@@ -8,6 +8,7 @@
 //   - call:              context-branching sub-call; caller session forked
 //   - fork:              spawn independent worker agent while parent continues
 //   - result:            return from function/call, or terminate if stack is empty
+//   - await:             pause agent until external input arrives; session preserved
 //   - call-workflow:     blocking cross-workflow call; forks caller session
 //   - function-workflow: blocking cross-workflow call; fresh session, cd allowed
 //   - fork-workflow:     non-blocking cross-workflow spawn; fresh session, cd allowed
@@ -22,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/prompts"
@@ -99,6 +101,8 @@ func ApplyTransition(
 		return HandleCall(copy, transition)
 	case "fork":
 		return HandleFork(copy, transition, wfState)
+	case "await":
+		return HandleAwait(copy, transition, wfState)
 	case "reset-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
 		var res specifier.Resolution
@@ -826,4 +830,40 @@ func HandleResult(
 	}
 
 	return TransitionResult{Agent: &agent}
+}
+
+// HandleAwait handles the <await> transition tag.
+//
+// Pauses the agent until external input arrives:
+//   - Sets status to "awaiting".
+//   - Preserves session ID (LLM context survives the await, like goto).
+//   - Stores the human-facing prompt (tag content), the next state (from the
+//     "next" attribute, stored in transition.Target by the parser), and optional
+//     timeout/timeout_next attributes.
+//   - Generates a unique input ID for correlating the eventual response.
+//   - Does NOT change CurrentState — the agent remains at the state that
+//     emitted <await> until input arrives.
+//   - Leaves the call stack intact.
+//
+// Returns an error when the target (next state) is empty.
+func HandleAwait(
+	agent wfstate.AgentState,
+	transition parsing.Transition,
+	wfState *wfstate.WorkflowState,
+) (TransitionResult, error) {
+	if transition.Target == "" {
+		return TransitionResult{}, fmt.Errorf(
+			"<await> tag requires 'next' attribute. " +
+				"Example: <await next=\"NEXT.md\">Please provide input</await>",
+		)
+	}
+
+	agent.Status = wfstate.AgentStatusAwaiting
+	agent.AwaitPrompt = transition.Payload
+	agent.AwaitNextState = transition.Target
+	agent.AwaitTimeout = transition.Attributes["timeout"]
+	agent.AwaitTimeoutNext = transition.Attributes["timeout_next"]
+	agent.AwaitInputID = fmt.Sprintf("inp_%s_%d", agent.ID, time.Now().UnixNano())
+
+	return TransitionResult{Agent: &agent, Worker: nil}, nil
 }

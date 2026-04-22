@@ -3219,3 +3219,150 @@ func TestHandleForkWorkflowParentTaskFolderUnchanged(t *testing.T) {
 	assert.Equal(t, "/tmp/tasks/wf1/main", result.Agent.TaskFolder)
 }
 
+// ----------------------------------------------------------------------------
+// HandleAwait
+// ----------------------------------------------------------------------------
+
+func awaitTransition(next, payload string, attrs map[string]string) parsing.Transition {
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	return parsing.Transition{
+		Tag:        "await",
+		Target:     next,
+		Payload:    payload,
+		Attributes: attrs,
+	}
+}
+
+func TestHandleAwaitBasic(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	tr := awaitTransition("DEPLOY.md", "Please approve", nil)
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.HandleAwait(agent, tr, wfState)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Worker)
+
+	a := result.Agent
+	assert.Equal(t, wfstate.AgentStatusAwaiting, a.Status)
+	assert.Equal(t, "Please approve", a.AwaitPrompt)
+	assert.Equal(t, "DEPLOY.md", a.AwaitNextState)
+	assert.NotEmpty(t, a.AwaitInputID, "input ID should be generated")
+	// Session is preserved (like goto).
+	require.NotNil(t, a.SessionID)
+	assert.Equal(t, "session_abc", *a.SessionID)
+	// CurrentState is NOT changed.
+	assert.Equal(t, "REVIEW.md", a.CurrentState)
+}
+
+func TestHandleAwaitWithAllAttributes(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	tr := awaitTransition("DEPLOY.md", "Approve?", map[string]string{
+		"timeout":      "24h",
+		"timeout_next": "TIMEOUT.md",
+	})
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.HandleAwait(agent, tr, wfState)
+
+	require.NoError(t, err)
+	a := result.Agent
+	assert.Equal(t, "24h", a.AwaitTimeout)
+	assert.Equal(t, "TIMEOUT.md", a.AwaitTimeoutNext)
+}
+
+func TestHandleAwaitWithinCallStack(t *testing.T) {
+	frame1 := wfstate.StackFrame{Session: strPtr("caller_session"), State: "RETURN.md", ScopeDir: "scope1"}
+	frame2 := wfstate.StackFrame{Session: nil, State: "OUTER.md", ScopeDir: "scope2"}
+	agent := makeAgent("main", "INNER.md", strPtr("session_xyz"))
+	agent.Stack = []wfstate.StackFrame{frame1, frame2}
+
+	tr := awaitTransition("NEXT.md", "Need approval", nil)
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.HandleAwait(agent, tr, wfState)
+
+	require.NoError(t, err)
+	a := result.Agent
+	// Stack must be preserved intact.
+	require.Len(t, a.Stack, 2)
+	assert.Equal(t, "RETURN.md", a.Stack[0].State)
+	assert.Equal(t, "OUTER.md", a.Stack[1].State)
+	// CurrentState unchanged.
+	assert.Equal(t, "INNER.md", a.CurrentState)
+}
+
+func TestHandleAwaitMissingTargetReturnsError(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	tr := awaitTransition("", "Approve?", nil) // empty target
+	wfState := &wfstate.WorkflowState{}
+
+	_, err := transitions.HandleAwait(agent, tr, wfState)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "<await>")
+	assert.Contains(t, err.Error(), "next")
+}
+
+func TestHandleAwaitInputIDUniqueness(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	wfState := &wfstate.WorkflowState{}
+
+	ids := make(map[string]bool)
+	for i := 0; i < 10; i++ {
+		tr := awaitTransition("DEPLOY.md", fmt.Sprintf("prompt %d", i), nil)
+		result, err := transitions.HandleAwait(agent, tr, wfState)
+		require.NoError(t, err)
+		id := result.Agent.AwaitInputID
+		assert.False(t, ids[id], "duplicate input ID generated: %s", id)
+		ids[id] = true
+	}
+}
+
+func TestHandleAwaitNoTimeoutAttributes(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	tr := awaitTransition("DEPLOY.md", "Approve?", nil) // no timeout attrs
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.HandleAwait(agent, tr, wfState)
+
+	require.NoError(t, err)
+	a := result.Agent
+	assert.Equal(t, "", a.AwaitTimeout)
+	assert.Equal(t, "", a.AwaitTimeoutNext)
+}
+
+func TestApplyTransitionDispatchesAwait(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	tr := awaitTransition("DEPLOY.md", "Please approve", nil)
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.ApplyTransition(&agent, tr, wfState, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Agent)
+	assert.Nil(t, result.Worker)
+	assert.Equal(t, wfstate.AgentStatusAwaiting, result.Agent.Status)
+	assert.Equal(t, "Please approve", result.Agent.AwaitPrompt)
+	assert.Equal(t, "DEPLOY.md", result.Agent.AwaitNextState)
+	// Session preserved.
+	require.NotNil(t, result.Agent.SessionID)
+	assert.Equal(t, "session_abc", *result.Agent.SessionID)
+	// CurrentState NOT changed.
+	assert.Equal(t, "REVIEW.md", result.Agent.CurrentState)
+}
+
+func TestApplyTransitionAwaitClearsPendingResult(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	agent.PendingResult = strPtr("old result")
+	tr := awaitTransition("DEPLOY.md", "Approve?", nil)
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
+
+	require.NoError(t, err)
+	assert.Nil(t, result.Agent.PendingResult)
+}
+

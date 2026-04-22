@@ -661,3 +661,113 @@ func TestLegacyJSONMissingNewFieldsDeserializesToZeroValues(t *testing.T) {
 	assert.Equal(t, 0, ws.Agents[0].TaskCount, "TaskCount should be zero for legacy JSON")
 	assert.Equal(t, "", ws.TaskFolderPattern, "TaskFolderPattern should be empty string (transient, not in JSON)")
 }
+
+// ----------------------------------------------------------------------------
+// Await fields serialization
+// ----------------------------------------------------------------------------
+
+func TestAgentStateAwaitFieldsRoundTrip(t *testing.T) {
+	agent := state.AgentState{
+		ID:               "main",
+		CurrentState:     "REVIEW.md",
+		Stack:            []state.StackFrame{},
+		Status:           state.AgentStatusAwaiting,
+		AwaitPrompt:      "Please approve the deployment",
+		AwaitNextState:   "DEPLOY.md",
+		AwaitTimeout:     "24h",
+		AwaitTimeoutNext: "TIMEOUT.md",
+		AwaitInputID:     "inp_main_1234567890",
+	}
+
+	data, err := json.Marshal(agent)
+	require.NoError(t, err)
+
+	var got state.AgentState
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	assert.Equal(t, state.AgentStatusAwaiting, got.Status)
+	assert.Equal(t, "Please approve the deployment", got.AwaitPrompt)
+	assert.Equal(t, "DEPLOY.md", got.AwaitNextState)
+	assert.Equal(t, "24h", got.AwaitTimeout)
+	assert.Equal(t, "TIMEOUT.md", got.AwaitTimeoutNext)
+	assert.Equal(t, "inp_main_1234567890", got.AwaitInputID)
+}
+
+func TestAgentStateAwaitFieldsBackwardCompatibility(t *testing.T) {
+	// JSON without any await fields — should deserialize to zero values with no errors.
+	raw := `{"id":"main","current_state":"START.md","session_id":null,"stack":[]}`
+
+	var agent state.AgentState
+	require.NoError(t, json.Unmarshal([]byte(raw), &agent))
+
+	assert.Equal(t, "", agent.AwaitPrompt)
+	assert.Equal(t, "", agent.AwaitNextState)
+	assert.Equal(t, "", agent.AwaitTimeout)
+	assert.Equal(t, "", agent.AwaitTimeoutNext)
+	assert.Equal(t, "", agent.AwaitInputID)
+	assert.Equal(t, "", agent.Status)
+}
+
+func TestAgentStateAwaitFieldsOmittedWhenEmpty(t *testing.T) {
+	agent := state.AgentState{
+		ID:           "main",
+		CurrentState: "START.md",
+		Stack:        []state.StackFrame{},
+	}
+
+	data, err := json.Marshal(agent)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, hasAwaitPrompt := raw["await_prompt"]
+	assert.False(t, hasAwaitPrompt, "await_prompt should be absent from JSON when empty")
+	_, hasAwaitNextState := raw["await_next_state"]
+	assert.False(t, hasAwaitNextState, "await_next_state should be absent from JSON when empty")
+	_, hasAwaitTimeout := raw["await_timeout"]
+	assert.False(t, hasAwaitTimeout, "await_timeout should be absent from JSON when empty")
+	_, hasAwaitTimeoutNext := raw["await_timeout_next"]
+	assert.False(t, hasAwaitTimeoutNext, "await_timeout_next should be absent from JSON when empty")
+	_, hasAwaitInputID := raw["await_input_id"]
+	assert.False(t, hasAwaitInputID, "await_input_id should be absent from JSON when empty")
+}
+
+// ----------------------------------------------------------------------------
+// LaunchParams OnAwait field
+// ----------------------------------------------------------------------------
+
+func TestLaunchParamsOnAwaitRoundTrip(t *testing.T) {
+	lp := state.LaunchParams{
+		Model:   "opus",
+		OnAwait: "pause",
+	}
+
+	data, err := json.Marshal(lp)
+	require.NoError(t, err)
+
+	var got state.LaunchParams
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "pause", got.OnAwait)
+}
+
+func TestLaunchParamsOnAwaitOmittedWhenEmpty(t *testing.T) {
+	lp := state.LaunchParams{Model: "opus"}
+
+	data, err := json.Marshal(lp)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	_, hasOnAwait := raw["on_await"]
+	assert.False(t, hasOnAwait, "on_await should be absent from JSON when empty")
+}
+
+func TestLaunchParamsOnAwaitBackwardCompatibility(t *testing.T) {
+	// Old JSON without on_await field.
+	raw := `{"dangerously_skip_permissions":false,"model":"haiku"}`
+
+	var lp state.LaunchParams
+	require.NoError(t, json.Unmarshal([]byte(raw), &lp))
+	assert.Equal(t, "", lp.OnAwait, "OnAwait should be empty for old state files without the field")
+}

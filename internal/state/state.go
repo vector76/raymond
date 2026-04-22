@@ -41,8 +41,9 @@ import (
 
 // Agent status constants. The zero value ("") means the agent is active.
 const (
-	AgentStatusPaused = "paused"
-	AgentStatusFailed = "failed"
+	AgentStatusPaused   = "paused"
+	AgentStatusFailed   = "failed"
+	AgentStatusAwaiting = "awaiting"
 )
 
 // StateFileError is returned when a state file cannot be parsed.
@@ -81,7 +82,7 @@ type AgentState struct {
 	NestingDepth int `json:"nesting_depth,omitempty"`
 
 	// Orchestrator-managed lifecycle fields.
-	Status     string `json:"status,omitempty"`      // "paused", "failed", or "" (active)
+	Status     string `json:"status,omitempty"`      // "paused", "failed", "awaiting", or "" (active)
 	RetryCount int    `json:"retry_count,omitempty"` // transient error retry counter
 	Error      string `json:"error,omitempty"`       // last error message when paused/failed
 
@@ -92,6 +93,14 @@ type AgentState struct {
 
 	TaskFolder string `json:"task_folder,omitempty"` // output folder for this agent's tasks
 	TaskCount  int    `json:"task_count,omitempty"`  // number of tasks spawned so far
+
+	// Await fields — populated by the await transition handler when an agent
+	// emits an <await> tag. All zero-value safe for backward compatibility.
+	AwaitPrompt      string `json:"await_prompt,omitempty"`       // human-facing prompt text from <await> tag content
+	AwaitNextState   string `json:"await_next_state,omitempty"`   // state to transition to when input arrives
+	AwaitTimeout     string `json:"await_timeout,omitempty"`      // timeout duration string (e.g. "24h")
+	AwaitTimeoutNext string `json:"await_timeout_next,omitempty"` // state to transition to on timeout
+	AwaitInputID     string `json:"await_input_id,omitempty"`     // unique identifier for correlating the response
 
 	// Transient execution fields — not persisted to JSON.
 	// Set by the orchestrator / transition handlers; consumed by the next executor step.
@@ -108,6 +117,7 @@ type LaunchParams struct {
 	Effort                     string  `json:"effort,omitempty"`
 	Timeout                    float64 `json:"timeout,omitempty"`
 	ContinueAndFork            bool    `json:"continue_and_fork,omitempty"`
+	OnAwait                    string  `json:"on_await,omitempty"`
 }
 
 // WorkflowState is the top-level structure persisted for each workflow.

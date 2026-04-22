@@ -423,6 +423,33 @@ func (r *ConsoleReporter) onAgentPaused(e events.AgentPaused) {
 	fmt.Fprintf(r.w, "%s Agent paused (%s)\n", r.formatAgentID(e.AgentID), reason)
 }
 
+func (r *ConsoleReporter) onAgentAwaitStarted(e events.AgentAwaitStarted) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prompt := firstLine(e.Prompt)
+	// Prefix: "  ├─ [agentID] awaiting human input: " = 30 + len(agentID)
+	prefixLen := 30 + len(e.AgentID)
+	prompt = truncateMessage(prompt, r.availableWidth(prefixLen))
+	fmt.Fprintf(r.w, "  %s %s awaiting human input: %s\n",
+		r.colorToken(e.AgentID, r.sym.progress), r.formatAgentID(e.AgentID), prompt)
+}
+
+func (r *ConsoleReporter) onAgentAwaitResumed(e events.AgentAwaitResumed) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fmt.Fprintf(r.w, "  %s %s input received, resuming\n",
+		r.colorToken(e.AgentID, r.sym.progress), r.formatAgentID(e.AgentID))
+}
+
+// firstLine returns the first non-empty line of s, trimmed of whitespace.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	return s
+}
+
 // returnSnippet extracts a short display snippet from a return-transition
 // result payload, applying these rules in order:
 //
@@ -488,6 +515,8 @@ func NewWithWriter(b *bus.Bus, quiet bool, width int, w io.Writer, unicode, colo
 		bus.Subscribe(b, r.onAgentTerminated),
 		bus.Subscribe(b, r.onErrorOccurred),
 		bus.Subscribe(b, r.onAgentPaused),
+		bus.Subscribe(b, r.onAgentAwaitStarted),
+		bus.Subscribe(b, r.onAgentAwaitResumed),
 	}
 	return o
 }

@@ -116,6 +116,25 @@ type AgentPaused struct {
 	Timestamp time.Time
 }
 
+// AgentAwaitStarted is emitted when an agent enters an await state, waiting
+// for human input.
+type AgentAwaitStarted struct {
+	AgentID   string
+	InputID   string
+	Prompt    string
+	NextState string
+	Timeout   string // empty if no timeout
+	Timestamp time.Time
+}
+
+// AgentAwaitResumed is emitted when an awaiting agent receives input and
+// resumes execution.
+type AgentAwaitResumed struct {
+	AgentID   string
+	InputID   string
+	Timestamp time.Time
+}
+
 // ClaudeStreamOutput is emitted for each JSON object received from the claude stream.
 type ClaudeStreamOutput struct {
 	AgentID    string

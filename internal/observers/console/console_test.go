@@ -718,6 +718,108 @@ func TestConsoleAgentPausedTimeoutReason(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// AgentAwaitStarted / AgentAwaitResumed
+// ----------------------------------------------------------------------------
+
+func TestConsoleAgentAwaitStartedShowsPrompt(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentAwaitStarted{
+		AgentID:   "main",
+		InputID:   "input-1",
+		Prompt:    "Please provide the API key",
+		NextState: "NEXT.md",
+		Timestamp: time.Now(),
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "[main]")
+	assert.Contains(t, out, "awaiting human input")
+	assert.Contains(t, out, "Please provide the API key")
+}
+
+func TestConsoleAgentAwaitResumedShowsResume(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentAwaitResumed{
+		AgentID:   "main",
+		InputID:   "input-1",
+		Timestamp: time.Now(),
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "[main]")
+	assert.Contains(t, out, "input received, resuming")
+}
+
+func TestConsoleAgentAwaitStartedLongPromptTruncated(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObsWithWidth(b, &buf, 80)
+	defer obs.Close()
+
+	longPrompt := strings.Repeat("q", 200)
+	b.Emit(events.AgentAwaitStarted{
+		AgentID:   "main",
+		InputID:   "input-2",
+		Prompt:    longPrompt,
+		NextState: "NEXT.md",
+		Timestamp: time.Now(),
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "...")
+	assert.Contains(t, out, "awaiting human input")
+	// Line must fit within terminal width.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	assert.LessOrEqual(t, len(lines[0]), 80)
+}
+
+func TestConsoleAgentAwaitStartedEmptyPrompt(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentAwaitStarted{
+		AgentID:   "main",
+		InputID:   "input-e",
+		Prompt:    "",
+		NextState: "NEXT.md",
+		Timestamp: time.Now(),
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "[main]")
+	assert.Contains(t, out, "awaiting human input")
+}
+
+func TestConsoleAgentAwaitStartedMultilinePromptUsesFirstLine(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.AgentAwaitStarted{
+		AgentID:   "main",
+		InputID:   "input-3",
+		Prompt:    "First line of prompt\nSecond line of prompt\nThird line",
+		NextState: "NEXT.md",
+		Timestamp: time.Now(),
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "First line of prompt")
+	assert.NotContains(t, out, "Second line of prompt")
+}
+
+// ----------------------------------------------------------------------------
 // Close
 // ----------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/vector76/raymond/internal/manifest"
+	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
 )
 
@@ -35,8 +36,9 @@ type Registry struct {
 }
 
 // NewRegistry creates a Registry that scans the given root directories for
-// workflow directories and zip archives containing workflow.yaml manifests.
-// Workflows without manifests are skipped.
+// workflow directories, zip archives containing workflow.yaml manifests, and
+// YAML workflow files with embedded manifest metadata. Workflows without
+// manifests are skipped.
 func NewRegistry(roots []string) (*Registry, error) {
 	r := &Registry{
 		roots: roots,
@@ -106,6 +108,8 @@ func (r *Registry) scan() error {
 				r.tryIndexDir(fullPath)
 			} else if zipscope.IsZipScope(fullPath) {
 				r.tryIndexZip(fullPath)
+			} else if yamlscope.IsYamlScope(fullPath) {
+				r.tryIndexYaml(fullPath)
 			}
 		}
 	}
@@ -163,6 +167,31 @@ func (r *Registry) tryIndexZip(zipPath string) {
 		RequiresHumanInput: humanInput,
 		ScopeDir:           zipPath,
 		ManifestPath:       zipPath,
+	}
+}
+
+// tryIndexYaml attempts to extract an embedded manifest from a YAML workflow
+// file and index the workflow if successful.
+func (r *Registry) tryIndexYaml(yamlPath string) {
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return
+	}
+	m, err := manifest.ExtractEmbeddedManifest(data)
+	if err != nil || m == nil {
+		return
+	}
+
+	humanInput := resolveHumanInputField(m.RequiresHumanInput)
+	r.index[m.ID] = WorkflowEntry{
+		ID:                 m.ID,
+		Name:               m.Name,
+		Description:        m.Description,
+		InputSchema:        m.InputSchema,
+		DefaultBudget:      m.DefaultBudget,
+		RequiresHumanInput: humanInput,
+		ScopeDir:           yamlPath,
+		ManifestPath:       yamlPath,
 	}
 }
 

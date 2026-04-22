@@ -44,10 +44,12 @@ type RunInfo struct {
 
 // runEntry is the internal bookkeeping for a tracked run.
 type runEntry struct {
-	mu     sync.Mutex
-	info   RunInfo
-	cancel context.CancelFunc // nil for recovered (non-running) entries
-	doneCh chan struct{}       // closed when the run reaches a terminal state
+	mu       sync.Mutex
+	info     RunInfo
+	cancel   context.CancelFunc // nil for recovered (non-running) entries
+	doneCh   chan struct{}      // closed when the run reaches a terminal state
+	eventBus *bus.Bus           // set by ObserverSetup; nil for recovered runs
+	busReady chan struct{}      // closed when eventBus is set
 }
 
 // Orchestrator is the interface for launching workflow runs. It exists so
@@ -159,8 +161,9 @@ func (rm *RunManager) LaunchRun(
 			}},
 			StartedAt: time.Now(),
 		},
-		cancel: runCancel,
-		doneCh: doneCh,
+		cancel:   runCancel,
+		doneCh:   doneCh,
+		busReady: make(chan struct{}),
 	}
 
 	rm.mu.Lock()
@@ -173,6 +176,10 @@ func (rm *RunManager) LaunchRun(
 		Quiet:        true,
 		OnAwait:      "pause",
 		ObserverSetup: func(b *bus.Bus) {
+			re.mu.Lock()
+			re.eventBus = b
+			re.mu.Unlock()
+			close(re.busReady)
 			rm.subscribeEvents(b, re)
 		},
 	}
@@ -507,4 +514,87 @@ func classifyRecoveredStatus(agents []wfstate.AgentState) string {
 	}
 
 	return RunStatusFailed
+}
+
+// SubscribeRunEvents returns a channel that receives all events emitted by the
+// given run's event bus. The caller must call the returned cancel function to
+// unsubscribe and release resources. The channel is closed when cancel is
+// called or the run completes.
+//
+// ctx is used to bound the wait for the event bus to become available (the bus
+// is set asynchronously when the orchestrator starts).
+func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-chan any, func(), error) {
+	rm.mu.RLock()
+	re, ok := rm.runs[runID]
+	rm.mu.RUnlock()
+	if !ok {
+		return nil, nil, fmt.Errorf("run %q not found", runID)
+	}
+
+	// Wait for the event bus to be ready (set by ObserverSetup).
+	// For recovered (non-running) runs, busReady is nil.
+	if re.busReady == nil {
+		return nil, nil, fmt.Errorf("run %q has no active event bus", runID)
+	}
+	select {
+	case <-re.busReady:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+
+	re.mu.Lock()
+	b := re.eventBus
+	re.mu.Unlock()
+	if b == nil {
+		return nil, nil, fmt.Errorf("run %q has no active event bus", runID)
+	}
+
+	ch := make(chan any, 256)
+	var cancels []func()
+
+	send := func(event any) {
+		select {
+		case ch <- event:
+		default:
+			// Drop event if client is too slow.
+		}
+	}
+
+	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowStarted) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowCompleted) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowPaused) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowWaiting) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowResuming) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.StateStarted) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.StateCompleted) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.TransitionOccurred) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentSpawned) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentTerminated) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentPaused) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentAwaitStarted) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentAwaitResumed) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.ClaudeStreamOutput) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.ClaudeInvocationStarted) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.ScriptOutput) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.ToolInvocation) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.ProgressMessage) { send(e) }))
+	cancels = append(cancels, bus.Subscribe(b, func(e events.ErrorOccurred) { send(e) }))
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			for _, c := range cancels {
+				c()
+			}
+			close(ch)
+		})
+	}
+
+	// Auto-cancel when the run completes.
+	go func() {
+		<-re.doneCh
+		cancel()
+	}()
+
+	return ch, cancel, nil
 }

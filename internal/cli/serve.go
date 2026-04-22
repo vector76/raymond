@@ -1,7 +1,14 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -11,10 +18,10 @@ import (
 // newServeCmd builds the "serve" subcommand that starts the Raymond daemon.
 func (c *CLI) newServeCmd() *cobra.Command {
 	var (
-		roots  []string
-		port   int
-		mcp    bool
-		noHTTP bool
+		roots   []string
+		port    int
+		mcp     bool
+		noHTTP  bool
 		workdir string
 	)
 
@@ -51,18 +58,40 @@ clients.`,
 				fmt.Fprintln(cmd.OutOrStdout())
 			}
 
-			if workdir != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Working directory: %s\n", workdir)
+			cwd := workdir
+			if cwd == "" {
+				cwd, _ = os.Getwd()
 			}
 
-			// Placeholder: actual HTTP and MCP server startup is implemented
-			// in later beads (16-17). For now, report what would be started.
+			rm, err := daemon.NewRunManager("", cwd)
+			if err != nil {
+				return fmt.Errorf("initializing run manager: %w", err)
+			}
+
 			if !noHTTP {
-				fmt.Fprintf(cmd.OutOrStdout(), "HTTP server would listen on port %d\n", port)
+				srv := daemon.NewServer(reg, rm, port)
+				fmt.Fprintf(cmd.OutOrStdout(), "HTTP server listening on port %d\n", port)
+				go func() {
+					if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						fmt.Fprintf(cmd.ErrOrStderr(), "HTTP server error: %v\n", err)
+					}
+				}()
+				defer func() {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					srv.Shutdown(shutdownCtx)
+				}()
 			}
+
 			if mcp {
-				fmt.Fprintln(cmd.OutOrStdout(), "MCP transport would be enabled")
+				fmt.Fprintln(cmd.OutOrStdout(), "MCP transport enabled (not yet implemented)")
 			}
+
+			// Block until interrupted.
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			sig := <-sigCh
+			fmt.Fprintf(cmd.OutOrStdout(), "\nReceived %v, shutting down...\n", sig)
 
 			return nil
 		},

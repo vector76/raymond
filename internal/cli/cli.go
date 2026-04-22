@@ -7,6 +7,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -88,6 +89,16 @@ func NewTestCLI(stdout, stderr io.Writer) *CLI {
 	}
 }
 
+// NewTestCLIWithRunner creates a CLI with a caller-supplied runner function.
+// Exported for use in cli_test tests that need to return specific errors.
+func NewTestCLIWithRunner(stdout, stderr io.Writer, runner func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error) *CLI {
+	return &CLI{
+		runner: runner,
+		stdout: stdout,
+		stderr: stderr,
+	}
+}
+
 // NewTestCLICapturing creates a CLI that records the RunOptions passed to the
 // runner on each invocation. The captured values are appended to *captured.
 // Exported for use in cli_test tests that need to inspect resolved opts.
@@ -109,6 +120,13 @@ func Run() {
 	err := cmd.Execute()
 	if err == nil {
 		return
+	}
+	var awaitErr *orchestrator.AwaitingInputError
+	if errors.As(err, &awaitErr) {
+		enc := json.NewEncoder(c.stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(awaitErr)
+		os.Exit(2)
 	}
 	var lintErr LintFoundErrorsError
 	if errors.As(err, &lintErr) {

@@ -60,6 +60,29 @@ type AwaitInput struct {
 	Response string
 }
 
+// AwaitingInputError is returned from RunAllAgents when the quiesce point is
+// reached with OnAwait="pause". It carries structured data describing the
+// active await so the CLI can emit JSON and exit with code 2.
+type AwaitingInputError struct {
+	Status       string                `json:"status"`
+	RunID        string                `json:"run_id"`
+	Workflow     string                `json:"workflow"`
+	Awaiting     AwaitingInputDetail   `json:"awaiting"`
+	PendingCount int                   `json:"pending_count"`
+	Resume       string                `json:"resume"`
+}
+
+// AwaitingInputDetail describes the active await within an AwaitingInputError.
+type AwaitingInputDetail struct {
+	InputID string `json:"input_id"`
+	AgentID string `json:"agent_id"`
+	Prompt  string `json:"prompt"`
+}
+
+func (e *AwaitingInputError) Error() string {
+	return fmt.Sprintf("workflow %q is awaiting input (input_id=%s)", e.RunID, e.Awaiting.InputID)
+}
+
 // RunOptions configures a RunAllAgents invocation.
 type RunOptions struct {
 	// StateDir is the directory that holds workflow state files.
@@ -386,7 +409,41 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					PausedAgentCount: len(ws.Agents),
 					Timestamp:        time.Now(),
 				})
-				return wfstate.WriteState(workflowID, ws, stateDir)
+				if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
+					return err
+				}
+
+				// Find the active awaiting agent to populate the structured output.
+				var activeAgent *wfstate.AgentState
+				if activeAwait != "" {
+					if idx := findAgentByID(ws.Agents, activeAwait); idx >= 0 {
+						activeAgent = &ws.Agents[idx]
+					}
+				}
+				if activeAgent == nil {
+					// Fallback: find the first awaiting agent.
+					for i := range ws.Agents {
+						if ws.Agents[i].Status == wfstate.AgentStatusAwaiting {
+							activeAgent = &ws.Agents[i]
+							break
+						}
+					}
+				}
+				if activeAgent != nil {
+					return &AwaitingInputError{
+						Status:   "awaiting_input",
+						RunID:    workflowID,
+						Workflow: filepath.Base(ws.ScopeDir),
+						Awaiting: AwaitingInputDetail{
+							InputID: activeAgent.AwaitInputID,
+							AgentID: activeAgent.ID,
+							Prompt:  activeAgent.AwaitPrompt,
+						},
+						PendingCount: len(preAwaitQueue),
+						Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
+					}
+				}
+				return nil
 			} else if allPaused(ws.Agents) {
 				if !opts.NoWait {
 					if waitSec, ok := computeAutoWait(ws.Agents); ok {

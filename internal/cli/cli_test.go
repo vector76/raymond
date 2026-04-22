@@ -3,6 +3,7 @@ package cli_test
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1727,4 +1728,117 @@ func TestStartSavesOnAwaitToLaunchParams(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ws.LaunchParams)
 	assert.Equal(t, "pause", ws.LaunchParams.OnAwait)
+}
+
+// --------------------------------------------------------------------------
+// AwaitingInputError → JSON output and exit code 2
+// --------------------------------------------------------------------------
+
+// newAwaitingCLI creates a CLI whose runner returns the given AwaitingInputError.
+func newAwaitingCLI(stdout, stderr *bytes.Buffer, awaitErr *orchestrator.AwaitingInputError) *cli.CLI {
+	return cli.NewTestCLIWithRunner(stdout, stderr, func(_ context.Context, _ string, _ orchestrator.RunOptions) error {
+		return awaitErr
+	})
+}
+
+func TestAwaitingInputErrorPropagatesThroughCLI(t *testing.T) {
+	// Verify that *AwaitingInputError from the runner propagates back through
+	// cobra's RunE → Execute() return value, so Run() can detect it.
+	stateDir := makeStateDir(t)
+	dir := t.TempDir()
+	startFile := filepath.Join(dir, "START.md")
+	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
+
+	awaitErr := &orchestrator.AwaitingInputError{
+		Status:   "awaiting_input",
+		RunID:    "test-wf-123",
+		Workflow: "myworkflow",
+		Awaiting: orchestrator.AwaitingInputDetail{
+			InputID: "input-abc",
+			AgentID: "main",
+			Prompt:  "Please provide data",
+		},
+		PendingCount: 0,
+		Resume:       `raymond --resume test-wf-123 --input "[your response]"`,
+	}
+
+	var out, errOut bytes.Buffer
+	c := newAwaitingCLI(&out, &errOut, awaitErr)
+	cmd := c.NewRootCmd()
+	cmd.SetArgs([]string{startFile, "--state-dir", stateDir})
+	err := cmd.Execute()
+
+	// The error should be an AwaitingInputError detectable via errors.As.
+	require.Error(t, err)
+	var gotAwait *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &gotAwait), "expected *AwaitingInputError, got %T", err)
+
+	assert.Equal(t, "awaiting_input", gotAwait.Status)
+	assert.Equal(t, "test-wf-123", gotAwait.RunID)
+	assert.Equal(t, "myworkflow", gotAwait.Workflow)
+	assert.Equal(t, "input-abc", gotAwait.Awaiting.InputID)
+	assert.Equal(t, "main", gotAwait.Awaiting.AgentID)
+	assert.Equal(t, "Please provide data", gotAwait.Awaiting.Prompt)
+	assert.Equal(t, 0, gotAwait.PendingCount)
+}
+
+func TestAwaitingInputErrorJSONIsParseable(t *testing.T) {
+	// Verify that the JSON encoding of AwaitingInputError (using the same
+	// indented NewEncoder path as Run()) is valid and contains all expected
+	// fields with correct JSON keys.
+	awaitErr := &orchestrator.AwaitingInputError{
+		Status:   "awaiting_input",
+		RunID:    "wf-42",
+		Workflow: "demo",
+		Awaiting: orchestrator.AwaitingInputDetail{
+			InputID: "id-1",
+			AgentID: "main",
+			Prompt:  "Enter value",
+		},
+		PendingCount: 2,
+		Resume:       `raymond --resume wf-42 --input "[your response]"`,
+	}
+
+	// Use the same encoder path as Run().
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	require.NoError(t, enc.Encode(awaitErr))
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
+
+	assert.Equal(t, "awaiting_input", parsed["status"])
+	assert.Equal(t, "wf-42", parsed["run_id"])
+	assert.Equal(t, "demo", parsed["workflow"])
+	assert.Equal(t, float64(2), parsed["pending_count"])
+	assert.Equal(t, `raymond --resume wf-42 --input "[your response]"`, parsed["resume"])
+
+	awaiting, ok := parsed["awaiting"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "id-1", awaiting["input_id"])
+	assert.Equal(t, "main", awaiting["agent_id"])
+	assert.Equal(t, "Enter value", awaiting["prompt"])
+}
+
+func TestAwaitingInputErrorPendingCountReflectsQueueLength(t *testing.T) {
+	awaitErr := &orchestrator.AwaitingInputError{
+		Status:   "awaiting_input",
+		RunID:    "wf-multi",
+		Workflow: "multi",
+		Awaiting: orchestrator.AwaitingInputDetail{
+			InputID: "id-active",
+			AgentID: "alpha",
+			Prompt:  "Primary",
+		},
+		PendingCount: 3,
+		Resume:       `raymond --resume wf-multi --input "[your response]"`,
+	}
+
+	data, err := json.Marshal(awaitErr)
+	require.NoError(t, err)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &parsed))
+	assert.Equal(t, float64(3), parsed["pending_count"])
 }

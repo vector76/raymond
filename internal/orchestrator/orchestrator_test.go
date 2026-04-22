@@ -2791,7 +2791,9 @@ func TestQuiesceSingleAgentAwaits(t *testing.T) {
 	opts.OnAwait = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	require.NoError(t, err)
+	// Quiesce point returns AwaitingInputError.
+	var awaitErr *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
 
 	// Agent preserved in state with awaiting status.
 	ws, readErr := wfstate.ReadState(wfID, dir)
@@ -2860,7 +2862,8 @@ func TestQuiesceAgentAwaitHoldsPeerAtBoundary(t *testing.T) {
 	opts.OnAwait = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	require.NoError(t, err)
+	var awaitErr *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
 
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
@@ -2908,7 +2911,8 @@ func TestQuiesceTwoAgentsBothAwait(t *testing.T) {
 	opts.OnAwait = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	require.NoError(t, err)
+	var awaitErr *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
 
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
@@ -2978,7 +2982,8 @@ func TestQuiesceThreeAgents_AwaitTerminateAwait(t *testing.T) {
 	opts.OnAwait = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	require.NoError(t, err)
+	var awaitErr *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
 
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
@@ -3035,7 +3040,8 @@ func TestQuiescePointEmitsWorkflowPausedAndPersistsState(t *testing.T) {
 	opts.OnAwait = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	require.NoError(t, err)
+	var awaitErr *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
 
 	// WorkflowPaused emitted with correct agent count.
 	require.Len(t, pausedEvents, 1)
@@ -3309,4 +3315,85 @@ func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
 	assert.Equal(t, "alpha-response", pendingResults["alpha"])
 	assert.Equal(t, "beta-response", pendingResults["beta"])
 	mu.Unlock()
+}
+
+// --------------------------------------------------------------------------
+// AwaitingInputError structured output
+// --------------------------------------------------------------------------
+
+func TestQuiesceSingleAgentReturnsAwaitingInputError(t *testing.T) {
+	// Single agent hits await with OnAwait="pause" → RunAllAgents returns
+	// *AwaitingInputError with correct fields.
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	mock := newMock(awaitResult("NEXT.md", "Need input"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	orchestrator.SetBusHook(func(_ *bus.Bus) {})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.Error(t, err)
+
+	var awaitErr *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+
+	assert.Equal(t, "awaiting_input", awaitErr.Status)
+	assert.Equal(t, wfID, awaitErr.RunID)
+	assert.NotEmpty(t, awaitErr.Workflow)
+	assert.NotEmpty(t, awaitErr.Awaiting.InputID)
+	assert.Equal(t, "main", awaitErr.Awaiting.AgentID)
+	assert.Equal(t, "Need input", awaitErr.Awaiting.Prompt)
+	assert.Equal(t, 0, awaitErr.PendingCount)
+	assert.Contains(t, awaitErr.Resume, "--resume")
+	assert.Contains(t, awaitErr.Resume, wfID)
+
+	// State file should be written before the error is returned.
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, wfstate.AgentStatusAwaiting, ws.Agents[0].Status)
+}
+
+func TestQuiesceMultipleAgentsAwaitPendingCount(t *testing.T) {
+	// Two agents both hit await → AwaitingInputError has pending_count=1
+	// (the second agent is in the pre-await queue).
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B.md"},
+	})
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			if agent.ID == "alpha" {
+				return awaitResult("ALPHA_NEXT.md", "Input 1"), nil
+			}
+			return awaitResult("BETA_NEXT.md", "Input 2"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	orchestrator.SetBusHook(func(_ *bus.Bus) {})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.Error(t, err)
+
+	var awaitErr *orchestrator.AwaitingInputError
+	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+
+	assert.Equal(t, "awaiting_input", awaitErr.Status)
+	assert.Equal(t, wfID, awaitErr.RunID)
+	// The first agent to await becomes the active await; the second is pending.
+	assert.Equal(t, 1, awaitErr.PendingCount)
+	assert.NotEmpty(t, awaitErr.Awaiting.InputID)
+	assert.NotEmpty(t, awaitErr.Awaiting.AgentID)
+	assert.NotEmpty(t, awaitErr.Awaiting.Prompt)
 }

@@ -43,19 +43,26 @@ clients.`,
 				return fmt.Errorf("--no-http requires --mcp (at least one transport must be enabled)")
 			}
 
+			// When MCP is enabled, stdout is reserved for JSON-RPC.
+			// Direct status messages to stderr instead.
+			logOut := cmd.OutOrStdout()
+			if mcp {
+				logOut = cmd.ErrOrStderr()
+			}
+
 			reg, err := daemon.NewRegistry(roots)
 			if err != nil {
 				return fmt.Errorf("initializing workflow registry: %w", err)
 			}
 
 			workflows := reg.ListWorkflows()
-			fmt.Fprintf(cmd.OutOrStdout(), "Discovered %d workflow(s)\n", len(workflows))
+			fmt.Fprintf(logOut, "Discovered %d workflow(s)\n", len(workflows))
 			for _, wf := range workflows {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s", wf.ID)
+				fmt.Fprintf(logOut, "  %s", wf.ID)
 				if wf.Name != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), " — %s", wf.Name)
+					fmt.Fprintf(logOut, " — %s", wf.Name)
 				}
-				fmt.Fprintln(cmd.OutOrStdout())
+				fmt.Fprintln(logOut)
 			}
 
 			cwd := workdir
@@ -70,7 +77,7 @@ clients.`,
 
 			if !noHTTP {
 				srv := daemon.NewServer(reg, rm, port)
-				fmt.Fprintf(cmd.OutOrStdout(), "HTTP server listening on port %d\n", port)
+				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", port)
 				go func() {
 					if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 						fmt.Fprintf(cmd.ErrOrStderr(), "HTTP server error: %v\n", err)
@@ -83,15 +90,27 @@ clients.`,
 				}()
 			}
 
+			mcpDone := make(chan struct{})
 			if mcp {
-				fmt.Fprintln(cmd.OutOrStdout(), "MCP transport enabled (not yet implemented)")
+				mcpSrv := daemon.NewMCPServer(reg, rm)
+				go func() {
+					defer close(mcpDone)
+					if err := mcpSrv.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "MCP server error: %v\n", err)
+					}
+				}()
+				fmt.Fprintf(logOut, "MCP transport enabled on stdio\n")
 			}
 
-			// Block until interrupted.
+			// Block until interrupted or MCP transport closes.
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			sig := <-sigCh
-			fmt.Fprintf(cmd.OutOrStdout(), "\nReceived %v, shutting down...\n", sig)
+			select {
+			case sig := <-sigCh:
+				fmt.Fprintf(logOut, "\nReceived %v, shutting down...\n", sig)
+			case <-mcpDone:
+				fmt.Fprintf(logOut, "\nMCP transport closed, shutting down...\n")
+			}
 
 			return nil
 		},

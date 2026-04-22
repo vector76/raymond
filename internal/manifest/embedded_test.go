@@ -1,0 +1,183 @@
+package manifest
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- ExtractEmbeddedManifest ---
+
+func TestExtractEmbeddedManifest_FullManifestAlongsideStates(t *testing.T) {
+	yaml := `
+id: my-workflow
+name: My Workflow
+description: A test workflow
+input_schema:
+  query: string
+default_budget: 2.5
+working_directory: /tmp/work
+environment:
+  FOO: bar
+requires_human_input: "true"
+
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, "my-workflow", m.ID)
+	assert.Equal(t, "My Workflow", m.Name)
+	assert.Equal(t, "A test workflow", m.Description)
+	assert.Equal(t, map[string]string{"query": "string"}, m.InputSchema)
+	assert.Equal(t, 2.5, m.DefaultBudget)
+	assert.Equal(t, "/tmp/work", m.WorkingDirectory)
+	assert.Equal(t, map[string]string{"FOO": "bar"}, m.Environment)
+	assert.Equal(t, "true", m.RequiresHumanInput)
+}
+
+func TestExtractEmbeddedManifest_StatesWithoutID_ReturnsNilNil(t *testing.T) {
+	yaml := `
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.NoError(t, err)
+	assert.Nil(t, m)
+}
+
+func TestExtractEmbeddedManifest_NoStatesKey_ReturnsNilNil(t *testing.T) {
+	yaml := `
+id: standalone
+name: Standalone Manifest
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.NoError(t, err)
+	assert.Nil(t, m)
+}
+
+func TestExtractEmbeddedManifest_IDPresentButEmpty_ReturnsError(t *testing.T) {
+	yaml := `
+id: ""
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.Error(t, err)
+	assert.Nil(t, m)
+	assert.Contains(t, err.Error(), "id")
+}
+
+func TestExtractEmbeddedManifest_IDPresentButNull_ReturnsError(t *testing.T) {
+	// `id:` with no value parses to nil, which should be distinguishable from
+	// the absent-key case and treated as an empty-id validation error.
+	yaml := `
+id:
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.Error(t, err)
+	assert.Nil(t, m)
+	assert.Contains(t, err.Error(), "id")
+}
+
+func TestExtractEmbeddedManifest_InvalidRequiresHumanInput_ReturnsError(t *testing.T) {
+	yaml := `
+id: bad-human-input
+requires_human_input: maybe
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.Error(t, err)
+	assert.Nil(t, m)
+	assert.Contains(t, err.Error(), "requires_human_input")
+}
+
+func TestExtractEmbeddedManifest_DefaultsRequiresHumanInputToAuto(t *testing.T) {
+	yaml := `
+id: defaulted
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, "auto", m.RequiresHumanInput)
+}
+
+func TestExtractEmbeddedManifest_ValidRequiresHumanInputValues(t *testing.T) {
+	for _, val := range []string{"auto", "true", "false"} {
+		t.Run(val, func(t *testing.T) {
+			yaml := "id: test\nrequires_human_input: " + val + "\nstates:\n  START:\n    prompt: Hello\n"
+			m, err := ExtractEmbeddedManifest([]byte(yaml))
+			require.NoError(t, err)
+			require.NotNil(t, m)
+			assert.Equal(t, val, m.RequiresHumanInput)
+		})
+	}
+}
+
+func TestExtractEmbeddedManifest_MalformedYAML_ReturnsError(t *testing.T) {
+	yaml := `
+id: broken
+states:
+  START:
+    prompt: "unterminated
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.Error(t, err)
+	assert.Nil(t, m)
+}
+
+func TestExtractEmbeddedManifest_UnknownTopLevelKeysIgnored(t *testing.T) {
+	yaml := `
+id: extras
+name: Has Extras
+some_future_field: ignored
+author: anonymous
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, "extras", m.ID)
+	assert.Equal(t, "Has Extras", m.Name)
+}
+
+func TestExtractEmbeddedManifest_MinimalValid(t *testing.T) {
+	yaml := `
+id: minimal
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, "minimal", m.ID)
+	assert.Equal(t, "", m.Name)
+	assert.Equal(t, "", m.Description)
+	assert.Nil(t, m.InputSchema)
+	assert.Equal(t, 0.0, m.DefaultBudget)
+	assert.Equal(t, "", m.WorkingDirectory)
+	assert.Nil(t, m.Environment)
+	assert.Equal(t, "auto", m.RequiresHumanInput)
+}
+
+func TestExtractEmbeddedManifest_EmptyData_ReturnsNilNil(t *testing.T) {
+	m, err := ExtractEmbeddedManifest(nil)
+	require.NoError(t, err)
+	assert.Nil(t, m)
+}

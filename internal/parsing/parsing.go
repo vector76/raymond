@@ -12,7 +12,7 @@ import (
 // Go's RE2 does not support backreferences, so we cannot enforce matching
 // close tags in a single regex. Instead we find the opening tag here, then
 // locate the corresponding closing tag with a plain string search.
-var openTagRe = regexp.MustCompile(`<(call-workflow|function-workflow|fork-workflow|reset-workflow|goto|reset|function|call|fork|result)([^>]*)>`)
+var openTagRe = regexp.MustCompile(`<(call-workflow|function-workflow|fork-workflow|reset-workflow|goto|reset|function|call|fork|result|await)([^>]*)>`)
 
 // attrRe matches key="value" or key='value' attribute pairs.
 // Two alternatives enforce matching quote characters so key="val' is rejected.
@@ -23,7 +23,7 @@ type Transition struct {
 	Tag        string
 	Target     string            // filename; empty for result tags
 	Attributes map[string]string // e.g. {"return": "NEXT.md"}
-	Payload    string            // content between tags; non-empty for result tags only
+	Payload    string            // content between tags; used by result and await tags
 }
 
 // ParseTransitions extracts all recognized transition tags from output.
@@ -50,6 +50,21 @@ func ParseTransitions(output string) ([]Transition, error) {
 
 		var target, payload string
 		if tagName == "result" {
+			payload = content
+		} else if tagName == "await" {
+			next, ok := attrs["next"]
+			if !ok || next == "" {
+				return nil, fmt.Errorf(
+					"tag <await> requires a non-empty \"next\" attribute",
+				)
+			}
+			if strings.ContainsAny(next, "/\\") {
+				return nil, fmt.Errorf(
+					"path %q contains path separator. Tag targets must be filenames only, not paths.",
+					next,
+				)
+			}
+			target = next
 			payload = content
 		} else {
 			target = strings.TrimSpace(content)

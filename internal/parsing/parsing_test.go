@@ -373,3 +373,95 @@ func TestForkStillRejectsPathSeparator(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "contains path separator")
 }
+
+// ----------------------------------------------------------------------------
+// Await tag
+// ----------------------------------------------------------------------------
+
+func TestParseAwaitBasic(t *testing.T) {
+	out := `<await next="TARGET.md">prompt text</await>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "await", tr.Tag)
+	assert.Equal(t, "TARGET.md", tr.Target)
+	assert.Equal(t, "prompt text", tr.Payload)
+	assert.Equal(t, "TARGET.md", tr.Attributes["next"])
+}
+
+func TestParseAwaitAllAttributes(t *testing.T) {
+	out := `<await next="A.md" timeout="24h" timeout_next="B.md">Please review the document.</await>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "await", tr.Tag)
+	assert.Equal(t, "A.md", tr.Target)
+	assert.Equal(t, "Please review the document.", tr.Payload)
+	assert.Equal(t, "A.md", tr.Attributes["next"])
+	assert.Equal(t, "24h", tr.Attributes["timeout"])
+	assert.Equal(t, "B.md", tr.Attributes["timeout_next"])
+}
+
+func TestParseAwaitMissingNextAttribute(t *testing.T) {
+	out := `<await>prompt text</await>`
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires a non-empty \"next\" attribute")
+}
+
+func TestParseAwaitEmptyNextAttribute(t *testing.T) {
+	out := `<await next="">prompt text</await>`
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires a non-empty \"next\" attribute")
+}
+
+func TestParseAwaitMultilinePrompt(t *testing.T) {
+	out := "<await next=\"REVIEW.md\">Please review:\n\n- **Item 1**: Check formatting\n- **Item 2**: Verify links\n\nThanks!</await>"
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "await", tr.Tag)
+	assert.Equal(t, "REVIEW.md", tr.Target)
+	assert.Equal(t, "Please review:\n\n- **Item 1**: Check formatting\n- **Item 2**: Verify links\n\nThanks!", tr.Payload)
+}
+
+func TestParseAwaitAlongsideOtherTransition(t *testing.T) {
+	out := "<goto>NEXT.md</goto>\n<await next=\"WAIT.md\">Hold on</await>"
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 2)
+	assert.Equal(t, "goto", transitions[0].Tag)
+	assert.Equal(t, "NEXT.md", transitions[0].Target)
+	assert.Equal(t, "await", transitions[1].Tag)
+	assert.Equal(t, "WAIT.md", transitions[1].Target)
+	assert.Equal(t, "Hold on", transitions[1].Payload)
+}
+
+func TestParseAwaitRejectsPathSeparatorInNext(t *testing.T) {
+	out := `<await next="subdir/file.md">prompt</await>`
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains path separator")
+}
+
+func TestParseAwaitRejectsBackslashInNext(t *testing.T) {
+	out := `<await next="sub\file.md">prompt</await>`
+	_, err := parsing.ParseTransitions(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains path separator")
+}
+
+func TestParseAwaitEmptyContent(t *testing.T) {
+	out := `<await next="TARGET.md"></await>`
+	transitions, err := parsing.ParseTransitions(out)
+	require.NoError(t, err)
+	require.Len(t, transitions, 1)
+	tr := transitions[0]
+	assert.Equal(t, "await", tr.Tag)
+	assert.Equal(t, "TARGET.md", tr.Target)
+	assert.Equal(t, "", tr.Payload)
+}

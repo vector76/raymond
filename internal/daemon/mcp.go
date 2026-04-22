@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -58,11 +60,23 @@ type mcpToolResult struct {
 // --- MCPServer ---
 
 // MCPServer handles MCP protocol communication over JSON-RPC 2.0 on stdio.
-// It exposes five launcher-phase tools for the Raymond daemon.
+// It exposes launcher-phase tools and input delivery for the Raymond daemon.
 type MCPServer struct {
-	registry       *Registry
-	runManager     *RunManager
-	hasElicitation bool
+	registry        *Registry
+	runManager      *RunManager
+	pendingRegistry *PendingRegistry
+	hasElicitation  bool
+
+	// Encoder for writing to the output stream (set by Serve).
+	enc   *json.Encoder
+	encMu sync.Mutex
+
+	// Server-to-client request tracking (for elicitation).
+	pendingResponses sync.Map   // request ID string → chan json.RawMessage
+	nextReqID        atomic.Int64
+
+	// Active raymond_await calls that support elicitation (runID → struct{}).
+	activeAwaits sync.Map
 }
 
 // NewMCPServer creates an MCPServer wired to the given registry and run manager.
@@ -73,18 +87,47 @@ func NewMCPServer(reg *Registry, rm *RunManager) *MCPServer {
 	}
 }
 
+// SetPendingRegistry configures the pending input registry for input-related
+// tools.
+func (s *MCPServer) SetPendingRegistry(pr *PendingRegistry) {
+	s.pendingRegistry = pr
+}
+
 // HasElicitation reports whether the MCP client declared elicitation support
 // during initialization.
 func (s *MCPServer) HasElicitation() bool {
 	return s.hasElicitation
 }
 
+// HandleAwaitNotification is called by the RunManager's await notifier when
+// an agent enters <await>. If there is an active raymond_await call with
+// elicitation support for the run, it issues an elicitation request to the
+// MCP client and delivers the response.
+func (s *MCPServer) HandleAwaitNotification(runID, inputID, prompt string) {
+	if _, ok := s.activeAwaits.Load(runID); !ok {
+		return
+	}
+	go func() {
+		response, err := s.sendElicitation(prompt)
+		if err != nil {
+			return // elicitation failed; input stays pending for manual delivery
+		}
+		s.runManager.DeliverInput(runID, inputID, response)
+	}()
+}
+
 // Serve reads JSON-RPC 2.0 requests from in (newline-delimited) and writes
 // responses to out. It blocks until ctx is cancelled or in reaches EOF.
+//
+// The loop also handles responses to server-originated requests (e.g.
+// elicitation/create) by routing them to the appropriate pending channel.
 func (s *MCPServer) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(out)
+
+	s.encMu.Lock()
+	s.enc = json.NewEncoder(out)
+	s.encMu.Unlock()
 
 	for scanner.Scan() {
 		select {
@@ -98,9 +141,30 @@ func (s *MCPServer) Serve(ctx context.Context, in io.Reader, out io.Writer) erro
 			continue
 		}
 
+		// Peek to distinguish client requests from responses to our requests.
+		var peek struct {
+			ID     *json.RawMessage `json:"id,omitempty"`
+			Method string           `json:"method,omitempty"`
+		}
+		if err := json.Unmarshal(line, &peek); err != nil {
+			s.sendJSON(jsonrpcResponse{
+				JSONRPC: "2.0",
+				ID:      nil,
+				Error:   &jsonrpcError{Code: codeParseError, Message: "parse error"},
+			})
+			continue
+		}
+
+		// A message with an id but no method is a response to a
+		// server-originated request (e.g. elicitation/create).
+		if peek.Method == "" && peek.ID != nil {
+			s.routeResponse(peek.ID, line)
+			continue
+		}
+
 		var req jsonrpcRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			enc.Encode(jsonrpcResponse{
+			s.sendJSON(jsonrpcResponse{
 				JSONRPC: "2.0",
 				ID:      nil,
 				Error:   &jsonrpcError{Code: codeParseError, Message: "parse error"},
@@ -114,22 +178,26 @@ func (s *MCPServer) Serve(ctx context.Context, in io.Reader, out io.Writer) erro
 		}
 
 		resp := s.dispatch(ctx, &req)
-		enc.Encode(resp)
+		if resp != nil {
+			s.sendJSON(*resp)
+		}
 	}
 
 	return scanner.Err()
 }
 
-func (s *MCPServer) dispatch(ctx context.Context, req *jsonrpcRequest) jsonrpcResponse {
+func (s *MCPServer) dispatch(ctx context.Context, req *jsonrpcRequest) *jsonrpcResponse {
 	switch req.Method {
 	case "initialize":
-		return s.handleInitialize(req)
+		resp := s.handleInitialize(req)
+		return &resp
 	case "tools/list":
-		return s.handleToolsList(req)
+		resp := s.handleToolsList(req)
+		return &resp
 	case "tools/call":
 		return s.handleToolsCall(ctx, req)
 	default:
-		return jsonrpcResponse{
+		return &jsonrpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Error:   &jsonrpcError{Code: codeMethodNotFound, Message: fmt.Sprintf("method not found: %s", req.Method)},
@@ -283,6 +351,32 @@ func (s *MCPServer) toolDefinitions() []mcpToolDef {
 				"required": []string{"run_id"},
 			},
 		},
+		{
+			Name:        "raymond_list_pending_inputs",
+			Description: "List all pending human-input requests across all runs.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			Name:        "raymond_provide_input",
+			Description: "Provide a response to a pending human-input request.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"input_id": map[string]any{
+						"type":        "string",
+						"description": "ID of the pending input to respond to.",
+					},
+					"response": map[string]any{
+						"type":        "string",
+						"description": "The response text to deliver.",
+					},
+				},
+				"required": []string{"input_id", "response"},
+			},
+		},
 	}
 }
 
@@ -293,14 +387,29 @@ type toolCallParams struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func (s *MCPServer) handleToolsCall(ctx context.Context, req *jsonrpcRequest) jsonrpcResponse {
+func (s *MCPServer) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jsonrpcResponse {
 	var params toolCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return jsonrpcResponse{
+		return &jsonrpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Error:   &jsonrpcError{Code: codeInvalidParams, Message: "invalid tools/call params"},
 		}
+	}
+
+	// raymond_await with elicitation support is dispatched asynchronously so
+	// the Serve loop can continue reading elicitation responses.
+	if params.Name == "raymond_await" && s.hasElicitation {
+		reqID := req.ID
+		go func() {
+			result := s.toolAwaitWithElicitation(ctx, params.Arguments)
+			s.sendJSON(jsonrpcResponse{
+				JSONRPC: "2.0",
+				ID:      reqID,
+				Result:  result,
+			})
+		}()
+		return nil // response sent asynchronously
 	}
 
 	var result mcpToolResult
@@ -315,6 +424,10 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *jsonrpcRequest) js
 		result = s.toolAwait(params.Arguments)
 	case "raymond_cancel":
 		result = s.toolCancel(params.Arguments)
+	case "raymond_list_pending_inputs":
+		result = s.toolListPendingInputs()
+	case "raymond_provide_input":
+		result = s.toolProvideInput(params.Arguments)
 	default:
 		result = mcpToolResult{
 			Content: []mcpContent{{Type: "text", Text: fmt.Sprintf("unknown tool: %s", params.Name)}},
@@ -322,7 +435,7 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *jsonrpcRequest) js
 		}
 	}
 
-	return jsonrpcResponse{
+	return &jsonrpcResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result:  result,
@@ -518,6 +631,225 @@ func (s *MCPServer) toolCancel(args json.RawMessage) mcpToolResult {
 	return mcpToolResult{
 		Content: []mcpContent{{Type: "text", Text: string(data)}},
 	}
+}
+
+func (s *MCPServer) toolListPendingInputs() mcpToolResult {
+	if s.pendingRegistry == nil {
+		return toolError("pending input registry not configured")
+	}
+
+	inputs := s.pendingRegistry.ListAll()
+
+	type item struct {
+		RunID      string  `json:"run_id"`
+		InputID    string  `json:"input_id"`
+		WorkflowID string  `json:"workflow_id"`
+		Prompt     string  `json:"prompt"`
+		CreatedAt  string  `json:"created_at"`
+		TimeoutAt  *string `json:"timeout_at,omitempty"`
+	}
+
+	items := make([]item, len(inputs))
+	for i, pi := range inputs {
+		items[i] = item{
+			RunID:      pi.RunID,
+			InputID:    pi.InputID,
+			WorkflowID: pi.WorkflowID,
+			Prompt:     pi.Prompt,
+			CreatedAt:  pi.CreatedAt.Format(time.RFC3339),
+		}
+		if pi.TimeoutAt != nil {
+			t := pi.TimeoutAt.Format(time.RFC3339)
+			items[i].TimeoutAt = &t
+		}
+	}
+
+	data, _ := json.Marshal(items)
+	return mcpToolResult{
+		Content: []mcpContent{{Type: "text", Text: string(data)}},
+	}
+}
+
+func (s *MCPServer) toolProvideInput(args json.RawMessage) mcpToolResult {
+	var params struct {
+		InputID  string `json:"input_id"`
+		Response string `json:"response"`
+	}
+	if err := unmarshalArgs(args, &params); err != nil {
+		return toolError("invalid arguments: " + err.Error())
+	}
+	if params.InputID == "" {
+		return toolError("input_id is required")
+	}
+	if params.Response == "" {
+		return toolError("response is required")
+	}
+
+	// Look up the pending input to get the run_id.
+	if s.pendingRegistry == nil {
+		return toolError("pending input registry not configured")
+	}
+	pi, ok := s.pendingRegistry.Get(params.InputID)
+	if !ok {
+		return toolError(fmt.Sprintf("pending input %q not found", params.InputID))
+	}
+	runID := pi.RunID
+
+	if err := s.runManager.DeliverInput("", params.InputID, params.Response); err != nil {
+		return toolError(err.Error())
+	}
+
+	result := map[string]any{
+		"run_id":   runID,
+		"input_id": params.InputID,
+		"status":   "resumed",
+	}
+	data, _ := json.Marshal(result)
+	return mcpToolResult{
+		Content: []mcpContent{{Type: "text", Text: string(data)}},
+	}
+}
+
+// toolAwaitWithElicitation is the elicitation-capable version of toolAwait.
+// It registers as an active await so that HandleAwaitNotification can issue
+// elicitation requests when the workflow hits <await>.
+func (s *MCPServer) toolAwaitWithElicitation(ctx context.Context, args json.RawMessage) mcpToolResult {
+	var params struct {
+		RunID          string  `json:"run_id"`
+		TimeoutSeconds float64 `json:"timeout_seconds"`
+	}
+	if err := unmarshalArgs(args, &params); err != nil {
+		return toolError("invalid arguments: " + err.Error())
+	}
+	if params.RunID == "" {
+		return toolError("run_id is required")
+	}
+
+	var timeout time.Duration
+	if params.TimeoutSeconds > 0 {
+		timeout = time.Duration(params.TimeoutSeconds * float64(time.Second))
+	}
+
+	// Register this run as having an active elicitation-capable await.
+	s.activeAwaits.Store(params.RunID, struct{}{})
+	defer s.activeAwaits.Delete(params.RunID)
+
+	// Elicit any inputs that were already pending before we registered.
+	if s.pendingRegistry != nil {
+		for _, pi := range s.pendingRegistry.ListByRun(params.RunID) {
+			go func(inputID, prompt string) {
+				response, err := s.sendElicitation(prompt)
+				if err != nil {
+					return
+				}
+				s.runManager.DeliverInput(params.RunID, inputID, response)
+			}(pi.InputID, pi.Prompt)
+		}
+	}
+
+	info, err := s.runManager.WaitForCompletion(params.RunID, timeout)
+	if err != nil {
+		return toolError(err.Error())
+	}
+
+	result := map[string]any{
+		"run_id":   info.RunID,
+		"status":   info.Status,
+		"result":   info.Result,
+		"cost_usd": info.CostUSD,
+	}
+	data, _ := json.Marshal(result)
+	return mcpToolResult{
+		Content: []mcpContent{{Type: "text", Text: string(data)}},
+	}
+}
+
+// --- Elicitation helpers ---
+
+// elicitationTimeout is the maximum time to wait for a client to respond to
+// an elicitation/create request.
+const elicitationTimeout = 5 * time.Minute
+
+// sendElicitation sends an elicitation/create request to the MCP client and
+// blocks until the client responds or the timeout expires.
+func (s *MCPServer) sendElicitation(prompt string) (string, error) {
+	id := s.nextReqID.Add(1)
+	idBytes, _ := json.Marshal(id)
+	idKey := string(idBytes)
+
+	ch := make(chan json.RawMessage, 1)
+	s.pendingResponses.Store(idKey, ch)
+	defer s.pendingResponses.Delete(idKey)
+
+	req := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "elicitation/create",
+		"params": map[string]any{
+			"message": prompt,
+			"requestedSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"response": map[string]any{
+						"type":        "string",
+						"description": "Your response",
+					},
+				},
+				"required": []string{"response"},
+			},
+		},
+	}
+
+	if err := s.sendJSON(req); err != nil {
+		return "", fmt.Errorf("send elicitation request: %w", err)
+	}
+
+	var respData json.RawMessage
+	select {
+	case respData = <-ch:
+	case <-time.After(elicitationTimeout):
+		return "", fmt.Errorf("elicitation timed out after %v", elicitationTimeout)
+	}
+
+	var result struct {
+		Action  string `json:"action"`
+		Content struct {
+			Response string `json:"response"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(respData, &result); err != nil {
+		return "", fmt.Errorf("unmarshal elicitation response: %w", err)
+	}
+	if result.Action != "accept" {
+		return "", fmt.Errorf("elicitation declined: %s", result.Action)
+	}
+
+	return result.Content.Response, nil
+}
+
+// routeResponse delivers a client response to the waiting server-originated
+// request (identified by the JSON-RPC id).
+func (s *MCPServer) routeResponse(id *json.RawMessage, raw []byte) {
+	idKey := string(*id)
+	if val, ok := s.pendingResponses.Load(idKey); ok {
+		ch := val.(chan json.RawMessage)
+		var resp struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if err := json.Unmarshal(raw, &resp); err == nil {
+			ch <- resp.Result
+		}
+	}
+}
+
+// sendJSON thread-safely encodes v to the output stream.
+func (s *MCPServer) sendJSON(v any) error {
+	s.encMu.Lock()
+	defer s.encMu.Unlock()
+	if s.enc == nil {
+		return fmt.Errorf("encoder not initialized")
+	}
+	return s.enc.Encode(v)
 }
 
 // --- Helpers ---

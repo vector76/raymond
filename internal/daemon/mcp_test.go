@@ -94,6 +94,26 @@ func (c *mcpTestClient) initialize(withElicitation bool) map[string]any {
 	})
 }
 
+// writeRequest writes a JSON-RPC request without reading the response.
+func (c *mcpTestClient) writeRequest(req map[string]any) {
+	c.t.Helper()
+	data, err := json.Marshal(req)
+	require.NoError(c.t, err)
+	data = append(data, '\n')
+	_, err = c.inWriter.Write(data)
+	require.NoError(c.t, err)
+}
+
+// readMessage reads the next JSON message from the server.
+func (c *mcpTestClient) readMessage() map[string]any {
+	c.t.Helper()
+	ok := c.scanner.Scan()
+	require.True(c.t, ok, "expected message from MCP server, err: %v", c.scanner.Err())
+	var msg map[string]any
+	require.NoError(c.t, json.Unmarshal(c.scanner.Bytes(), &msg))
+	return msg
+}
+
 // callTool sends a tools/call request.
 func (c *mcpTestClient) callTool(id int, name string, args map[string]any) map[string]any {
 	c.t.Helper()
@@ -190,7 +210,15 @@ func newMCPTestSetupOpts(t *testing.T, requiresHumanInput bool) (*mcpTestClient,
 	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
+	pendingDir := t.TempDir()
+	pr, err := NewPendingRegistry(pendingDir)
+	require.NoError(t, err)
+	rm.SetPendingRegistry(pr)
+
 	srv := NewMCPServer(reg, rm)
+	srv.SetPendingRegistry(pr)
+	rm.SetAwaitNotifier(srv.HandleAwaitNotification)
+
 	client := newMCPTestClient(t, srv)
 	return client, fake
 }
@@ -209,7 +237,7 @@ func TestMCPToolsList(t *testing.T) {
 
 	result := resp["result"].(map[string]any)
 	tools := result["tools"].([]any)
-	require.Len(t, tools, 5)
+	require.Len(t, tools, 7)
 
 	names := make([]string, len(tools))
 	for i, tool := range tools {
@@ -224,6 +252,8 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Contains(t, names, "raymond_status")
 	assert.Contains(t, names, "raymond_await")
 	assert.Contains(t, names, "raymond_cancel")
+	assert.Contains(t, names, "raymond_list_pending_inputs")
+	assert.Contains(t, names, "raymond_provide_input")
 }
 
 func TestMCPListWorkflows(t *testing.T) {
@@ -374,4 +404,238 @@ func TestMCPRequiresHumanInput_Allowed(t *testing.T) {
 	result := toolResultJSON(t, resp)
 	assert.NotEmpty(t, result["run_id"])
 	assert.Equal(t, "running", result["status"])
+}
+
+func TestMCPListPendingInputs(t *testing.T) {
+	client, fake := newMCPTestSetup(t)
+	client.initialize(false)
+
+	awaitReady := make(chan struct{})
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+		if opts.AwaitCallback != nil {
+			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md")
+		}
+		close(awaitReady)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	// Launch a run.
+	runResp := client.callTool(2, "raymond_run", map[string]any{
+		"workflow_id": "test-workflow",
+	})
+	assert.False(t, toolIsError(t, runResp))
+	runResult := toolResultJSON(t, runResp)
+	runID := runResult["run_id"].(string)
+
+	// Wait for await callback.
+	select {
+	case <-awaitReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for await callback")
+	}
+
+	// List pending inputs.
+	resp := client.callTool(3, "raymond_list_pending_inputs", nil)
+	assert.False(t, toolIsError(t, resp))
+
+	inputs := toolResultArray(t, resp)
+	require.Len(t, inputs, 1)
+	assert.Equal(t, runID, inputs[0]["run_id"])
+	assert.Equal(t, "test-input-1", inputs[0]["input_id"])
+	assert.Equal(t, "What next?", inputs[0]["prompt"])
+	assert.Equal(t, "test-workflow", inputs[0]["workflow_id"])
+}
+
+func TestMCPProvideInput(t *testing.T) {
+	client, fake := newMCPTestSetup(t)
+	client.initialize(false)
+
+	inputDelivered := make(chan string, 1)
+	awaitReady := make(chan struct{})
+
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+		if opts.AwaitCallback != nil {
+			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md")
+		}
+		close(awaitReady)
+
+		if opts.AwaitInputCh != nil {
+			select {
+			case input := <-opts.AwaitInputCh:
+				inputDelivered <- input.Response
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		b.Emit(events.WorkflowCompleted{
+			WorkflowID:   workflowID,
+			TotalCostUSD: 0.5,
+			Timestamp:    time.Now(),
+		})
+		return nil
+	}
+
+	// Launch a run.
+	runResp := client.callTool(2, "raymond_run", map[string]any{
+		"workflow_id": "test-workflow",
+	})
+	runResult := toolResultJSON(t, runResp)
+	runID := runResult["run_id"].(string)
+
+	// Wait for await.
+	select {
+	case <-awaitReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for await callback")
+	}
+
+	// Provide input.
+	resp := client.callTool(3, "raymond_provide_input", map[string]any{
+		"input_id": "test-input-1",
+		"response": "Do the thing",
+	})
+	assert.False(t, toolIsError(t, resp))
+
+	result := toolResultJSON(t, resp)
+	assert.Equal(t, runID, result["run_id"])
+	assert.Equal(t, "test-input-1", result["input_id"])
+	assert.Equal(t, "resumed", result["status"])
+
+	// Verify delivery.
+	select {
+	case delivered := <-inputDelivered:
+		assert.Equal(t, "Do the thing", delivered)
+	case <-time.After(5 * time.Second):
+		t.Fatal("input not delivered")
+	}
+}
+
+func TestMCPElicitation(t *testing.T) {
+	client, fake := newMCPTestSetup(t)
+	client.initialize(true) // enable elicitation
+
+	// startAwait signals the orchestrator to hit <await>. This lets us
+	// send raymond_await first so the active-await is registered before
+	// the callback fires.
+	startAwait := make(chan struct{})
+	inputDelivered := make(chan string, 1)
+
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+
+		// Wait for signal before hitting <await>.
+		select {
+		case <-startAwait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		if opts.AwaitCallback != nil {
+			opts.AwaitCallback("main", "elicit-input-1", "What should I do?", "NEXT.md")
+		}
+
+		// Wait for input delivery.
+		if opts.AwaitInputCh != nil {
+			select {
+			case input := <-opts.AwaitInputCh:
+				inputDelivered <- input.Response
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		b.Emit(events.AgentTerminated{
+			AgentID:       "main",
+			ResultPayload: "done with input",
+			Timestamp:     time.Now(),
+		})
+		b.Emit(events.WorkflowCompleted{
+			WorkflowID:   workflowID,
+			TotalCostUSD: 1.0,
+			Timestamp:    time.Now(),
+		})
+		return nil
+	}
+
+	// Launch a run.
+	runResp := client.callTool(2, "raymond_run", map[string]any{
+		"workflow_id": "test-workflow",
+	})
+	runResult := toolResultJSON(t, runResp)
+	runID := runResult["run_id"].(string)
+
+	// Send raymond_await asynchronously (dispatched in a goroutine because
+	// the client has elicitation). Give the goroutine a moment to register
+	// the active await before signalling the orchestrator.
+	client.writeRequest(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      10,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "raymond_await",
+			"arguments": map[string]any{
+				"run_id": runID,
+			},
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	// Signal the orchestrator to hit <await>.
+	close(startAwait)
+
+	// Read the elicitation/create request from the server.
+	elicitReq := client.readMessage()
+	assert.Equal(t, "elicitation/create", elicitReq["method"])
+	assert.NotNil(t, elicitReq["id"])
+
+	params := elicitReq["params"].(map[string]any)
+	assert.Equal(t, "What should I do?", params["message"])
+
+	// Send elicitation response.
+	elicitReqID := elicitReq["id"]
+	client.writeRequest(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      elicitReqID,
+		"result": map[string]any{
+			"action": "accept",
+			"content": map[string]any{
+				"response": "Please proceed",
+			},
+		},
+	})
+
+	// Verify the input was delivered to the orchestrator.
+	select {
+	case delivered := <-inputDelivered:
+		assert.Equal(t, "Please proceed", delivered)
+	case <-time.After(5 * time.Second):
+		t.Fatal("elicitation input not delivered")
+	}
+
+	// Read the raymond_await response (run should complete).
+	awaitResp := client.readMessage()
+	assert.NotNil(t, awaitResp["result"])
+	result := awaitResp["result"].(map[string]any)
+	content := result["content"].([]any)
+	first := content[0].(map[string]any)
+	text := first["text"].(string)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &parsed))
+	assert.Equal(t, runID, parsed["run_id"])
+	assert.Equal(t, "completed", parsed["status"])
+	assert.Equal(t, "done with input", parsed["result"])
 }

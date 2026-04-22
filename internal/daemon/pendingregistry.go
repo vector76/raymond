@@ -18,6 +18,7 @@ type PendingInput struct {
 	RunID       string     `json:"run_id"`
 	AgentID     string     `json:"agent_id"`
 	InputID     string     `json:"input_id"`
+	WorkflowID  string     `json:"workflow_id,omitempty"`
 	Prompt      string     `json:"prompt,omitempty"`
 	NextState   string     `json:"next_state,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -106,6 +107,27 @@ func (pr *PendingRegistry) Get(inputID string) (*PendingInput, bool) {
 	if !ok {
 		return nil, false
 	}
+	return &pi, true
+}
+
+// GetAndRemove atomically retrieves and removes a pending input. It returns
+// the input and true if it existed, or nil and false otherwise. This prevents
+// duplicate delivery when multiple callers race to claim the same input.
+func (pr *PendingRegistry) GetAndRemove(inputID string) (*PendingInput, bool) {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+
+	pi, exists := pr.inputs[inputID]
+	if !exists {
+		return nil, false
+	}
+
+	entry := logEntry{Op: "remove", ID: inputID}
+	if err := pr.appendLog(entry); err != nil {
+		return nil, false
+	}
+
+	delete(pr.inputs, inputID)
 	return &pi, true
 }
 

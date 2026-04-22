@@ -13,9 +13,10 @@ import (
 // Server is the HTTP REST API server for the Raymond daemon. It exposes
 // workflow discovery, run management, and SSE event streaming endpoints.
 type Server struct {
-	registry   *Registry
-	runManager *RunManager
-	httpServer *http.Server
+	registry        *Registry
+	runManager      *RunManager
+	pendingRegistry *PendingRegistry
+	httpServer      *http.Server
 }
 
 // NewServer creates a Server wired to the given registry and run manager.
@@ -34,6 +35,8 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	mux.HandleFunc("GET /runs/{id}/output", s.handleRunOutput)
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
+	mux.HandleFunc("GET /runs/{id}/pending-inputs", s.handleListPendingInputs)
+	mux.HandleFunc("POST /runs/{id}/inputs/{input_id}", s.handleDeliverInput)
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -41,6 +44,12 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	}
 
 	return s
+}
+
+// SetPendingRegistry configures the pending input registry for input delivery
+// endpoints.
+func (s *Server) SetPendingRegistry(pr *PendingRegistry) {
+	s.pendingRegistry = pr
 }
 
 // Handler returns the HTTP handler (for testing with httptest).
@@ -106,6 +115,24 @@ type createRunResponse struct {
 type cancelRunResponse struct {
 	RunID  string `json:"run_id"`
 	Status string `json:"status"`
+}
+
+type pendingInputResponse struct {
+	RunID     string  `json:"run_id"`
+	InputID   string  `json:"input_id"`
+	Prompt    string  `json:"prompt"`
+	CreatedAt string  `json:"created_at"`
+	TimeoutAt *string `json:"timeout_at,omitempty"`
+}
+
+type deliverInputRequest struct {
+	Response string `json:"response"`
+}
+
+type deliverInputResponse struct {
+	RunID   string `json:"run_id"`
+	InputID string `json:"input_id"`
+	Status  string `json:"status"`
 }
 
 type errorResponse struct {
@@ -263,6 +290,66 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, cancelRunResponse{RunID: id, Status: info.Status})
+}
+
+func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request) {
+	if s.pendingRegistry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "pending input registry not configured"})
+		return
+	}
+
+	runID := r.PathValue("id")
+	if _, ok := s.runManager.GetRun(runID); !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q not found", runID)})
+		return
+	}
+
+	inputs := s.pendingRegistry.ListByRun(runID)
+	resp := make([]pendingInputResponse, len(inputs))
+	for i, pi := range inputs {
+		resp[i] = pendingInputResponse{
+			RunID:     pi.RunID,
+			InputID:   pi.InputID,
+			Prompt:    pi.Prompt,
+			CreatedAt: pi.CreatedAt.Format(time.RFC3339),
+		}
+		if pi.TimeoutAt != nil {
+			t := pi.TimeoutAt.Format(time.RFC3339)
+			resp[i].TimeoutAt = &t
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
+	if s.pendingRegistry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "pending input registry not configured"})
+		return
+	}
+
+	runID := r.PathValue("id")
+	inputID := r.PathValue("input_id")
+
+	var req deliverInputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON body: " + err.Error()})
+		return
+	}
+
+	if err := s.runManager.DeliverInput(runID, inputID, req.Response); err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") {
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, deliverInputResponse{
+		RunID:   runID,
+		InputID: inputID,
+		Status:  "resumed",
+	})
 }
 
 // --- Helpers ---

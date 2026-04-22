@@ -44,12 +44,13 @@ type RunInfo struct {
 
 // runEntry is the internal bookkeeping for a tracked run.
 type runEntry struct {
-	mu       sync.Mutex
-	info     RunInfo
-	cancel   context.CancelFunc // nil for recovered (non-running) entries
-	doneCh   chan struct{}      // closed when the run reaches a terminal state
-	eventBus *bus.Bus           // set by ObserverSetup; nil for recovered runs
-	busReady chan struct{}      // closed when eventBus is set
+	mu           sync.Mutex
+	info         RunInfo
+	cancel       context.CancelFunc                // nil for recovered (non-running) entries
+	doneCh       chan struct{}                      // closed when the run reaches a terminal state
+	eventBus     *bus.Bus                           // set by ObserverSetup; nil for recovered runs
+	busReady     chan struct{}                      // closed when eventBus is set
+	awaitInputCh chan orchestrator.AwaitInput // delivers responses to pending awaits
 }
 
 // Orchestrator is the interface for launching workflow runs. It exists so
@@ -67,11 +68,13 @@ func (defaultOrchestrator) RunAllAgents(ctx context.Context, workflowID string, 
 
 // RunManager tracks active and completed workflow runs for the daemon.
 type RunManager struct {
-	mu           sync.RWMutex
-	runs         map[string]*runEntry
-	stateDir     string
-	cwd          string // daemon working directory (fallback for workDir)
-	orchestrator Orchestrator
+	mu              sync.RWMutex
+	runs            map[string]*runEntry
+	stateDir        string
+	cwd             string // daemon working directory (fallback for workDir)
+	orchestrator    Orchestrator
+	pendingRegistry *PendingRegistry
+	awaitNotify     func(runID, inputID, prompt string) // optional, called when an agent enters <await>
 }
 
 // NewRunManager creates a RunManager and recovers any in-progress workflows
@@ -182,6 +185,32 @@ func (rm *RunManager) LaunchRun(
 			close(re.busReady)
 			rm.subscribeEvents(b, re)
 		},
+	}
+
+	// When a pending registry is configured, enable daemon mode so the
+	// orchestrator calls AwaitCallback instead of quiescing on <await>.
+	if rm.pendingRegistry != nil {
+		awaitInputCh := make(chan orchestrator.AwaitInput, 16)
+		re.awaitInputCh = awaitInputCh
+		opts.DaemonMode = true
+		opts.AwaitInputCh = awaitInputCh
+		opts.AwaitCallback = func(agentID, inputID, prompt, nextState string) {
+			pi := PendingInput{
+				RunID:      runID,
+				AgentID:    agentID,
+				InputID:    inputID,
+				WorkflowID: entry.ID,
+				Prompt:     prompt,
+				NextState:  nextState,
+				CreatedAt:  time.Now(),
+			}
+			if err := rm.pendingRegistry.Register(pi); err != nil {
+				return // registration failed; skip notification
+			}
+			if rm.awaitNotify != nil {
+				rm.awaitNotify(runID, inputID, prompt)
+			}
+		}
 	}
 
 	go rm.runOrchestrator(runCtx, runID, re, opts, doneCh)
@@ -597,4 +626,64 @@ func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-c
 	}()
 
 	return ch, cancel, nil
+}
+
+// SetPendingRegistry configures the pending input registry. When set, runs
+// are launched in daemon mode with an AwaitCallback that registers pending
+// inputs automatically.
+func (rm *RunManager) SetPendingRegistry(pr *PendingRegistry) {
+	rm.pendingRegistry = pr
+}
+
+// SetAwaitNotifier sets an optional callback invoked when an agent enters
+// <await> in daemon mode. The callback receives (runID, inputID, prompt).
+// It is called from the orchestrator's main goroutine and must not block.
+func (rm *RunManager) SetAwaitNotifier(fn func(runID, inputID, prompt string)) {
+	rm.awaitNotify = fn
+}
+
+// DeliverInput delivers a response to a pending await input. If runID is
+// non-empty, the input must belong to that run.
+//
+// It uses GetAndRemove to atomically claim the input, preventing duplicate
+// delivery when multiple callers race on the same input ID.
+func (rm *RunManager) DeliverInput(runID, inputID, response string) error {
+	if rm.pendingRegistry == nil {
+		return fmt.Errorf("pending registry not configured")
+	}
+
+	// Peek first to validate run ownership before the destructive remove.
+	if runID != "" {
+		pi, ok := rm.pendingRegistry.Get(inputID)
+		if !ok {
+			return fmt.Errorf("pending input %q not found", inputID)
+		}
+		if pi.RunID != runID {
+			return fmt.Errorf("pending input %q does not belong to run %q", inputID, runID)
+		}
+	}
+
+	// Atomically claim the input so no other caller can deliver it.
+	pi, ok := rm.pendingRegistry.GetAndRemove(inputID)
+	if !ok {
+		return fmt.Errorf("pending input %q not found", inputID)
+	}
+
+	rm.mu.RLock()
+	re, ok := rm.runs[pi.RunID]
+	rm.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("run %q not found", pi.RunID)
+	}
+
+	if re.awaitInputCh == nil {
+		return fmt.Errorf("run %q has no active await input channel", pi.RunID)
+	}
+
+	select {
+	case re.awaitInputCh <- orchestrator.AwaitInput{InputID: inputID, Response: response}:
+		return nil
+	default:
+		return fmt.Errorf("await input channel for run %q is full", pi.RunID)
+	}
 }

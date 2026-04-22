@@ -48,7 +48,13 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server, *fakeOrchestrator) 
 	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
+	pendingDir := t.TempDir()
+	pr, err := NewPendingRegistry(pendingDir)
+	require.NoError(t, err)
+	rm.SetPendingRegistry(pr)
+
 	srv := NewServer(reg, rm, 0)
+	srv.SetPendingRegistry(pr)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -380,6 +386,224 @@ func TestCORS_Headers(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
+}
+
+func TestListPendingInputs(t *testing.T) {
+	_, ts, fake := newTestServer(t)
+
+	// Set up a fake orchestrator that emits an await event.
+	awaitReady := make(chan struct{})
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+
+		b.Emit(events.AgentAwaitStarted{
+			AgentID:   "main",
+			InputID:   "test-input-1",
+			Prompt:    "What should I do?",
+			NextState: "NEXT.md",
+			Timestamp: time.Now(),
+		})
+
+		// In daemon mode the callback registers the pending input.
+		if opts.AwaitCallback != nil {
+			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md")
+		}
+
+		close(awaitReady)
+
+		// Block until cancelled.
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	// Create a run.
+	body := `{"workflow_id": "test-workflow"}`
+	createResp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
+
+	// Wait for await to be registered.
+	select {
+	case <-awaitReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for await")
+	}
+
+	// List pending inputs.
+	resp, err := http.Get(ts.URL + "/runs/" + cr.RunID + "/pending-inputs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var inputs []pendingInputResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&inputs))
+	require.Len(t, inputs, 1)
+	assert.Equal(t, cr.RunID, inputs[0].RunID)
+	assert.Equal(t, "test-input-1", inputs[0].InputID)
+	assert.Equal(t, "What should I do?", inputs[0].Prompt)
+}
+
+func TestDeliverInput(t *testing.T) {
+	_, ts, fake := newTestServer(t)
+
+	inputDelivered := make(chan string, 1)
+	awaitReady := make(chan struct{})
+
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+
+		b.Emit(events.AgentAwaitStarted{
+			AgentID:   "main",
+			InputID:   "test-input-1",
+			Prompt:    "What should I do?",
+			NextState: "NEXT.md",
+			Timestamp: time.Now(),
+		})
+
+		if opts.AwaitCallback != nil {
+			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md")
+		}
+
+		close(awaitReady)
+
+		// In daemon mode, wait for input on the AwaitInputCh.
+		if opts.AwaitInputCh != nil {
+			select {
+			case input := <-opts.AwaitInputCh:
+				inputDelivered <- input.Response
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		b.Emit(events.WorkflowCompleted{
+			WorkflowID:   workflowID,
+			TotalCostUSD: 0.5,
+			Timestamp:    time.Now(),
+		})
+		return nil
+	}
+
+	// Create a run.
+	body := `{"workflow_id": "test-workflow"}`
+	createResp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
+
+	// Wait for await.
+	select {
+	case <-awaitReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for await")
+	}
+
+	// Deliver input.
+	inputBody := `{"response": "Do the thing"}`
+	resp, err := http.Post(
+		ts.URL+"/runs/"+cr.RunID+"/inputs/test-input-1",
+		"application/json",
+		strings.NewReader(inputBody),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var dr deliverInputResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&dr))
+	assert.Equal(t, cr.RunID, dr.RunID)
+	assert.Equal(t, "test-input-1", dr.InputID)
+	assert.Equal(t, "resumed", dr.Status)
+
+	// Verify the input was actually delivered.
+	select {
+	case delivered := <-inputDelivered:
+		assert.Equal(t, "Do the thing", delivered)
+	case <-time.After(5 * time.Second):
+		t.Fatal("input was not delivered to orchestrator")
+	}
+}
+
+func TestDeliverInput_InvalidInputID(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+
+	// Create a run.
+	body := `{"workflow_id": "test-workflow"}`
+	createResp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
+
+	// Try to deliver to non-existent input.
+	inputBody := `{"response": "hello"}`
+	resp, err := http.Post(
+		ts.URL+"/runs/"+cr.RunID+"/inputs/nonexistent",
+		"application/json",
+		strings.NewReader(inputBody),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestDeliverInput_WrongRun(t *testing.T) {
+	_, ts, fake := newTestServer(t)
+
+	awaitReady := make(chan struct{})
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+		if opts.AwaitCallback != nil {
+			opts.AwaitCallback("main", "test-input-1", "prompt", "NEXT.md")
+		}
+		close(awaitReady)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	// Create a run.
+	body := `{"workflow_id": "test-workflow"}`
+	createResp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	select {
+	case <-awaitReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for await")
+	}
+
+	// Try to deliver input using wrong run ID.
+	inputBody := `{"response": "hello"}`
+	resp, err := http.Post(
+		ts.URL+"/runs/wrong-run-id/inputs/test-input-1",
+		"application/json",
+		strings.NewReader(inputBody),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestCamelToSnake(t *testing.T) {

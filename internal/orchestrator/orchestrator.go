@@ -31,6 +31,7 @@ import (
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
+	"github.com/vector76/raymond/internal/manifest"
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/policy"
 	"github.com/vector76/raymond/internal/registry"
@@ -141,19 +142,49 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	}
 
 	// Launch-time check: if OnAwait is "reject" (or empty, which defaults to
-	// reject), scan the workflow scope for states declaring <await> transitions
-	// and reject early with a helpful error.
+	// reject), determine whether the workflow requires human input and reject
+	// early with a helpful error.
+	//
+	// When the scope has a workflow manifest, use ResolveRequiresHumanInput
+	// (which honours the manifest's requires_human_input field and follows
+	// cross-workflow references transitively). Otherwise fall back to the
+	// simple frontmatter scan.
 	if opts.OnAwait != "pause" {
-		awaitStates, scanErr := scanForAwaitTransitions(ws.ScopeDir)
-		if scanErr != nil {
-			return fmt.Errorf("scan for await transitions: %w", scanErr)
+		manifestUsed := false
+		if manifestPath, ok := manifest.FindManifest(ws.ScopeDir); ok {
+			m, parseErr := manifest.ParseManifest(manifestPath)
+			if parseErr != nil && !errors.Is(parseErr, manifest.ErrNotManifest) {
+				return fmt.Errorf("parse manifest: %w", parseErr)
+			}
+			if parseErr == nil {
+				requiresHuman, scanErr := manifest.ResolveRequiresHumanInput(m, ws.ScopeDir, fetch)
+				if scanErr != nil {
+					return fmt.Errorf("resolve requires_human_input: %w", scanErr)
+				}
+				if requiresHuman {
+					return fmt.Errorf(
+						"workflow %q requires human input. "+
+							"Use --on-await=pause to allow awaiting, or use `raymond serve` for interactive workflows",
+						workflowID,
+					)
+				}
+				manifestUsed = true
+			}
+			// ErrNotManifest (YAML scope file named workflow.yaml): fall
+			// through to the frontmatter scan below.
 		}
-		if len(awaitStates) > 0 {
-			return fmt.Errorf(
-				"workflow %q declares <await> transitions in state(s): %s. "+
-					"Use --on-await=pause to allow awaiting, or use `raymond serve` for interactive workflows",
-				workflowID, strings.Join(awaitStates, ", "),
-			)
+		if !manifestUsed {
+			awaitStates, scanErr := scanForAwaitTransitions(ws.ScopeDir)
+			if scanErr != nil {
+				return fmt.Errorf("scan for await transitions: %w", scanErr)
+			}
+			if len(awaitStates) > 0 {
+				return fmt.Errorf(
+					"workflow %q declares <await> transitions in state(s): %s. "+
+						"Use --on-await=pause to allow awaiting, or use `raymond serve` for interactive workflows",
+					workflowID, strings.Join(awaitStates, ", "),
+				)
+			}
 		}
 	}
 

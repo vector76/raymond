@@ -2542,6 +2542,135 @@ Do work.
 	assert.Contains(t, ws2.Agents[0].Error, "--on-await=reject")
 }
 
+// --------------------------------------------------------------------------
+// Manifest-based requires_human_input integration tests
+// --------------------------------------------------------------------------
+
+func TestManifestRequiresHumanInputTrue_RejectsAtLaunch(t *testing.T) {
+	// Manifest says requires_human_input: true + OnAwait=reject → rejection.
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	scopeDir := filepath.Join(tmpDir, "workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+
+	// Write manifest with requires_human_input: true.
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "workflow.yaml"), []byte(`
+id: manifest-true-test
+requires_human_input: "true"
+`), 0o644))
+
+	// State file has NO await — manifest overrides.
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
+allowed_transitions:
+  - { tag: goto, target: DONE.md }
+---
+No await here.
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "DONE.md"), []byte("Done.\n"), 0o644))
+
+	wfID := "test-manifest-true"
+	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.OnAwait = "reject"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires human input")
+	assert.Contains(t, err.Error(), "--on-await=pause")
+}
+
+func TestManifestRequiresHumanInputFalse_NoRejection(t *testing.T) {
+	// Manifest says requires_human_input: false + workflow has await → no rejection.
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	scopeDir := filepath.Join(tmpDir, "workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+
+	// Write manifest with requires_human_input: false.
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "workflow.yaml"), []byte(`
+id: manifest-false-test
+requires_human_input: "false"
+`), 0o644))
+
+	// State file declares await — but manifest says false, so no rejection.
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
+allowed_transitions:
+  - { tag: await }
+---
+This state awaits, but manifest overrides to false.
+`), 0o644))
+
+	wfID := "test-manifest-false"
+	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.OnAwait = "reject"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	// Should succeed — manifest overrides to false.
+	require.NoError(t, err)
+}
+
+func TestYamlScopeFileNamedWorkflowYaml_FallsBackToScan(t *testing.T) {
+	// A directory-based workflow that has a workflow.yaml which is actually a
+	// YAML scope (has "states" key), not a manifest. FindManifest finds the
+	// file, ParseManifest returns ErrNotManifest. The orchestrator should
+	// fall back to the frontmatter scan rather than returning a hard error.
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	scopeDir := filepath.Join(tmpDir, "workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+
+	// workflow.yaml is a YAML scope, not a manifest.
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "workflow.yaml"), []byte(`
+states:
+  START:
+    prompt: hello
+`), 0o644))
+
+	// Actual state file with await in frontmatter — the fallback scan finds it.
+	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
+allowed_transitions:
+  - { tag: await }
+---
+Awaiting.
+`), 0o644))
+
+	wfID := "test-yaml-scope-fallback"
+	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.OnAwait = "reject"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.Error(t, err)
+	// Should hit the fallback scan path and report await states.
+	assert.Contains(t, err.Error(), "declares <await> transitions")
+	assert.Contains(t, err.Error(), "START.md")
+}
+
 func TestTaskFolderRecreated_OnResume(t *testing.T) {
 	stateDir, wfID := setupWorkflow(t, "START.md")
 

@@ -181,3 +181,36 @@ func TestExtractEmbeddedManifest_EmptyData_ReturnsNilNil(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, m)
 }
+
+// TestExtractEmbeddedManifest_DistinguishesIDAbsentFromIDEmpty asserts that
+// "id key absent" and "id key present but empty" are observably different
+// return values. A future refactor that collapsed the two cases (e.g. by
+// struct-only unmarshaling) would regress here.
+func TestExtractEmbeddedManifest_DistinguishesIDAbsentFromIDEmpty(t *testing.T) {
+	absentYAML := `
+states:
+  START:
+    prompt: Hello
+`
+	emptyYAML := `
+id: ""
+states:
+  START:
+    prompt: Hello
+`
+
+	mAbsent, errAbsent := ExtractEmbeddedManifest([]byte(absentYAML))
+	mEmpty, errEmpty := ExtractEmbeddedManifest([]byte(emptyYAML))
+
+	// Absent: no error, nil manifest (opt-out signal).
+	require.NoError(t, errAbsent)
+	assert.Nil(t, mAbsent)
+
+	// Empty: non-nil error, nil manifest (validation failure).
+	require.Error(t, errEmpty)
+	assert.Nil(t, mEmpty)
+
+	// Observable distinction: the error outcomes differ.
+	assert.NotEqual(t, errAbsent == nil, errEmpty == nil,
+		"id-absent and id-empty must produce observably different error results")
+}

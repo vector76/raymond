@@ -130,6 +130,24 @@ func TestParseManifest_NonexistentFile(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestParseManifestData_YAMLScope_ReturnsErrNotManifest guards the contract of
+// ParseManifestData against the embedded-manifest work: adding
+// ExtractEmbeddedManifest must not widen ParseManifestData to start accepting
+// YAML scope files.
+func TestParseManifestData_YAMLScope_ReturnsErrNotManifest(t *testing.T) {
+	yaml := `
+id: embedded-id
+name: Would-Be Manifest
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ParseManifestData([]byte(yaml))
+	require.Error(t, err)
+	assert.Nil(t, m)
+	assert.ErrorIs(t, err, ErrNotManifest)
+}
+
 // --- FindManifest ---
 
 func TestFindManifest_Exists(t *testing.T) {

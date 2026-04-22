@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -602,4 +603,163 @@ func TestTaskInvalidValueOnFork(t *testing.T) {
 	diags, err := lint.Lint(dir, lint.Options{})
 	require.NoError(t, err)
 	assert.True(t, hasTaskDiag(diags, "invalid-task-value"), "expected invalid-task-value, got: %v", diags)
+}
+
+// --- Await lint tests ---
+
+func TestAwaitValidNext(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="WAIT.md">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "WAIT.md"), []byte("<goto>DONE.md</goto>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	for _, d := range diags {
+		if d.Check == "missing-target" && d.Severity == lint.Error {
+			assert.Fail(t, "unexpected missing-target error for valid await next", d)
+		}
+	}
+}
+
+func TestAwaitMissingNextTarget(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="NONEXISTENT.md">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	found := false
+	for _, d := range diags {
+		if d.Check == "missing-target" && d.Severity == lint.Error && strings.Contains(d.Message, "NONEXISTENT") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected missing-target error for await with nonexistent next, got: %v", diags)
+}
+
+func TestAwaitMissingTimeoutNextTarget(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="WAIT.md" timeout="24h" timeout_next="NONEXISTENT.md">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "WAIT.md"), []byte("<goto>DONE.md</goto>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	found := false
+	for _, d := range diags {
+		if d.Check == "missing-target" && d.Severity == lint.Error && strings.Contains(d.Message, "timeout_next") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected missing-target error for await with nonexistent timeout_next, got: %v", diags)
+}
+
+func TestAwaitUnsupportedTask(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="DONE.md" task="new">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute for await with task, got: %v", diags)
+}
+
+func TestAwaitUnsupportedCd(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="DONE.md" cd="/some/path">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	found := false
+	for _, d := range diags {
+		if d.Check == "unsupported-cd-attribute" && d.Severity == lint.Error {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected unsupported-cd-attribute error for await with cd, got: %v", diags)
+}
+
+func TestAwaitMissingNextAttribute(t *testing.T) {
+	dir := t.TempDir()
+	content := "---\nallowed_transitions:\n  - { tag: await }\n---\nPlease await review.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(content), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	found := false
+	for _, d := range diags {
+		if d.Check == "missing-await-next" && d.Severity == lint.Error {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected missing-await-next error for await without next attribute, got: %v", diags)
+}
+
+func TestAwaitNoUnusedAllowedTransitionWarning(t *testing.T) {
+	dir := t.TempDir()
+	content := "---\nallowed_transitions:\n  - { tag: await, next: WAIT.md }\n  - { tag: goto, target: DONE.md }\n---\nPlease proceed to DONE.md when ready.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(content), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "WAIT.md"), []byte("<goto>DONE.md</goto>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
+
+	diags, err := lint.Lint(dir, lint.Options{})
+	require.NoError(t, err)
+	for _, d := range diags {
+		if d.Check == "unused-allowed-transition" {
+			assert.Fail(t, "await next target should not trigger unused-allowed-transition warning", d)
+		}
+	}
+}
+
+func TestYamlScopeAwaitValid(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writeTestYaml(t, dir, `states:
+  1_START:
+    prompt: |
+      Start the work.
+    allowed_transitions:
+      - { tag: await, next: WAIT.md }
+  WAIT:
+    prompt: |
+      Continue after input.
+    allowed_transitions:
+      - { tag: goto, target: DONE.md }
+  DONE:
+    prompt: |
+      Finished.
+    allowed_transitions:
+      - { tag: result }
+`)
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+	for _, d := range diags {
+		if d.Severity == lint.Error {
+			assert.Fail(t, "expected no error-severity diagnostics for valid YAML workflow with await", d)
+		}
+	}
+}
+
+func TestZipScopeAwaitValid(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := writeTestZip(t, dir, map[string]string{
+		"1_START.md": `<await next="WAIT.md">Please review</await>`,
+		"WAIT.md":    "<goto>DONE.md</goto>",
+		"DONE.md":    "<result>ok</result>",
+	})
+
+	diags, err := lint.Lint(zipPath, lint.Options{})
+	require.NoError(t, err)
+	for _, d := range diags {
+		if d.Check == "missing-target" && d.Severity == lint.Error {
+			assert.Fail(t, "unexpected missing-target error for valid zip await workflow", d)
+		}
+	}
 }

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -683,6 +684,12 @@ func TestInitConfigCreatesConfigFile(t *testing.T) {
 	assert.Contains(t, s, "# no_debug = false")
 	assert.Contains(t, s, "# no_wait = false")
 	assert.Contains(t, s, "# verbose = false")
+	assert.Contains(t, s, "[raymond.serve]")
+	assert.Contains(t, s, `# root = "workflows"`)
+	assert.Contains(t, s, "# port = 8080")
+	assert.Contains(t, s, "# mcp = false")
+	assert.Contains(t, s, "# no_http = false")
+	assert.Contains(t, s, `# workdir = ""`)
 }
 
 func TestInitConfigCreatesRaymondDirIfMissing(t *testing.T) {
@@ -840,4 +847,280 @@ func TestInitUnsafeDefaultsErrorMentionsExistingPath(t *testing.T) {
 	err := config.InitUnsafeDefaults(root)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config.toml")
+}
+
+// ----------------------------------------------------------------------------
+// LoadServeConfig and ServeConfig validation
+// ----------------------------------------------------------------------------
+
+// writeServeConfig writes a config.toml at <root>/.raymond/config.toml.
+func writeServeConfig(t *testing.T, root, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".raymond"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, ".raymond", "config.toml"),
+		[]byte(content), 0o644,
+	))
+}
+
+func TestLoadServeConfigReturnsZeroIfNoConfigFile(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.LoadServeConfig(root)
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Root)
+	assert.Nil(t, cfg.Port)
+	assert.False(t, cfg.MCP)
+	assert.False(t, cfg.NoHTTP)
+	assert.Equal(t, "", cfg.Workdir)
+}
+
+func TestLoadServeConfigReturnsZeroIfNoServeSection(t *testing.T) {
+	root := t.TempDir()
+	writeServeConfig(t, root, "[raymond]\nbudget = 50.0\n")
+	cfg, err := config.LoadServeConfig(root)
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Root)
+	assert.Nil(t, cfg.Port)
+}
+
+func TestLoadServeConfigParsesAllFields(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "wf"), 0o755))
+	require.NoError(t, os.Mkdir(filepath.Join(root, "wd"), 0o755))
+	writeServeConfig(t, root, strings.Join([]string{
+		"[raymond.serve]",
+		`root = "wf"`,
+		"port = 9000",
+		"mcp = true",
+		"no_http = true",
+		`workdir = "wd"`,
+	}, "\n"))
+
+	cfg, err := config.LoadServeConfig(root)
+	require.NoError(t, err)
+	wantRoot, _ := filepath.EvalSymlinks(filepath.Join(root, "wf"))
+	gotRoot, _ := filepath.EvalSymlinks(cfg.Root)
+	assert.Equal(t, wantRoot, gotRoot)
+	require.NotNil(t, cfg.Port)
+	assert.Equal(t, 9000, *cfg.Port)
+	assert.True(t, cfg.MCP)
+	assert.True(t, cfg.NoHTTP)
+	wantWD, _ := filepath.EvalSymlinks(filepath.Join(root, "wd"))
+	gotWD, _ := filepath.EvalSymlinks(cfg.Workdir)
+	assert.Equal(t, wantWD, gotWD)
+}
+
+func TestLoadServeConfigResolvesRelativeRootAgainstConfigDir(t *testing.T) {
+	// Config file is at <root>/.raymond/config.toml.
+	// A relative root="workflows" should resolve to <root>/workflows,
+	// NOT to <cwd>/workflows.
+	root := t.TempDir()
+	writeServeConfig(t, root, "[raymond.serve]\nroot = \"workflows\"\n")
+
+	// Invoke from a subdirectory to ensure cwd is not used as the base.
+	sub := filepath.Join(root, "subdir", "deep")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+
+	cfg, err := config.LoadServeConfig(sub)
+	require.NoError(t, err)
+	want, _ := filepath.EvalSymlinks(root)
+	got, _ := filepath.EvalSymlinks(filepath.Dir(cfg.Root))
+	assert.Equal(t, want, got)
+	assert.Equal(t, "workflows", filepath.Base(cfg.Root))
+}
+
+func TestLoadServeConfigKeepsAbsoluteRoot(t *testing.T) {
+	root := t.TempDir()
+	abs := filepath.Join(root, "elsewhere")
+	require.NoError(t, os.Mkdir(abs, 0o755))
+	writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\nroot = %q\n", abs))
+
+	cfg, err := config.LoadServeConfig(root)
+	require.NoError(t, err)
+	want, _ := filepath.EvalSymlinks(abs)
+	got, _ := filepath.EvalSymlinks(cfg.Root)
+	assert.Equal(t, want, got)
+}
+
+func TestLoadServeConfigRootMustBeString(t *testing.T) {
+	root := t.TempDir()
+	writeServeConfig(t, root, "[raymond.serve]\nroot = 42\n")
+	_, err := config.LoadServeConfig(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "root")
+	assert.Contains(t, err.Error(), "string")
+}
+
+func TestLoadServeConfigRejectsRootArray(t *testing.T) {
+	// Per design, only a single root is allowed in TOML.
+	root := t.TempDir()
+	writeServeConfig(t, root, "[raymond.serve]\nroot = [\"a\", \"b\"]\n")
+	_, err := config.LoadServeConfig(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "root")
+}
+
+func TestLoadServeConfigPortMustBeInteger(t *testing.T) {
+	root := t.TempDir()
+	writeServeConfig(t, root, "[raymond.serve]\nport = \"9000\"\n")
+	_, err := config.LoadServeConfig(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "port")
+	assert.Contains(t, err.Error(), "integer")
+}
+
+func TestLoadServeConfigPortRangeRejected(t *testing.T) {
+	root := t.TempDir()
+	for _, p := range []int{0, -1, 65536, 100000} {
+		writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\nport = %d\n", p))
+		_, err := config.LoadServeConfig(root)
+		require.Error(t, err, "port %d should be rejected", p)
+		assert.Contains(t, err.Error(), "port")
+	}
+}
+
+func TestLoadServeConfigBoolFlagsWrongType(t *testing.T) {
+	for _, flag := range []string{"mcp", "no_http"} {
+		root := t.TempDir()
+		writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\n%s = \"true\"\n", flag))
+		_, err := config.LoadServeConfig(root)
+		require.Error(t, err, "flag %q should fail", flag)
+		assert.Contains(t, err.Error(), flag)
+		assert.Contains(t, err.Error(), "boolean")
+	}
+}
+
+func TestLoadServeConfigUnknownKeysIgnored(t *testing.T) {
+	root := t.TempDir()
+	writeServeConfig(t, root, "[raymond.serve]\nport = 9000\nfuture_option = \"x\"\n")
+	cfg, err := config.LoadServeConfig(root)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Port)
+	assert.Equal(t, 9000, *cfg.Port)
+}
+
+func TestLoadServeConfigErrorIfServeSectionScalar(t *testing.T) {
+	root := t.TempDir()
+	writeServeConfig(t, root, "[raymond]\nserve = \"oops\"\n")
+	_, err := config.LoadServeConfig(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "[raymond.serve]")
+}
+
+// ----------------------------------------------------------------------------
+// MergeServeConfig
+// ----------------------------------------------------------------------------
+
+func TestMergeServeConfigCLIRootsAppendedToFileRoot(t *testing.T) {
+	tmp := t.TempDir()
+	a := filepath.Join(tmp, "a")
+	b := filepath.Join(tmp, "b")
+	c := filepath.Join(tmp, "c")
+	for _, d := range []string{a, b, c} {
+		require.NoError(t, os.Mkdir(d, 0o755))
+	}
+	file := config.ServeFileConfig{Root: a}
+	args := config.ServeCLIArgs{Roots: []string{b, c}}
+
+	merged := config.MergeServeConfig(file, args)
+	require.Len(t, merged.Roots, 3)
+	assert.Equal(t, a, merged.Roots[0])
+	assert.Equal(t, b, merged.Roots[1])
+	assert.Equal(t, c, merged.Roots[2])
+}
+
+func TestMergeServeConfigDedupesRootsByAbsolutePath(t *testing.T) {
+	tmp := t.TempDir()
+	a := filepath.Join(tmp, "shared")
+	require.NoError(t, os.Mkdir(a, 0o755))
+	file := config.ServeFileConfig{Root: a}
+	// CLI passes the same path again; should be deduped.
+	args := config.ServeCLIArgs{Roots: []string{a}}
+
+	merged := config.MergeServeConfig(file, args)
+	require.Len(t, merged.Roots, 1)
+	assert.Equal(t, a, merged.Roots[0])
+}
+
+func TestMergeServeConfigCLIOnlyWhenNoFileRoot(t *testing.T) {
+	tmp := t.TempDir()
+	a := filepath.Join(tmp, "a")
+	require.NoError(t, os.Mkdir(a, 0o755))
+	file := config.ServeFileConfig{}
+	args := config.ServeCLIArgs{Roots: []string{a}}
+
+	merged := config.MergeServeConfig(file, args)
+	require.Len(t, merged.Roots, 1)
+}
+
+func TestMergeServeConfigFileRootOnlyWhenNoCLI(t *testing.T) {
+	tmp := t.TempDir()
+	a := filepath.Join(tmp, "a")
+	require.NoError(t, os.Mkdir(a, 0o755))
+	file := config.ServeFileConfig{Root: a}
+	args := config.ServeCLIArgs{}
+
+	merged := config.MergeServeConfig(file, args)
+	require.Equal(t, []string{a}, merged.Roots)
+}
+
+func TestMergeServeConfigPortCLIOverridesFile(t *testing.T) {
+	cliPort := 7000
+	filePort := 9000
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{Port: &filePort},
+		config.ServeCLIArgs{Port: &cliPort},
+	)
+	assert.Equal(t, 7000, merged.Port)
+}
+
+func TestMergeServeConfigPortFromFileWhenCLIUnset(t *testing.T) {
+	filePort := 9000
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{Port: &filePort},
+		config.ServeCLIArgs{},
+	)
+	assert.Equal(t, 9000, merged.Port)
+}
+
+func TestMergeServeConfigPortDefaultsTo8080(t *testing.T) {
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{},
+		config.ServeCLIArgs{},
+	)
+	assert.Equal(t, 8080, merged.Port)
+}
+
+func TestMergeServeConfigBoolsCLIWinsWhenTrue(t *testing.T) {
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{MCP: false, NoHTTP: false},
+		config.ServeCLIArgs{MCP: true, NoHTTP: true},
+	)
+	assert.True(t, merged.MCP)
+	assert.True(t, merged.NoHTTP)
+}
+
+func TestMergeServeConfigBoolsFromFileWhenCLIFalse(t *testing.T) {
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{MCP: true, NoHTTP: true},
+		config.ServeCLIArgs{},
+	)
+	assert.True(t, merged.MCP)
+	assert.True(t, merged.NoHTTP)
+}
+
+func TestMergeServeConfigWorkdirCLIWins(t *testing.T) {
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{Workdir: "/file/wd"},
+		config.ServeCLIArgs{Workdir: "/cli/wd"},
+	)
+	assert.Equal(t, "/cli/wd", merged.Workdir)
+}
+
+func TestMergeServeConfigWorkdirFromFile(t *testing.T) {
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{Workdir: "/file/wd"},
+		config.ServeCLIArgs{},
+	)
+	assert.Equal(t, "/file/wd", merged.Workdir)
 }

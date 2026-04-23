@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/vector76/raymond/internal/config"
 	"github.com/vector76/raymond/internal/daemon"
 )
 
@@ -33,24 +34,46 @@ and/or MCP tool interface.
 
 The daemon scans the configured --root directories for workflow directories
 and zip archives containing workflow.yaml manifests, then serves them to
-clients.`,
+clients.
+
+Defaults for --root, --port, --mcp, --no-http, and --workdir may also be set
+in .raymond/config.toml under the [raymond.serve] section. CLI --root values
+are appended to (not replacing) the config file's root.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(roots) == 0 {
-				return fmt.Errorf("at least one --root directory is required")
+			fileCfg, err := config.LoadServeConfig("")
+			if err != nil {
+				return err
 			}
 
-			if noHTTP && !mcp {
+			cliArgs := config.ServeCLIArgs{
+				Roots:   roots,
+				MCP:     mcp,
+				NoHTTP:  noHTTP,
+				Workdir: workdir,
+			}
+			if cmd.Flags().Changed("port") {
+				p := port
+				cliArgs.Port = &p
+			}
+
+			merged := config.MergeServeConfig(fileCfg, cliArgs)
+
+			if len(merged.Roots) == 0 {
+				return fmt.Errorf("at least one --root directory is required (or set [raymond.serve].root in config.toml)")
+			}
+
+			if merged.NoHTTP && !merged.MCP {
 				return fmt.Errorf("--no-http requires --mcp (at least one transport must be enabled)")
 			}
 
 			// When MCP is enabled, stdout is reserved for JSON-RPC.
 			// Direct status messages to stderr instead.
 			logOut := cmd.OutOrStdout()
-			if mcp {
+			if merged.MCP {
 				logOut = cmd.ErrOrStderr()
 			}
 
-			reg, err := daemon.NewRegistry(roots)
+			reg, err := daemon.NewRegistry(merged.Roots)
 			if err != nil {
 				return fmt.Errorf("initializing workflow registry: %w", err)
 			}
@@ -65,7 +88,7 @@ clients.`,
 				fmt.Fprintln(logOut)
 			}
 
-			cwd := workdir
+			cwd := merged.Workdir
 			if cwd == "" {
 				cwd, _ = os.Getwd()
 			}
@@ -75,9 +98,9 @@ clients.`,
 				return fmt.Errorf("initializing run manager: %w", err)
 			}
 
-			if !noHTTP {
-				srv := daemon.NewServer(reg, rm, port)
-				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", port)
+			if !merged.NoHTTP {
+				srv := daemon.NewServer(reg, rm, merged.Port)
+				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
 				go func() {
 					if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 						fmt.Fprintf(cmd.ErrOrStderr(), "HTTP server error: %v\n", err)
@@ -91,7 +114,7 @@ clients.`,
 			}
 
 			mcpDone := make(chan struct{})
-			if mcp {
+			if merged.MCP {
 				mcpSrv := daemon.NewMCPServer(reg, rm)
 				go func() {
 					defer close(mcpDone)
@@ -117,8 +140,8 @@ clients.`,
 	}
 
 	f := cmd.Flags()
-	f.StringArrayVar(&roots, "root", nil, "scope root directory (may be specified multiple times)")
-	f.IntVar(&port, "port", 8080, "HTTP server port")
+	f.StringArrayVar(&roots, "root", nil, "scope root directory (may be specified multiple times; appended to [raymond.serve].root from config)")
+	f.IntVar(&port, "port", config.DefaultServePort, "HTTP server port")
 	f.BoolVar(&mcp, "mcp", false, "enable MCP transport")
 	f.BoolVar(&noHTTP, "no-http", false, "disable HTTP server (requires --mcp)")
 	f.StringVar(&workdir, "workdir", "", "default working directory for workflow runs")

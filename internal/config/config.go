@@ -421,6 +421,249 @@ func MergeConfig(fileConfig map[string]any, args CLIArgs) CLIArgs {
 	return result
 }
 
+// DefaultServePort is the HTTP port used by `ray serve` when no port is
+// supplied via CLI flag or config file.
+const DefaultServePort = 8080
+
+// ServeFileConfig holds values from the [raymond.serve] section of config.toml.
+// Path fields (Root, Workdir) are resolved to absolute paths at load time,
+// relative to the directory containing .raymond/. A pointer or empty/false
+// value indicates the option was not set in the config file.
+type ServeFileConfig struct {
+	Root    string
+	Port    *int
+	MCP     bool
+	NoHTTP  bool
+	Workdir string
+}
+
+// ServeCLIArgs holds values parsed from `ray serve` command-line flags.
+// Roots holds raw --root paths (multiple allowed). Port is nil when --port
+// was not explicitly set. Workdir is "" when --workdir was not specified.
+type ServeCLIArgs struct {
+	Roots   []string
+	Port    *int
+	MCP     bool
+	NoHTTP  bool
+	Workdir string
+}
+
+// MergedServeConfig is the resolved configuration the serve command uses.
+// Roots are absolute paths, deduplicated.
+type MergedServeConfig struct {
+	Roots   []string
+	Port    int
+	MCP     bool
+	NoHTTP  bool
+	Workdir string
+}
+
+// serveKnownKeys is the recognized set of keys in the [raymond.serve] section.
+var serveKnownKeys = map[string]bool{
+	"root":    true,
+	"port":    true,
+	"mcp":     true,
+	"no_http": true,
+	"workdir": true,
+}
+
+// validateServeSection validates and normalizes the raw [raymond.serve] map.
+// Unknown keys are silently dropped for forward compatibility. Path fields
+// are returned unresolved; LoadServeConfig handles resolution.
+func validateServeSection(raw map[string]any, configFile string) (ServeFileConfig, error) {
+	var out ServeFileConfig
+
+	for k := range raw {
+		if !serveKnownKeys[k] {
+			delete(raw, k)
+		}
+	}
+
+	if v, ok := raw["root"]; ok {
+		s, isStr := v.(string)
+		if !isStr {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'root' in %s: expected string (single path), got %T",
+				configFile, v,
+			)}
+		}
+		out.Root = s
+	}
+
+	if v, ok := raw["port"]; ok {
+		var p int
+		switch n := v.(type) {
+		case int64:
+			p = int(n)
+		case int:
+			p = n
+		default:
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'port' in %s: expected integer, got %T", configFile, v,
+			)}
+		}
+		if p < 1 || p > 65535 {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'port' in %s: must be in range 1-65535, got %d",
+				configFile, p,
+			)}
+		}
+		out.Port = &p
+	}
+
+	for _, flag := range []string{"mcp", "no_http"} {
+		if v, ok := raw[flag]; ok {
+			b, isBool := v.(bool)
+			if !isBool {
+				return out, &ConfigError{msg: fmt.Sprintf(
+					"Invalid value for %q in %s: expected boolean, got %T",
+					flag, configFile, v,
+				)}
+			}
+			switch flag {
+			case "mcp":
+				out.MCP = b
+			case "no_http":
+				out.NoHTTP = b
+			}
+		}
+	}
+
+	if v, ok := raw["workdir"]; ok {
+		s, isStr := v.(string)
+		if !isStr {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'workdir' in %s: expected string, got %T", configFile, v,
+			)}
+		}
+		out.Workdir = s
+	}
+
+	return out, nil
+}
+
+// LoadServeConfig loads the [raymond.serve] subsection from
+// .raymond/config.toml found by searching upward from cwd. Relative paths in
+// `root` and `workdir` are resolved against the directory containing
+// .raymond/ (so behavior is independent of the user's cwd when invoking
+// `ray serve`). Returns a zero ServeFileConfig if no config file is found.
+func LoadServeConfig(cwd string) (ServeFileConfig, error) {
+	var zero ServeFileConfig
+
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return zero, &ConfigError{msg: fmt.Sprintf("failed to get working directory: %v", err)}
+		}
+	}
+
+	configFile := FindConfigFile(cwd)
+	if configFile == "" {
+		return zero, nil
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return zero, &ConfigError{msg: fmt.Sprintf("Failed to read %s: %v", configFile, err)}
+	}
+
+	var raw map[string]any
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return zero, &ConfigError{msg: fmt.Sprintf(
+			"Failed to parse %s: Invalid TOML syntax - %v", configFile, err,
+		)}
+	}
+
+	raymondSection, ok := raw["raymond"].(map[string]any)
+	if !ok {
+		return zero, nil
+	}
+
+	serveRaw, ok := raymondSection["serve"].(map[string]any)
+	if !ok {
+		if _, exists := raymondSection["serve"]; exists {
+			return zero, &ConfigError{msg: fmt.Sprintf(
+				"Failed to parse %s: [raymond.serve] must be a TOML table, not a scalar value",
+				configFile,
+			)}
+		}
+		return zero, nil
+	}
+
+	cfg, err := validateServeSection(serveRaw, configFile)
+	if err != nil {
+		return zero, err
+	}
+
+	// Resolve path fields relative to the directory containing .raymond/
+	// (i.e., the parent of the .raymond directory).
+	baseDir := filepath.Dir(filepath.Dir(configFile))
+	if cfg.Root != "" && !filepath.IsAbs(cfg.Root) {
+		cfg.Root = filepath.Join(baseDir, cfg.Root)
+	}
+	if cfg.Workdir != "" && !filepath.IsAbs(cfg.Workdir) {
+		cfg.Workdir = filepath.Join(baseDir, cfg.Workdir)
+	}
+
+	return cfg, nil
+}
+
+// MergeServeConfig combines a ServeFileConfig and ServeCLIArgs into the
+// MergedServeConfig used by the serve command.
+//
+// Roots: the file root (if set) is placed first, then CLI roots are appended.
+// Duplicates are removed by absolute-path comparison. Relative CLI paths
+// resolve against the process working directory.
+//
+// Port: CLI value wins if non-nil; otherwise file value; otherwise DefaultServePort.
+// MCP/NoHTTP: CLI true wins; otherwise file value.
+// Workdir: CLI value wins if non-empty; otherwise file value.
+func MergeServeConfig(file ServeFileConfig, args ServeCLIArgs) MergedServeConfig {
+	var roots []string
+	seen := make(map[string]bool)
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		if seen[abs] {
+			return
+		}
+		seen[abs] = true
+		roots = append(roots, p)
+	}
+
+	add(file.Root)
+	for _, r := range args.Roots {
+		add(r)
+	}
+
+	port := DefaultServePort
+	switch {
+	case args.Port != nil:
+		port = *args.Port
+	case file.Port != nil:
+		port = *file.Port
+	}
+
+	merged := MergedServeConfig{
+		Roots:  roots,
+		Port:   port,
+		MCP:    args.MCP || file.MCP,
+		NoHTTP: args.NoHTTP || file.NoHTTP,
+	}
+	if args.Workdir != "" {
+		merged.Workdir = args.Workdir
+	} else {
+		merged.Workdir = file.Workdir
+	}
+	return merged
+}
+
 // configTemplate is the content of a newly generated config file.
 // All options are commented out with explanatory comments.
 const configTemplate = `# Raymond configuration file
@@ -457,6 +700,26 @@ const configTemplate = `# Raymond configuration file
 
 # Task folder location pattern; supports {{workflow_id}} and {{agent_id}} (default: .raymond/tasks/{{workflow_id}}/{{agent_id}})
 # task_folder_pattern = ".raymond/tasks/{{workflow_id}}/{{agent_id}}"
+
+[raymond.serve]
+# Defaults for the 'ray serve' subcommand.
+# CLI flags override these values, except --root which is APPENDED to the
+# value here. Relative paths resolve against this config file's directory.
+
+# Workflow root directory scanned for workflow.yaml manifests (default: none)
+# root = "workflows"
+
+# HTTP server port (default: 8080)
+# port = 8080
+
+# Enable MCP transport over stdio (default: false)
+# mcp = false
+
+# Disable HTTP server; requires mcp = true (default: false)
+# no_http = false
+
+# Default working directory for workflow runs (default: process cwd)
+# workdir = ""
 `
 
 // configUnsafeDefaultsTemplate is structurally identical to configTemplate but
@@ -495,6 +758,26 @@ dangerously_skip_permissions = true
 
 # Task folder location pattern; supports {{workflow_id}} and {{agent_id}} (default: .raymond/tasks/{{workflow_id}}/{{agent_id}})
 # task_folder_pattern = ".raymond/tasks/{{workflow_id}}/{{agent_id}}"
+
+[raymond.serve]
+# Defaults for the 'ray serve' subcommand.
+# CLI flags override these values, except --root which is APPENDED to the
+# value here. Relative paths resolve against this config file's directory.
+
+# Workflow root directory scanned for workflow.yaml manifests (default: none)
+# root = "workflows"
+
+# HTTP server port (default: 8080)
+# port = 8080
+
+# Enable MCP transport over stdio (default: false)
+# mcp = false
+
+# Disable HTTP server; requires mcp = true (default: false)
+# no_http = false
+
+# Default working directory for workflow runs (default: process cwd)
+# workdir = ""
 `
 
 // InitConfig creates .raymond/config.toml at the project root with all options

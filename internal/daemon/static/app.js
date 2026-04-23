@@ -8,6 +8,7 @@
   var POLL_INTERVAL = 3000;
 
   // --- DOM refs ---
+  var workflowsEl = document.getElementById("workflows");
   var activeRunsEl = document.getElementById("active-runs");
   var historyRunsEl = document.getElementById("history-runs");
   var pendingSection = document.getElementById("pending-inputs-section");
@@ -62,6 +63,66 @@
   }
 
   // --- Rendering ---
+  function renderWorkflows(workflows) {
+    // Skip re-render while user is typing in a launch form.
+    if (workflowsEl.contains(document.activeElement)) {
+      return;
+    }
+    workflowsEl.innerHTML = "";
+    if (!workflows || workflows.length === 0) {
+      workflowsEl.innerHTML = '<div class="empty-state">No workflows discovered</div>';
+      return;
+    }
+
+    workflows.forEach(function (wf) {
+      var card = document.createElement("div");
+      card.className = "workflow-card";
+
+      card.innerHTML =
+        '<div class="workflow-card-header">' +
+          '<span class="workflow-name">' + escapeHTML(wf.name || wf.id) + '</span>' +
+          '<span class="workflow-id">' + escapeHTML(wf.id) + '</span>' +
+        '</div>' +
+        (wf.description
+          ? '<div class="workflow-description">' + escapeHTML(wf.description) + '</div>'
+          : '') +
+        '<div class="workflow-actions">' +
+          '<textarea rows="1" placeholder="Input (optional)..."></textarea>' +
+          '<button class="btn btn-primary">Launch</button>' +
+        '</div>';
+
+      var textarea = card.querySelector("textarea");
+      var btn = card.querySelector("button");
+
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        btn.textContent = "Launching...";
+        launchWorkflow(wf.id, textarea.value).then(function (resp) {
+          textarea.value = "";
+          btn.disabled = false;
+          btn.textContent = "Launch";
+          refreshAll();
+          if (resp && resp.run_id) {
+            selectRun(resp.run_id, resp.status || "running");
+          }
+        }).catch(function (err) {
+          btn.disabled = false;
+          btn.textContent = "Launch";
+          alert("Launch failed: " + err.message);
+        });
+      });
+
+      textarea.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          btn.click();
+        }
+      });
+
+      workflowsEl.appendChild(card);
+    });
+  }
+
   function renderRunCard(run, container) {
     var card = document.createElement("div");
     card.className = "run-card" + (run.run_id === selectedRunID ? " selected" : "");
@@ -297,7 +358,19 @@
     return apiPost("/runs/" + encodeURIComponent(runID) + "/cancel", {});
   }
 
+  function launchWorkflow(workflowID, input) {
+    return apiPost("/runs", { workflow_id: workflowID, input: input });
+  }
+
   // --- Polling ---
+  function refreshWorkflows() {
+    return apiGet("/workflows").then(function (workflows) {
+      renderWorkflows(workflows);
+    }).catch(function () {
+      // Leave current list intact on transient errors.
+    });
+  }
+
   function refreshRuns() {
     return apiGet("/runs").then(function (runs) {
       renderActiveRuns(runs);
@@ -340,8 +413,12 @@
   }
 
   function startPolling() {
+    refreshWorkflows();
     refreshAll();
-    pollTimer = setInterval(refreshAll, POLL_INTERVAL);
+    pollTimer = setInterval(function () {
+      refreshWorkflows();
+      refreshAll();
+    }, POLL_INTERVAL);
   }
 
   // --- Event listeners ---

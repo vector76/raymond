@@ -73,9 +73,73 @@ section h2 {
   margin-bottom: 12px;
 }
 
+/* Workflows spans full width at the top */
+#workflows-section {
+  grid-column: 1 / -1;
+}
+
 /* Pending inputs spans full width */
 #pending-inputs-section {
   grid-column: 1 / -1;
+}
+
+/* Workflow cards */
+.workflow-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.workflow-card:last-child {
+  margin-bottom: 0;
+}
+
+.workflow-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.workflow-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.workflow-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.workflow-description {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.workflow-actions {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.workflow-actions textarea {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  min-height: 32px;
+}
+
+.workflow-actions textarea:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 /* Live output spans full width */

@@ -1,7 +1,3 @@
-# Python cache (residual — not part of Go port)
-__pycache__/
-*.py[cod]
-
 # Go binaries
 /raymond
 /ray
@@ -29,7 +25,6 @@ Thumbs.db
 # Test outputs
 workflows/test_cases/test_outputs/
 test-logs/
-TASK-DONE*
 
 # Environment
 .env

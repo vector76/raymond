@@ -1477,6 +1477,48 @@ func TestMultiForkValidationNonForkTagMixedInPausesAgent(t *testing.T) {
 	assert.Contains(t, ws.Agents[0].Error, "result")
 }
 
+// TestSingleForkWorkflowResolutionFailureEmitsAgentPaused verifies that when a
+// single fork-workflow tag fails to resolve (target doesn't exist), the
+// orchestrator emits AgentPaused with reason "validation_error" and an Error
+// message describing the failure. Prior to this fix, the agent.Error was set
+// on disk but no event was emitted, so the live SSE stream was silent about
+// why the workflow paused.
+func TestSingleForkWorkflowResolutionFailureEmitsAgentPaused(t *testing.T) {
+	tmp := t.TempDir()
+	dir, wfID := setupMultiForkWorkflow(t, tmp)
+
+	// Single fork-workflow transition pointing at a non-existent path.
+	mock := newMock(
+		executors.ExecutionResult{
+			Transition: forkWorkflowTransitionFor(
+				filepath.Join(tmp, "does-not-exist"),
+				map[string]string{"next": "CONT.md"},
+			),
+		},
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	var paused []events.AgentPaused
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentPaused) { paused = append(paused, e) })
+	})
+	defer orchestrator.ResetBusHook()
+
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(dir)))
+	require.Len(t, paused, 1, "expected one AgentPaused event for the single-transition fork-workflow failure")
+	assert.Equal(t, "main", paused[0].AgentID)
+	assert.Equal(t, "validation_error", paused[0].Reason)
+	assert.Contains(t, paused[0].Error, "fork-workflow",
+		"AgentPaused.Error should carry the same message as agent.Error so the UI can show it")
+
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "paused", ws.Agents[0].Status)
+	assert.Contains(t, ws.Agents[0].Error, "fork-workflow")
+}
+
 // ----------------------------------------------------------------------------
 // Implicit transition input propagation (end-to-end via mock executor)
 // ----------------------------------------------------------------------------

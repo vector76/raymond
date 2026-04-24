@@ -110,9 +110,13 @@ type AgentTerminated struct {
 }
 
 // AgentPaused is emitted when an agent is paused (e.g. rate limit hit).
+// Error carries the human-readable failure message when the pause was caused
+// by a recoverable validation or resolution failure; it is empty for routine
+// pauses such as usage limits.
 type AgentPaused struct {
 	AgentID   string
 	Reason    string
+	Error     string
 	Timestamp time.Time
 }
 

@@ -716,6 +716,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 						b.Emit(events.AgentPaused{
 							AgentID:   agentBefore.ID,
 							Reason:    "await_rejected",
+							Error:     ws.Agents[idx].Error,
 							Timestamp: time.Now(),
 						})
 					}
@@ -874,6 +875,16 @@ func emitTransitionEvents(
 			ResultPayload: payload,
 			Timestamp:     time.Now(),
 		})
+	} else if tr.Agent.Status == wfstate.AgentStatusPaused {
+		// Resolution or validation failure (e.g. fork-workflow target not
+		// found). The transition handler set agent.Error but did not emit
+		// an event; surface it now so the live SSE stream can show why.
+		b.Emit(events.AgentPaused{
+			AgentID:   tr.Agent.ID,
+			Reason:    "validation_error",
+			Error:     tr.Agent.Error,
+			Timestamp: time.Now(),
+		})
 	}
 	if tr.Worker != nil {
 		b.Emit(events.AgentSpawned{
@@ -992,6 +1003,7 @@ func applyMultiFork(
 		b.Emit(events.AgentPaused{
 			AgentID:   agent.ID,
 			Reason:    "validation_error",
+			Error:     agentCopy.Error,
 			Timestamp: time.Now(),
 		})
 		return transitions.TransitionResult{Agent: &agentCopy}, nil
@@ -1025,6 +1037,7 @@ func applyMultiFork(
 				b.Emit(events.AgentPaused{
 					AgentID:   agent.ID,
 					Reason:    "validation_error",
+					Error:     agentCopy.Error,
 					Timestamp: time.Now(),
 				})
 				return transitions.TransitionResult{Agent: &agentCopy}, nil
@@ -1164,7 +1177,7 @@ func handleStepError(
 		})
 		agent.Status = wfstate.AgentStatusPaused
 		agent.Error = err.Error()
-		b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: events.PauseReasonUsageLimit, Timestamp: time.Now()})
+		b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: events.PauseReasonUsageLimit, Error: agent.Error, Timestamp: time.Now()})
 		return nil
 
 	case isRetryableError(err):
@@ -1188,7 +1201,7 @@ func handleStepError(
 			agent.Status = wfstate.AgentStatusPaused
 			agent.Error = err.Error()
 			reason := agentPausedReason(err)
-			b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: reason, Timestamp: time.Now()})
+			b.Emit(events.AgentPaused{AgentID: agent.ID, Reason: reason, Error: agent.Error, Timestamp: time.Now()})
 		}
 		return nil
 

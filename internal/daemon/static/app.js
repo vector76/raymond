@@ -320,6 +320,9 @@
         break;
       case "agent_paused":
         line = "[paused] " + (evt.Reason || "");
+        if (evt.Error) {
+          line += ": " + evt.Error;
+        }
         break;
       case "agent_spawned":
         line = "[spawned] " + (evt.NewAgentID || "?") + " → " + (evt.InitialState || "?");

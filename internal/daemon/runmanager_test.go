@@ -720,3 +720,46 @@ states:
 	require.NoError(t, err)
 	assert.NotEmpty(t, runID)
 }
+
+// ----------------------------------------------------------------------------
+// parseRunIDTimestamp
+// ----------------------------------------------------------------------------
+
+func TestParseRunIDTimestampCanonical(t *testing.T) {
+	got, ok := parseRunIDTimestamp("workflow_2026-04-23_18-37-29-948850")
+	require.True(t, ok)
+	want := time.Date(2026, 4, 23, 18, 37, 29, 948850*1000, time.Local)
+	assert.True(t, got.Equal(want), "got %v want %v", got, want)
+}
+
+func TestParseRunIDTimestampWithCounter(t *testing.T) {
+	got, ok := parseRunIDTimestamp("workflow_2026-04-23_18-37-29-948850_2")
+	require.True(t, ok)
+	want := time.Date(2026, 4, 23, 18, 37, 29, 948850*1000, time.Local)
+	assert.True(t, got.Equal(want), "got %v want %v", got, want)
+}
+
+func TestParseRunIDTimestampMissingPrefix(t *testing.T) {
+	_, ok := parseRunIDTimestamp("custom-id-no-prefix")
+	assert.False(t, ok)
+}
+
+func TestParseRunIDTimestampGarbage(t *testing.T) {
+	_, ok := parseRunIDTimestamp("workflow_not-a-date")
+	assert.False(t, ok)
+}
+
+func TestParseRunIDTimestampNonNumericMicros(t *testing.T) {
+	_, ok := parseRunIDTimestamp("workflow_2026-04-23_18-37-29-XXXXXX")
+	assert.False(t, ok)
+}
+
+func TestParseRunIDTimestampOrdering(t *testing.T) {
+	// Stable ordering: an earlier ID parses to an earlier time, even when
+	// they share the same date prefix that the previous truncation collided on.
+	earlier, ok := parseRunIDTimestamp("workflow_2026-04-23_18-37-29-100000")
+	require.True(t, ok)
+	later, ok := parseRunIDTimestamp("workflow_2026-04-23_18-37-29-200000")
+	require.True(t, ok)
+	assert.True(t, earlier.Before(later))
+}

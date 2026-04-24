@@ -44,6 +44,47 @@
     return status === "running" || status === "awaiting_input";
   }
 
+  // pad2 returns a 2-digit zero-padded string for h/m/s formatting.
+  function pad2(n) {
+    return n < 10 ? "0" + n : "" + n;
+  }
+
+  // formatLaunchTime returns a short, human-readable label for a run's launch
+  // moment. Prefers the server-supplied started_at (RFC3339) and falls back to
+  // parsing the timestamp embedded in the run_id ("workflow_YYYY-MM-DD_HH-MM-SS-...").
+  // Same-day launches show "HH:MM:SS"; otherwise "Mmm DD HH:MM:SS".
+  function formatLaunchTime(run) {
+    var d = null;
+    if (run.started_at) {
+      var t = new Date(run.started_at);
+      if (!isNaN(t.getTime()) && t.getFullYear() > 1) {
+        d = t;
+      }
+    }
+    if (!d && run.run_id) {
+      // run_id format: workflow_YYYY-MM-DD_HH-MM-SS-MICROS[_N]
+      var m = run.run_id.match(/^workflow_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+      if (m) {
+        d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+      }
+    }
+    if (!d) {
+      // Fall back to a truncated id when no timestamp is recoverable.
+      return run.run_id && run.run_id.length > 12
+        ? run.run_id.substring(0, 12) + "..."
+        : (run.run_id || "?");
+    }
+    var hms = pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+    var now = new Date();
+    var sameDay = d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+    if (sameDay) return hms;
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return months[d.getMonth()] + " " + pad2(d.getDate()) + " " + hms;
+  }
+
   // --- API calls ---
   function apiGet(path) {
     return fetch(path).then(function (res) {
@@ -132,13 +173,14 @@
     card.className = "run-card" + (run.run_id === selectedRunID ? " selected" : "");
     card.dataset.runId = run.run_id;
 
-    var shortID = run.run_id.length > 12
-      ? run.run_id.substring(0, 12) + "..."
-      : run.run_id;
+    // Show launch time as the primary label — run_ids share the "workflow_YYYY"
+    // prefix so a truncated id is not a useful differentiator. Full id is in
+    // the title attribute for hover.
+    var label = formatLaunchTime(run);
 
     card.innerHTML =
       '<div class="run-card-header">' +
-        '<span class="run-id">' + escapeHTML(shortID) + '</span>' +
+        '<span class="run-id" title="' + escapeHTML(run.run_id || "") + '">' + escapeHTML(label) + '</span>' +
         '<span class="badge badge-' + escapeHTML(run.status) + '">' + escapeHTML(run.status) + '</span>' +
       '</div>' +
       '<div class="run-workflow">' + escapeHTML(run.workflow_id || "unknown") + '</div>' +
@@ -157,6 +199,24 @@
     container.appendChild(card);
   }
 
+  // sortRunsNewestFirst sorts in place by started_at (descending). Falls back
+  // to run_id (descending) when timestamps tie or are missing — this is the
+  // stable case for recovered runs that share a zero started_at and would
+  // otherwise reorder on every poll due to map iteration on the server.
+  function sortRunsNewestFirst(runs) {
+    runs.sort(function (a, b) {
+      var aT = a.started_at || "";
+      var bT = b.started_at || "";
+      if (bT > aT) return 1;
+      if (bT < aT) return -1;
+      var aID = a.run_id || "";
+      var bID = b.run_id || "";
+      if (bID > aID) return 1;
+      if (bID < aID) return -1;
+      return 0;
+    });
+  }
+
   function renderActiveRuns(runs) {
     activeRunsEl.innerHTML = "";
     var active = runs.filter(function (r) { return isActive(r.status); });
@@ -164,6 +224,7 @@
       activeRunsEl.innerHTML = '<div class="empty-state">No active runs</div>';
       return;
     }
+    sortRunsNewestFirst(active);
     active.forEach(function (r) { renderRunCard(r, activeRunsEl); });
   }
 
@@ -174,12 +235,7 @@
       historyRunsEl.innerHTML = '<div class="empty-state">No completed runs</div>';
       return;
     }
-    // Most recent first (started_at is RFC3339, lexicographic sort works)
-    done.sort(function (a, b) {
-      if (b.started_at > a.started_at) return 1;
-      if (b.started_at < a.started_at) return -1;
-      return 0;
-    });
+    sortRunsNewestFirst(done);
     done.forEach(function (r) { renderRunCard(r, historyRunsEl); });
   }
 
@@ -373,8 +429,22 @@
   function refreshWorkflows() {
     return apiGet("/workflows").then(function (workflows) {
       renderWorkflows(workflows);
-    }).catch(function () {
-      // Leave current list intact on transient errors.
+    }).catch(function (err) {
+      // Workflows are only fetched at startup, so surface the failure
+      // instead of leaving the section silently empty.
+      if (workflowsEl.contains(document.activeElement)) return;
+      workflowsEl.innerHTML =
+        '<div class="empty-state">Failed to load workflows: ' +
+        escapeHTML(err.message) +
+        ' &mdash; <a href="#" id="workflows-retry">Retry</a></div>';
+      var retry = document.getElementById("workflows-retry");
+      if (retry) {
+        retry.addEventListener("click", function (e) {
+          e.preventDefault();
+          workflowsEl.innerHTML = '<div class="empty-state">Loading...</div>';
+          refreshWorkflows();
+        });
+      }
     });
   }
 
@@ -428,22 +498,44 @@
   }
 
   // --- Theme ---
+  // Outline icons (stroke="currentColor" so they inherit button color).
+  var SUN_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="4"/>' +
+    '<path d="M12 2v2"/><path d="M12 20v2"/>' +
+    '<path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/>' +
+    '<path d="M2 12h2"/><path d="M20 12h2"/>' +
+    '<path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>' +
+    '</svg>';
+  var MOON_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>' +
+    '</svg>';
+
   function currentTheme() {
     return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
   }
 
-  function updateThemeToggleLabel() {
-    themeToggle.textContent = currentTheme() === "dark" ? "Light mode" : "Dark mode";
+  function updateThemeToggle() {
+    var isDark = currentTheme() === "dark";
+    // Show the icon for the mode you would switch TO.
+    themeToggle.innerHTML = isDark ? SUN_ICON : MOON_ICON;
+    var label = "Switch to " + (isDark ? "light" : "dark") + " mode";
+    themeToggle.setAttribute("aria-label", label);
+    themeToggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+    themeToggle.title = label;
   }
 
   themeToggle.addEventListener("click", function () {
     var next = currentTheme() === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
     try { localStorage.setItem("raymond-theme", next); } catch (e) {}
-    updateThemeToggleLabel();
+    updateThemeToggle();
   });
 
-  updateThemeToggleLabel();
+  updateThemeToggle();
 
   // --- Event listeners ---
   cancelBtn.addEventListener("click", function () {

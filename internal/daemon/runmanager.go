@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -473,6 +475,44 @@ func (rm *RunManager) WaitForCompletion(runID string, timeout time.Duration) (*R
 	return &info, nil
 }
 
+// parseRunIDTimestamp returns the launch time embedded in run IDs of the form
+// "workflow_YYYY-MM-DD_HH-MM-SS-MICROSECONDS[_N]" produced by
+// wfstate.GenerateUniqueWorkflowID. Returns the zero time and false for IDs
+// that do not match this format (e.g. user-supplied custom IDs).
+//
+// Used during recovery to restore StartedAt for persisted runs so that the
+// daemon's run history sorts deterministically rather than by map iteration
+// order.
+func parseRunIDTimestamp(id string) (time.Time, bool) {
+	const prefix = "workflow_"
+	if !strings.HasPrefix(id, prefix) {
+		return time.Time{}, false
+	}
+	body := id[len(prefix):]
+
+	// Strip an optional trailing "_N" disambiguator. The canonical body has
+	// exactly one underscore (between date and time); a second underscore
+	// marks the start of the counter suffix.
+	if strings.Count(body, "_") > 1 {
+		body = body[:strings.LastIndex(body, "_")]
+	}
+
+	// body should now be "YYYY-MM-DD_HH-MM-SS-MICROSECONDS".
+	dash := strings.LastIndex(body, "-")
+	if dash <= 0 {
+		return time.Time{}, false
+	}
+	micros, err := strconv.Atoi(body[dash+1:])
+	if err != nil || micros < 0 {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006-01-02_15-04-05", body[:dash], time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.Add(time.Duration(micros) * time.Microsecond), true
+}
+
 // recoverRuns scans the state directory for existing workflow state files and
 // registers them in the run manager's tracking. Recovered runs are not
 // actively running — they represent interrupted workflows from a previous
@@ -506,6 +546,12 @@ func (rm *RunManager) recoverRuns() error {
 		doneCh := make(chan struct{})
 		close(doneCh) // recovered runs are not active
 
+		// The launch timestamp is encoded in the run_id for daemon-generated
+		// IDs. Parsing it here gives the UI a stable sort key across daemon
+		// restarts; otherwise every recovered run shares a zero timestamp
+		// and sort order depends on map iteration.
+		startedAt, _ := parseRunIDTimestamp(id)
+
 		re := &runEntry{
 			info: RunInfo{
 				RunID:      id,
@@ -513,7 +559,7 @@ func (rm *RunManager) recoverRuns() error {
 				Status:     status,
 				Agents:     agents,
 				CostUSD:    ws.TotalCostUSD,
-				StartedAt:  time.Time{}, // unknown for recovered runs
+				StartedAt:  startedAt,
 			},
 			cancel: nil,
 			doneCh: doneCh,

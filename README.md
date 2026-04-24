@@ -16,9 +16,10 @@ themselves.
 - **State machine workflows** — Define multi-step workflows as directories of
   markdown prompts and shell scripts that reference each other via transition
   tags
-- **Context control** — Six transition types (`goto`, `reset`, `call`,
-  `function`, `fork`, `await`) give precise control over what context carries
-  forward, gets discarded, branches, or pauses for input
+- **Context control** — Seven transition tags (`goto`, `reset`, `call`,
+  `function`, `fork`, `await`, `result`) give precise control over what
+  context carries forward, gets discarded, branches, pauses for input, or
+  terminates the current state
 - **Human-in-the-loop** — The `<await>` transition suspends an agent and
   presents a prompt to a human; the workflow resumes when input arrives
 - **Shell script states** — Deterministic operations (polling, builds, data
@@ -38,7 +39,8 @@ themselves.
 - **Crash recovery** — Workflow state is persisted to disk; crashed workflows
   can be resumed
 - **Static analysis** — `raymond lint` validates workflows statically;
-  `raymond diagram` generates Mermaid flowcharts
+  `raymond diagram` generates Mermaid flowcharts; `raymond convert` turns a
+  directory or zip workflow into the single-file YAML format
 
 ## Quick start
 
@@ -67,12 +69,17 @@ raymond --resume <run_id> --input "approved"
 # Start the daemon (HTTP API + web UI)
 raymond serve --root ./workflows
 
-# Lint and diagram
+# Lint, diagram, and convert
 raymond lint ./my-workflow
 raymond diagram --html ./my-workflow
+raymond convert ./my-workflow --output my-workflow.yaml
 
 # Generate a config file
 raymond --init-config
+
+# Or generate one with permissive defaults (budget=1000,
+# dangerously-skip-permissions=true) — use only in trusted/sandboxed envs
+raymond --init-unsafe-defaults
 ```
 
 ## Example workflow
@@ -123,12 +130,12 @@ so the agent can see its previous attempts.
 | [Diagram](docs/diagram.md) | Reference | `raymond diagram` — Mermaid flowchart generation |
 | [Cross-Workflow Design](docs/cross-workflow-design.md) | Reference | Cross-workflow invocation tags |
 | [YAML Workflows](docs/yaml-workflows.md) | Reference | Single-file YAML workflow format |
+| [Reset Stack Retention](docs/reset-stack-retention.md) | Reference | How `<reset>` preserves the call/return stack |
+| [Terminal Title Bar](docs/terminal-titlebar.md) | Reference | Terminal title updates during workflow execution |
 | [Orchestration Design](docs/orchestration-design.md) | Raymond developers | Architecture and internal design |
 | [Script States Design](docs/bash-states.md) | Raymond developers | Design rationale for shell script states |
 | [Implementation Assumptions](docs/implementation-assumptions.md) | Raymond developers | Design decision log |
 | [Configuration Design](docs/configuration-file-design.md) | Raymond developers | Configuration system design |
-| [Console Output Design](docs/console-output.md) | Raymond developers | Console output format design |
-| [Debug Mode](docs/debug-mode.md) | Raymond developers | Debug mode feature design |
 | [Code Structure](docs/code-structure.md) | Raymond developers | Project structure and development setup |
 | [Sample Workflows](docs/sample-workflows.md) | Both | Test workflows and examples |
 

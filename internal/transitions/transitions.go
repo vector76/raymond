@@ -70,6 +70,14 @@ func ResolveCd(cdValue, baseCwd string) string {
 // empty (i.e. all workflows are filesystem-based).
 //
 // Returns an error when the tag is unknown or a required attribute is missing.
+//
+// Pause contract: when this function returns a TransitionResult whose Agent
+// has Status == AgentStatusPaused, the handler MUST also populate
+// agent.Error with a human-readable message describing the failure. The
+// orchestrator surfaces that message in the AgentPaused event with
+// Reason="validation_error" — a new handler that pauses for a different
+// reason should either populate agent.Error to fit that label or emit its
+// own AgentPaused event before returning.
 func ApplyTransition(
 	agent *wfstate.AgentState,
 	transition parsing.Transition,

@@ -62,8 +62,10 @@
       }
     }
     if (!d && run.run_id) {
-      // run_id format: workflow_YYYY-MM-DD_HH-MM-SS-MICROS[_N]
-      var m = run.run_id.match(/^workflow_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+      // run_id format: workflow_YYYY-MM-DD_HH-MM-SS-MICROS[_N].
+      // Require at least one digit of micros so partial / malformed ids
+      // (e.g. "workflow_2026-04-23_18-37-29-garbage") don't match.
+      var m = run.run_id.match(/^workflow_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})-\d+(?:_\d+)?$/);
       if (m) {
         d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
       }

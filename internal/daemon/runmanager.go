@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -381,7 +382,11 @@ func (rm *RunManager) GetRun(runID string) (*RunInfo, bool) {
 	return &info, true
 }
 
-// ListRuns returns snapshots of all tracked runs.
+// ListRuns returns snapshots of all tracked runs, sorted newest-first by
+// StartedAt with RunID as a stable tiebreaker. The sort guarantees a
+// deterministic order for every consumer (HTTP, MCP, the web UI), so callers
+// don't have to defend against Go map iteration shuffling the result on each
+// call.
 func (rm *RunManager) ListRuns() []RunInfo {
 	rm.mu.RLock()
 	entries := make([]*runEntry, 0, len(rm.runs))
@@ -402,6 +407,13 @@ func (rm *RunManager) ListRuns() []RunInfo {
 		re.mu.Unlock()
 		result = append(result, info)
 	}
+
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].StartedAt.Equal(result[j].StartedAt) {
+			return result[i].StartedAt.After(result[j].StartedAt)
+		}
+		return result[i].RunID > result[j].RunID
+	})
 	return result
 }
 
@@ -499,11 +511,14 @@ func parseRunIDTimestamp(id string) (time.Time, bool) {
 
 	// body should now be "YYYY-MM-DD_HH-MM-SS-MICROSECONDS".
 	dash := strings.LastIndex(body, "-")
-	if dash <= 0 {
+	if dash < 0 {
 		return time.Time{}, false
 	}
 	micros, err := strconv.Atoi(body[dash+1:])
-	if err != nil || micros < 0 {
+	// Format guarantees 0 <= micros <= 999999. Reject anything outside
+	// that range so an id with extra digits can't silently spill into
+	// the seconds component via t.Add.
+	if err != nil || micros < 0 || micros >= 1_000_000 {
 		return time.Time{}, false
 	}
 	t, err := time.ParseInLocation("2006-01-02_15-04-05", body[:dash], time.Local)
@@ -546,11 +561,14 @@ func (rm *RunManager) recoverRuns() error {
 		doneCh := make(chan struct{})
 		close(doneCh) // recovered runs are not active
 
-		// The launch timestamp is encoded in the run_id for daemon-generated
-		// IDs. Parsing it here gives the UI a stable sort key across daemon
-		// restarts; otherwise every recovered run shares a zero timestamp
-		// and sort order depends on map iteration.
-		startedAt, _ := parseRunIDTimestamp(id)
+		// Prefer the StartedAt persisted in the state file (timezone-safe).
+		// For older state files written before that field existed, fall
+		// back to parsing the timestamp out of the run_id. Both paths give
+		// the UI a stable sort key across daemon restarts.
+		startedAt := ws.StartedAt
+		if startedAt.IsZero() {
+			startedAt, _ = parseRunIDTimestamp(id)
+		}
 
 		re := &runEntry{
 			info: RunInfo{

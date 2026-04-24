@@ -754,6 +754,13 @@ func TestParseRunIDTimestampNonNumericMicros(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Format guarantees micros are at most 6 digits. Reject larger values so a
+// hand-crafted id can't silently overflow into the seconds field via t.Add.
+func TestParseRunIDTimestampMicrosTooLarge(t *testing.T) {
+	_, ok := parseRunIDTimestamp("workflow_2026-04-23_18-37-29-9999999")
+	assert.False(t, ok)
+}
+
 func TestParseRunIDTimestampOrdering(t *testing.T) {
 	// Stable ordering: an earlier ID parses to an earlier time, even when
 	// they share the same date prefix that the previous truncation collided on.

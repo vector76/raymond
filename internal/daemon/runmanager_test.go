@@ -772,6 +772,147 @@ func TestParseRunIDTimestampOrdering(t *testing.T) {
 	assert.True(t, earlier.Before(later))
 }
 
+// TestRestartRecovery_PrefersPersistedStartedAt verifies that recoverRuns
+// uses ws.StartedAt when present, ignoring the run_id timestamp. This is
+// the timezone-safe path: the persisted moment round-trips exactly, while
+// parseRunIDTimestamp re-interprets the run_id digits in the recovering
+// process's local timezone and would drift if that changed.
+func TestRestartRecovery_PrefersPersistedStartedAt(t *testing.T) {
+	stateDir := ensureStateDir(t)
+
+	// Use a launch time well after the timestamp encoded in the run_id so
+	// a regression that falls back to parseRunIDTimestamp is detectable.
+	persisted := time.Date(2030, 7, 15, 12, 34, 56, 789000000, time.UTC)
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "workflow_2026-04-23_18-37-29-948850",
+		ScopeDir:   "/some/scope",
+		StartedAt:  persisted,
+		Agents: []wfstate.AgentState{
+			{ID: "main", CurrentState: "X.md", Status: wfstate.AgentStatusPaused, Stack: []wfstate.StackFrame{}},
+		},
+	}
+	data, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stateDir, ws.WorkflowID+".json"),
+		data, 0o644,
+	))
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	info, ok := rm.GetRun(ws.WorkflowID)
+	require.True(t, ok)
+	assert.True(t, info.StartedAt.Equal(persisted),
+		"recoverRuns should prefer persisted StartedAt; got %v want %v",
+		info.StartedAt, persisted)
+}
+
+// TestRestartRecovery_FallsBackToRunIDTimestamp verifies that recoverRuns
+// falls back to parsing the run_id when ws.StartedAt is the zero time
+// (state files written before the field existed).
+func TestRestartRecovery_FallsBackToRunIDTimestamp(t *testing.T) {
+	stateDir := ensureStateDir(t)
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "workflow_2026-04-23_18-37-29-948850",
+		ScopeDir:   "/some/scope",
+		// StartedAt left as zero (legacy state file).
+		Agents: []wfstate.AgentState{
+			{ID: "main", CurrentState: "X.md", Status: wfstate.AgentStatusPaused, Stack: []wfstate.StackFrame{}},
+		},
+	}
+	data, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stateDir, ws.WorkflowID+".json"),
+		data, 0o644,
+	))
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	info, ok := rm.GetRun(ws.WorkflowID)
+	require.True(t, ok)
+	require.False(t, info.StartedAt.IsZero(), "StartedAt should be parsed from the run_id")
+	want, parsedOK := parseRunIDTimestamp(ws.WorkflowID)
+	require.True(t, parsedOK)
+	assert.True(t, info.StartedAt.Equal(want))
+}
+
+// TestSubscribeRunEvents_DeliversLiveEventsAfterReplay verifies that a
+// subscriber attached mid-run receives the replay snapshot AND any events
+// that arrive after subscription. Earlier tests subscribed only after the
+// run completed (replay-only path); this exercises the fan-out path.
+func TestSubscribeRunEvents_DeliversLiveEventsAfterReplay(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	// release lets the test trigger the orchestrator to emit a "live" event
+	// (one observed after the subscription is established).
+	release := make(chan struct{})
+	exit := make(chan struct{})
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+			// Pre-subscription event: ends up in the replay buffer.
+			b.Emit(events.WorkflowStarted{
+				WorkflowID: workflowID,
+				Timestamp:  time.Now(),
+			})
+			// Wait until the test has subscribed before emitting the live one.
+			<-release
+			b.Emit(events.AgentSpawned{
+				ParentAgentID: "main",
+				NewAgentID:    "live",
+				InitialState:  "X.md",
+				Timestamp:     time.Now(),
+			})
+			<-exit
+			return nil
+		},
+	}
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	// Wait for the bus to be wired up before subscribing. SubscribeRunEvents
+	// blocks on busReady internally, but waiting here prevents the test
+	// from racing the pre-sub event past the subscribe call.
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelCtx()
+	ch, cancelSub, err := rm.SubscribeRunEvents(ctx, runID)
+	require.NoError(t, err)
+	defer cancelSub()
+
+	// Replay should have delivered WorkflowStarted by the time we get here.
+	select {
+	case ev := <-ch:
+		_, isStart := ev.(events.WorkflowStarted)
+		assert.True(t, isStart, "first replayed event should be WorkflowStarted, got %T", ev)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for replayed WorkflowStarted")
+	}
+
+	// Now release the orchestrator to emit the live event.
+	close(release)
+
+	select {
+	case ev := <-ch:
+		spawned, ok := ev.(events.AgentSpawned)
+		require.True(t, ok, "live event should be AgentSpawned, got %T", ev)
+		assert.Equal(t, "live", spawned.NewAgentID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for live AgentSpawned event")
+	}
+
+	close(exit)
+}
+
 // ----------------------------------------------------------------------------
 // SubscribeRunEvents — replay + live stream
 // ----------------------------------------------------------------------------

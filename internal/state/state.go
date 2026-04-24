@@ -126,7 +126,7 @@ type WorkflowState struct {
 	ScopeDir     string         `json:"scope_dir"`
 	TotalCostUSD float64        `json:"total_cost_usd"`
 	BudgetUSD    float64        `json:"budget_usd"`
-	StartedAt    time.Time      `json:"started_at,omitempty"` // wall-clock launch time, recovered after restarts
+	StartedAt    time.Time      `json:"started_at"` // wall-clock launch time, recovered after restarts
 	Agents       []AgentState   `json:"agents"`
 	ForkCounters map[string]int `json:"fork_counters,omitempty"` // per-parent agent fork counters
 	LaunchParams *LaunchParams  `json:"launch_params,omitempty"` // persisted for --resume restoration

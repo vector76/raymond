@@ -65,7 +65,9 @@
       // run_id format: workflow_YYYY-MM-DD_HH-MM-SS-MICROS[_N].
       // Require at least one digit of micros so partial / malformed ids
       // (e.g. "workflow_2026-04-23_18-37-29-garbage") don't match.
-      var m = run.run_id.match(/^workflow_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})-\d+(?:_\d+)?$/);
+      // The counter, when present, is _1, _2, ... — never _0 (the
+      // generator only adds it to disambiguate collisions).
+      var m = run.run_id.match(/^workflow_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})-\d+(?:_[1-9]\d*)?$/);
       if (m) {
         d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
       }
@@ -342,9 +344,19 @@
     };
 
     eventSource.onerror = function () {
-      appendOutputLine("[SSE connection closed]");
-      eventSource.close();
-      eventSource = null;
+      // EventSource fires onerror on any close, including a normal
+      // server-initiated end-of-stream after the replay finishes for a
+      // completed/recovered run. Only show the [closed] line for an
+      // unexpected disconnect (readyState CONNECTING == 0, the browser
+      // is trying to reconnect). When the server cleanly closed the
+      // stream readyState is CLOSED (2) and we suppress the line.
+      if (eventSource && eventSource.readyState !== EventSource.CLOSED) {
+        appendOutputLine("[SSE connection closed]");
+      }
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
     };
   }
 
@@ -393,6 +405,13 @@
         line = "[terminated] agent " + (evt.AgentID || "?");
         break;
       case "transition_occurred":
+        // Suppress self-transitions: a paused agent leaves CurrentState
+        // unchanged, and the orchestrator still emits TransitionOccurred
+        // with FromState == ToState. The accompanying [paused] line
+        // already conveys the outcome.
+        if (evt.FromState && evt.FromState === evt.ToState) {
+          return;
+        }
         line = "[transition] " + (evt.FromState || "?") + " → " + (evt.ToState || "(end)");
         break;
       case "claude_stream_output":

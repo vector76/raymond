@@ -75,7 +75,7 @@ func ResolveCd(cdValue, baseCwd string) string {
 // has Status == AgentStatusPaused, the handler MUST also populate
 // agent.Error with a human-readable message describing the failure. The
 // orchestrator surfaces that message in the AgentPaused event with
-// Reason="validation_error" — a new handler that pauses for a different
+// Reason=`validation_error` — a new handler that pauses for a different
 // reason should either populate agent.Error to fit that label or emit its
 // own AgentPaused event before returning.
 func ApplyTransition(
@@ -143,7 +143,7 @@ func ApplyTransition(
 		result, handlerErr := HandleForkWorkflow(copy, tr, wfState, res)
 		if handlerErr != nil {
 			copy.Status = wfstate.AgentStatusPaused
-			copy.Error = handlerErr.Error()
+			copy.Error = fmt.Sprintf("fork-workflow: %s", handlerErr.Error())
 			return TransitionResult{Agent: &copy}, nil
 		}
 		return result, nil
@@ -164,7 +164,7 @@ func ApplyTransition(
 		result, handlerErr := HandleCallWorkflow(copy, tr, wfState, res)
 		if handlerErr != nil {
 			copy.Status = wfstate.AgentStatusPaused
-			copy.Error = handlerErr.Error()
+			copy.Error = fmt.Sprintf("call-workflow: %s", handlerErr.Error())
 			return TransitionResult{Agent: &copy}, nil
 		}
 		return result, nil
@@ -185,7 +185,7 @@ func ApplyTransition(
 		result, handlerErr := HandleFunctionWorkflow(copy, tr, wfState, res)
 		if handlerErr != nil {
 			copy.Status = wfstate.AgentStatusPaused
-			copy.Error = handlerErr.Error()
+			copy.Error = fmt.Sprintf("function-workflow: %s", handlerErr.Error())
 			return TransitionResult{Agent: &copy}, nil
 		}
 		return result, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -240,7 +241,7 @@ func (s *Server) handleRunOutput(w http.ResponseWriter, r *http.Request) {
 
 	eventCh, cancel, err := s.runManager.SubscribeRunEvents(r.Context(), id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrRunNotFound) {
 			writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q not found", id)})
 		} else {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
@@ -285,7 +286,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if err := s.runManager.CancelRun(id); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrRunNotFound) {
 			writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
 		} else {
 			writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error()})
@@ -346,7 +347,9 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.runManager.DeliverInput(runID, inputID, req.Response); err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") {
+		if errors.Is(err, ErrRunNotFound) ||
+			errors.Is(err, ErrPendingInputNotFound) ||
+			errors.Is(err, ErrPendingInputMismatch) {
 			writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
 		} else {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})

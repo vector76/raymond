@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -49,6 +50,19 @@ type RunInfo struct {
 // newly-connected subscribers. Bounded so a long-running run doesn't accumulate
 // unlimited events in memory.
 const eventLogCap = 200
+
+// subscriberHeadroom is added to len(eventLog) when sizing each subscriber's
+// channel. It absorbs short bursts of live events while the consumer is still
+// draining the replay snapshot.
+const subscriberHeadroom = 1024
+
+// Sentinel errors returned (wrapped) by RunManager methods. Callers should
+// match these via errors.Is rather than inspecting the error message text.
+var (
+	ErrRunNotFound           = errors.New("run not found")
+	ErrPendingInputNotFound  = errors.New("pending input not found")
+	ErrPendingInputMismatch  = errors.New("pending input does not belong to run")
+)
 
 // runEntry is the internal bookkeeping for a tracked run.
 type runEntry struct {
@@ -177,7 +191,10 @@ func (rm *RunManager) LaunchRun(
 				ID:           "main",
 				CurrentState: initialState,
 			}},
-			StartedAt: time.Now(),
+			// Reuse the StartedAt that CreateInitialState already stamped
+			// into ws so the live and recovered (post-restart) views of
+			// this run report the same wall-clock launch time.
+			StartedAt: ws.StartedAt,
 		},
 		cancel:   runCancel,
 		doneCh:   doneCh,
@@ -436,7 +453,7 @@ func (rm *RunManager) CancelRun(runID string) error {
 	re, ok := rm.runs[runID]
 	rm.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("run %q not found", runID)
+		return fmt.Errorf("%w: %q", ErrRunNotFound, runID)
 	}
 
 	re.mu.Lock()
@@ -478,7 +495,7 @@ func (rm *RunManager) WaitForCompletion(runID string, timeout time.Duration) (*R
 	re, ok := rm.runs[runID]
 	rm.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("run %q not found", runID)
+		return nil, fmt.Errorf("%w: %q", ErrRunNotFound, runID)
 	}
 
 	if timeout > 0 {
@@ -627,6 +644,9 @@ func classifyRecoveredStatus(agents []wfstate.AgentState) string {
 // the previous per-subscriber bus subscription pattern so that subscribers get
 // a replay of recent events plus a live stream, with a single lock serializing
 // append and fan-out to preserve ordering.
+//
+// Subscriptions are unsubscribed when re.doneCh closes so the closures
+// (which capture re and the bus) don't pin memory beyond the run's lifetime.
 func (re *runEntry) startRecorder(b *bus.Bus) {
 	record := func(e any) {
 		re.logMu.Lock()
@@ -641,31 +661,42 @@ func (re *runEntry) startRecorder(b *bus.Bus) {
 			select {
 			case ch <- e:
 			default:
-				// Drop event if subscriber is too slow.
+				// Drop event if subscriber is too slow. The buffer is
+				// generous (see SubscribeRunEvents) so this only triggers
+				// for unusually chatty runs with a stalled SSE consumer.
 			}
 		}
 		re.logMu.Unlock()
 	}
 
-	bus.Subscribe(b, func(e events.WorkflowStarted) { record(e) })
-	bus.Subscribe(b, func(e events.WorkflowCompleted) { record(e) })
-	bus.Subscribe(b, func(e events.WorkflowPaused) { record(e) })
-	bus.Subscribe(b, func(e events.WorkflowWaiting) { record(e) })
-	bus.Subscribe(b, func(e events.WorkflowResuming) { record(e) })
-	bus.Subscribe(b, func(e events.StateStarted) { record(e) })
-	bus.Subscribe(b, func(e events.StateCompleted) { record(e) })
-	bus.Subscribe(b, func(e events.TransitionOccurred) { record(e) })
-	bus.Subscribe(b, func(e events.AgentSpawned) { record(e) })
-	bus.Subscribe(b, func(e events.AgentTerminated) { record(e) })
-	bus.Subscribe(b, func(e events.AgentPaused) { record(e) })
-	bus.Subscribe(b, func(e events.AgentAwaitStarted) { record(e) })
-	bus.Subscribe(b, func(e events.AgentAwaitResumed) { record(e) })
-	bus.Subscribe(b, func(e events.ClaudeStreamOutput) { record(e) })
-	bus.Subscribe(b, func(e events.ClaudeInvocationStarted) { record(e) })
-	bus.Subscribe(b, func(e events.ScriptOutput) { record(e) })
-	bus.Subscribe(b, func(e events.ToolInvocation) { record(e) })
-	bus.Subscribe(b, func(e events.ProgressMessage) { record(e) })
-	bus.Subscribe(b, func(e events.ErrorOccurred) { record(e) })
+	cancels := []func(){
+		bus.Subscribe(b, func(e events.WorkflowStarted) { record(e) }),
+		bus.Subscribe(b, func(e events.WorkflowCompleted) { record(e) }),
+		bus.Subscribe(b, func(e events.WorkflowPaused) { record(e) }),
+		bus.Subscribe(b, func(e events.WorkflowWaiting) { record(e) }),
+		bus.Subscribe(b, func(e events.WorkflowResuming) { record(e) }),
+		bus.Subscribe(b, func(e events.StateStarted) { record(e) }),
+		bus.Subscribe(b, func(e events.StateCompleted) { record(e) }),
+		bus.Subscribe(b, func(e events.TransitionOccurred) { record(e) }),
+		bus.Subscribe(b, func(e events.AgentSpawned) { record(e) }),
+		bus.Subscribe(b, func(e events.AgentTerminated) { record(e) }),
+		bus.Subscribe(b, func(e events.AgentPaused) { record(e) }),
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) { record(e) }),
+		bus.Subscribe(b, func(e events.AgentAwaitResumed) { record(e) }),
+		bus.Subscribe(b, func(e events.ClaudeStreamOutput) { record(e) }),
+		bus.Subscribe(b, func(e events.ClaudeInvocationStarted) { record(e) }),
+		bus.Subscribe(b, func(e events.ScriptOutput) { record(e) }),
+		bus.Subscribe(b, func(e events.ToolInvocation) { record(e) }),
+		bus.Subscribe(b, func(e events.ProgressMessage) { record(e) }),
+		bus.Subscribe(b, func(e events.ErrorOccurred) { record(e) }),
+	}
+
+	go func() {
+		<-re.doneCh
+		for _, c := range cancels {
+			c()
+		}
+	}()
 }
 
 // SubscribeRunEvents returns a channel that receives a replay of the run's
@@ -686,7 +717,7 @@ func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-c
 	re, ok := rm.runs[runID]
 	rm.mu.RUnlock()
 	if !ok {
-		return nil, nil, fmt.Errorf("run %q not found", runID)
+		return nil, nil, fmt.Errorf("%w: %q", ErrRunNotFound, runID)
 	}
 
 	// Wait for the bus to be ready on active runs. Recovered runs have
@@ -700,9 +731,12 @@ func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-c
 	}
 
 	re.logMu.Lock()
-	// Buffer sized for the initial replay plus headroom for live events so a
-	// briefly-slow consumer doesn't cause drops during the snapshot-drain phase.
-	ch := make(chan any, len(re.eventLog)+256)
+	// Buffer sized for the initial replay plus generous headroom for live
+	// events so a briefly-slow consumer doesn't cause drops during the
+	// snapshot-drain phase. Drops in the recorder's fan-out (silent, by
+	// design — see startRecorder) only kick in for unusually chatty runs
+	// with a stalled SSE consumer.
+	ch := make(chan any, len(re.eventLog)+subscriberHeadroom)
 	for _, e := range re.eventLog {
 		ch <- e
 	}
@@ -763,24 +797,25 @@ func (rm *RunManager) DeliverInput(runID, inputID, response string) error {
 	if runID != "" {
 		pi, ok := rm.pendingRegistry.Get(inputID)
 		if !ok {
-			return fmt.Errorf("pending input %q not found", inputID)
+			return fmt.Errorf("%w: %q", ErrPendingInputNotFound, inputID)
 		}
 		if pi.RunID != runID {
-			return fmt.Errorf("pending input %q does not belong to run %q", inputID, runID)
+			return fmt.Errorf("%w: input %q belongs to run %q, not %q",
+				ErrPendingInputMismatch, inputID, pi.RunID, runID)
 		}
 	}
 
 	// Atomically claim the input so no other caller can deliver it.
 	pi, ok := rm.pendingRegistry.GetAndRemove(inputID)
 	if !ok {
-		return fmt.Errorf("pending input %q not found", inputID)
+		return fmt.Errorf("%w: %q", ErrPendingInputNotFound, inputID)
 	}
 
 	rm.mu.RLock()
 	re, ok := rm.runs[pi.RunID]
 	rm.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("run %q not found", pi.RunID)
+		return fmt.Errorf("%w: %q", ErrRunNotFound, pi.RunID)
 	}
 
 	if re.awaitInputCh == nil {

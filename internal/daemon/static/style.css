@@ -194,6 +194,14 @@ section h2 {
   grid-column: 1 / -1;
 }
 
+/* Cap the run lists so a long history doesn't push the live-output panel
+   off screen. The section header stays anchored; cards scroll under it. */
+#active-runs,
+#history-runs {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
 /* Run cards */
 .run-card {
   border: 1px solid var(--border);

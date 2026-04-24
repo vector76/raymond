@@ -98,13 +98,16 @@
       btn.addEventListener("click", function () {
         btn.disabled = true;
         btn.textContent = "Launching...";
-        launchWorkflow(wf.id, textarea.value).then(function (resp) {
+        launchWorkflow(wf.id, textarea.value.trim()).then(function (resp) {
           textarea.value = "";
           btn.disabled = false;
           btn.textContent = "Launch";
-          refreshAll();
           if (resp && resp.run_id) {
+            // selectRun refreshes runs; the next poll tick handles conn-status
+            // and pending inputs, so no separate refreshAll is needed.
             selectRun(resp.run_id, resp.status || "running");
+          } else {
+            refreshAll();
           }
         }).catch(function (err) {
           btn.disabled = false;
@@ -417,12 +420,11 @@
   }
 
   function startPolling() {
+    // Workflows are discovered once at registry startup and don't change
+    // while the daemon runs, so fetch once rather than on every poll tick.
     refreshWorkflows();
     refreshAll();
-    pollTimer = setInterval(function () {
-      refreshWorkflows();
-      refreshAll();
-    }, POLL_INTERVAL);
+    pollTimer = setInterval(refreshAll, POLL_INTERVAL);
   }
 
   // --- Theme ---

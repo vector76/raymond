@@ -44,7 +44,6 @@
   border-radius: var(--radius);
   font-size: 12px;
   cursor: pointer;
-  margin-left: 12px;
 }
 
 .theme-toggle:hover {
@@ -55,6 +54,7 @@
 header .header-right {
   display: flex;
   align-items: center;
+  gap: 12px;
 }
 
 body {
@@ -372,6 +372,7 @@ section h2 {
     padding: 12px;
   }
 
+  #workflows-section,
   #pending-inputs-section,
   #output-section {
     grid-column: 1;

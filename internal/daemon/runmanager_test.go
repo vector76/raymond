@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -769,4 +770,164 @@ func TestParseRunIDTimestampOrdering(t *testing.T) {
 	later, ok := parseRunIDTimestamp("workflow_2026-04-23_18-37-29-200000")
 	require.True(t, ok)
 	assert.True(t, earlier.Before(later))
+}
+
+// ----------------------------------------------------------------------------
+// SubscribeRunEvents — replay + live stream
+// ----------------------------------------------------------------------------
+
+// drainAll reads every event from ch until ch is closed or the deadline is
+// reached. Used by subscribe tests that expect a finite stream.
+func drainAll(t *testing.T, ch <-chan any, timeout time.Duration) []any {
+	t.Helper()
+	var got []any
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return got
+			}
+			got = append(got, ev)
+		case <-deadline:
+			t.Fatalf("timed out after %v; received %d events", timeout, len(got))
+		}
+	}
+}
+
+// Subscribing to a completed run should replay the recent events so a user
+// who clicks into a no-longer-active run can see what happened, rather than
+// getting a blank output pane.
+func TestSubscribeRunEvents_ReplaysPastEventsAfterCompletion(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+
+			b.Emit(events.StateStarted{AgentID: "main", StateName: "S1", Timestamp: time.Now()})
+			b.Emit(events.StateCompleted{AgentID: "main", StateName: "S1", Timestamp: time.Now()})
+			b.Emit(events.AgentTerminated{AgentID: "main", Timestamp: time.Now()})
+			b.Emit(events.WorkflowCompleted{WorkflowID: workflowID, Timestamp: time.Now()})
+			return nil
+		},
+	}
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+
+	ch, cancel, err := rm.SubscribeRunEvents(context.Background(), runID)
+	require.NoError(t, err)
+	defer cancel()
+
+	got := drainAll(t, ch, 2*time.Second)
+	require.Len(t, got, 4, "expected replay of all four emitted events")
+	assert.IsType(t, events.StateStarted{}, got[0])
+	assert.IsType(t, events.StateCompleted{}, got[1])
+	assert.IsType(t, events.AgentTerminated{}, got[2])
+	assert.IsType(t, events.WorkflowCompleted{}, got[3])
+}
+
+// When more events are emitted than the ring buffer capacity, only the most
+// recent events are retained — the oldest are evicted. The cap bounds memory
+// for long-running runs.
+func TestSubscribeRunEvents_RingBufferEvictsOldestEvents(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	overflow := 50
+	total := eventLogCap + overflow
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+			for i := 0; i < total; i++ {
+				// Use StateStarted so the sequence index is recoverable from the event.
+				b.Emit(events.StateStarted{
+					AgentID:   "main",
+					StateName: "S" + strconv.Itoa(i),
+					Timestamp: time.Now(),
+				})
+			}
+			b.Emit(events.AgentTerminated{AgentID: "main", Timestamp: time.Now()})
+			return nil
+		},
+	}
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+
+	ch, cancel, err := rm.SubscribeRunEvents(context.Background(), runID)
+	require.NoError(t, err)
+	defer cancel()
+
+	got := drainAll(t, ch, 2*time.Second)
+	require.Len(t, got, eventLogCap, "ring buffer should cap retained events")
+
+	// After eviction the first retained StateStarted is for index (overflow+1):
+	// total = cap + overflow; plus one trailing AgentTerminated pushes the
+	// oldest (overflow + 1) extra events out of the buffer.
+	first, ok := got[0].(events.StateStarted)
+	require.True(t, ok)
+	assert.Equal(t, "S"+strconv.Itoa(overflow+1), first.StateName)
+
+	// The tail terminator should be the most recently appended event.
+	_, ok = got[len(got)-1].(events.AgentTerminated)
+	assert.True(t, ok)
+}
+
+// Two subscribers opened in sequence to the same run should each see the full
+// replay independently; one subscriber's reads must not drain events from the
+// other.
+func TestSubscribeRunEvents_MultipleSubscribersIndependent(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+			b.Emit(events.StateStarted{AgentID: "main", StateName: "A", Timestamp: time.Now()})
+			b.Emit(events.StateStarted{AgentID: "main", StateName: "B", Timestamp: time.Now()})
+			b.Emit(events.AgentTerminated{AgentID: "main", Timestamp: time.Now()})
+			return nil
+		},
+	}
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+
+	ch1, cancel1, err := rm.SubscribeRunEvents(context.Background(), runID)
+	require.NoError(t, err)
+	defer cancel1()
+
+	ch2, cancel2, err := rm.SubscribeRunEvents(context.Background(), runID)
+	require.NoError(t, err)
+	defer cancel2()
+
+	got1 := drainAll(t, ch1, 2*time.Second)
+	got2 := drainAll(t, ch2, 2*time.Second)
+	assert.Len(t, got1, 3)
+	assert.Len(t, got2, 3)
 }

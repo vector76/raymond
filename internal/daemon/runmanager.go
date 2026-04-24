@@ -45,6 +45,11 @@ type RunInfo struct {
 	Result          string
 }
 
+// eventLogCap is the maximum number of events retained per run for replay to
+// newly-connected subscribers. Bounded so a long-running run doesn't accumulate
+// unlimited events in memory.
+const eventLogCap = 200
+
 // runEntry is the internal bookkeeping for a tracked run.
 type runEntry struct {
 	mu           sync.Mutex
@@ -54,6 +59,13 @@ type runEntry struct {
 	eventBus     *bus.Bus                           // set by ObserverSetup; nil for recovered runs
 	busReady     chan struct{}                      // closed when eventBus is set
 	awaitInputCh chan orchestrator.AwaitInput // delivers responses to pending awaits
+
+	// logMu protects eventLog and subscribers. Held briefly when recording a
+	// new event (append to eventLog + fan-out to subscribers) and when adding
+	// or removing a subscriber.
+	logMu       sync.Mutex
+	eventLog    []any       // ring buffer of recent events for replay
+	subscribers []chan any  // live subscribers; each receives a copy of every new event
 }
 
 // Orchestrator is the interface for launching workflow runs. It exists so
@@ -185,8 +197,9 @@ func (rm *RunManager) LaunchRun(
 			re.mu.Lock()
 			re.eventBus = b
 			re.mu.Unlock()
-			close(re.busReady)
+			re.startRecorder(b)
 			rm.subscribeEvents(b, re)
+			close(re.busReady)
 		},
 	}
 
@@ -609,13 +622,65 @@ func classifyRecoveredStatus(agents []wfstate.AgentState) string {
 	return RunStatusFailed
 }
 
-// SubscribeRunEvents returns a channel that receives all events emitted by the
-// given run's event bus. The caller must call the returned cancel function to
-// unsubscribe and release resources. The channel is closed when cancel is
-// called or the run completes.
+// startRecorder registers a single set of bus subscriptions that both append
+// each event to the ring buffer and fan out to live subscribers. This replaces
+// the previous per-subscriber bus subscription pattern so that subscribers get
+// a replay of recent events plus a live stream, with a single lock serializing
+// append and fan-out to preserve ordering.
+func (re *runEntry) startRecorder(b *bus.Bus) {
+	record := func(e any) {
+		re.logMu.Lock()
+		// Ring buffer with O(N) eviction. N is bounded by eventLogCap (~200);
+		// the copy keeps the underlying array from growing unboundedly.
+		if len(re.eventLog) >= eventLogCap {
+			copy(re.eventLog, re.eventLog[1:])
+			re.eventLog = re.eventLog[:eventLogCap-1]
+		}
+		re.eventLog = append(re.eventLog, e)
+		for _, ch := range re.subscribers {
+			select {
+			case ch <- e:
+			default:
+				// Drop event if subscriber is too slow.
+			}
+		}
+		re.logMu.Unlock()
+	}
+
+	bus.Subscribe(b, func(e events.WorkflowStarted) { record(e) })
+	bus.Subscribe(b, func(e events.WorkflowCompleted) { record(e) })
+	bus.Subscribe(b, func(e events.WorkflowPaused) { record(e) })
+	bus.Subscribe(b, func(e events.WorkflowWaiting) { record(e) })
+	bus.Subscribe(b, func(e events.WorkflowResuming) { record(e) })
+	bus.Subscribe(b, func(e events.StateStarted) { record(e) })
+	bus.Subscribe(b, func(e events.StateCompleted) { record(e) })
+	bus.Subscribe(b, func(e events.TransitionOccurred) { record(e) })
+	bus.Subscribe(b, func(e events.AgentSpawned) { record(e) })
+	bus.Subscribe(b, func(e events.AgentTerminated) { record(e) })
+	bus.Subscribe(b, func(e events.AgentPaused) { record(e) })
+	bus.Subscribe(b, func(e events.AgentAwaitStarted) { record(e) })
+	bus.Subscribe(b, func(e events.AgentAwaitResumed) { record(e) })
+	bus.Subscribe(b, func(e events.ClaudeStreamOutput) { record(e) })
+	bus.Subscribe(b, func(e events.ClaudeInvocationStarted) { record(e) })
+	bus.Subscribe(b, func(e events.ScriptOutput) { record(e) })
+	bus.Subscribe(b, func(e events.ToolInvocation) { record(e) })
+	bus.Subscribe(b, func(e events.ProgressMessage) { record(e) })
+	bus.Subscribe(b, func(e events.ErrorOccurred) { record(e) })
+}
+
+// SubscribeRunEvents returns a channel that receives a replay of the run's
+// recent events (up to eventLogCap) followed by a live stream of any new
+// events. The caller must call the returned cancel function to unsubscribe
+// and release resources. The channel is closed when cancel is called or the
+// run completes.
 //
-// ctx is used to bound the wait for the event bus to become available (the bus
-// is set asynchronously when the orchestrator starts).
+// For completed or recovered runs with no active bus, the returned channel
+// receives the replay (which is empty for recovered runs since events are not
+// persisted across daemon restarts) and then closes. No error is returned —
+// the blank-log case is expressed as a clean end-of-stream.
+//
+// ctx is used to bound the wait for the event bus to become available on
+// active runs (the bus is set asynchronously when the orchestrator starts).
 func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-chan any, func(), error) {
 	rm.mu.RLock()
 	re, ok := rm.runs[runID]
@@ -624,66 +689,44 @@ func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-c
 		return nil, nil, fmt.Errorf("run %q not found", runID)
 	}
 
-	// Wait for the event bus to be ready (set by ObserverSetup).
-	// For recovered (non-running) runs, busReady is nil.
-	if re.busReady == nil {
-		return nil, nil, fmt.Errorf("run %q has no active event bus", runID)
-	}
-	select {
-	case <-re.busReady:
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
-	}
-
-	re.mu.Lock()
-	b := re.eventBus
-	re.mu.Unlock()
-	if b == nil {
-		return nil, nil, fmt.Errorf("run %q has no active event bus", runID)
-	}
-
-	ch := make(chan any, 256)
-	var cancels []func()
-
-	send := func(event any) {
+	// Wait for the bus to be ready on active runs. Recovered runs have
+	// busReady == nil; skip the wait and deliver an empty replay.
+	if re.busReady != nil {
 		select {
-		case ch <- event:
-		default:
-			// Drop event if client is too slow.
+		case <-re.busReady:
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
 		}
 	}
 
-	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowStarted) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowCompleted) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowPaused) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowWaiting) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.WorkflowResuming) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.StateStarted) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.StateCompleted) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.TransitionOccurred) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentSpawned) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentTerminated) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentPaused) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentAwaitStarted) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.AgentAwaitResumed) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.ClaudeStreamOutput) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.ClaudeInvocationStarted) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.ScriptOutput) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.ToolInvocation) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.ProgressMessage) { send(e) }))
-	cancels = append(cancels, bus.Subscribe(b, func(e events.ErrorOccurred) { send(e) }))
+	re.logMu.Lock()
+	// Buffer sized for the initial replay plus headroom for live events so a
+	// briefly-slow consumer doesn't cause drops during the snapshot-drain phase.
+	ch := make(chan any, len(re.eventLog)+256)
+	for _, e := range re.eventLog {
+		ch <- e
+	}
+	re.subscribers = append(re.subscribers, ch)
+	re.logMu.Unlock()
 
 	var once sync.Once
 	cancel := func() {
 		once.Do(func() {
-			for _, c := range cancels {
-				c()
+			re.logMu.Lock()
+			for i, s := range re.subscribers {
+				if s == ch {
+					re.subscribers = append(re.subscribers[:i], re.subscribers[i+1:]...)
+					break
+				}
 			}
+			re.logMu.Unlock()
 			close(ch)
 		})
 	}
 
-	// Auto-cancel when the run completes.
+	// Auto-cancel when the run completes. For already-done runs (completed
+	// in this process or recovered), doneCh is already closed and this fires
+	// immediately, letting the caller drain the buffered replay and see EOF.
 	go func() {
 		<-re.doneCh
 		cancel()

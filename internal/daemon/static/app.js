@@ -18,6 +18,7 @@
   var outputRunID = document.getElementById("output-run-id");
   var cancelBtn = document.getElementById("cancel-btn");
   var connStatus = document.getElementById("conn-status");
+  var themeToggle = document.getElementById("theme-toggle");
 
   // --- Helpers ---
   function formatElapsed(secs) {
@@ -423,6 +424,24 @@
       refreshAll();
     }, POLL_INTERVAL);
   }
+
+  // --- Theme ---
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  }
+
+  function updateThemeToggleLabel() {
+    themeToggle.textContent = currentTheme() === "dark" ? "Light mode" : "Dark mode";
+  }
+
+  themeToggle.addEventListener("click", function () {
+    var next = currentTheme() === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("raymond-theme", next); } catch (e) {}
+    updateThemeToggleLabel();
+  });
+
+  updateThemeToggleLabel();
 
   // --- Event listeners ---
   cancelBtn.addEventListener("click", function () {

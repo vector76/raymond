@@ -248,6 +248,221 @@ func TestCancelRun_AlreadyTerminal(t *testing.T) {
 	assert.Contains(t, err.Error(), "terminal state")
 }
 
+func TestDeleteRun_RemovesTerminalRun(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	// Seed a tasks dir beside the state dir so we can verify cleanup.
+	tasksRoot := filepath.Join(filepath.Dir(stateDir), "tasks")
+	require.NoError(t, os.MkdirAll(tasksRoot, 0o755))
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+			b.Emit(events.WorkflowCompleted{
+				WorkflowID: workflowID, TotalCostUSD: 0.1, Timestamp: time.Now(),
+			})
+			return nil
+		},
+	}
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+
+	// Create the per-run tasks dir after launch so DeleteRun has something to clean up.
+	runTasksDir := filepath.Join(tasksRoot, runID)
+	require.NoError(t, os.MkdirAll(filepath.Join(runTasksDir, "main"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(runTasksDir, "main", "output.txt"), []byte("hi"), 0o644))
+
+	require.NoError(t, rm.DeleteRun(runID))
+
+	// Removed from tracking.
+	_, ok := rm.GetRun(runID)
+	assert.False(t, ok)
+
+	// Tasks dir wiped.
+	_, statErr := os.Stat(runTasksDir)
+	assert.True(t, os.IsNotExist(statErr), "tasks dir should be removed")
+}
+
+func TestDeleteRun_RemovesRecoveredFailedRun(t *testing.T) {
+	stateDir := ensureStateDir(t)
+
+	// Write a state file simulating a paused/failed run.
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "workflow_recovered_1",
+		ScopeDir:   "/tmp/scope",
+		Agents: []wfstate.AgentState{
+			{ID: "main", CurrentState: "START.md", Status: wfstate.AgentStatusPaused},
+		},
+		StartedAt: time.Now().Add(-time.Hour),
+	}
+	require.NoError(t, wfstate.WriteState(ws.WorkflowID, ws, stateDir))
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	info, ok := rm.GetRun(ws.WorkflowID)
+	require.True(t, ok)
+	require.Equal(t, RunStatusFailed, info.Status)
+
+	require.NoError(t, rm.DeleteRun(ws.WorkflowID))
+
+	// State file gone.
+	_, statErr := os.Stat(filepath.Join(stateDir, ws.WorkflowID+".json"))
+	assert.True(t, os.IsNotExist(statErr))
+
+	// Run no longer tracked.
+	_, ok = rm.GetRun(ws.WorkflowID)
+	assert.False(t, ok)
+}
+
+func TestDeleteRun_RejectsActiveRun(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	fake := &fakeOrchestrator{} // blocks until cancelled
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+
+	err = rm.DeleteRun(runID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRunActive)
+
+	// Still tracked.
+	_, ok := rm.GetRun(runID)
+	assert.True(t, ok)
+}
+
+func TestDeleteRun_NotFound(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	err = rm.DeleteRun("nonexistent")
+	assert.ErrorIs(t, err, ErrRunNotFound)
+}
+
+func TestAgentAwaitStarted_FlipsRunToAwaitingInput(t *testing.T) {
+	// In daemon mode the orchestrator emits AgentAwaitStarted but NOT
+	// WorkflowPaused (siblings keep running). The run-level Status must
+	// still flip to "awaiting_input" so the UI knows to poll for pending
+	// inputs and surface an input card.
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	started := make(chan struct{})
+	cont := make(chan struct{})
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+			b.Emit(events.AgentAwaitStarted{
+				AgentID:   "main",
+				InputID:   "input-1",
+				Prompt:    "Please review",
+				NextState: "NEXT.md",
+				Timestamp: time.Now(),
+			})
+			close(started)
+			<-cont
+			return nil
+		},
+	}
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	<-started
+	// Event delivery is synchronous on the bus, so by the time
+	// AgentAwaitStarted returns the subscriber has already applied its
+	// update. Small sleep only as a safety margin against future async
+	// changes in bus delivery.
+	time.Sleep(20 * time.Millisecond)
+
+	info, ok := rm.GetRun(runID)
+	require.True(t, ok)
+	assert.Equal(t, RunStatusAwaitingInput, info.Status,
+		"run status should flip to awaiting_input when an agent enters <await> in daemon mode")
+	require.Len(t, info.Agents, 1)
+	assert.Equal(t, wfstate.AgentStatusAwaiting, info.Agents[0].Status)
+
+	close(cont)
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+}
+
+func TestStateStarted_FlipsRunBackToRunning(t *testing.T) {
+	// After an awaiting agent receives input and enters its next state,
+	// the run should stop reading as awaiting_input.
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	awaited := make(chan struct{})
+	resumed := make(chan struct{})
+	done := make(chan struct{})
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+			b.Emit(events.AgentAwaitStarted{
+				AgentID:   "main",
+				InputID:   "input-1",
+				NextState: "REVIEW.md",
+				Timestamp: time.Now(),
+			})
+			close(awaited)
+			<-resumed
+			b.Emit(events.StateStarted{
+				AgentID:   "main",
+				StateName: "REVIEW.md",
+				StateType: "markdown",
+				Timestamp: time.Now(),
+			})
+			<-done
+			return nil
+		},
+	}
+
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	require.NoError(t, err)
+
+	<-awaited
+	time.Sleep(20 * time.Millisecond)
+	info, _ := rm.GetRun(runID)
+	require.Equal(t, RunStatusAwaitingInput, info.Status)
+
+	close(resumed)
+	time.Sleep(20 * time.Millisecond)
+	info, _ = rm.GetRun(runID)
+	assert.Equal(t, RunStatusRunning, info.Status,
+		"run should go back to running once the awaiting agent enters its next state")
+
+	close(done)
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+}
+
 func TestWaitForCompletion_BlocksUntilDone(t *testing.T) {
 	stateDir := ensureStateDir(t)
 	scopeDir := t.TempDir()

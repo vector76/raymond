@@ -123,6 +123,115 @@ func TestCreateRun(t *testing.T) {
 	assert.False(t, cr.StartedAt.IsZero())
 }
 
+func TestResolveBudget(t *testing.T) {
+	// Precedence: request > manifest > server > hardcoded constant.
+	assert.Equal(t, 3.0, resolveBudget(3.0, 2.0, 1.0))
+	assert.Equal(t, 2.0, resolveBudget(0, 2.0, 1.0))
+	assert.Equal(t, 1.0, resolveBudget(0, 0, 1.0))
+	assert.Equal(t, daemonDefaultBudgetUSD, resolveBudget(0, 0, 0))
+	// Negative values are treated as unset at every level.
+	assert.Equal(t, 2.0, resolveBudget(-5, 2.0, 1.0))
+}
+
+func TestCreateRun_AppliesServerDefaultBudgetWhenUnspecified(t *testing.T) {
+	// Workflow manifest has no default_budget and the request omits budget;
+	// the daemon must fall back to the server-wide default that serve.go
+	// loads from config.toml. This is what the CLI does when --budget and
+	// the workflow manifest are both silent.
+	scopeDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "START.md"),
+		[]byte("# Start\nDo something."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "workflow.yaml"),
+		[]byte("id: no-budget-workflow\nname: No Budget\ndescription: Has no default_budget\n"),
+		0o644,
+	))
+
+	reg, err := NewRegistry([]string{filepath.Dir(scopeDir)})
+	require.NoError(t, err)
+
+	stateDir := ensureStateDir(t)
+	fake := &fakeOrchestrator{}
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	srv := NewServer(reg, rm, 0)
+	srv.SetDefaultBudget(1000.0) // simulate config.toml budget = 1000
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	body := `{"workflow_id": "no-budget-workflow"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cr))
+
+	stateFile := filepath.Join(stateDir, cr.RunID+".json")
+	raw, err := os.ReadFile(stateFile)
+	require.NoError(t, err)
+	var ws struct {
+		BudgetUSD float64 `json:"budget_usd"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &ws))
+	assert.Equal(t, 1000.0, ws.BudgetUSD)
+}
+
+func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
+	// Workflow has no default_budget and the request omits budget; the daemon
+	// must fall back to daemonDefaultBudgetUSD. Before the fix this landed at
+	// $0.00, which caused the markdown executor's budget-exceeded guard to
+	// synthesize a terminating <result> on the first Claude call, bypassing
+	// the state's await policy and ending the run immediately.
+	scopeDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "START.md"),
+		[]byte("# Start\nDo something."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "workflow.yaml"),
+		[]byte("id: no-budget-workflow\nname: No Budget\ndescription: Has no default_budget\n"),
+		0o644,
+	))
+
+	reg, err := NewRegistry([]string{filepath.Dir(scopeDir)})
+	require.NoError(t, err)
+
+	stateDir := ensureStateDir(t)
+	fake := &fakeOrchestrator{}
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	srv := NewServer(reg, rm, 0)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	body := `{"workflow_id": "no-budget-workflow"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cr))
+
+	// Read the persisted budget from the state file to confirm the fallback.
+	stateFile := filepath.Join(stateDir, cr.RunID+".json")
+	raw, err := os.ReadFile(stateFile)
+	require.NoError(t, err)
+	var ws struct {
+		BudgetUSD float64 `json:"budget_usd"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &ws))
+	assert.Equal(t, daemonDefaultBudgetUSD, ws.BudgetUSD)
+}
+
 func TestCreateRun_InvalidJSON(t *testing.T) {
 	_, ts, _ := newTestServer(t)
 
@@ -253,6 +362,91 @@ func TestCancelRun(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cancelResp))
 	assert.Equal(t, cr.RunID, cancelResp.RunID)
 	assert.Equal(t, "cancelled", cancelResp.Status)
+}
+
+func TestDeleteRun_HTTP(t *testing.T) {
+	_, ts, fake := newTestServer(t)
+
+	// Completes immediately so the run is deletable.
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		opts.ObserverSetup(b)
+		b.Emit(events.WorkflowCompleted{
+			WorkflowID: workflowID, TotalCostUSD: 0, Timestamp: time.Now(),
+		})
+		return nil
+	}
+
+	body := `{"workflow_id": "test-workflow"}`
+	createResp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
+
+	// Wait for the run to reach terminal status.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		getResp, getErr := http.Get(ts.URL + "/runs/" + cr.RunID)
+		require.NoError(t, getErr)
+		var r runResponse
+		json.NewDecoder(getResp.Body).Decode(&r)
+		getResp.Body.Close()
+		if r.Status == "completed" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/runs/"+cr.RunID, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	// Subsequent GET should 404.
+	getResp, err := http.Get(ts.URL + "/runs/" + cr.RunID)
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
+}
+
+func TestDeleteRun_HTTP_Active(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+
+	body := `{"workflow_id": "test-workflow"}`
+	createResp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
+
+	// Let the orchestrator start so the run is "running".
+	time.Sleep(50 * time.Millisecond)
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/runs/"+cr.RunID, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestDeleteRun_HTTP_NotFound(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/runs/nonexistent", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestHTTPCancelRun_NotFound(t *testing.T) {

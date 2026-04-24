@@ -66,6 +66,10 @@ type MCPServer struct {
 	runManager      *RunManager
 	pendingRegistry *PendingRegistry
 	hasElicitation  bool
+	// defaultBudget mirrors Server.defaultBudget: a server-wide budget
+	// fallback applied when the raymond_launch tool call and the workflow
+	// manifest both leave it unset.
+	defaultBudget float64
 
 	// Encoder for writing to the output stream (set by Serve).
 	enc   *json.Encoder
@@ -91,6 +95,12 @@ func NewMCPServer(reg *Registry, rm *RunManager) *MCPServer {
 // tools.
 func (s *MCPServer) SetPendingRegistry(pr *PendingRegistry) {
 	s.pendingRegistry = pr
+}
+
+// SetDefaultBudget configures the server-wide fallback budget for MCP launch
+// tool calls. See Server.SetDefaultBudget for semantics.
+func (s *MCPServer) SetDefaultBudget(budget float64) {
+	s.defaultBudget = budget
 }
 
 // HasElicitation reports whether the MCP client declared elicitation support
@@ -504,10 +514,7 @@ func (s *MCPServer) toolRun(ctx context.Context, args json.RawMessage) mcpToolRe
 		))
 	}
 
-	budget := params.Budget
-	if budget <= 0 {
-		budget = entry.DefaultBudget
-	}
+	budget := resolveBudget(params.Budget, entry.DefaultBudget, s.defaultBudget)
 
 	runID, err := s.runManager.LaunchRun(
 		context.Background(),

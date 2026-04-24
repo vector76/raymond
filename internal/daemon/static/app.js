@@ -181,11 +181,15 @@
     // prefix so a truncated id is not a useful differentiator. Full id is in
     // the title attribute for hover.
     var label = formatLaunchTime(run);
+    var active = isActive(run.status);
 
     card.innerHTML =
       '<div class="run-card-header">' +
         '<span class="run-id" title="' + escapeHTML(run.run_id || "") + '">' + escapeHTML(label) + '</span>' +
         '<span class="badge badge-' + escapeHTML(run.status) + '">' + escapeHTML(run.status) + '</span>' +
+        (active
+          ? ''
+          : '<button class="run-delete" type="button" title="Delete run" aria-label="Delete run">×</button>') +
       '</div>' +
       '<div class="run-workflow">' + escapeHTML(run.workflow_id || "unknown") + '</div>' +
       '<div class="run-meta">' +
@@ -199,6 +203,28 @@
     card.addEventListener("click", function () {
       selectRun(run.run_id, run.status);
     });
+
+    var delBtn = card.querySelector(".run-delete");
+    if (delBtn) {
+      delBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (!confirm("Delete run " + run.run_id + "?\n\nThis removes its state file and tasks directory from .raymond/.")) {
+          return;
+        }
+        delBtn.disabled = true;
+        deleteRun(run.run_id).then(function () {
+          if (selectedRunID === run.run_id) {
+            selectedRunID = null;
+            outputSection.style.display = "none";
+            if (eventSource) { eventSource.close(); eventSource = null; }
+          }
+          refreshAll();
+        }).catch(function (err) {
+          delBtn.disabled = false;
+          alert("Delete failed: " + err.message);
+        });
+      });
+    }
 
     container.appendChild(card);
   }
@@ -403,6 +429,14 @@
         break;
       case "agent_terminated":
         line = "[terminated] agent " + (evt.AgentID || "?");
+        if (evt.ResultPayload) {
+          // The result payload is the reason the agent stopped — either the
+          // workflow author's chosen result string, or a system-synthesized
+          // message (e.g. "Workflow terminated: budget exceeded ..." from
+          // the markdown executor's budget guard). Surface it so a run that
+          // ends unexpectedly doesn't read as just "terminated".
+          line += " — " + evt.ResultPayload;
+        }
         break;
       case "transition_occurred":
         // Suppress self-transitions: a paused agent leaves CurrentState
@@ -440,6 +474,19 @@
 
   function cancelRun(runID) {
     return apiPost("/runs/" + encodeURIComponent(runID) + "/cancel", {});
+  }
+
+  function deleteRun(runID) {
+    return fetch("/runs/" + encodeURIComponent(runID), { method: "DELETE" })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.json().then(function (body) {
+            throw new Error(body.error || ("HTTP " + res.status));
+          }, function () {
+            throw new Error("HTTP " + res.status);
+          });
+        }
+      });
   }
 
   function launchWorkflow(workflowID, input) {

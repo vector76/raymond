@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
+	debugobs "github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/orchestrator"
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
@@ -210,12 +213,18 @@ func (rm *RunManager) LaunchRun(
 		DefaultModel: model,
 		Quiet:        true,
 		OnAwait:      "pause",
+		// Match the CLI's default behavior so raw Claude stream output
+		// lands on disk (.raymond/debug/<run_id>/*.jsonl). Without this,
+		// daemon-launched runs produce no artifact for diagnosing what
+		// the agent actually emitted.
+		Debug: true,
 		ObserverSetup: func(b *bus.Bus) {
 			re.mu.Lock()
 			re.eventBus = b
 			re.mu.Unlock()
 			re.startRecorder(b)
 			rm.subscribeEvents(b, re)
+			debugobs.New(b)
 			close(re.busReady)
 		},
 	}
@@ -301,6 +310,10 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 		if len(re.info.Agents) > 0 {
 			re.info.CurrentState = re.info.Agents[0].CurrentState
 		}
+		// An agent that just entered a new state has cleared its await
+		// status; recompute the run-level status so the UI moves the run
+		// out of "awaiting_input" when the last awaiting agent resumes.
+		recomputeRunStatus(&re.info)
 	})
 
 	// Track cost updates.
@@ -359,6 +372,11 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 				break
 			}
 		}
+		// Daemon mode doesn't emit WorkflowPaused for a single await
+		// (siblings keep running), so the run-level status won't flip to
+		// "awaiting_input" via that path. Recompute here so the UI polls
+		// the pending-inputs endpoint and surfaces an input card.
+		recomputeRunStatus(&re.info)
 	})
 
 	// Workflow completed: all agents terminated.
@@ -387,6 +405,27 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 		// Otherwise it's a failure-pause (rate limit, error, etc.).
 		re.info.Status = RunStatusFailed
 	})
+}
+
+// recomputeRunStatus flips a non-terminal run between "running" and
+// "awaiting_input" based on whether any agent currently has
+// AgentStatusAwaiting. Terminal statuses (completed, failed, cancelled)
+// are left alone — once a run is done it does not un-terminate just
+// because an event handler runs late.
+//
+// Caller must hold re.mu.
+func recomputeRunStatus(info *RunInfo) {
+	switch info.Status {
+	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+		return
+	}
+	for _, a := range info.Agents {
+		if a.Status == wfstate.AgentStatusAwaiting {
+			info.Status = RunStatusAwaitingInput
+			return
+		}
+	}
+	info.Status = RunStatusRunning
 }
 
 // GetRun returns a snapshot of the run's current state.
@@ -484,6 +523,59 @@ func (rm *RunManager) CancelRun(runID string) error {
 		re.info.ElapsedDuration = time.Since(re.info.StartedAt)
 	}
 	re.mu.Unlock()
+
+	return nil
+}
+
+// ErrRunActive is returned by DeleteRun when the run is still running or
+// awaiting input. The caller must cancel the run before it can be deleted.
+var ErrRunActive = errors.New("run is active")
+
+// DeleteRun removes a terminal run from tracking and deletes its on-disk
+// artifacts: the state file (if still present) and the per-run tasks
+// directory. Returns ErrRunNotFound if the run is unknown and ErrRunActive
+// if the run is still running or awaiting input.
+//
+// A missing tasks directory is not an error (RemoveAll is idempotent), but
+// a RemoveAll failure (e.g. EACCES) is surfaced so the caller can tell the
+// user. The tasks directory is only cleaned up at the default layout,
+// `<raymond-dir>/tasks/<workflow_id>/` (sibling of the state directory);
+// runs that used a custom task_folder_pattern pointing elsewhere will need
+// manual cleanup.
+func (rm *RunManager) DeleteRun(runID string) error {
+	rm.mu.Lock()
+	re, ok := rm.runs[runID]
+	if !ok {
+		rm.mu.Unlock()
+		return fmt.Errorf("%w: %q", ErrRunNotFound, runID)
+	}
+
+	re.mu.Lock()
+	status := re.info.Status
+	re.mu.Unlock()
+
+	switch status {
+	case RunStatusRunning, RunStatusAwaitingInput:
+		rm.mu.Unlock()
+		return fmt.Errorf("%w: %q (status: %s); cancel it first", ErrRunActive, runID, status)
+	}
+
+	delete(rm.runs, runID)
+	rm.mu.Unlock()
+
+	// Remove the state file (idempotent if already deleted on completion).
+	if err := wfstate.DeleteState(runID, rm.stateDir); err != nil {
+		return fmt.Errorf("delete state: %w", err)
+	}
+
+	// Remove the per-run tasks directory if it lives in the default
+	// location beside the state directory. Best-effort: a missing
+	// directory is fine; a RemoveAll failure is surfaced so the caller
+	// can tell the user.
+	tasksDir := filepath.Join(filepath.Dir(wfstate.GetStateDir(rm.stateDir)), "tasks", runID)
+	if err := os.RemoveAll(tasksDir); err != nil {
+		return fmt.Errorf("delete tasks dir %s: %w", tasksDir, err)
+	}
 
 	return nil
 }

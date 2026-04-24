@@ -229,7 +229,37 @@ section h2 {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 4px;
+}
+
+.run-card-header .run-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-delete {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: var(--radius);
+}
+
+.run-delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--bg);
+}
+
+.run-delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .run-id {

@@ -45,6 +45,16 @@ are appended to (not replacing) the config file's root.`,
 				return err
 			}
 
+			// Also load the main [raymond] section so server-wide defaults
+			// (budget in particular) match what `ray run` would pick up for
+			// the same config.toml. Without this, daemon launches that omit
+			// budget fall through to a hardcoded default instead of the
+			// project's configured value.
+			raymondCfg, err := config.LoadConfig("")
+			if err != nil {
+				return err
+			}
+
 			cliArgs := config.ServeCLIArgs{
 				Roots:   roots,
 				MCP:     mcp,
@@ -98,8 +108,39 @@ are appended to (not replacing) the config file's root.`,
 				return fmt.Errorf("initializing run manager: %w", err)
 			}
 
+			// Wire up the pending-input registry so that <await> transitions
+			// run in daemon mode: the orchestrator registers each pending
+			// input via AwaitCallback and the HTTP layer exposes it for the
+			// UI to surface and answer. Without this, awaits fall back to
+			// the CLI pause path (return AwaitingInputError, wait for
+			// --resume on the next process), which never triggers in a
+			// long-running daemon.
+			raymondDir, err := config.FindRaymondDir(cwd, true)
+			if err != nil {
+				return fmt.Errorf("resolving .raymond dir for pending registry: %w", err)
+			}
+			pr, err := daemon.NewPendingRegistry(raymondDir)
+			if err != nil {
+				return fmt.Errorf("initializing pending registry: %w", err)
+			}
+			rm.SetPendingRegistry(pr)
+
+			// Extract the configured budget. Validated values are always
+			// positive floats (see config.ValidateConfig); any other shape
+			// or absence means "unset" and we leave the server default at
+			// 0, which lets the resolver fall back to the hardcoded
+			// constant.
+			var configBudget float64
+			if v, ok := raymondCfg["budget"]; ok {
+				if f, ok := v.(float64); ok && f > 0 {
+					configBudget = f
+				}
+			}
+
 			if !merged.NoHTTP {
 				srv := daemon.NewServer(reg, rm, merged.Port)
+				srv.SetPendingRegistry(pr)
+				srv.SetDefaultBudget(configBudget)
 				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
 				go func() {
 					if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -116,6 +157,8 @@ are appended to (not replacing) the config file's root.`,
 			mcpDone := make(chan struct{})
 			if merged.MCP {
 				mcpSrv := daemon.NewMCPServer(reg, rm)
+				mcpSrv.SetPendingRegistry(pr)
+				mcpSrv.SetDefaultBudget(configBudget)
 				go func() {
 					defer close(mcpDone)
 					if err := mcpSrv.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {

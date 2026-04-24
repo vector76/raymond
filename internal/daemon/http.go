@@ -16,6 +16,30 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
+// daemonDefaultBudgetUSD is the ultimate fallback budget when no other
+// source (request, workflow manifest, or server-wide config) supplies one.
+// Matches the CLI default (internal/cli/cli.go defaultBudgetUSD) so
+// daemon-launched runs don't halt immediately on the zero-budget guard
+// in the markdown executor.
+const daemonDefaultBudgetUSD = 10.0
+
+// resolveBudget picks the effective budget for a run, walking the
+// precedence ladder: explicit request budget > workflow manifest
+// default_budget > server-wide config budget > hardcoded constant. Zero
+// and negative values are treated as "unset" at every level.
+func resolveBudget(reqBudget, manifestBudget, serverBudget float64) float64 {
+	if reqBudget > 0 {
+		return reqBudget
+	}
+	if manifestBudget > 0 {
+		return manifestBudget
+	}
+	if serverBudget > 0 {
+		return serverBudget
+	}
+	return daemonDefaultBudgetUSD
+}
+
 // Server is the HTTP REST API server for the Raymond daemon. It exposes
 // workflow discovery, run management, and SSE event streaming endpoints.
 type Server struct {
@@ -23,6 +47,11 @@ type Server struct {
 	runManager      *RunManager
 	pendingRegistry *PendingRegistry
 	httpServer      *http.Server
+	// defaultBudget is the server-wide budget fallback applied when the
+	// request body omits budget and the workflow manifest has no
+	// default_budget. Configured by SetDefaultBudget; defaults to 0
+	// (meaning the handler falls through to daemonDefaultBudgetUSD).
+	defaultBudget float64
 }
 
 // NewServer creates a Server wired to the given registry and run manager.
@@ -41,6 +70,7 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	mux.HandleFunc("GET /runs/{id}/output", s.handleRunOutput)
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
+	mux.HandleFunc("DELETE /runs/{id}", s.handleDeleteRun)
 	mux.HandleFunc("GET /runs/{id}/pending-inputs", s.handleListPendingInputs)
 	mux.HandleFunc("POST /runs/{id}/inputs/{input_id}", s.handleDeliverInput)
 
@@ -60,6 +90,14 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 // endpoints.
 func (s *Server) SetPendingRegistry(pr *PendingRegistry) {
 	s.pendingRegistry = pr
+}
+
+// SetDefaultBudget configures the server-wide fallback budget used when the
+// launch request and the workflow manifest both leave it unset. Pass 0 to
+// fall back to daemonDefaultBudgetUSD. Typically called by the serve command
+// after loading .raymond/config.toml.
+func (s *Server) SetDefaultBudget(budget float64) {
+	s.defaultBudget = budget
 }
 
 // Handler returns the HTTP handler (for testing with httptest).
@@ -188,10 +226,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	budget := req.Budget
-	if budget <= 0 {
-		budget = entry.DefaultBudget
-	}
+	budget := resolveBudget(req.Budget, entry.DefaultBudget, s.defaultBudget)
 
 	// Use a background context so the run outlives the HTTP request.
 	runID, err := s.runManager.LaunchRun(
@@ -302,6 +337,24 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cancelRunResponse{RunID: id, Status: info.Status})
 }
 
+func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	if err := s.runManager.DeleteRun(id); err != nil {
+		switch {
+		case errors.Is(err, ErrRunNotFound):
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
+		case errors.Is(err, ErrRunActive):
+			writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error()})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request) {
 	if s.pendingRegistry == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "pending input registry not configured"})
@@ -369,7 +422,7 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {

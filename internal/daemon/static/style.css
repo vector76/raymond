@@ -40,10 +40,19 @@
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-secondary);
-  padding: 4px 10px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border-radius: var(--radius);
-  font-size: 12px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
 }
 
 .theme-toggle:hover {
@@ -167,6 +176,8 @@ section h2 {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
   font-family: inherit;
   font-size: 13px;
   resize: vertical;
@@ -292,6 +303,8 @@ section h2 {
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
   font-family: inherit;
   font-size: 13px;
   resize: vertical;

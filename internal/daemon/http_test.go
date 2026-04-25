@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1254,6 +1255,316 @@ func TestListPendingInputs_DisplayOnlyReturnsStagedFiles(t *testing.T) {
 	assert.Equal(t, int64(4096), inputs[0].StagedFiles[0].Size)
 	assert.Equal(t, "application/pdf", inputs[0].StagedFiles[0].ContentType)
 	assert.Equal(t, "display", inputs[0].StagedFiles[0].Source)
+}
+
+// setupAgentTaskFolder rewrites the run's state file so the named agent's
+// TaskFolder points at taskFolder. The handleGetInputFile handler reads this
+// to compute the on-disk inputs subdirectory.
+func setupAgentTaskFolder(t *testing.T, srv *Server, runID, agentID, taskFolder string) {
+	t.Helper()
+	statePath := filepath.Join(srv.runManager.stateDir, runID+".json")
+	raw, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	var ws wfstate.WorkflowState
+	require.NoError(t, json.Unmarshal(raw, &ws))
+	updated := false
+	for i := range ws.Agents {
+		if ws.Agents[i].ID == agentID {
+			ws.Agents[i].TaskFolder = taskFolder
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		ws.Agents = append(ws.Agents, wfstate.AgentState{ID: agentID, TaskFolder: taskFolder})
+	}
+	out, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(statePath, out, 0o644))
+}
+
+// writeInputFile writes a file into the on-disk inputs subdirectory for an
+// input step, mirroring what the staging code (bead 4) and the upload code
+// (later beads) do at runtime.
+func writeInputFile(t *testing.T, taskFolder, inputID, name string, content []byte) string {
+	t.Helper()
+	dir := filepath.Join(taskFolder, "inputs", inputID)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+	return path
+}
+
+func TestGetInputFile_ServesStagedDisplayFileForPendingInput(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+	content := []byte("\x89PNG\r\n\x1a\nfake-png-bytes")
+	writeInputFile(t, taskFolder, "inp-pending", "chart.png", content)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-pending",
+		Prompt:    "review",
+		CreatedAt: time.Now(),
+		StagedFiles: []wfstate.FileRecord{
+			{Name: "chart.png", Size: int64(len(content)), ContentType: "image/png", Source: "display"},
+		},
+	}))
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-pending/files/chart.png")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, content, body)
+	assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
+}
+
+func TestGetInputFile_ServesUploadedFileForResolvedInput(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+	content := []byte("name,value\nfoo,1\nbar,2\n")
+	writeInputFile(t, taskFolder, "inp-resolved", "data.csv", content)
+
+	statePath := filepath.Join(srv.runManager.stateDir, runID+".json")
+	raw, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	var ws wfstate.WorkflowState
+	require.NoError(t, json.Unmarshal(raw, &ws))
+	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
+		InputID: "inp-resolved",
+		AgentID: "main",
+		UploadedFiles: []wfstate.FileRecord{
+			{Name: "data.csv", Size: int64(len(content)), ContentType: "text/csv", Source: "upload"},
+		},
+		ResolvedAt: time.Now(),
+	})
+	out, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(statePath, out, 0o644))
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-resolved/files/data.csv")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, content, body)
+	assert.Equal(t, "text/csv", resp.Header.Get("Content-Type"))
+}
+
+func TestGetInputFile_RejectsPathTraversal(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-trav",
+		CreatedAt: time.Now(),
+		StagedFiles: []wfstate.FileRecord{
+			{Name: "ok.txt", Size: 0, ContentType: "text/plain", Source: "display"},
+		},
+	}))
+	// Write a sibling file outside the input subdirectory; the handler must
+	// not surface it via a "../" traversal.
+	siblingDir := filepath.Join(taskFolder, "inputs", "other")
+	require.NoError(t, os.MkdirAll(siblingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(siblingDir, "secret.txt"), []byte("nope"), 0o644))
+
+	// %2e%2e%2f decodes to "../" — Go's ServeMux URL-decodes wildcard segments
+	// before matching, so the traversal is observed by the handler. Plain "../"
+	// is collapsed by the mux's cleanPath redirect before we ever see it, which
+	// is also a valid defense; we test the encoded form because that is the
+	// path that actually reaches the handler logic.
+	for _, encoded := range []string{
+		"%2e%2e%2fother%2fsecret.txt", // ../other/secret.txt (encoded slashes)
+		"%2e%2e/other/secret.txt",     // .. via encoded dots, plain slashes
+	} {
+		resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-trav/files/" + encoded)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, encoded)
+		resp.Body.Close()
+	}
+}
+
+func TestGetInputFile_DefaultDispositionIsAttachment(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+	writeInputFile(t, taskFolder, "inp-disp", "report.pdf", []byte("%PDF-1.4 fake"))
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-disp",
+		CreatedAt: time.Now(),
+		StagedFiles: []wfstate.FileRecord{
+			{Name: "report.pdf", Size: 13, ContentType: "application/pdf", Source: "display"},
+		},
+	}))
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-disp/files/report.pdf")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	cd := resp.Header.Get("Content-Disposition")
+	assert.True(t, strings.HasPrefix(cd, "attachment;"), "expected attachment disposition by default, got %q", cd)
+	assert.Contains(t, cd, `filename="report.pdf"`)
+}
+
+func TestGetInputFile_InlineHonoredForAllowlistedMime(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+	writeInputFile(t, taskFolder, "inp-inline", "preview.png", []byte("png-bytes"))
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-inline",
+		CreatedAt: time.Now(),
+		StagedFiles: []wfstate.FileRecord{
+			{Name: "preview.png", Size: 9, ContentType: "image/png", Source: "display"},
+		},
+	}))
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-inline/files/preview.png?disposition=inline")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	cd := resp.Header.Get("Content-Disposition")
+	assert.True(t, strings.HasPrefix(cd, "inline;"), "expected inline for image/png, got %q", cd)
+}
+
+func TestGetInputFile_InlineDeniedForNonAllowlistedMime(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	cases := []struct {
+		name        string
+		recordName  string
+		contentType string
+	}{
+		{"html_forced_attachment", "page.html", "text/html"},
+		{"svg_forced_attachment", "icon.svg", "image/svg+xml"},
+		{"plain_forced_attachment", "notes.txt", "text/plain"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inputID := fmt.Sprintf("inp-deny-%d", i)
+			writeInputFile(t, taskFolder, inputID, tc.recordName, []byte("x"))
+			require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+				RunID:     runID,
+				AgentID:   "main",
+				InputID:   inputID,
+				CreatedAt: time.Now(),
+				StagedFiles: []wfstate.FileRecord{
+					{Name: tc.recordName, Size: 1, ContentType: tc.contentType, Source: "display"},
+				},
+			}))
+
+			resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/" + inputID + "/files/" + tc.recordName + "?disposition=inline")
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			cd := resp.Header.Get("Content-Disposition")
+			assert.True(t, strings.HasPrefix(cd, "attachment;"),
+				"%s: expected attachment despite ?disposition=inline, got %q", tc.contentType, cd)
+		})
+	}
+}
+
+func TestGetInputFile_DefenseHeadersAlwaysPresent(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+	writeInputFile(t, taskFolder, "inp-headers", "img.png", []byte("png"))
+	writeInputFile(t, taskFolder, "inp-headers", "page.html", []byte("<html></html>"))
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-headers",
+		CreatedAt: time.Now(),
+		StagedFiles: []wfstate.FileRecord{
+			{Name: "img.png", Size: 3, ContentType: "image/png", Source: "display"},
+			{Name: "page.html", Size: 13, ContentType: "text/html", Source: "display"},
+		},
+	}))
+
+	for _, urlPath := range []string{
+		"/runs/" + runID + "/inputs/inp-headers/files/img.png",
+		"/runs/" + runID + "/inputs/inp-headers/files/img.png?disposition=inline",
+		"/runs/" + runID + "/inputs/inp-headers/files/page.html",
+		"/runs/" + runID + "/inputs/inp-headers/files/page.html?disposition=inline",
+	} {
+		resp, err := http.Get(ts.URL + urlPath)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode, urlPath)
+		assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"), urlPath)
+		assert.Equal(t, "default-src 'none'; sandbox", resp.Header.Get("Content-Security-Policy"), urlPath)
+		resp.Body.Close()
+	}
+}
+
+func TestGetInputFile_UnknownRun(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/runs/no-such-run/inputs/inp/files/foo.txt")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestGetInputFile_UnknownInput(t *testing.T) {
+	_, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/no-such-input/files/foo.txt")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestGetInputFile_UnknownFileInCatalog(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+	// File on disk but not in the catalog — must 404 (catalog is authoritative).
+	writeInputFile(t, taskFolder, "inp-cat", "ghost.txt", []byte("hi"))
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-cat",
+		CreatedAt: time.Now(),
+	}))
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-cat/files/ghost.txt")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestCamelToSnake(t *testing.T) {

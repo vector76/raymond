@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -94,6 +97,7 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("DELETE /runs/{id}", s.handleDeleteRun)
 	mux.HandleFunc("GET /runs/{id}/pending-inputs", s.handleListPendingInputs)
 	mux.HandleFunc("GET /runs/{id}/inputs/{input_id}/files", s.handleListInputFiles)
+	mux.HandleFunc("GET /runs/{id}/inputs/{input_id}/files/{path...}", s.handleGetInputFile)
 	mux.HandleFunc("POST /runs/{id}/inputs/{input_id}", s.handleDeliverInput)
 
 	// Serve embedded static UI files at root; API routes above take precedence.
@@ -484,6 +488,164 @@ func (s *Server) handleListInputFiles(w http.ResponseWriter, r *http.Request) {
 	all = append(all, ri.StagedFiles...)
 	all = append(all, ri.UploadedFiles...)
 	writeJSON(w, http.StatusOK, fileRecordsToMetadata(all))
+}
+
+// inlineAllowedContentTypes is the server-defined allowlist of MIME types for
+// which `?disposition=inline` is honored on the file content endpoint. Any
+// content type outside this list is forced to `Content-Disposition: attachment`
+// regardless of the requested disposition, so script-bearing types such as
+// `text/html` and `image/svg+xml` are never rendered inline by the server.
+//
+// Defense headers are always emitted alongside file responses:
+//   - `X-Content-Type-Options: nosniff` prevents browsers from second-guessing
+//     the recorded Content-Type and downgrading our allowlist decision.
+//   - `Content-Security-Policy: default-src 'none'; sandbox` is the strictest
+//     CSP that still lets browsers display the allowlisted image and PDF
+//     types inline. `default-src 'none'` blocks any subresource fetches and
+//     script execution; `sandbox` (no `allow-*` tokens) drops the response
+//     into a unique opaque origin without scripts, forms, popups, or
+//     same-origin privileges. Images and the built-in PDF viewer render
+//     fine under this policy because they require no subresource loads.
+var inlineAllowedContentTypes = map[string]bool{
+	"image/png":       true,
+	"image/jpeg":      true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"application/pdf": true,
+}
+
+// handleGetInputFile serves GET /runs/{id}/inputs/{input_id}/files/{path...}.
+// It looks up the recorded FileRecord for `path` (first via the pending
+// registry, then via the resolved-input history) and serves the on-disk file
+// at `<task folder>/inputs/<input_id>/<path>`. The recorded content type is
+// authoritative — the server does not re-sniff at view time. Path traversal
+// is rejected by SafeJoinUnderDir.
+func (s *Server) handleGetInputFile(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	inputID := r.PathValue("input_id")
+	path := r.PathValue("path")
+
+	if _, ok := s.runManager.GetRun(runID); !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q not found", runID)})
+		return
+	}
+
+	records, agentID, ok := s.lookupInputCatalog(runID, inputID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", inputID, runID)})
+		return
+	}
+
+	taskFolder, ok := s.lookupAgentTaskFolder(runID, agentID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: "task folder not assigned for input"})
+		return
+	}
+	inputDir := filepath.Join(taskFolder, "inputs", inputID)
+
+	// Validate the path against the input subdirectory before matching it to
+	// the catalog: traversal attempts must return 400 even when the cleaned
+	// form would happen to match a catalog name.
+	fullPath, err := SafeJoinUnderDir(inputDir, path)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+
+	var record *wfstate.FileRecord
+	for i := range records {
+		if records[i].Name == path {
+			record = &records[i]
+			break
+		}
+	}
+	if record == nil {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("file %q not found", path)})
+		return
+	}
+
+	f, err := os.Open(fullPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("file %q not found", path)})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "open file: " + err.Error()})
+		return
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "stat file: " + err.Error()})
+		return
+	}
+
+	disposition := "attachment"
+	if r.URL.Query().Get("disposition") == "inline" && isInlineAllowed(record.ContentType) {
+		disposition = "inline"
+	}
+
+	contentType := record.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, record.Name))
+
+	http.ServeContent(w, r, record.Name, info.ModTime(), f)
+}
+
+// lookupInputCatalog returns the FileRecords associated with an input — first
+// trying the pending registry, then the run-state's resolved-input history.
+// Also returns the owning agent ID so the caller can resolve the on-disk
+// task folder. A pending entry whose run ID does not match runID is treated
+// as "not found" (consistent with handleListInputFiles); we never fall
+// through to the resolved history in that case, so a cross-run input ID
+// collision cannot leak the wrong file catalog.
+func (s *Server) lookupInputCatalog(runID, inputID string) ([]wfstate.FileRecord, string, bool) {
+	if s.pendingRegistry != nil {
+		if pi, ok := s.pendingRegistry.Get(inputID); ok {
+			if pi.RunID != runID {
+				return nil, "", false
+			}
+			return pi.StagedFiles, pi.AgentID, true
+		}
+	}
+	ri, ok := s.runManager.LookupResolvedInput(runID, inputID)
+	if !ok {
+		return nil, "", false
+	}
+	all := make([]wfstate.FileRecord, 0, len(ri.StagedFiles)+len(ri.UploadedFiles))
+	all = append(all, ri.StagedFiles...)
+	all = append(all, ri.UploadedFiles...)
+	return all, ri.AgentID, true
+}
+
+// lookupAgentTaskFolder reads the persisted workflow state and returns the
+// TaskFolder assigned to the agent identified by agentID.
+func (s *Server) lookupAgentTaskFolder(runID, agentID string) (string, bool) {
+	ws, err := wfstate.ReadState(runID, s.runManager.stateDir)
+	if err != nil {
+		return "", false
+	}
+	for _, a := range ws.Agents {
+		if a.ID == agentID && a.TaskFolder != "" {
+			return a.TaskFolder, true
+		}
+	}
+	return "", false
+}
+
+func isInlineAllowed(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return inlineAllowedContentTypes[strings.ToLower(mediaType)]
 }
 
 func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {

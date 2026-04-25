@@ -24,6 +24,10 @@ type Transition struct {
 	Target     string            // filename; empty for result tags
 	Attributes map[string]string // e.g. {"return": "NEXT.md"}
 	Payload    string            // content between tags; used by result and await tags
+
+	// FileAffordance is the parsed file descriptor for <await> transitions.
+	// Zero value means text-only and is the result for non-<await> tags.
+	FileAffordance FileAffordance
 }
 
 // ParseTransitions extracts all recognized transition tags from output.
@@ -49,6 +53,7 @@ func ParseTransitions(output string) ([]Transition, error) {
 		attrs := parseAttributes(attrsStr)
 
 		var target, payload string
+		var fileAffordance FileAffordance
 		if tagName == "result" {
 			payload = content
 		} else if tagName == "await" {
@@ -66,6 +71,11 @@ func ParseTransitions(output string) ([]Transition, error) {
 			}
 			target = next
 			payload = content
+			fa, err := ParseFileAffordance(attrs)
+			if err != nil {
+				return nil, fmt.Errorf("tag <await>: %w", err)
+			}
+			fileAffordance = fa
 		} else {
 			target = strings.TrimSpace(content)
 			if target == "" {
@@ -83,10 +93,11 @@ func ParseTransitions(output string) ([]Transition, error) {
 		}
 
 		transitions = append(transitions, Transition{
-			Tag:        tagName,
-			Target:     target,
-			Attributes: attrs,
-			Payload:    payload,
+			Tag:            tagName,
+			Target:         target,
+			Attributes:     attrs,
+			Payload:        payload,
+			FileAffordance: fileAffordance,
 		})
 	}
 

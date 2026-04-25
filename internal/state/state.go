@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/vector76/raymond/internal/config"
+	"github.com/vector76/raymond/internal/parsing"
 )
 
 // Agent status constants. The zero value ("") means the agent is active.
@@ -103,6 +104,12 @@ type AgentState struct {
 	AwaitTimeoutNext string `json:"await_timeout_next,omitempty"` // state to transition to on timeout
 	AwaitInputID     string `json:"await_input_id,omitempty"`     // unique identifier for correlating the response
 
+	// File-affordance fields — populated when a file-bearing await is entered.
+	// All zero-value safe for backward compatibility.
+	AwaitFileAffordance *parsing.FileAffordance `json:"await_file_affordance,omitempty"` // descriptor parsed from the <await> tag
+	AwaitStagedFiles    []FileRecord            `json:"await_staged_files,omitempty"`    // display files staged into the input subdirectory at await-entry
+	AwaitEnteredAt      time.Time               `json:"await_entered_at,omitempty"`      // wall-clock time the await was entered; stamped onto the ResolvedInput record on resume
+
 	// Transient execution fields — not persisted to JSON.
 	// Set by the orchestrator / transition handlers; consumed by the next executor step.
 	ForkSessionID  *string           `json:"-"` // session to fork from (call transitions)
@@ -123,14 +130,15 @@ type LaunchParams struct {
 
 // WorkflowState is the top-level structure persisted for each workflow.
 type WorkflowState struct {
-	WorkflowID   string         `json:"workflow_id"`
-	ScopeDir     string         `json:"scope_dir"`
-	TotalCostUSD float64        `json:"total_cost_usd"`
-	BudgetUSD    float64        `json:"budget_usd"`
-	StartedAt    time.Time      `json:"started_at"` // wall-clock launch time, recovered after restarts
-	Agents       []AgentState   `json:"agents"`
-	ForkCounters map[string]int `json:"fork_counters,omitempty"` // per-parent agent fork counters
-	LaunchParams *LaunchParams  `json:"launch_params,omitempty"` // persisted for --resume restoration
+	WorkflowID     string          `json:"workflow_id"`
+	ScopeDir       string          `json:"scope_dir"`
+	TotalCostUSD   float64         `json:"total_cost_usd"`
+	BudgetUSD      float64         `json:"budget_usd"`
+	StartedAt      time.Time       `json:"started_at"` // wall-clock launch time, recovered after restarts
+	Agents         []AgentState    `json:"agents"`
+	ForkCounters   map[string]int  `json:"fork_counters,omitempty"`   // per-parent agent fork counters
+	LaunchParams   *LaunchParams   `json:"launch_params,omitempty"`   // persisted for --resume restoration
+	ResolvedInputs []ResolvedInput `json:"resolved_inputs,omitempty"` // durable history of resolved input steps (file-bearing or text-only)
 
 	// Transient: populated by HandleResult when an agent terminates; consumed by orchestrator.
 	AgentTerminationResults map[string]string `json:"-"`

@@ -864,6 +864,25 @@ func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-c
 	return ch, cancel, nil
 }
 
+// LookupResolvedInput reads the workflow state for runID and returns the
+// ResolvedInput record matching inputID, if any. The state file is the source
+// of truth after a pending input has been claimed and removed from the
+// pending registry. Returns false when the state cannot be read or no such
+// resolved input exists.
+func (rm *RunManager) LookupResolvedInput(runID, inputID string) (*wfstate.ResolvedInput, bool) {
+	ws, err := wfstate.ReadState(runID, rm.stateDir)
+	if err != nil {
+		return nil, false
+	}
+	for i := range ws.ResolvedInputs {
+		if ws.ResolvedInputs[i].InputID == inputID {
+			ri := ws.ResolvedInputs[i]
+			return &ri, true
+		}
+	}
+	return nil, false
+}
+
 // SetPendingRegistry configures the pending input registry. When set, runs
 // are launched in daemon mode with an AwaitCallback that registers pending
 // inputs automatically.

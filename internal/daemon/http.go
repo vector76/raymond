@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/vector76/raymond/internal/manifest"
+	"github.com/vector76/raymond/internal/parsing"
+	wfstate "github.com/vector76/raymond/internal/state"
 )
 
 //go:embed static
@@ -91,6 +93,7 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
 	mux.HandleFunc("DELETE /runs/{id}", s.handleDeleteRun)
 	mux.HandleFunc("GET /runs/{id}/pending-inputs", s.handleListPendingInputs)
+	mux.HandleFunc("GET /runs/{id}/inputs/{input_id}/files", s.handleListInputFiles)
 	mux.HandleFunc("POST /runs/{id}/inputs/{input_id}", s.handleDeliverInput)
 
 	// Serve embedded static UI files at root; API routes above take precedence.
@@ -185,11 +188,47 @@ type cancelRunResponse struct {
 }
 
 type pendingInputResponse struct {
-	RunID     string  `json:"run_id"`
-	InputID   string  `json:"input_id"`
-	Prompt    string  `json:"prompt"`
-	CreatedAt string  `json:"created_at"`
-	TimeoutAt *string `json:"timeout_at,omitempty"`
+	RunID          string                  `json:"run_id"`
+	InputID        string                  `json:"input_id"`
+	Prompt         string                  `json:"prompt"`
+	CreatedAt      string                  `json:"created_at"`
+	TimeoutAt      *string                 `json:"timeout_at,omitempty"`
+	FileAffordance *fileAffordanceResponse `json:"file_affordance,omitempty"`
+	StagedFiles    []inputFileMetadata     `json:"staged_files,omitempty"`
+}
+
+// inputFileMetadata is the JSON shape used by the file-listing endpoint, the
+// pending-inputs response, and (later) the run-history endpoint to describe a
+// single file associated with an input step.
+type inputFileMetadata struct {
+	Name        string `json:"name"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"content_type,omitempty"`
+	Source      string `json:"source,omitempty"`
+}
+
+type fileSlotResponse struct {
+	Name string   `json:"name"`
+	MIME []string `json:"mime,omitempty"`
+}
+
+type bucketSpecResponse struct {
+	MaxCount       int      `json:"max_count,omitempty"`
+	MaxSizePerFile int64    `json:"max_size_per_file,omitempty"`
+	MaxTotalSize   int64    `json:"max_total_size,omitempty"`
+	MIME           []string `json:"mime,omitempty"`
+}
+
+type displayFileResponse struct {
+	SourcePath  string `json:"source_path"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+type fileAffordanceResponse struct {
+	Mode         string                `json:"mode"`
+	Slots        []fileSlotResponse    `json:"slots,omitempty"`
+	Bucket       *bucketSpecResponse   `json:"bucket,omitempty"`
+	DisplayFiles []displayFileResponse `json:"display_files,omitempty"`
 }
 
 type deliverInputRequest struct {
@@ -395,10 +434,12 @@ func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request)
 	resp := make([]pendingInputResponse, len(inputs))
 	for i, pi := range inputs {
 		resp[i] = pendingInputResponse{
-			RunID:     pi.RunID,
-			InputID:   pi.InputID,
-			Prompt:    pi.Prompt,
-			CreatedAt: pi.CreatedAt.Format(time.RFC3339),
+			RunID:          pi.RunID,
+			InputID:        pi.InputID,
+			Prompt:         pi.Prompt,
+			CreatedAt:      pi.CreatedAt.Format(time.RFC3339),
+			FileAffordance: fileAffordanceToResponse(pi.FileAffordance),
+			StagedFiles:    fileRecordsToMetadata(pi.StagedFiles),
 		}
 		if pi.TimeoutAt != nil {
 			t := pi.TimeoutAt.Format(time.RFC3339)
@@ -406,6 +447,43 @@ func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleListInputFiles serves GET /runs/{id}/inputs/{input_id}/files. It
+// returns the file catalog for an input — staged display files and any
+// uploaded files. Pending inputs (still awaiting a response) are resolved
+// through the pending registry; once the input has been delivered, its
+// catalog is sourced from the workflow state's ResolvedInputs history.
+func (s *Server) handleListInputFiles(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	inputID := r.PathValue("input_id")
+
+	if _, ok := s.runManager.GetRun(runID); !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q not found", runID)})
+		return
+	}
+
+	if s.pendingRegistry != nil {
+		if pi, ok := s.pendingRegistry.Get(inputID); ok {
+			if pi.RunID != runID {
+				writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", inputID, runID)})
+				return
+			}
+			writeJSON(w, http.StatusOK, fileRecordsToMetadata(pi.StagedFiles))
+			return
+		}
+	}
+
+	ri, ok := s.runManager.LookupResolvedInput(runID, inputID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", inputID, runID)})
+		return
+	}
+
+	all := make([]wfstate.FileRecord, 0, len(ri.StagedFiles)+len(ri.UploadedFiles))
+	all = append(all, ri.StagedFiles...)
+	all = append(all, ri.UploadedFiles...)
+	writeJSON(w, http.StatusOK, fileRecordsToMetadata(all))
 }
 
 func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
@@ -519,6 +597,77 @@ func marshalSSEEvent(event any) ([]byte, error) {
 	}
 
 	return json.Marshal(envelope)
+}
+
+// fileRecordsToMetadata converts state.FileRecord slices into the JSON
+// inputFileMetadata shape shared by the listing and pending-inputs endpoints.
+// Always returns a non-nil slice so the listing endpoint serializes empty
+// catalogs as `[]` rather than `null`; pending-input responses still elide
+// the field via the struct tag's omitempty (encoding/json treats len-0
+// slices as empty for that purpose).
+func fileRecordsToMetadata(records []wfstate.FileRecord) []inputFileMetadata {
+	out := make([]inputFileMetadata, len(records))
+	for i, r := range records {
+		out[i] = inputFileMetadata{
+			Name:        r.Name,
+			Size:        r.Size,
+			ContentType: r.ContentType,
+			Source:      r.Source,
+		}
+	}
+	return out
+}
+
+// fileAffordanceToResponse projects a parsing.FileAffordance into the JSON
+// shape exposed by the API. Returns nil for a nil affordance and for a
+// zero-value (text-only) affordance with no display files, so the caller can
+// rely on omitempty.
+func fileAffordanceToResponse(fa *parsing.FileAffordance) *fileAffordanceResponse {
+	if fa == nil {
+		return nil
+	}
+	if fa.Mode == parsing.ModeTextOnly && len(fa.DisplayFiles) == 0 {
+		return nil
+	}
+	resp := &fileAffordanceResponse{Mode: modeToString(fa.Mode)}
+	if len(fa.Slots) > 0 {
+		resp.Slots = make([]fileSlotResponse, len(fa.Slots))
+		for i, s := range fa.Slots {
+			resp.Slots[i] = fileSlotResponse{Name: s.Name, MIME: s.MIME}
+		}
+	}
+	if fa.Mode == parsing.ModeBucket {
+		b := fa.Bucket
+		resp.Bucket = &bucketSpecResponse{
+			MaxCount:       b.MaxCount,
+			MaxSizePerFile: b.MaxSizePerFile,
+			MaxTotalSize:   b.MaxTotalSize,
+			MIME:           b.MIME,
+		}
+	}
+	if len(fa.DisplayFiles) > 0 {
+		resp.DisplayFiles = make([]displayFileResponse, len(fa.DisplayFiles))
+		for i, d := range fa.DisplayFiles {
+			resp.DisplayFiles[i] = displayFileResponse{
+				SourcePath:  d.SourcePath,
+				DisplayName: d.DisplayName,
+			}
+		}
+	}
+	return resp
+}
+
+func modeToString(m parsing.Mode) string {
+	switch m {
+	case parsing.ModeSlot:
+		return "slot"
+	case parsing.ModeBucket:
+		return "bucket"
+	case parsing.ModeDisplayOnly:
+		return "display_only"
+	default:
+		return "text_only"
+	}
 }
 
 // camelToSnake converts CamelCase to snake_case.

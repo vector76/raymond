@@ -894,6 +894,9 @@ func TestLoadServeConfigParsesAllFields(t *testing.T) {
 		"mcp = true",
 		"no_http = true",
 		`workdir = "wd"`,
+		"max_file_size = 1024",
+		"max_total_size = 4096",
+		"max_file_count = 8",
 	}, "\n"))
 
 	cfg, err := config.LoadServeConfig(root)
@@ -908,6 +911,32 @@ func TestLoadServeConfigParsesAllFields(t *testing.T) {
 	wantWD, _ := filepath.EvalSymlinks(filepath.Join(root, "wd"))
 	gotWD, _ := filepath.EvalSymlinks(cfg.Workdir)
 	assert.Equal(t, wantWD, gotWD)
+	assert.Equal(t, int64(1024), cfg.MaxFileSize)
+	assert.Equal(t, int64(4096), cfg.MaxTotalSize)
+	assert.Equal(t, 8, cfg.MaxFileCount)
+}
+
+func TestLoadServeConfigUploadCapsRejectsNonPositive(t *testing.T) {
+	for _, key := range []string{"max_file_size", "max_total_size", "max_file_count"} {
+		for _, v := range []int{0, -1} {
+			root := t.TempDir()
+			writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\n%s = %d\n", key, v))
+			_, err := config.LoadServeConfig(root)
+			require.Error(t, err, "%s=%d must be rejected", key, v)
+			assert.Contains(t, err.Error(), key)
+		}
+	}
+}
+
+func TestLoadServeConfigUploadCapsRejectsWrongType(t *testing.T) {
+	for _, key := range []string{"max_file_size", "max_total_size", "max_file_count"} {
+		root := t.TempDir()
+		writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\n%s = \"big\"\n", key))
+		_, err := config.LoadServeConfig(root)
+		require.Error(t, err, "%s must reject string", key)
+		assert.Contains(t, err.Error(), key)
+		assert.Contains(t, err.Error(), "integer")
+	}
 }
 
 func TestLoadServeConfigResolvesRelativeRootAgainstConfigDir(t *testing.T) {
@@ -1123,4 +1152,37 @@ func TestMergeServeConfigWorkdirFromFile(t *testing.T) {
 		config.ServeCLIArgs{},
 	)
 	assert.Equal(t, "/file/wd", merged.Workdir)
+}
+
+func TestMergeServeConfigUploadCapsCLIWinsWhenPositive(t *testing.T) {
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{MaxFileSize: 100, MaxTotalSize: 200, MaxFileCount: 3},
+		config.ServeCLIArgs{MaxFileSize: 1000, MaxTotalSize: 2000, MaxFileCount: 30},
+	)
+	assert.Equal(t, int64(1000), merged.MaxFileSize)
+	assert.Equal(t, int64(2000), merged.MaxTotalSize)
+	assert.Equal(t, 30, merged.MaxFileCount)
+}
+
+func TestMergeServeConfigUploadCapsFromFileWhenCLIZero(t *testing.T) {
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{MaxFileSize: 100, MaxTotalSize: 200, MaxFileCount: 3},
+		config.ServeCLIArgs{},
+	)
+	assert.Equal(t, int64(100), merged.MaxFileSize)
+	assert.Equal(t, int64(200), merged.MaxTotalSize)
+	assert.Equal(t, 3, merged.MaxFileCount)
+}
+
+func TestMergeServeConfigUploadCapsZeroWhenNeitherSet(t *testing.T) {
+	// Zero in the merged config signals "unset" so the daemon falls
+	// through to its hardcoded defaults — the resolver, not the merge
+	// step, owns the final fallback.
+	merged := config.MergeServeConfig(
+		config.ServeFileConfig{},
+		config.ServeCLIArgs{},
+	)
+	assert.Equal(t, int64(0), merged.MaxFileSize)
+	assert.Equal(t, int64(0), merged.MaxTotalSize)
+	assert.Equal(t, 0, merged.MaxFileCount)
 }

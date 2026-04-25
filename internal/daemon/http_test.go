@@ -137,6 +137,100 @@ func TestResolveBudget(t *testing.T) {
 	assert.Equal(t, 2.0, resolveBudget(-5, 2.0, 1.0))
 }
 
+func TestResolveUploadCaps_PerAwaitOverridesAll(t *testing.T) {
+	// Bucket-mode awaits with their own caps win over server config and
+	// the hardcoded fallback. Per-slot MIME isn't a size cap, so slot mode
+	// is exercised separately below.
+	fa := &parsing.FileAffordance{
+		Mode: parsing.ModeBucket,
+		Bucket: parsing.BucketSpec{
+			MaxSizePerFile: 7,
+			MaxTotalSize:   77,
+			MaxCount:       3,
+		},
+	}
+	perFile, total, count := resolveUploadCaps(fa, 50, 500, 20)
+	assert.Equal(t, int64(7), perFile)
+	assert.Equal(t, int64(77), total)
+	assert.Equal(t, 3, count)
+}
+
+func TestResolveUploadCaps_ServerConfigUsedWhenAwaitUnset(t *testing.T) {
+	// Bucket await with all caps unset (zero) inherits the server config.
+	fa := &parsing.FileAffordance{Mode: parsing.ModeBucket}
+	perFile, total, count := resolveUploadCaps(fa, 42, 420, 9)
+	assert.Equal(t, int64(42), perFile)
+	assert.Equal(t, int64(420), total)
+	assert.Equal(t, 9, count)
+}
+
+func TestResolveUploadCaps_HardcodedFallbackWhenServerUnset(t *testing.T) {
+	// Both per-await and server are zero (or negative) — fall through to
+	// the daemonDefaultMax* constants.
+	perFile, total, count := resolveUploadCaps(nil, 0, 0, 0)
+	assert.Equal(t, daemonDefaultMaxFileSize, perFile)
+	assert.Equal(t, daemonDefaultMaxTotalSize, total)
+	assert.Equal(t, daemonDefaultMaxFileCount, count)
+
+	// Negatives at the server level are treated as unset, same as zero.
+	perFile, total, count = resolveUploadCaps(nil, -1, -1, -1)
+	assert.Equal(t, daemonDefaultMaxFileSize, perFile)
+	assert.Equal(t, daemonDefaultMaxTotalSize, total)
+	assert.Equal(t, daemonDefaultMaxFileCount, count)
+}
+
+func TestResolveUploadCaps_PartialAwaitOverridesPerCap(t *testing.T) {
+	// An await may override only some of the three caps; the rest fall
+	// through to the server config (or hardcoded fallback for any cap the
+	// server also leaves unset). This is the "mix and match" precedence
+	// case the design calls out for bucket-mode awaits.
+	fa := &parsing.FileAffordance{
+		Mode: parsing.ModeBucket,
+		Bucket: parsing.BucketSpec{
+			MaxSizePerFile: 11,
+			// MaxTotalSize and MaxCount left unset.
+		},
+	}
+	perFile, total, count := resolveUploadCaps(fa, 99, 999, 5)
+	assert.Equal(t, int64(11), perFile) // per-await override
+	assert.Equal(t, int64(999), total)  // server config
+	assert.Equal(t, 5, count)           // server config
+}
+
+func TestResolveUploadCaps_SlotModeInheritsServerDefaults(t *testing.T) {
+	// Slot-mode awaits don't carry size/count caps of their own; they must
+	// inherit the server-wide defaults so an upload to a slot is bounded
+	// by the same ceiling as a bucket upload that also leaves caps unset.
+	fa := &parsing.FileAffordance{
+		Mode: parsing.ModeSlot,
+		Slots: []parsing.SlotSpec{
+			{Name: "resume.pdf", MIME: []string{"application/pdf"}},
+		},
+	}
+	perFile, total, count := resolveUploadCaps(fa, 200, 2000, 4)
+	assert.Equal(t, int64(200), perFile)
+	assert.Equal(t, int64(2000), total)
+	assert.Equal(t, 4, count)
+}
+
+func TestResolveUploadCaps_NilAffordanceUsesServerThenFallback(t *testing.T) {
+	// A nil FileAffordance (e.g. text-only await misrouted through the
+	// upload path) is bounded by the server config, then the hardcoded
+	// defaults — never unbounded.
+	perFile, total, count := resolveUploadCaps(nil, 33, 333, 6)
+	assert.Equal(t, int64(33), perFile)
+	assert.Equal(t, int64(333), total)
+	assert.Equal(t, 6, count)
+}
+
+func TestSetDefaultUploadCapsAffectsServerState(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.SetDefaultUploadCaps(123, 456, 7)
+	assert.Equal(t, int64(123), srv.defaultMaxFileSize)
+	assert.Equal(t, int64(456), srv.defaultMaxTotalSize)
+	assert.Equal(t, 7, srv.defaultMaxFileCount)
+}
+
 func TestCreateRun_AppliesServerDefaultBudgetWhenUnspecified(t *testing.T) {
 	// Workflow manifest has no default_budget and the request omits budget;
 	// the daemon must fall back to the server-wide default that serve.go

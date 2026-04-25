@@ -19,11 +19,14 @@ import (
 // newServeCmd builds the "serve" subcommand that starts the Raymond daemon.
 func (c *CLI) newServeCmd() *cobra.Command {
 	var (
-		roots   []string
-		port    int
-		mcp     bool
-		noHTTP  bool
-		workdir string
+		roots        []string
+		port         int
+		mcp          bool
+		noHTTP       bool
+		workdir      string
+		maxFileSize  int64
+		maxTotalSize int64
+		maxFileCount int
 	)
 
 	cmd := &cobra.Command{
@@ -36,9 +39,10 @@ The daemon scans the configured --root directories for workflow directories
 and zip archives containing workflow.yaml manifests, then serves them to
 clients.
 
-Defaults for --root, --port, --mcp, --no-http, and --workdir may also be set
-in .raymond/config.toml under the [raymond.serve] section. CLI --root values
-are appended to (not replacing) the config file's root.`,
+Defaults for --root, --port, --mcp, --no-http, --workdir, --max-file-size,
+--max-total-size, and --max-file-count may also be set in .raymond/config.toml
+under the [raymond.serve] section. CLI --root values are appended to (not
+replacing) the config file's root.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fileCfg, err := config.LoadServeConfig("")
 			if err != nil {
@@ -56,10 +60,13 @@ are appended to (not replacing) the config file's root.`,
 			}
 
 			cliArgs := config.ServeCLIArgs{
-				Roots:   roots,
-				MCP:     mcp,
-				NoHTTP:  noHTTP,
-				Workdir: workdir,
+				Roots:        roots,
+				MCP:          mcp,
+				NoHTTP:       noHTTP,
+				Workdir:      workdir,
+				MaxFileSize:  maxFileSize,
+				MaxTotalSize: maxTotalSize,
+				MaxFileCount: maxFileCount,
 			}
 			if cmd.Flags().Changed("port") {
 				p := port
@@ -141,6 +148,7 @@ are appended to (not replacing) the config file's root.`,
 				srv := daemon.NewServer(reg, rm, merged.Port)
 				srv.SetPendingRegistry(pr)
 				srv.SetDefaultBudget(configBudget)
+				srv.SetDefaultUploadCaps(merged.MaxFileSize, merged.MaxTotalSize, merged.MaxFileCount)
 				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
 				go func() {
 					if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -191,6 +199,9 @@ are appended to (not replacing) the config file's root.`,
 	f.BoolVar(&mcp, "mcp", false, "enable MCP transport")
 	f.BoolVar(&noHTTP, "no-http", false, "disable HTTP server (requires --mcp)")
 	f.StringVar(&workdir, "workdir", "", "default working directory for workflow runs")
+	f.Int64Var(&maxFileSize, "max-file-size", 0, "default maximum bytes per uploaded file when an <await> declares no per-file cap (0 means use [raymond.serve].max_file_size or daemon default)")
+	f.Int64Var(&maxTotalSize, "max-total-size", 0, "default maximum total bytes per upload submission when an <await> declares no total cap (0 means use [raymond.serve].max_total_size or daemon default)")
+	f.IntVar(&maxFileCount, "max-file-count", 0, "default maximum file count per upload submission when an <await> declares no count cap (0 means use [raymond.serve].max_file_count or daemon default)")
 
 	return cmd
 }

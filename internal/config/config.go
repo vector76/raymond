@@ -429,42 +429,62 @@ const DefaultServePort = 8080
 // Path fields (Root, Workdir) are resolved to absolute paths at load time,
 // relative to the directory containing .raymond/. A pointer or empty/false
 // value indicates the option was not set in the config file.
+//
+// Upload caps (MaxFileSize, MaxTotalSize, MaxFileCount) are zero when the
+// option was not set; the serve resolver treats zero as "unset" and falls
+// through to the daemon's hardcoded defaults.
 type ServeFileConfig struct {
-	Root    string
-	Port    *int
-	MCP     bool
-	NoHTTP  bool
-	Workdir string
+	Root         string
+	Port         *int
+	MCP          bool
+	NoHTTP       bool
+	Workdir      string
+	MaxFileSize  int64
+	MaxTotalSize int64
+	MaxFileCount int
 }
 
 // ServeCLIArgs holds values parsed from `ray serve` command-line flags.
 // Roots holds raw --root paths (multiple allowed). Port is nil when --port
 // was not explicitly set. Workdir is "" when --workdir was not specified.
+//
+// Upload caps are zero when the corresponding flag was not provided; merge
+// behavior is "CLI wins if positive, otherwise file value."
 type ServeCLIArgs struct {
-	Roots   []string
-	Port    *int
-	MCP     bool
-	NoHTTP  bool
-	Workdir string
+	Roots        []string
+	Port         *int
+	MCP          bool
+	NoHTTP       bool
+	Workdir      string
+	MaxFileSize  int64
+	MaxTotalSize int64
+	MaxFileCount int
 }
 
 // MergedServeConfig is the resolved configuration the serve command uses.
-// Roots are absolute paths, deduplicated.
+// Roots are absolute paths, deduplicated. Upload caps are zero when neither
+// CLI nor config file set them; the daemon resolver treats zero as "unset".
 type MergedServeConfig struct {
-	Roots   []string
-	Port    int
-	MCP     bool
-	NoHTTP  bool
-	Workdir string
+	Roots        []string
+	Port         int
+	MCP          bool
+	NoHTTP       bool
+	Workdir      string
+	MaxFileSize  int64
+	MaxTotalSize int64
+	MaxFileCount int
 }
 
 // serveKnownKeys is the recognized set of keys in the [raymond.serve] section.
 var serveKnownKeys = map[string]bool{
-	"root":    true,
-	"port":    true,
-	"mcp":     true,
-	"no_http": true,
-	"workdir": true,
+	"root":           true,
+	"port":           true,
+	"mcp":            true,
+	"no_http":        true,
+	"workdir":        true,
+	"max_file_size":  true,
+	"max_total_size": true,
+	"max_file_count": true,
 }
 
 // validateServeSection validates and normalizes the raw [raymond.serve] map.
@@ -539,7 +559,53 @@ func validateServeSection(raw map[string]any, configFile string) (ServeFileConfi
 		out.Workdir = s
 	}
 
+	if v, ok := raw["max_file_size"]; ok {
+		n, err := toInt64Positive(v)
+		if err != nil {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'max_file_size' in %s: %v", configFile, err,
+			)}
+		}
+		out.MaxFileSize = n
+	}
+	if v, ok := raw["max_total_size"]; ok {
+		n, err := toInt64Positive(v)
+		if err != nil {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'max_total_size' in %s: %v", configFile, err,
+			)}
+		}
+		out.MaxTotalSize = n
+	}
+	if v, ok := raw["max_file_count"]; ok {
+		n, err := toInt64Positive(v)
+		if err != nil {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'max_file_count' in %s: %v", configFile, err,
+			)}
+		}
+		out.MaxFileCount = int(n)
+	}
+
 	return out, nil
+}
+
+// toInt64Positive converts a TOML numeric value into a strictly-positive
+// int64. TOML integers arrive as int64 when decoded into map[string]any.
+func toInt64Positive(v any) (int64, error) {
+	var n int64
+	switch x := v.(type) {
+	case int64:
+		n = x
+	case int:
+		n = int64(x)
+	default:
+		return 0, fmt.Errorf("expected integer, got %T", v)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("must be positive, got %d", n)
+	}
+	return n, nil
 }
 
 // LoadServeConfig loads the [raymond.serve] subsection from
@@ -661,7 +727,35 @@ func MergeServeConfig(file ServeFileConfig, args ServeCLIArgs) MergedServeConfig
 	} else {
 		merged.Workdir = file.Workdir
 	}
+
+	// Upload caps: CLI value wins when positive; otherwise file value.
+	// Zero in the merged config means "unset" — the daemon resolver falls
+	// through to its hardcoded defaults.
+	merged.MaxFileSize = pickPositiveInt64(args.MaxFileSize, file.MaxFileSize)
+	merged.MaxTotalSize = pickPositiveInt64(args.MaxTotalSize, file.MaxTotalSize)
+	merged.MaxFileCount = pickPositiveInt(args.MaxFileCount, file.MaxFileCount)
+
 	return merged
+}
+
+func pickPositiveInt64(cli, file int64) int64 {
+	if cli > 0 {
+		return cli
+	}
+	if file > 0 {
+		return file
+	}
+	return 0
+}
+
+func pickPositiveInt(cli, file int) int {
+	if cli > 0 {
+		return cli
+	}
+	if file > 0 {
+		return file
+	}
+	return 0
 }
 
 // configTemplate is the content of a newly generated config file.
@@ -720,6 +814,18 @@ const configTemplate = `# Raymond configuration file
 
 # Default working directory for workflow runs (default: process cwd)
 # workdir = ""
+
+# Maximum bytes per uploaded file when an <await> does not declare its own
+# limit (default: 10485760, i.e. 10 MiB)
+# max_file_size = 10485760
+
+# Maximum total bytes per upload submission when an <await> does not declare
+# its own limit (default: 104857600, i.e. 100 MiB)
+# max_total_size = 104857600
+
+# Maximum number of files per upload submission when an <await> does not
+# declare its own limit (default: 10)
+# max_file_count = 10
 `
 
 // configUnsafeDefaultsTemplate is structurally identical to configTemplate but
@@ -778,6 +884,18 @@ dangerously_skip_permissions = true
 
 # Default working directory for workflow runs (default: process cwd)
 # workdir = ""
+
+# Maximum bytes per uploaded file when an <await> does not declare its own
+# limit (default: 10485760, i.e. 10 MiB)
+# max_file_size = 10485760
+
+# Maximum total bytes per upload submission when an <await> does not declare
+# its own limit (default: 104857600, i.e. 100 MiB)
+# max_total_size = 104857600
+
+# Maximum number of files per upload submission when an <await> does not
+# declare its own limit (default: 10)
+# max_file_count = 10
 `
 
 // InitConfig creates .raymond/config.toml at the project root with all options

@@ -30,6 +30,16 @@ var staticFiles embed.FS
 // in the markdown executor.
 const daemonDefaultBudgetUSD = 10.0
 
+// Upload-cap fallbacks applied when neither the await nor the server
+// configuration supplies a value. These are intentionally conservative; an
+// operator who needs higher limits sets them via CLI flag or config file,
+// and a workflow can raise its own ceiling per-await on a bucket-mode <await>.
+const (
+	daemonDefaultMaxFileSize  int64 = 10 * 1024 * 1024  // 10 MiB per file
+	daemonDefaultMaxTotalSize int64 = 100 * 1024 * 1024 // 100 MiB per submission
+	daemonDefaultMaxFileCount       = 10
+)
+
 // validateInputMode enforces the manifest's input.mode constraint at launch.
 // mode: required rejects an empty input; mode: none rejects a non-empty input.
 // mode: optional (or any unknown value, defensively) accepts anything.
@@ -64,6 +74,53 @@ func resolveBudget(reqBudget, manifestBudget, serverBudget float64) float64 {
 	return daemonDefaultBudgetUSD
 }
 
+// resolveUploadCaps picks the effective upload caps for an await, mirroring
+// resolveBudget's precedence ladder: per-await override (from
+// FileAffordance.Bucket) > server config > hardcoded constant. Zero and
+// negative values are treated as "unset" at every level.
+//
+// Bucket mode is the only level at which an await may raise or lower the
+// caps; slot-mode and display-only awaits leave the per-await values at zero
+// and therefore inherit the server-wide defaults for size and count. Per-slot
+// MIME allowlists ride on parsing.SlotSpec and are enforced at upload time
+// independently of these size caps.
+//
+// perAwait may be nil for awaits that did not declare a file affordance; the
+// caller still gets the server-wide caps so a misuse of the upload endpoint
+// is bounded by the same defaults as a declared bucket await.
+func resolveUploadCaps(perAwait *parsing.FileAffordance, serverPerFile, serverTotal int64, serverCount int) (perFile, total int64, count int) {
+	var awaitPerFile, awaitTotal int64
+	var awaitCount int
+	if perAwait != nil && perAwait.Mode == parsing.ModeBucket {
+		awaitPerFile = perAwait.Bucket.MaxSizePerFile
+		awaitTotal = perAwait.Bucket.MaxTotalSize
+		awaitCount = perAwait.Bucket.MaxCount
+	}
+	return pickInt64Cap(awaitPerFile, serverPerFile, daemonDefaultMaxFileSize),
+		pickInt64Cap(awaitTotal, serverTotal, daemonDefaultMaxTotalSize),
+		pickIntCap(awaitCount, serverCount, daemonDefaultMaxFileCount)
+}
+
+func pickInt64Cap(awaitVal, serverVal, fallback int64) int64 {
+	if awaitVal > 0 {
+		return awaitVal
+	}
+	if serverVal > 0 {
+		return serverVal
+	}
+	return fallback
+}
+
+func pickIntCap(awaitVal, serverVal, fallback int) int {
+	if awaitVal > 0 {
+		return awaitVal
+	}
+	if serverVal > 0 {
+		return serverVal
+	}
+	return fallback
+}
+
 // Server is the HTTP REST API server for the Raymond daemon. It exposes
 // workflow discovery, run management, and SSE event streaming endpoints.
 type Server struct {
@@ -76,6 +133,12 @@ type Server struct {
 	// default_budget. Configured by SetDefaultBudget; defaults to 0
 	// (meaning the handler falls through to daemonDefaultBudgetUSD).
 	defaultBudget float64
+	// Server-wide upload caps applied when an <await> does not declare its
+	// own. Configured by SetDefaultUploadCaps; zero values mean "unset" and
+	// let resolveUploadCaps fall through to the daemonDefaultMax* constants.
+	defaultMaxFileSize  int64
+	defaultMaxTotalSize int64
+	defaultMaxFileCount int
 }
 
 // NewServer creates a Server wired to the given registry and run manager.
@@ -124,6 +187,17 @@ func (s *Server) SetPendingRegistry(pr *PendingRegistry) {
 // after loading .raymond/config.toml.
 func (s *Server) SetDefaultBudget(budget float64) {
 	s.defaultBudget = budget
+}
+
+// SetDefaultUploadCaps configures the server-wide fallback upload caps used
+// when an <await> declares no caps of its own. Any non-positive value is
+// treated as "unset" and lets resolveUploadCaps fall through to the
+// daemonDefaultMax* constants. Typically called by the serve command after
+// loading .raymond/config.toml and merging CLI flags.
+func (s *Server) SetDefaultUploadCaps(perFile, total int64, count int) {
+	s.defaultMaxFileSize = perFile
+	s.defaultMaxTotalSize = total
+	s.defaultMaxFileCount = count
 }
 
 // Handler returns the HTTP handler (for testing with httptest).

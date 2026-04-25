@@ -104,8 +104,161 @@ management, streaming output, and human-in-the-loop input delivery.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/runs/{id}/pending-inputs` | List pending human input requests for a run. Each entry includes `run_id`, `input_id`, `prompt`, `created_at`, and optional `timeout_at`. |
-| `POST` | `/runs/{id}/inputs/{input_id}` | Deliver a human response. Accepts JSON body: `{"response": "..."}`. Returns `{"run_id", "input_id", "status": "resumed"}`. |
+| `GET` | `/runs/{id}/pending-inputs` | List pending human input requests for a run. Each entry includes `run_id`, `input_id`, `prompt`, `created_at`, optional `timeout_at`, and (for file-bearing awaits) optional `file_affordance` and `staged_files` blocks. |
+| `POST` | `/runs/{id}/inputs/{input_id}` | Deliver a human response. Accepts either `application/json` (text only) or `multipart/form-data` (text plus files). Returns `{"run_id", "input_id", "status": "resumed"}`. |
+| `GET` | `/runs/{id}/inputs/{input_id}/files` | List files associated with an input — display files staged at await entry plus any uploaded files once the input has been delivered. |
+| `GET` | `/runs/{id}/inputs/{input_id}/files/{path}` | Serve the named file from the input's subdirectory. Optional `?disposition=inline` is honored only for vetted MIME types (see below). |
+
+#### File-bearing awaits
+
+When an `<await>` declares file affordances (see
+[workflow-protocol.md](workflow-protocol.md) for the attribute syntax), the
+endpoints above carry the additional shape described here. The on-disk layout
+is `<task folder>/inputs/<input_id>/`, populated by the runtime at await entry
+(display files) and on submission (uploads).
+
+**Pending-inputs extension.** Each entry may include:
+
+```json
+{
+  "run_id": "...",
+  "input_id": "...",
+  "prompt": "...",
+  "created_at": "...",
+  "timeout_at": "...",
+  "file_affordance": {
+    "mode": "slot" | "bucket" | "display_only",
+    "slots": [{"name": "resume.pdf", "mime": ["application/pdf"]}],
+    "bucket": {"max_count": 5, "max_size_per_file": 10485760, "max_total_size": 52428800, "mime": ["image/png"]},
+    "display_files": [{"source_path": "out/report.pdf", "display_name": "Final Report"}]
+  },
+  "staged_files": [
+    {"name": "Final Report", "size": 12345, "content_type": "application/pdf", "source": "display"}
+  ]
+}
+```
+
+`file_affordance` and `staged_files` are omitted for text-only awaits.
+
+**Listing endpoint.** `GET /runs/{id}/inputs/{input_id}/files` returns an array
+of file metadata for the input — staged display files plus uploaded files
+(after delivery). Pending inputs are sourced from the pending registry; once
+delivered, the catalog comes from the run state's resolved-input history.
+
+```json
+[
+  {"name": "Final Report", "size": 12345, "content_type": "application/pdf", "source": "display"},
+  {"name": "scan.png",     "size": 67890, "content_type": "image/png",       "source": "upload"}
+]
+```
+
+`source` is either `"display"` (staged from the workflow's task folder) or
+`"upload"` (provided by the user).
+
+**Content endpoint.** `GET /runs/{id}/inputs/{input_id}/files/{path}` serves
+the named file. The `path` segment is resolved strictly within the input's
+subdirectory; traversal attempts (`..`, absolute paths, symlinks escaping the
+subdirectory) return 400.
+
+The recorded content type (sniffed once at upload or staging time via Go's
+`http.DetectContentType`) is authoritative — the server does not re-sniff at
+view time. Every file response carries:
+
+- `Content-Type: <recorded type>` (or `application/octet-stream` if unknown)
+- `Content-Disposition: attachment; filename="<name>"` by default
+- `X-Content-Type-Options: nosniff`
+- `Content-Security-Policy: default-src 'none'; sandbox`
+
+Passing `?disposition=inline` switches to `inline` **only** when the recorded
+content type is on the inline allowlist. The allowlist is server-defined and
+not author-controllable:
+
+- `image/png`
+- `image/jpeg`
+- `image/gif`
+- `image/webp`
+- `application/pdf`
+
+Anything outside the allowlist is served as `attachment` regardless of the
+query parameter, so script-bearing types such as `text/html` and
+`image/svg+xml` are never rendered inline by the server.
+
+**Multipart upload contract.** The deliver endpoint dispatches on
+`Content-Type`:
+
+- `application/json` — text-only, current behavior preserved (`{"response": "..."}`).
+- `multipart/form-data` — text plus file parts.
+
+Multipart requests use these field conventions:
+
+- `response` (text field) — the human-facing text response. Optional if the
+  await is upload-only.
+- File parts:
+  - **Slot mode**: each file part's form field name must match a declared slot
+    name (e.g. `resume.pdf`). Every declared slot must appear exactly once;
+    unexpected names or duplicates are rejected.
+  - **Bucket mode**: form field names are not significant; the saved filename
+    is taken from the part's `filename=` attribute. Validated against
+    `upload_max_count`, `upload_max_size`, `upload_max_total_size`, and
+    `upload_mime`.
+
+Filenames are normalized before persistence: path separators, null bytes,
+control characters, leading dots, and platform-reserved names are rejected
+with a structured 4xx (the server does not silently rewrite a name). Within a
+single submission, two parts saved under the same effective filename are a
+`409 Conflict`; an upload that would overwrite a staged display file is also a
+`409`. Submissions are atomic — files are buffered into a per-submission
+staging directory under `inputs/<input_id>/.staging-*/` and renamed into place
+only after every part validates; partial failures leave the input still
+pending and the input subdirectory unmodified by the failed attempt.
+
+Validation errors return a structured body naming the failed constraint, for
+the UI to highlight the offending field:
+
+```json
+{"error": "...", "constraint": "max_file_size"}
+```
+
+Constraint values include `slot_missing`, `slot_extra`, `max_count`,
+`max_file_size`, `max_total_size`, `mime_not_allowed`, `filename`,
+`duplicate_filename`, `collision_with_staged`, `multipart`, and
+`input_not_pending`.
+
+#### Server-wide upload caps
+
+The daemon applies size and count caps in this precedence order (mirroring
+`resolveBudget`'s ladder):
+
+1. Per-await override — only bucket-mode `<await>` may raise or lower its own
+   caps via `upload_max_size`, `upload_max_total_size`, `upload_max_count`.
+2. Server-wide config — set by the `serve` command via
+   `Server.SetDefaultUploadCaps(perFile, total, count)` after loading
+   `.raymond/config.toml` and merging CLI flags. Zero values mean "unset" and
+   fall through.
+3. Built-in fallbacks — 10 MiB per file, 100 MiB total, 10 files per
+   submission.
+
+The total cap is a hard limit on the request body via
+`http.MaxBytesReader` — clients cannot stream past it even if per-file
+accounting would have rejected the body later.
+
+#### MCP degradation rules
+
+The MCP transport has no native channel for binary file exchange in
+`elicitation/create`. The daemon degrades file-bearing awaits as follows:
+
+- **Text-only awaits** — delivered via elicitation as before.
+- **Display-only awaits** — delivered via elicitation; the prompt is augmented
+  with absolute URLs (under the configured `base_url`) for each staged file so
+  an MCP client can fetch them out of band via the file content endpoint. If
+  no base URL is configured, the URLs are omitted.
+- **Slot- or bucket-mode awaits** (any upload affordance) — **not delivered
+  via MCP**. The await stays pending and a warning is logged; the user must
+  complete it via the HTTP UI.
+
+Workflow authors targeting both transports should design awaits that are
+either text-only or text-plus-display, and avoid making upload affordances
+mandatory for progress.
 
 ### SSE output stream
 

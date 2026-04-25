@@ -333,6 +333,115 @@ I have completed my analysis. Please respond with your decision:
 </await>
 ```
 
+#### File Attachments
+
+`<await>` can also exchange files with the user — uploads from the user, files
+the workflow exposes for inspection, or both. The affordance is declared via
+optional attributes on the opening tag and carries through to the daemon's web
+UI and HTTP API. Awaits without any of these attributes behave as text-only
+(current behavior preserved).
+
+The full design rationale lives in
+[input-file-attachments-design.md](input-file-attachments-design.md); the
+attribute reference and surface contract are summarized here.
+
+**Modes.** An await opts into one of three file modes:
+
+- **Slot mode** — declares one or more named upload slots. The user uploads
+  exactly one file per slot.
+- **Bucket mode** — declares constraints (count, MIME, size). The user uploads
+  any filenames that satisfy the constraints.
+- **Display only** — the workflow exposes files for the user to view or
+  download alongside the prompt. No upload.
+
+Display files may be combined with slot or bucket mode. `upload_slots` and
+`upload_bucket` are mutually exclusive.
+
+**Attributes:**
+
+| Attribute | Mode | Value | Description |
+|-----------|------|-------|-------------|
+| `upload_slots` | slot | `name[:mime\|mime,...](,name...)` | Comma-separated slot list. Per-slot MIME allowlist (separated by `\|`) is optional. |
+| `upload_bucket` | bucket | `"true"` or `"false"` | Switches the await into bucket mode. |
+| `upload_max_count` | bucket | positive integer | Maximum number of files per submission. |
+| `upload_max_size` | bucket | positive integer | Maximum bytes per file. |
+| `upload_max_total_size` | bucket | positive integer | Maximum total bytes across all files in the submission. |
+| `upload_mime` | bucket | `mime,mime,...` | MIME allowlist applied to every uploaded file. |
+| `display_files` | any | `src-path[:label](,src-path...)` | Files (relative to the agent's task folder) to expose to the user. Optional `:label` becomes the displayed/staged filename; default is the source basename. |
+
+The bucket-mode caps (`upload_max_count`, `upload_max_size`,
+`upload_max_total_size`) only take effect when `upload_bucket="true"`. Slot mode
+and display-only inherit the daemon's server-wide upload caps; per-slot MIME
+allowlists ride on `upload_slots` independently.
+
+**Staging behavior.** When the agent enters a file-bearing await, the runtime
+creates `<task folder>/inputs/<input_id>/` and copies each declared display
+file into it (under its `:label`, or the source basename if no label is
+given). Display sources are read strictly relative to the task folder; absolute
+paths, `..` segments, and symlinks that escape the task folder are rejected. A
+missing source file is reported as a startup-of-await error rather than a
+silent omission. Uploads, when they arrive, land in the same directory.
+
+The `inputs/<input_id>/` segment is part of the runtime-managed layout — the
+workflow author should not write to it directly before the await, and the
+directory is not created until the await is entered. Staging is idempotent
+across daemon restarts.
+
+**The `{{input_id}}` template variable.** The state **immediately following**
+an input step receives an additional template substitution, `{{input_id}}`,
+bound to the ID of the input that resolved to reach that state. This is the
+only state in which `{{input_id}}` is bound automatically — it is cleared
+before the next state runs (one transition deep). If a workflow needs the ID
+in a state further along, the author plumbs it forward explicitly through the
+transition `input` attribute (e.g. by writing it to a file in the task folder
+during the immediately-following state, or by passing a structured payload
+that bundles the response with the input id). Most workflows will not need
+this — the post-await state is the natural place to consume uploads.
+
+**Examples — slot mode:**
+
+```
+<await next="REVIEW_DOCS.md"
+       upload_slots="resume.pdf:application/pdf,cover.txt:text/plain">
+Please upload your résumé as `resume.pdf` and a plain-text cover letter as
+`cover.txt`.
+</await>
+```
+
+The post-await `REVIEW_DOCS.md` reads each slot at its known path:
+```
+{{task_folder}}/inputs/{{input_id}}/resume.pdf
+{{task_folder}}/inputs/{{input_id}}/cover.txt
+```
+
+**Example — bucket mode:**
+
+```
+<await next="PROCESS_IMAGES.md"
+       upload_bucket="true"
+       upload_max_count="5"
+       upload_max_size="10485760"
+       upload_max_total_size="52428800"
+       upload_mime="image/png,image/jpeg">
+Attach up to 5 PNG or JPEG images (≤10 MiB each, ≤50 MiB total).
+</await>
+```
+
+The post-await state discovers the actual filenames by listing
+`{{task_folder}}/inputs/{{input_id}}/`.
+
+**Example — display only:**
+
+```
+<await next="HANDLE_REVIEW.md"
+       display_files="out/report.pdf:Final Report,out/chart.png">
+Please review the attached report and chart and respond with your decision.
+</await>
+```
+
+The runtime stages `out/report.pdf` (shown as `Final Report`) and `out/chart.png`
+(shown by its basename) into the input subdirectory at await entry.
+
 ## Working Directory (`cd` Attribute)
 
 By default, all agents execute in the orchestrator's working directory (the

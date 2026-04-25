@@ -44,6 +44,29 @@
     return status === "running" || status === "awaiting_input";
   }
 
+  // formatBytes returns a short, human-readable file size (e.g. "1.2 MB").
+  function formatBytes(n) {
+    if (!n || n <= 0) return "0 B";
+    var units = ["B", "KB", "MB", "GB"];
+    var i = 0;
+    var v = n;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    if (i === 0) return v + " " + units[i];
+    return v.toFixed(v < 10 ? 1 : 0) + " " + units[i];
+  }
+
+  // MIME types the file content endpoint will serve with
+  // ?disposition=inline. Mirrors inlineAllowedContentTypes in http.go.
+  var INLINE_IMAGE_TYPES = {
+    "image/png": true,
+    "image/jpeg": true,
+    "image/gif": true,
+    "image/webp": true,
+  };
+
   // pad2 returns a 2-digit zero-padded string for h/m/s formatting.
   function pad2(n) {
     return n < 10 ? "0" + n : "" + n;
@@ -291,66 +314,397 @@
     done.forEach(function (r) { renderRunCard(r, historyRunsEl); });
   }
 
+  // shouldPreserveCard reports whether an existing pending-input card holds
+  // user state we shouldn't blow away on a poll re-render: a non-empty file
+  // selection or typed-but-unsent text. Focus is handled separately in
+  // renderPendingInputs by skipping the whole render — moving a focused node
+  // via appendChild can drop the user's cursor in some browsers.
+  function shouldPreserveCard(card) {
+    if (!card) return false;
+    var fileInputs = card.querySelectorAll('input[type="file"]');
+    for (var i = 0; i < fileInputs.length; i++) {
+      if (fileInputs[i].files && fileInputs[i].files.length > 0) return true;
+    }
+    var ta = card.querySelector("textarea");
+    if (ta && ta.value !== "") return true;
+    return false;
+  }
+
   function renderPendingInputs(inputs) {
     if (!inputs || inputs.length === 0) {
+      // Don't clear while focus is inside the section — a textarea blur in
+      // the middle of typing is the same UX bug the focus-skip below avoids.
+      // The next poll once focus moves will clean up.
+      if (pendingEl.contains(document.activeElement)) return;
       pendingSection.style.display = "none";
-      return;
-    }
-    // Skip re-render while user is typing in a pending input form;
-    // next poll after they finish will refresh.
-    if (pendingEl.contains(document.activeElement)) {
+      pendingEl.innerHTML = "";
       return;
     }
     pendingSection.style.display = "";
-    pendingEl.innerHTML = "";
 
+    // Skip re-render entirely while focus is inside the pending section so
+    // we don't steal the user's cursor mid-edit. Per-card preservation
+    // (below) keeps cards with selected files or typed text intact when
+    // focus is elsewhere on the page.
+    if (pendingEl.contains(document.activeElement)) {
+      return;
+    }
+
+    // Index existing cards by input_id so in-progress cards survive polling.
+    var existing = {};
+    var current = pendingEl.querySelectorAll(".input-card");
+    for (var i = 0; i < current.length; i++) {
+      var iid = current[i].dataset.inputId;
+      if (iid) existing[iid] = current[i];
+    }
+
+    var ordered = [];
     inputs.forEach(function (input) {
-      var card = document.createElement("div");
-      card.className = "input-card";
+      var prior = existing[input.input_id];
+      if (prior && shouldPreserveCard(prior)) {
+        ordered.push(prior);
+      } else {
+        ordered.push(buildPendingInputCard(input));
+      }
+      delete existing[input.input_id];
+    });
 
-      var shortInput = input.input_id.length > 12
-        ? input.input_id.substring(0, 12) + "..."
-        : input.input_id;
+    pendingEl.innerHTML = "";
+    ordered.forEach(function (c) { pendingEl.appendChild(c); });
+  }
 
-      card.innerHTML =
-        '<div class="input-card-header">' +
-          '<span>Run: ' + escapeHTML(input.run_id) + '</span>' +
-          '<span>Input: ' + escapeHTML(shortInput) + '</span>' +
-        '</div>' +
-        '<div class="input-prompt">' + escapeHTML(input.prompt) + '</div>' +
-        '<div class="input-form">' +
-          '<textarea rows="2" placeholder="Type your response..."></textarea>' +
-          '<button class="btn btn-primary">Send</button>' +
-        '</div>';
+  // fileURL builds the file content endpoint URL for a staged or uploaded
+  // file. The path segment is the recorded filename (already normalized);
+  // the disposition query is set only for inline previews of allowlisted
+  // MIME types — see inlineAllowedContentTypes in http.go.
+  function fileURL(runID, inputID, name, inline) {
+    var url = "/runs/" + encodeURIComponent(runID) +
+      "/inputs/" + encodeURIComponent(inputID) +
+      "/files/" + encodeURIComponent(name);
+    if (inline) url += "?disposition=inline";
+    return url;
+  }
 
-      var textarea = card.querySelector("textarea");
-      var btn = card.querySelector("button");
+  function buildDisplayFileEl(runID, inputID, file) {
+    var ct = (file.content_type || "").toLowerCase();
+    var wrapper = document.createElement("div");
+    wrapper.className = "input-display-file";
 
-      btn.addEventListener("click", function () {
-        var response = textarea.value.trim();
-        if (!response) return;
+    if (INLINE_IMAGE_TYPES[ct]) {
+      var img = document.createElement("img");
+      img.className = "input-display-image";
+      img.src = fileURL(runID, inputID, file.name, true);
+      img.alt = file.name;
+      wrapper.appendChild(img);
+    } else if (ct === "application/pdf") {
+      var emb = document.createElement("embed");
+      emb.className = "input-display-pdf";
+      emb.type = "application/pdf";
+      emb.src = fileURL(runID, inputID, file.name, true);
+      wrapper.appendChild(emb);
+    } else {
+      var link = document.createElement("a");
+      link.href = fileURL(runID, inputID, file.name, false);
+      link.textContent = "Download " + file.name;
+      link.className = "input-display-link";
+      wrapper.appendChild(link);
+    }
+
+    var meta = document.createElement("div");
+    meta.className = "input-display-file-meta";
+    meta.textContent = file.name + " (" + formatBytes(file.size) +
+      (file.content_type ? ", " + file.content_type : "") + ")";
+    wrapper.appendChild(meta);
+    return wrapper;
+  }
+
+  function buildSlotControl(form, slot) {
+    var row = document.createElement("div");
+    row.className = "input-file-row";
+
+    var label = document.createElement("label");
+    label.className = "input-file-label";
+    label.textContent = slot.name;
+    row.appendChild(label);
+
+    var input = document.createElement("input");
+    input.type = "file";
+    input.name = slot.name;
+    if (slot.mime && slot.mime.length > 0 && slot.mime.length <= 5) {
+      input.accept = slot.mime.join(",");
+    }
+    row.appendChild(input);
+
+    if (slot.mime && slot.mime.length > 0) {
+      var help = document.createElement("div");
+      help.className = "input-file-help";
+      help.textContent = "Allowed: " + slot.mime.join(", ");
+      row.appendChild(help);
+    }
+
+    var err = document.createElement("div");
+    err.className = "input-file-error";
+    row.appendChild(err);
+
+    form.appendChild(row);
+    return { fieldName: slot.name, inputElement: input, errorEl: err };
+  }
+
+  function buildBucketControl(form, bucket) {
+    var row = document.createElement("div");
+    row.className = "input-file-row";
+
+    var label = document.createElement("label");
+    label.className = "input-file-label";
+    label.textContent = "Files";
+    row.appendChild(label);
+
+    var input = document.createElement("input");
+    input.type = "file";
+    input.name = "files";
+    input.multiple = true;
+    if (bucket && bucket.mime && bucket.mime.length > 0 && bucket.mime.length <= 5) {
+      input.accept = bucket.mime.join(",");
+    }
+    row.appendChild(input);
+
+    if (bucket) {
+      var bits = [];
+      if (bucket.max_count) bits.push("up to " + bucket.max_count + " file" + (bucket.max_count === 1 ? "" : "s"));
+      if (bucket.max_size_per_file) bits.push(formatBytes(bucket.max_size_per_file) + " per file");
+      if (bucket.max_total_size) bits.push(formatBytes(bucket.max_total_size) + " total");
+      if (bucket.mime && bucket.mime.length > 0) bits.push("MIME: " + bucket.mime.join(", "));
+      if (bits.length > 0) {
+        var help = document.createElement("div");
+        help.className = "input-file-help";
+        help.textContent = bits.join("; ");
+        row.appendChild(help);
+      }
+    }
+
+    var err = document.createElement("div");
+    err.className = "input-file-error";
+    row.appendChild(err);
+
+    form.appendChild(row);
+    return { fieldName: "files", inputElement: input, errorEl: err };
+  }
+
+  // applyUploadError surfaces a server-side validation failure in the form.
+  // The constraint string identifies which rule fired (see uploadErrorResponse
+  // in http.go) and we use it plus the message text to highlight the offending
+  // control. Anything we can't pin to a control falls back to a form-level
+  // banner.
+  function applyUploadError(constraint, message, controls, formErrEl) {
+    var slotMatch = /slot "([^"]+)"/.exec(message || "");
+    var fileMatch = /(?:file|filename) "([^"]+)"/.exec(message || "");
+    var matched = false;
+
+    function highlight(ctrl) {
+      ctrl.inputElement.classList.add("input-error");
+      if (ctrl.errorEl) {
+        ctrl.errorEl.textContent = message;
+      }
+    }
+
+    if (constraint === "slot_missing" || constraint === "slot_extra") {
+      if (slotMatch) {
+        for (var i = 0; i < controls.length; i++) {
+          if (controls[i].fieldName === slotMatch[1]) {
+            highlight(controls[i]);
+            matched = true;
+            break;
+          }
+        }
+      }
+    } else if (constraint === "max_file_size" ||
+               constraint === "mime_not_allowed" ||
+               constraint === "filename" ||
+               constraint === "duplicate_filename" ||
+               constraint === "collision_with_staged") {
+      if (fileMatch) {
+        // For slot mode the file name equals the slot field name.
+        for (var j = 0; j < controls.length; j++) {
+          if (controls[j].fieldName === fileMatch[1]) {
+            highlight(controls[j]);
+            matched = true;
+            break;
+          }
+        }
+      }
+      if (!matched) {
+        controls.forEach(highlight);
+        matched = controls.length > 0;
+      }
+    } else if (constraint === "max_count" || constraint === "max_total_size") {
+      controls.forEach(highlight);
+      matched = controls.length > 0;
+    }
+
+    if (!matched && formErrEl) {
+      formErrEl.textContent = message;
+      formErrEl.classList.add("input-form-error-visible");
+    }
+  }
+
+  function clearFormErrors(controls, formErrEl) {
+    controls.forEach(function (ctrl) {
+      ctrl.inputElement.classList.remove("input-error");
+      if (ctrl.errorEl) ctrl.errorEl.textContent = "";
+    });
+    if (formErrEl) {
+      formErrEl.textContent = "";
+      formErrEl.classList.remove("input-form-error-visible");
+    }
+  }
+
+  function buildPendingInputCard(input) {
+    var card = document.createElement("div");
+    card.className = "input-card";
+    card.dataset.inputId = input.input_id;
+
+    var shortInput = input.input_id.length > 12
+      ? input.input_id.substring(0, 12) + "..."
+      : input.input_id;
+
+    var header = document.createElement("div");
+    header.className = "input-card-header";
+    header.innerHTML =
+      '<span>Run: ' + escapeHTML(input.run_id) + '</span>' +
+      '<span>Input: ' + escapeHTML(shortInput) + '</span>';
+    card.appendChild(header);
+
+    var promptEl = document.createElement("div");
+    promptEl.className = "input-prompt";
+    promptEl.textContent = input.prompt;
+    card.appendChild(promptEl);
+
+    var aff = input.file_affordance || null;
+    var mode = aff ? aff.mode : "text_only";
+
+    // Display files render above any upload control regardless of mode.
+    var displayFiles = (input.staged_files || []).filter(function (f) {
+      return f.source === "display";
+    });
+    if (displayFiles.length > 0) {
+      var displaySection = document.createElement("div");
+      displaySection.className = "input-display-files";
+      displayFiles.forEach(function (f) {
+        displaySection.appendChild(buildDisplayFileEl(input.run_id, input.input_id, f));
+      });
+      card.appendChild(displaySection);
+    }
+
+    var formEl = document.createElement("div");
+    formEl.className = "input-form-wrapper";
+    card.appendChild(formEl);
+
+    var fileControls = [];
+    if (mode === "slot") {
+      (aff.slots || []).forEach(function (slot) {
+        fileControls.push(buildSlotControl(formEl, slot));
+      });
+    } else if (mode === "bucket") {
+      fileControls.push(buildBucketControl(formEl, aff.bucket || {}));
+    }
+
+    var formErr = document.createElement("div");
+    formErr.className = "input-form-error";
+    formEl.appendChild(formErr);
+
+    var textRow = document.createElement("div");
+    textRow.className = "input-form";
+    formEl.appendChild(textRow);
+
+    var textarea = document.createElement("textarea");
+    textarea.rows = 2;
+    textarea.placeholder = "Type your response...";
+    textRow.appendChild(textarea);
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-primary";
+    btn.textContent = "Send";
+    textRow.appendChild(btn);
+
+    var hasUpload = mode === "slot" || mode === "bucket";
+
+    btn.addEventListener("click", function () {
+      clearFormErrors(fileControls, formErr);
+
+      if (!hasUpload) {
+        var trimmed = textarea.value.trim();
+        if (!trimmed) return;
         btn.disabled = true;
         btn.textContent = "Sending...";
-        submitInput(input.run_id, input.input_id, response).then(function () {
+        submitInput(input.run_id, input.input_id, trimmed).then(function () {
           card.style.opacity = "0.5";
           refreshAll();
         }).catch(function (err) {
           btn.disabled = false;
           btn.textContent = "Send";
-          alert("Failed to send: " + err.message);
+          formErr.textContent = "Failed to send: " + err.message;
+          formErr.classList.add("input-form-error-visible");
         });
-      });
+        return;
+      }
 
-      // Allow Ctrl+Enter / Cmd+Enter to submit
-      textarea.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          btn.click();
+      // Multipart path: build FormData with the text response and each file
+      // part keyed by its slot name (slot mode) or the shared "files" name
+      // (bucket mode). The server enforces all caps and constraints; client
+      // pre-checks here only catch the obvious "no file selected" case so
+      // the user gets a fast pointer to the offending control.
+      var fd = new FormData();
+      fd.append("response", textarea.value);
+
+      if (mode === "slot") {
+        for (var i = 0; i < fileControls.length; i++) {
+          var ctrl = fileControls[i];
+          var files = ctrl.inputElement.files;
+          if (!files || files.length === 0) {
+            ctrl.inputElement.classList.add("input-error");
+            if (ctrl.errorEl) ctrl.errorEl.textContent = "Required";
+            formErr.textContent = "Slot \"" + ctrl.fieldName + "\" is required";
+            formErr.classList.add("input-form-error-visible");
+            return;
+          }
+          fd.append(ctrl.fieldName, files[0]);
         }
-      });
+      } else { // bucket
+        var bucketCtrl = fileControls[0];
+        var bfiles = bucketCtrl.inputElement.files;
+        if (!bfiles || bfiles.length === 0) {
+          bucketCtrl.inputElement.classList.add("input-error");
+          formErr.textContent = "At least one file is required";
+          formErr.classList.add("input-form-error-visible");
+          return;
+        }
+        for (var j = 0; j < bfiles.length; j++) {
+          fd.append(bucketCtrl.fieldName, bfiles[j]);
+        }
+      }
 
-      pendingEl.appendChild(card);
+      btn.disabled = true;
+      btn.textContent = "Sending...";
+      submitInputMultipart(input.run_id, input.input_id, fd).then(function () {
+        card.style.opacity = "0.5";
+        refreshAll();
+      }).catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = "Send";
+        applyUploadError(err.constraint || "", err.message || "submit failed",
+          fileControls, formErr);
+      });
     });
+
+    textarea.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        btn.click();
+      }
+    });
+
+    return card;
   }
 
   // --- Actions ---
@@ -492,6 +846,30 @@
       "/runs/" + encodeURIComponent(runID) + "/inputs/" + encodeURIComponent(inputID),
       { response: response }
     );
+  }
+
+  // submitInputMultipart posts an upload submission to the deliver endpoint.
+  // The browser sets the Content-Type header (with boundary) automatically
+  // when body is a FormData. On a 4xx/5xx the server returns a JSON body
+  // shaped like {error, constraint}; we attach `constraint` to the thrown
+  // Error so the form can highlight the right control.
+  function submitInputMultipart(runID, inputID, formData) {
+    return fetch(
+      "/runs/" + encodeURIComponent(runID) + "/inputs/" + encodeURIComponent(inputID),
+      { method: "POST", body: formData }
+    ).then(function (res) {
+      if (!res.ok) {
+        return res.json().then(function (body) {
+          var err = new Error(body && body.error ? body.error : ("HTTP " + res.status));
+          if (body && body.constraint) err.constraint = body.constraint;
+          err.status = res.status;
+          throw err;
+        }, function () {
+          throw new Error("HTTP " + res.status);
+        });
+      }
+      return res.json();
+    });
   }
 
   function cancelRun(runID) {

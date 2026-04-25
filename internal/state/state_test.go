@@ -733,6 +733,40 @@ func TestAgentStateAwaitFieldsOmittedWhenEmpty(t *testing.T) {
 	assert.False(t, hasAwaitInputID, "await_input_id should be absent from JSON when empty")
 }
 
+func TestAgentStatePendingInputIDRoundTrip(t *testing.T) {
+	agent := state.AgentState{
+		ID:             "main",
+		CurrentState:   "POST_AWAIT.md",
+		Stack:          []state.StackFrame{},
+		PendingInputID: "inp_main_1234567890",
+	}
+
+	data, err := json.Marshal(agent)
+	require.NoError(t, err)
+
+	var got state.AgentState
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	assert.Equal(t, "inp_main_1234567890", got.PendingInputID)
+}
+
+func TestAgentStatePendingInputIDOmittedWhenEmpty(t *testing.T) {
+	agent := state.AgentState{
+		ID:           "main",
+		CurrentState: "START.md",
+		Stack:        []state.StackFrame{},
+	}
+
+	data, err := json.Marshal(agent)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, has := raw["pending_input_id"]
+	assert.False(t, has, "pending_input_id should be absent from JSON when empty")
+}
+
 // ----------------------------------------------------------------------------
 // LaunchParams OnAwait field
 // ----------------------------------------------------------------------------

@@ -323,6 +323,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		awaitInput := opts.AwaitInput
 		inputID := a.AwaitInputID
 		a.PendingResult = &awaitInput
+		a.PendingInputID = inputID
 		a.CurrentState = a.AwaitNextState
 		a.AwaitPrompt = ""
 		a.AwaitNextState = ""
@@ -583,6 +584,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			a := &ws.Agents[idx]
 			pr := input.Response
 			a.PendingResult = &pr
+			a.PendingInputID = input.InputID
 			a.CurrentState = a.AwaitNextState
 			a.Status = ""
 			a.AwaitPrompt = ""
@@ -1054,6 +1056,7 @@ func applyMultiFork(
 	// Advance the caller to the continuation state.
 	callerCopy.CurrentState = continuation
 	callerCopy.PendingResult = nil
+	callerCopy.PendingInputID = ""
 	callerCopy.ForkSessionID = nil
 	callerCopy.ForkAttributes = nil
 

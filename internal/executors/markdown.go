@@ -79,6 +79,9 @@ func (e *MarkdownExecutor) Execute(
 	if agent.PendingResult != nil {
 		variables["result"] = *agent.PendingResult
 	}
+	if agent.PendingInputID != "" {
+		variables["input_id"] = agent.PendingInputID
+	}
 	for k, v := range agent.ForkAttributes {
 		variables[k] = v
 	}

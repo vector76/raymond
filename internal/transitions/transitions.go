@@ -95,6 +95,7 @@ func ApplyTransition(
 	// Clear transient fields before the handler runs so handlers can set
 	// fresh values without accidentally inheriting stale ones.
 	copy.PendingResult = nil
+	copy.PendingInputID = ""
 	copy.ForkSessionID = nil
 	copy.ForkAttributes = nil
 

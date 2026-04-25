@@ -3525,6 +3525,102 @@ func TestResumeWithInputDeliversToAwaitAgent(t *testing.T) {
 	assert.Equal(t, "user-response", capturedPendingResult)
 }
 
+func TestResumeWithInputBindsPendingInputIDForOneState(t *testing.T) {
+	// When an await resolves, PendingInputID is bound for the immediately-
+	// following state and cleared before the state two transitions deep runs.
+	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+		{
+			ID:             "main",
+			CurrentState:   "START.md",
+			Status:         wfstate.AgentStatusAwaiting,
+			AwaitPrompt:    "Please provide data",
+			AwaitNextState: "NEXT.md",
+			AwaitInputID:   "inp_main_xyz",
+		},
+	})
+
+	captured := map[string]string{} // state name -> PendingInputID seen
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			captured[agent.CurrentState] = agent.PendingInputID
+			switch agent.CurrentState {
+			case "NEXT.md":
+				return gotoResult("DEEP.md"), nil
+			default:
+				return resultExecResult("done"), nil
+			}
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+	opts.NoResetPaused = true
+	opts.AwaitInput = "user-response"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Immediately-following state sees the input ID.
+	assert.Equal(t, "inp_main_xyz", captured["NEXT.md"],
+		"PendingInputID should be set on the state running right after the await resolves")
+
+	// State two transitions deep does not.
+	assert.Equal(t, "", captured["DEEP.md"],
+		"PendingInputID should be cleared after the immediately-following state runs")
+}
+
+func TestResumeWithInputClearsPendingInputIDAcrossMultiFork(t *testing.T) {
+	// When the immediately-following state emits a multi-fork (fork + goto
+	// continuation), PendingInputID must be cleared on the caller's
+	// continuation, just like PendingResult. Otherwise {{input_id}} would
+	// leak into a state two transitions deep.
+	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+		{
+			ID:             "main",
+			CurrentState:   "START.md",
+			Status:         wfstate.AgentStatusAwaiting,
+			AwaitPrompt:    "Please provide data",
+			AwaitNextState: "NEXT.md",
+			AwaitInputID:   "inp_mf_xyz",
+		},
+	})
+
+	captured := map[string]string{} // state name -> PendingInputID seen
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			captured[agent.CurrentState+"@"+agent.ID] = agent.PendingInputID
+			switch agent.CurrentState {
+			case "NEXT.md":
+				// multi-fork: one fork worker + one goto continuation
+				return multiForkResult(
+					forkTransitionWith("WORKER.md", map[string]string{"next": "CONT.md"}),
+					gotoTransition("CONT.md"),
+				), nil
+			default:
+				return resultExecResult("done"), nil
+			}
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+	opts.NoResetPaused = true
+	opts.AwaitInput = "user-response"
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Immediately-following state sees the input ID.
+	assert.Equal(t, "inp_mf_xyz", captured["NEXT.md@main"],
+		"PendingInputID should be set on the post-await state")
+
+	// Continuation after the multi-fork must NOT see it.
+	assert.Equal(t, "", captured["CONT.md@main"],
+		"PendingInputID should be cleared on the multi-fork continuation")
+}
+
 func TestResumeWithoutInputRepresentsPrompt(t *testing.T) {
 	// Resume without --input when agents are awaiting → re-presents the
 	// active await's prompt via AwaitingInputError.

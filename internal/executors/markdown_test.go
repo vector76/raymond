@@ -429,3 +429,91 @@ func TestMarkdownExecutor_TaskFolderSubstitutedInBody(t *testing.T) {
 		t.Errorf("prompt still contains literal {{task_folder}}: %q", capturedPrompt)
 	}
 }
+
+// TestMarkdownExecutor_InputIDSubstitutedInImmediatelyFollowingState verifies
+// that {{input_id}} is substituted with the agent's PendingInputID when the
+// state runs immediately after an await resolves.
+func TestMarkdownExecutor_InputIDSubstitutedInImmediatelyFollowingState(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "Resumed by input {{input_id}}")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-input-id",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:             "main",
+			CurrentState:   "START.md",
+			ScopeDir:       dir,
+			Stack:          []wfstate.StackFrame{},
+			PendingInputID: "input-abc-123",
+		}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if !strings.Contains(capturedPrompt, "Resumed by input input-abc-123") {
+		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "Resumed by input input-abc-123")
+	}
+	if strings.Contains(capturedPrompt, "{{input_id}}") {
+		t.Errorf("prompt still contains literal {{input_id}}: %q", capturedPrompt)
+	}
+}
+
+// TestMarkdownExecutor_InputIDUnsubstitutedWhenNotPending verifies that
+// {{input_id}} is left as a literal placeholder when PendingInputID is empty
+// (i.e. the state is not the immediately-following state after an await).
+// This matches the missing-key behavior of RenderPrompt.
+func TestMarkdownExecutor_InputIDUnsubstitutedWhenNotPending(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "No input here: {{input_id}}")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-input-id-empty",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:           "main",
+			CurrentState: "START.md",
+			ScopeDir:     dir,
+			Stack:        []wfstate.StackFrame{},
+			// PendingInputID intentionally empty.
+		}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if !strings.Contains(capturedPrompt, "{{input_id}}") {
+		t.Errorf("prompt = %q, want literal {{input_id}} to remain", capturedPrompt)
+	}
+}

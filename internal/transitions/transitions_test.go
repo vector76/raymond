@@ -62,6 +62,17 @@ func TestApplyTransitionClearsPendingResult(t *testing.T) {
 	assert.Nil(t, result.Agent.PendingResult)
 }
 
+func TestApplyTransitionClearsPendingInputID(t *testing.T) {
+	agent := makeAgent("main", "START.md", strPtr("session_123"))
+	agent.PendingInputID = "input-abc-123"
+	tr := gotoTransition("NEXT.md")
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "", result.Agent.PendingInputID)
+}
+
 func TestApplyTransitionClearsForkSessionID(t *testing.T) {
 	agent := makeAgent("main", "START.md", strPtr("session_123"))
 	agent.ForkSessionID = strPtr("forked_session")

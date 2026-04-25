@@ -68,14 +68,15 @@ type StackFrame struct {
 
 // AgentState holds the persisted state of a single agent within a workflow.
 type AgentState struct {
-	ID            string       `json:"id"`
-	CurrentState  string       `json:"current_state"`
-	SessionID     *string      `json:"session_id"`               // null when no session has been started
-	Stack         []StackFrame `json:"stack"`                    // call-return stack of frames
-	PendingResult *string      `json:"pending_result,omitempty"` // absent from JSON when nil
-	Cwd           string       `json:"cwd,omitempty"`            // per-agent working directory; empty = inherit
-	ScopeDir      string       `json:"scope_dir,omitempty"`      // per-agent scope directory; empty = use workflow ScopeDir
-	ScopeURL      string       `json:"scope_url,omitempty"`      // original URL when scope was fetched from a remote URL
+	ID             string       `json:"id"`
+	CurrentState   string       `json:"current_state"`
+	SessionID      *string      `json:"session_id"`                 // null when no session has been started
+	Stack          []StackFrame `json:"stack"`                      // call-return stack of frames
+	PendingResult  *string      `json:"pending_result,omitempty"`   // absent from JSON when nil
+	PendingInputID string       `json:"pending_input_id,omitempty"` // {{input_id}} for the immediately-following state
+	Cwd            string       `json:"cwd,omitempty"`              // per-agent working directory; empty = inherit
+	ScopeDir       string       `json:"scope_dir,omitempty"`        // per-agent scope directory; empty = use workflow ScopeDir
+	ScopeURL       string       `json:"scope_url,omitempty"`        // original URL when scope was fetched from a remote URL
 
 	// Cross-workflow nesting depth. Incremented by call-workflow/function-workflow,
 	// restored by result. Capped at 4 to prevent runaway recursion.
@@ -370,5 +371,3 @@ func RecoverWorkflows(stateDir string) ([]string, error) {
 	}
 	return ids, nil
 }
-
-

@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1659,6 +1661,585 @@ func TestGetInputFile_UnknownFileInCatalog(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// multipartFile is a single file part for buildMultipartBody. fieldName is
+// the form field (slot name in slot mode); filename is the FileHeader name
+// (used by the bucket-mode path); content is the body.
+type multipartFile struct {
+	fieldName string
+	filename  string
+	content   []byte
+}
+
+// buildMultipartBody assembles a multipart/form-data body containing a
+// "response" text field followed by file parts. It returns the body and
+// the Content-Type header (including the random boundary).
+func buildMultipartBody(t *testing.T, response string, files []multipartFile) (*bytes.Buffer, string) {
+	t.Helper()
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	require.NoError(t, w.WriteField("response", response))
+	for _, f := range files {
+		part, err := w.CreateFormFile(f.fieldName, f.filename)
+		require.NoError(t, err)
+		_, err = part.Write(f.content)
+		require.NoError(t, err)
+	}
+	require.NoError(t, w.Close())
+	return body, w.FormDataContentType()
+}
+
+// postMultipart posts a multipart submission to the deliver endpoint.
+func postMultipart(t *testing.T, ts *httptest.Server, runID, inputID, response string, files []multipartFile) *http.Response {
+	t.Helper()
+	body, ct := buildMultipartBody(t, response, files)
+	resp, err := http.Post(ts.URL+"/runs/"+runID+"/inputs/"+inputID, ct, body)
+	require.NoError(t, err)
+	return resp
+}
+
+// decodeUploadError reads a uploadErrorResponse body.
+func decodeUploadError(t *testing.T, body io.Reader) uploadErrorResponse {
+	t.Helper()
+	var er uploadErrorResponse
+	require.NoError(t, json.NewDecoder(body).Decode(&er))
+	return er
+}
+
+func TestDeliverInput_Multipart_SlotMode_Success(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-slot",
+		Prompt:    "upload your application",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeSlot,
+			Slots: []parsing.SlotSpec{
+				{Name: "resume.pdf"},
+				{Name: "cover.txt"},
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-slot", "all set", []multipartFile{
+		{fieldName: "resume.pdf", filename: "resume.pdf", content: []byte("%PDF-1.4 fake-pdf")},
+		{fieldName: "cover.txt", filename: "cover.txt", content: []byte("hello cover letter")},
+	})
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Files renamed into the input subdirectory.
+	inputDir := filepath.Join(taskFolder, "inputs", "inp-slot")
+	resume, err := os.ReadFile(filepath.Join(inputDir, "resume.pdf"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("%PDF-1.4 fake-pdf"), resume)
+	cover, err := os.ReadFile(filepath.Join(inputDir, "cover.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello cover letter"), cover)
+
+	// Staging directory removed.
+	entries, err := os.ReadDir(inputDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.False(t, strings.HasPrefix(e.Name(), ".staging-"),
+			"staging dir leaked: %s", e.Name())
+	}
+
+	// Pending input was claimed.
+	_, ok := srv.pendingRegistry.Get("inp-slot")
+	assert.False(t, ok, "expected pending input to be claimed after delivery")
+}
+
+func TestDeliverInput_Multipart_SlotMode_MissingSlot(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-miss",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeSlot,
+			Slots: []parsing.SlotSpec{
+				{Name: "resume.pdf"},
+				{Name: "cover.txt"},
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-miss", "", []multipartFile{
+		{fieldName: "resume.pdf", filename: "resume.pdf", content: []byte("only one slot")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "slot_missing", er.Constraint)
+	assert.Contains(t, er.Error, "cover.txt")
+}
+
+func TestDeliverInput_Multipart_SlotMode_ExtraSlot(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-extra",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeSlot,
+			Slots: []parsing.SlotSpec{
+				{Name: "resume.pdf"},
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-extra", "", []multipartFile{
+		{fieldName: "resume.pdf", filename: "resume.pdf", content: []byte("ok")},
+		{fieldName: "extra.txt", filename: "extra.txt", content: []byte("nope")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "slot_extra", er.Constraint)
+	assert.Contains(t, er.Error, "extra.txt")
+}
+
+func TestDeliverInput_Multipart_SlotMode_DuplicatePartForSameSlot(t *testing.T) {
+	// Two parts with the same fieldName matching a declared slot must be
+	// rejected as slot_extra (not slot_missing): the slot was provided,
+	// just more than once. "Every declared slot once" is the rule.
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-dup-slot",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeSlot,
+			Slots: []parsing.SlotSpec{
+				{Name: "resume.pdf"},
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-dup-slot", "", []multipartFile{
+		{fieldName: "resume.pdf", filename: "first.pdf", content: []byte("a")},
+		{fieldName: "resume.pdf", filename: "second.pdf", content: []byte("b")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "slot_extra", er.Constraint)
+	assert.Contains(t, er.Error, "resume.pdf")
+}
+
+func TestDeliverInput_Multipart_BucketMode_Success(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-bucket",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{
+				MaxCount:       3,
+				MaxSizePerFile: 1024,
+				MaxTotalSize:   2048,
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-bucket", "ok", []multipartFile{
+		{fieldName: "files", filename: "first.txt", content: []byte("alpha alpha alpha")},
+		{fieldName: "files", filename: "second.txt", content: []byte("beta beta")},
+	})
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	first, err := os.ReadFile(filepath.Join(taskFolder, "inputs", "inp-bucket", "first.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("alpha alpha alpha"), first)
+	second, err := os.ReadFile(filepath.Join(taskFolder, "inputs", "inp-bucket", "second.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("beta beta"), second)
+}
+
+func TestDeliverInput_Multipart_BucketMode_PerFileSizeExceeded(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-pf",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{
+				MaxSizePerFile: 8,
+				MaxTotalSize:   1024,
+				MaxCount:       4,
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-pf", "", []multipartFile{
+		{fieldName: "files", filename: "big.txt", content: []byte("this is way too long")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "max_file_size", er.Constraint)
+}
+
+func TestDeliverInput_Multipart_BucketMode_TotalSizeExceeded(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-total",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{
+				MaxSizePerFile: 1024,
+				// Total cap small enough that two normal files exceed it,
+				// but each one alone fits under MaxSizePerFile. The
+				// MaxBytesReader wrapper trips before the per-part loop
+				// runs, so this is the path that produces the structured
+				// "max_total_size" rejection during ParseMultipartForm.
+				MaxTotalSize: 64,
+				MaxCount:     4,
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-total", "", []multipartFile{
+		{fieldName: "files", filename: "a.txt", content: bytes.Repeat([]byte("a"), 60)},
+		{fieldName: "files", filename: "b.txt", content: bytes.Repeat([]byte("b"), 60)},
+	})
+	defer resp.Body.Close()
+	require.True(t, resp.StatusCode >= 400 && resp.StatusCode < 500,
+		"expected 4xx, got %d", resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "max_total_size", er.Constraint)
+}
+
+func TestDeliverInput_Multipart_BucketMode_CountExceeded(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-count",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{
+				MaxCount: 1,
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-count", "", []multipartFile{
+		{fieldName: "files", filename: "a.txt", content: []byte("a")},
+		{fieldName: "files", filename: "b.txt", content: []byte("b")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "max_count", er.Constraint)
+}
+
+func TestDeliverInput_Multipart_BucketMode_MIMEAllowlist(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-mime",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{
+				MIME: []string{"image/png"},
+			},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-mime", "", []multipartFile{
+		{fieldName: "files", filename: "notes.txt", content: []byte("plain text not on the list")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "mime_not_allowed", er.Constraint)
+}
+
+func TestDeliverInput_Multipart_FilenameNormalizationRejection(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-name",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{
+				MaxCount: 4,
+			},
+		},
+	}))
+
+	// Leading dot is rejected by NormalizeUploadFilename.
+	resp := postMultipart(t, ts, runID, "inp-name", "", []multipartFile{
+		{fieldName: "files", filename: ".hidden", content: []byte("x")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "filename", er.Constraint)
+}
+
+func TestDeliverInput_Multipart_DuplicateFilenameInSubmission(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-dup",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode:   parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{MaxCount: 4},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-dup", "", []multipartFile{
+		{fieldName: "files", filename: "data.txt", content: []byte("first")},
+		{fieldName: "files", filename: "data.txt", content: []byte("second")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "duplicate_filename", er.Constraint)
+}
+
+func TestDeliverInput_Multipart_CollisionWithStagedFile(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-coll",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode:   parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{MaxCount: 4},
+		},
+		StagedFiles: []wfstate.FileRecord{
+			{Name: "report.pdf", Size: 10, ContentType: "application/pdf", Source: "display"},
+		},
+	}))
+
+	resp := postMultipart(t, ts, runID, "inp-coll", "", []multipartFile{
+		{fieldName: "files", filename: "report.pdf", content: []byte("collides")},
+	})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "collision_with_staged", er.Constraint)
+}
+
+func TestDeliverInput_Multipart_FailedValidationLeavesInputClaimable(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+
+	// Use a fake that consumes the AwaitInputCh so we can verify the
+	// follow-up JSON delivery actually reaches the orchestrator after a
+	// failed multipart validation. The pending entry must remain in the
+	// registry across the failed multipart attempt, with no files left in
+	// the input subdirectory.
+	delivered := make(chan orchestrator.AwaitInput, 1)
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(bus.New())
+		}
+		select {
+		case in := <-opts.AwaitInputCh:
+			delivered <- in
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	createResp, err := http.Post(ts.URL+"/runs", "application/json",
+		strings.NewReader(`{"workflow_id": "test-workflow"}`))
+	require.NoError(t, err)
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
+	runID := cr.RunID
+
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-recover",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode: parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{
+				MaxSizePerFile: 4,
+				MaxCount:       2,
+			},
+		},
+	}))
+
+	// First request fails validation (per-file size).
+	resp := postMultipart(t, ts, runID, "inp-recover", "", []multipartFile{
+		{fieldName: "files", filename: "huge.txt", content: []byte("way too big")},
+	})
+	resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	// Input subdirectory must be untouched. Either it was never created
+	// (handler short-circuits before mkdir) or it exists but is empty —
+	// no files, no leftover staging directory.
+	inputDir := filepath.Join(taskFolder, "inputs", "inp-recover")
+	if entries, statErr := os.ReadDir(inputDir); statErr == nil {
+		assert.Empty(t, entries, "input subdirectory must be empty after failed validation")
+	}
+
+	// Pending entry still claimable: a follow-up JSON delivery succeeds.
+	pi, ok := srv.pendingRegistry.Get("inp-recover")
+	require.True(t, ok, "pending input must remain after failed multipart")
+	assert.Equal(t, "inp-recover", pi.InputID)
+
+	resp2, err := http.Post(
+		ts.URL+"/runs/"+runID+"/inputs/inp-recover",
+		"application/json",
+		strings.NewReader(`{"response": "fallback text"}`),
+	)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	select {
+	case in := <-delivered:
+		assert.Equal(t, "fallback text", in.Response)
+		assert.Empty(t, in.UploadedFiles)
+	case <-time.After(5 * time.Second):
+		t.Fatal("input was not delivered to orchestrator after recovery")
+	}
+}
+
+func TestDeliverInput_Multipart_ConcurrentSecondSubmissionInputNotPending(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+	taskFolder := t.TempDir()
+	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-race",
+		CreatedAt: time.Now(),
+		FileAffordance: &parsing.FileAffordance{
+			Mode:   parsing.ModeBucket,
+			Bucket: parsing.BucketSpec{MaxCount: 4},
+		},
+	}))
+
+	// Simulate the winning concurrent submission having already claimed
+	// the input via GetAndRemove. The losing submission's Peek then
+	// observes "not pending" and must surface the structured 4xx, not 409.
+	_, ok := srv.pendingRegistry.GetAndRemove("inp-race")
+	require.True(t, ok)
+
+	resp := postMultipart(t, ts, runID, "inp-race", "", []multipartFile{
+		{fieldName: "files", filename: "a.txt", content: []byte("late")},
+	})
+	defer resp.Body.Close()
+	require.True(t, resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusConflict,
+		"expected 4xx but not 409, got %d", resp.StatusCode)
+	er := decodeUploadError(t, resp.Body)
+	assert.Equal(t, "input_not_pending", er.Constraint)
+}
+
+func TestDeliverInput_JSON_TextOnlyAwaitStillWorks(t *testing.T) {
+	// Sanity-check that introducing the multipart branch did not regress
+	// the JSON path for text-only awaits. This is a focused complement to
+	// TestDeliverInput, which exercises the full orchestrator round-trip.
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+		RunID:     runID,
+		AgentID:   "main",
+		InputID:   "inp-json",
+		Prompt:    "yes or no",
+		CreatedAt: time.Now(),
+	}))
+
+	resp, err := http.Post(
+		ts.URL+"/runs/"+runID+"/inputs/inp-json",
+		"application/json",
+		strings.NewReader(`{"response": "yes"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_, ok := srv.pendingRegistry.Get("inp-json")
+	assert.False(t, ok, "JSON delivery must claim the pending input")
 }
 
 func TestCamelToSnake(t *testing.T) {

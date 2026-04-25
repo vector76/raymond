@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -321,6 +323,15 @@ type deliverInputResponse struct {
 
 type errorResponse struct {
 	Error string `json:"error"`
+}
+
+// uploadErrorResponse is the structured 4xx body emitted by the multipart
+// branch of handleDeliverInput. The constraint field names the validation
+// rule that rejected the submission so the UI can target a specific field
+// (e.g. highlight the offending slot or the size cap).
+type uploadErrorResponse struct {
+	Error      string `json:"error"`
+	Constraint string `json:"constraint"`
 }
 
 // --- Handlers ---
@@ -731,6 +742,12 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 	inputID := r.PathValue("input_id")
 
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaType == "multipart/form-data" {
+		s.handleDeliverInputMultipart(w, r, runID, inputID)
+		return
+	}
+
 	var req deliverInputRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON body: " + err.Error()})
@@ -753,6 +770,339 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 		InputID: inputID,
 		Status:  "resumed",
 	})
+}
+
+// writeUploadError serializes a structured 4xx upload-error body. constraint
+// names the validation rule that failed (e.g. "max_file_size", "slot_missing")
+// so the UI can target a specific control.
+func writeUploadError(w http.ResponseWriter, status int, constraint, msg string) {
+	writeJSON(w, status, uploadErrorResponse{Error: msg, Constraint: constraint})
+}
+
+// handleDeliverInputMultipart accepts a multipart/form-data submission to a
+// pending input. The text response lives in a form field named "response";
+// file parts are validated against the await's declared FileAffordance,
+// staged into a per-submission directory, and renamed into place atomically
+// before the pending input is claimed via DeliverInput.
+func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Request, runID, inputID string) {
+	pi, ok := s.pendingRegistry.Get(inputID)
+	if !ok {
+		writeUploadError(w, http.StatusNotFound, "input_not_pending",
+			fmt.Sprintf("pending input %q not found", inputID))
+		return
+	}
+	if pi.RunID != runID {
+		writeUploadError(w, http.StatusNotFound, "input_not_pending",
+			fmt.Sprintf("input %q does not belong to run %q", inputID, runID))
+		return
+	}
+
+	perFileCap, totalCap, countCap := resolveUploadCaps(
+		pi.FileAffordance,
+		s.defaultMaxFileSize, s.defaultMaxTotalSize, s.defaultMaxFileCount)
+
+	// MaxBytesReader is a hard cap; ParseMultipartForm only governs the
+	// in-memory budget. Without the wrapper a client could stream past the
+	// total cap and rely on per-file/total accounting alone, which only
+	// fires after the body has already been received.
+	r.Body = http.MaxBytesReader(w, r.Body, totalCap)
+	if err := r.ParseMultipartForm(totalCap); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeUploadError(w, http.StatusRequestEntityTooLarge, "max_total_size",
+				fmt.Sprintf("submission exceeds total cap of %d bytes", totalCap))
+			return
+		}
+		writeUploadError(w, http.StatusBadRequest, "multipart",
+			"parse multipart form: "+err.Error())
+		return
+	}
+	// ParseMultipartForm may spill file parts that exceed maxMemory to
+	// tempfiles in os.TempDir(); without RemoveAll those persist for the
+	// lifetime of the process. (On a parse error ReadForm cleans up its
+	// own temps, so this defer is only relevant for the success path.)
+	defer func() {
+		if r.MultipartForm != nil {
+			r.MultipartForm.RemoveAll()
+		}
+	}()
+
+	response := r.FormValue("response")
+
+	type partInfo struct {
+		fieldName string
+		header    *multipart.FileHeader
+	}
+	var parts []partInfo
+	if r.MultipartForm != nil {
+		for fieldName, headers := range r.MultipartForm.File {
+			for _, h := range headers {
+				parts = append(parts, partInfo{fieldName: fieldName, header: h})
+			}
+		}
+	}
+
+	mode := parsing.ModeTextOnly
+	if pi.FileAffordance != nil {
+		mode = pi.FileAffordance.Mode
+	}
+
+	// Slot validation: every declared slot must appear exactly once; no extras.
+	if mode == parsing.ModeSlot {
+		declared := make(map[string]bool)
+		for _, sl := range pi.FileAffordance.Slots {
+			declared[sl.Name] = true
+		}
+		seen := make(map[string]int)
+		for _, p := range parts {
+			seen[p.fieldName]++
+		}
+		for name, cnt := range seen {
+			if !declared[name] {
+				writeUploadError(w, http.StatusBadRequest, "slot_extra",
+					fmt.Sprintf("unexpected slot %q", name))
+				return
+			}
+			if cnt > 1 {
+				writeUploadError(w, http.StatusBadRequest, "slot_extra",
+					fmt.Sprintf("slot %q has %d entries; expected exactly one", name, cnt))
+				return
+			}
+		}
+		for name := range declared {
+			if seen[name] == 0 {
+				writeUploadError(w, http.StatusBadRequest, "slot_missing",
+					fmt.Sprintf("slot %q is required", name))
+				return
+			}
+		}
+	}
+
+	// Bucket count cap.
+	if mode == parsing.ModeBucket && len(parts) > countCap {
+		writeUploadError(w, http.StatusBadRequest, "max_count",
+			fmt.Sprintf("upload has %d files; max is %d", len(parts), countCap))
+		return
+	}
+
+	stagedNames := make(map[string]bool, len(pi.StagedFiles))
+	for _, sf := range pi.StagedFiles {
+		stagedNames[sf.Name] = true
+	}
+
+	// Validate filenames, sizes, and within-submission collisions before
+	// touching disk so a failure leaves the input subdirectory untouched.
+	type accepted struct {
+		fieldName string
+		header    *multipart.FileHeader
+		savedName string
+	}
+	submitted := make(map[string]bool, len(parts))
+	var totalSize int64
+	accepts := make([]accepted, 0, len(parts))
+	for _, p := range parts {
+		var rawName string
+		if mode == parsing.ModeSlot {
+			rawName = p.fieldName
+		} else {
+			rawName = filepath.Base(p.header.Filename)
+		}
+		savedName, err := NormalizeUploadFilename(rawName)
+		if err != nil {
+			writeUploadError(w, http.StatusBadRequest, "filename",
+				fmt.Sprintf("filename %q is invalid: %s", rawName, err.Error()))
+			return
+		}
+		if submitted[savedName] {
+			writeUploadError(w, http.StatusConflict, "duplicate_filename",
+				fmt.Sprintf("duplicate filename %q in submission", savedName))
+			return
+		}
+		submitted[savedName] = true
+		if stagedNames[savedName] {
+			writeUploadError(w, http.StatusConflict, "collision_with_staged",
+				fmt.Sprintf("filename %q collides with a staged display file", savedName))
+			return
+		}
+		if p.header.Size > perFileCap {
+			writeUploadError(w, http.StatusBadRequest, "max_file_size",
+				fmt.Sprintf("file %q (%d bytes) exceeds per-file cap of %d bytes",
+					savedName, p.header.Size, perFileCap))
+			return
+		}
+		totalSize += p.header.Size
+		if totalSize > totalCap {
+			writeUploadError(w, http.StatusBadRequest, "max_total_size",
+				fmt.Sprintf("submission size %d exceeds total cap of %d bytes",
+					totalSize, totalCap))
+			return
+		}
+		accepts = append(accepts, accepted{fieldName: p.fieldName, header: p.header, savedName: savedName})
+	}
+
+	taskFolder, ok := s.lookupAgentTaskFolder(runID, pi.AgentID)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "task folder not assigned for input"})
+		return
+	}
+	inputDir := filepath.Join(taskFolder, "inputs", inputID)
+	if err := os.MkdirAll(inputDir, 0o755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "create input directory: " + err.Error()})
+		return
+	}
+
+	stagingDir, err := os.MkdirTemp(inputDir, ".staging-")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "create staging directory: " + err.Error()})
+		return
+	}
+	cleanupStaging := true
+	defer func() {
+		if cleanupStaging {
+			os.RemoveAll(stagingDir)
+		}
+	}()
+
+	// Per-slot MIME allowlists are indexed by slot field name; bucket mode
+	// uses a single shared allowlist on Bucket.MIME.
+	var slotMIME map[string][]string
+	if mode == parsing.ModeSlot {
+		slotMIME = make(map[string][]string, len(pi.FileAffordance.Slots))
+		for _, sl := range pi.FileAffordance.Slots {
+			slotMIME[sl.Name] = sl.MIME
+		}
+	}
+
+	uploaded := make([]wfstate.FileRecord, 0, len(accepts))
+	for _, a := range accepts {
+		f, openErr := a.header.Open()
+		if openErr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "open part: " + openErr.Error()})
+			return
+		}
+		stagingPath := filepath.Join(stagingDir, a.savedName)
+		out, createErr := os.Create(stagingPath)
+		if createErr != nil {
+			f.Close()
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "create staging file: " + createErr.Error()})
+			return
+		}
+
+		// Read the first 512 bytes for content-type sniffing, then stream
+		// the rest. http.DetectContentType uses the byte signature alone;
+		// the FileHeader.Header value the client sent is not trusted.
+		sniff := make([]byte, 512)
+		n, readErr := io.ReadFull(f, sniff)
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			f.Close()
+			out.Close()
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "read part: " + readErr.Error()})
+			return
+		}
+		sniff = sniff[:n]
+		detected := http.DetectContentType(sniff)
+		mediaTypeOnly, _, _ := mime.ParseMediaType(detected)
+		if mediaTypeOnly == "" {
+			mediaTypeOnly = detected
+		}
+
+		var allowlist []string
+		switch mode {
+		case parsing.ModeSlot:
+			allowlist = slotMIME[a.fieldName]
+		case parsing.ModeBucket:
+			allowlist = pi.FileAffordance.Bucket.MIME
+		}
+		if len(allowlist) > 0 && !mimeAllowed(mediaTypeOnly, allowlist) {
+			f.Close()
+			out.Close()
+			writeUploadError(w, http.StatusBadRequest, "mime_not_allowed",
+				fmt.Sprintf("file %q content type %q is not in the allowlist", a.savedName, mediaTypeOnly))
+			return
+		}
+
+		if _, werr := out.Write(sniff); werr != nil {
+			f.Close()
+			out.Close()
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "write staging file: " + werr.Error()})
+			return
+		}
+		if _, cerr := io.Copy(out, f); cerr != nil {
+			f.Close()
+			out.Close()
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "write staging file: " + cerr.Error()})
+			return
+		}
+		f.Close()
+		if cerr := out.Close(); cerr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "close staging file: " + cerr.Error()})
+			return
+		}
+
+		info, statErr := os.Stat(stagingPath)
+		if statErr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "stat staging file: " + statErr.Error()})
+			return
+		}
+		uploaded = append(uploaded, wfstate.FileRecord{
+			Name:        a.savedName,
+			Size:        info.Size(),
+			ContentType: mediaTypeOnly,
+			Source:      "upload",
+		})
+	}
+
+	// All parts validated and staged. Rename into the input subdirectory
+	// before claiming the registry entry: per the design's atomicity
+	// rationale, a rename failure must leave the input still claimable.
+	for _, rec := range uploaded {
+		from := filepath.Join(stagingDir, rec.Name)
+		to := filepath.Join(inputDir, rec.Name)
+		if rerr := os.Rename(from, to); rerr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "rename staging file: " + rerr.Error()})
+			return
+		}
+	}
+	os.Remove(stagingDir)
+	cleanupStaging = false
+
+	if err := s.runManager.DeliverInput(runID, inputID, response, uploaded); err != nil {
+		// A concurrent submission may have already claimed the input
+		// between Get and DeliverInput. The loser's already-renamed files
+		// stay in place as orphans alongside the winner's: the design's
+		// "files persist after the input resolves" rule covers them, and
+		// the agent and UI only surface the winner's recorded
+		// UploadedFiles. Concurrent renames make deletion racy, so we do
+		// not attempt cleanup here.
+		if errors.Is(err, ErrPendingInputNotFound) || errors.Is(err, ErrPendingInputMismatch) {
+			writeUploadError(w, http.StatusNotFound, "input_not_pending", err.Error())
+			return
+		}
+		if errors.Is(err, ErrRunNotFound) {
+			writeUploadError(w, http.StatusNotFound, "input_not_pending", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, deliverInputResponse{
+		RunID:   runID,
+		InputID: inputID,
+		Status:  "resumed",
+	})
+}
+
+// mimeAllowed reports whether contentType matches any entry of allowlist
+// (case-insensitive). The allowlist is empty in the "no MIME constraint"
+// case; callers must not reach here when allowlist is empty.
+func mimeAllowed(contentType string, allowlist []string) bool {
+	for _, a := range allowlist {
+		if strings.EqualFold(contentType, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Helpers ---

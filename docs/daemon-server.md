@@ -87,14 +87,14 @@ management, streaming output, and human-in-the-loop input delivery.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/workflows` | List all discovered workflows with metadata (`id`, `name`, `description`, `input_schema`, `default_budget`, `requires_human_input`). |
+| `GET` | `/workflows` | List all discovered workflows with metadata (`id`, `name`, `description`, `input`, `default_budget`, `requires_human_input`). |
 | `GET` | `/workflows/{id}` | Get details for a specific workflow. |
 
 ### Run management
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/runs` | Start a workflow run. Accepts JSON body: `{"workflow_id", "input", "budget", "model", "working_directory", "environment"}`. Returns `{"run_id", "status", "started_at"}`. |
+| `POST` | `/runs` | Start a workflow run. Accepts JSON body: `{"workflow_id", "input", "budget", "model", "working_directory", "environment"}`. Returns `{"run_id", "status", "started_at"}`. Returns 400 if `input` violates the workflow's `input.mode` (empty for `required`, non-empty for `none`). |
 | `GET` | `/runs` | List all runs with status, cost, and timing. |
 | `GET` | `/runs/{id}` | Get the status of a single run, including agents, cost, elapsed time, and result. |
 | `GET` | `/runs/{id}/output` | Server-Sent Events stream of agent output, state transitions, and other run events. |
@@ -139,14 +139,16 @@ implementations.
 **`raymond_list_workflows`** — List all discovered workflows.
 
 Returns an array of workflow objects with `id`, `name`, `description`,
-`input_schema`, `default_budget`, and `requires_human_input`.
+`input` (an object with `mode`, `label`, and `description`), `default_budget`,
+and `requires_human_input`.
 
 **`raymond_run`** — Launch a workflow run.
 
 Parameters: `workflow_id` (required), `input`, `budget`, `model`,
 `working_directory`, `environment` (all optional). Returns `{run_id, status}`.
 Rejects workflows requiring human input if the client lacks elicitation
-support.
+support. Also rejects calls that violate the workflow's `input.mode` (empty
+`input` when `mode: required`, or non-empty `input` when `mode: none`).
 
 **`raymond_status`** — Get current status of a run.
 

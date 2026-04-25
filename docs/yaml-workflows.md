@@ -221,11 +221,26 @@ still usable via direct CLI invocation.
 | `id` | string | (none) | Unique identifier. Required for daemon discovery; used as the workflow ID in the HTTP API and MCP tools. |
 | `name` | string | `""` | Human-readable display name. |
 | `description` | string | `""` | Description shown in tool/endpoint documentation. |
-| `input_schema` | map[string]string | `nil` | Parameters the workflow accepts. |
+| `input` | object | `{mode: optional}` | Describes the single optional string passed to the first state as `{{result}}`. See [Input block](#input-block). |
 | `default_budget` | float64 | `0` | Default USD budget when callers don't specify one. |
 | `working_directory` | string | `""` | Default working directory for runs. |
 | `environment` | map[string]string | `nil` | Environment variables for runs. Supports `${VAR}` interpolation. |
 | `requires_human_input` | string | `"auto"` | `"auto"`, `"true"`, or `"false"`. Controls whether the daemon rejects the workflow from contexts that cannot deliver human input. At discovery time, `auto` resolves to `false` for YAML workflows, matching the behavior for directory and zip scopes. |
+
+### Input block
+
+A workflow receives at most one string of input at launch time, substituted
+into the first state as `{{result}}`. The `input` block describes that string
+for UI and MCP surfaces, and lets the daemon enforce whether input is
+permitted or required.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `"optional"` | One of `required`, `optional`, `none`. `required` rejects launches with an empty input; `none` rejects launches with a non-empty input. |
+| `label` | string | `""` | Short prompt shown in the web UI field and surfaced to MCP callers. |
+| `description` | string | `""` | Longer help text shown under the input field. |
+
+The entire `input` block is optional. Omitting it is equivalent to `input: {mode: optional}` with no label or description.
 
 Adding manifest fields has **no effect on CLI behavior**. `raymond
 workflow.yaml` runs the workflow identically whether or not `id` and its
@@ -239,9 +254,10 @@ id: vendor-approval
 name: Vendor Approval
 description: Evaluates a vendor proposal and routes through human approval
 default_budget: 5.0
-input_schema:
-  vendor_name: string
-  budget_limit: string
+input:
+  mode: required
+  label: Vendor name
+  description: The vendor to evaluate (passed to the first state as {{result}}).
 requires_human_input: auto
 
 states:

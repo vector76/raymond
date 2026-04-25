@@ -26,9 +26,10 @@ func TestParseManifest_AllFields(t *testing.T) {
 id: my-workflow
 name: My Workflow
 description: A test workflow
-input_schema:
-  query: string
-  verbose: bool
+input:
+  mode: required
+  label: Query
+  description: A search query to run
 default_budget: 42.5
 working_directory: /tmp/work
 environment:
@@ -43,7 +44,7 @@ requires_human_input: "true"
 	assert.Equal(t, "my-workflow", m.ID)
 	assert.Equal(t, "My Workflow", m.Name)
 	assert.Equal(t, "A test workflow", m.Description)
-	assert.Equal(t, map[string]string{"query": "string", "verbose": "bool"}, m.InputSchema)
+	assert.Equal(t, InputSpec{Mode: "required", Label: "Query", Description: "A search query to run"}, m.Input)
 	assert.Equal(t, 42.5, m.DefaultBudget)
 	assert.Equal(t, "/tmp/work", m.WorkingDirectory)
 	assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, m.Environment)
@@ -59,11 +60,49 @@ func TestParseManifest_MinimalIDOnly(t *testing.T) {
 	assert.Equal(t, "minimal", m.ID)
 	assert.Equal(t, "", m.Name)
 	assert.Equal(t, "", m.Description)
-	assert.Nil(t, m.InputSchema)
+	// Absent input block defaults to optional mode with empty label/description.
+	assert.Equal(t, InputSpec{Mode: "optional"}, m.Input)
 	assert.Equal(t, 0.0, m.DefaultBudget)
 	assert.Equal(t, "", m.WorkingDirectory)
 	assert.Nil(t, m.Environment)
 	assert.Equal(t, "auto", m.RequiresHumanInput)
+}
+
+func TestParseManifest_InputModeDefaultsToOptional(t *testing.T) {
+	// input block present but mode omitted → defaults to optional.
+	yaml := `
+id: labeled
+input:
+  label: Topic
+`
+	path := writeTempManifest(t, yaml)
+	m, err := ParseManifest(path)
+	require.NoError(t, err)
+	assert.Equal(t, InputSpec{Mode: "optional", Label: "Topic"}, m.Input)
+}
+
+func TestParseManifest_ValidInputModes(t *testing.T) {
+	for _, mode := range []string{"required", "optional", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			yaml := "id: test\ninput:\n  mode: " + mode + "\n"
+			path := writeTempManifest(t, yaml)
+			m, err := ParseManifest(path)
+			require.NoError(t, err)
+			assert.Equal(t, mode, m.Input.Mode)
+		})
+	}
+}
+
+func TestParseManifest_InvalidInputMode(t *testing.T) {
+	yaml := `
+id: bad-input-mode
+input:
+  mode: maybe
+`
+	path := writeTempManifest(t, yaml)
+	_, err := ParseManifest(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "input.mode")
 }
 
 func TestParseManifest_MissingID(t *testing.T) {

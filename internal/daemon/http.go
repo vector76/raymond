@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/vector76/raymond/internal/manifest"
 )
 
 //go:embed static
@@ -22,6 +24,23 @@ var staticFiles embed.FS
 // daemon-launched runs don't halt immediately on the zero-budget guard
 // in the markdown executor.
 const daemonDefaultBudgetUSD = 10.0
+
+// validateInputMode enforces the manifest's input.mode constraint at launch.
+// mode: required rejects an empty input; mode: none rejects a non-empty input.
+// mode: optional (or any unknown value, defensively) accepts anything.
+func validateInputMode(mode, input string) error {
+	switch mode {
+	case manifest.InputModeRequired:
+		if input == "" {
+			return fmt.Errorf("workflow requires non-empty input")
+		}
+	case manifest.InputModeNone:
+		if input != "" {
+			return fmt.Errorf("workflow does not accept input")
+		}
+	}
+	return nil
+}
 
 // resolveBudget picks the effective budget for a run, walking the
 // precedence ladder: explicit request budget > workflow manifest
@@ -119,12 +138,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // --- JSON response/request types ---
 
 type workflowResponse struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	Description        string            `json:"description"`
-	InputSchema        map[string]string `json:"input_schema"`
-	DefaultBudget      float64           `json:"default_budget"`
-	RequiresHumanInput bool              `json:"requires_human_input"`
+	ID                 string             `json:"id"`
+	Name               string             `json:"name"`
+	Description        string             `json:"description"`
+	Input              manifest.InputSpec `json:"input"`
+	DefaultBudget      float64            `json:"default_budget"`
+	RequiresHumanInput bool               `json:"requires_human_input"`
 }
 
 type agentResponse struct {
@@ -223,6 +242,11 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	entry, ok := s.registry.GetWorkflow(req.WorkflowID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("workflow %q not found", req.WorkflowID)})
+		return
+	}
+
+	if err := validateInputMode(entry.Input.Mode, req.Input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
 		return
 	}
 
@@ -445,7 +469,7 @@ func workflowToResponse(e WorkflowEntry) workflowResponse {
 		ID:                 e.ID,
 		Name:               e.Name,
 		Description:        e.Description,
-		InputSchema:        e.InputSchema,
+		Input:              e.Input,
 		DefaultBudget:      e.DefaultBudget,
 		RequiresHumanInput: e.RequiresHumanInput,
 	}

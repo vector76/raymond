@@ -124,6 +124,21 @@
       var card = document.createElement("div");
       card.className = "workflow-card";
 
+      var input = wf.input || { mode: "optional", label: "", description: "" };
+      var mode = input.mode || "optional";
+      var label = input.label || "Input";
+      var placeholder = label + (mode === "required" ? " (required)" : " (optional)");
+      var inputHTML =
+        mode === "none"
+          ? ""
+          : '<div class="workflow-input">' +
+              '<textarea rows="1" placeholder="' + escapeHTML(placeholder) + '"' +
+              (mode === "required" ? ' required' : '') + '></textarea>' +
+              (input.description
+                ? '<div class="workflow-input-help">' + escapeHTML(input.description) + '</div>'
+                : '') +
+            '</div>';
+
       card.innerHTML =
         '<div class="workflow-card-header">' +
           '<span class="workflow-name">' + escapeHTML(wf.name || wf.id) + '</span>' +
@@ -133,7 +148,7 @@
           ? '<div class="workflow-description">' + escapeHTML(wf.description) + '</div>'
           : '') +
         '<div class="workflow-actions">' +
-          '<textarea rows="1" placeholder="Input (optional)..."></textarea>' +
+          inputHTML +
           '<button class="btn btn-primary">Launch</button>' +
         '</div>';
 
@@ -141,10 +156,15 @@
       var btn = card.querySelector("button");
 
       btn.addEventListener("click", function () {
+        var value = textarea ? textarea.value.trim() : "";
+        if (mode === "required" && !value) {
+          alert(label + " is required");
+          return;
+        }
         btn.disabled = true;
         btn.textContent = "Launching...";
-        launchWorkflow(wf.id, textarea.value.trim()).then(function (resp) {
-          textarea.value = "";
+        launchWorkflow(wf.id, value).then(function (resp) {
+          if (textarea) textarea.value = "";
           btn.disabled = false;
           btn.textContent = "Launch";
           if (resp && resp.run_id) {
@@ -161,12 +181,14 @@
         });
       });
 
-      textarea.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          btn.click();
-        }
-      });
+      if (textarea) {
+        textarea.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            btn.click();
+          }
+        });
+      }
 
       workflowsEl.appendChild(card);
     });

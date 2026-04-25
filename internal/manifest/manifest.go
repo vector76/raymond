@@ -25,11 +25,35 @@ type Manifest struct {
 	ID                 string            `yaml:"id"`
 	Name               string            `yaml:"name"`
 	Description        string            `yaml:"description"`
-	InputSchema        map[string]string `yaml:"input_schema"`
+	Input              InputSpec         `yaml:"input"`
 	DefaultBudget      float64           `yaml:"default_budget"`
 	WorkingDirectory   string            `yaml:"working_directory"`
 	Environment        map[string]string `yaml:"environment"`
 	RequiresHumanInput string            `yaml:"requires_human_input"`
+}
+
+// InputSpec describes the workflow's single optional entry-state input string
+// (substituted into the first state as {{result}}). Mode controls whether the
+// run may, must, or must-not receive a non-empty input at launch time. Label
+// and Description are hints for UI/MCP surfaces.
+type InputSpec struct {
+	Mode        string `yaml:"mode" json:"mode"`
+	Label       string `yaml:"label" json:"label"`
+	Description string `yaml:"description" json:"description"`
+}
+
+// Input mode values.
+const (
+	InputModeRequired = "required"
+	InputModeOptional = "optional"
+	InputModeNone     = "none"
+)
+
+// validInputMode lists the accepted values for InputSpec.Mode.
+var validInputMode = map[string]bool{
+	InputModeRequired: true,
+	InputModeOptional: true,
+	InputModeNone:     true,
 }
 
 // rawManifest is used for initial unmarshalling so we can detect YAML scope
@@ -82,6 +106,9 @@ func ParseManifestData(data []byte) (*Manifest, error) {
 	if m.RequiresHumanInput == "" {
 		m.RequiresHumanInput = "auto"
 	}
+	if m.Input.Mode == "" {
+		m.Input.Mode = InputModeOptional
+	}
 
 	// Validate required fields.
 	if m.ID == "" {
@@ -91,6 +118,11 @@ func ParseManifestData(data []byte) (*Manifest, error) {
 	// Validate requires_human_input.
 	if !validHumanInput[m.RequiresHumanInput] {
 		return nil, fmt.Errorf("manifest validation: requires_human_input must be one of auto, true, false; got %q", m.RequiresHumanInput)
+	}
+
+	// Validate input.mode.
+	if !validInputMode[m.Input.Mode] {
+		return nil, fmt.Errorf("manifest validation: input.mode must be one of required, optional, none; got %q", m.Input.Mode)
 	}
 
 	return m, nil

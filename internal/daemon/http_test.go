@@ -268,6 +268,105 @@ func TestCreateRun_UnknownWorkflow(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// newTestServerWithManifest builds a server backed by a registry with one
+// workflow whose workflow.yaml is the given yaml. Used by input-mode tests.
+func newTestServerWithManifest(t *testing.T, manifestYAML string) *httptest.Server {
+	t.Helper()
+	scopeDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "START.md"),
+		[]byte("# Start\nDo something."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "workflow.yaml"),
+		[]byte(manifestYAML),
+		0o644,
+	))
+	reg, err := NewRegistry([]string{filepath.Dir(scopeDir)})
+	require.NoError(t, err)
+	stateDir := ensureStateDir(t)
+	fake := &fakeOrchestrator{}
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+	srv := NewServer(reg, rm, 0)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestCreateRun_InputModeRequired_RejectsEmpty(t *testing.T) {
+	ts := newTestServerWithManifest(t, "id: req-wf\ninput:\n  mode: required\n")
+
+	body := `{"workflow_id": "req-wf"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	var errResp errorResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&errResp))
+	assert.Contains(t, errResp.Error, "requires non-empty input")
+}
+
+func TestCreateRun_InputModeRequired_AcceptsNonEmpty(t *testing.T) {
+	ts := newTestServerWithManifest(t, "id: req-wf\ninput:\n  mode: required\n")
+
+	body := `{"workflow_id": "req-wf", "input": "hello"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
+func TestCreateRun_InputModeNone_RejectsNonEmpty(t *testing.T) {
+	ts := newTestServerWithManifest(t, "id: none-wf\ninput:\n  mode: none\n")
+
+	body := `{"workflow_id": "none-wf", "input": "should not be here"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	var errResp errorResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&errResp))
+	assert.Contains(t, errResp.Error, "does not accept input")
+}
+
+func TestCreateRun_InputModeNone_AcceptsEmpty(t *testing.T) {
+	ts := newTestServerWithManifest(t, "id: none-wf\ninput:\n  mode: none\n")
+
+	body := `{"workflow_id": "none-wf"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
+func TestListWorkflows_ExposesInputSpec(t *testing.T) {
+	ts := newTestServerWithManifest(t, `
+id: labeled-wf
+input:
+  mode: required
+  label: Vendor name
+  description: The vendor to evaluate
+`)
+
+	resp, err := http.Get(ts.URL + "/workflows")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var workflows []workflowResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&workflows))
+	require.Len(t, workflows, 1)
+	assert.Equal(t, "required", workflows[0].Input.Mode)
+	assert.Equal(t, "Vendor name", workflows[0].Input.Label)
+	assert.Equal(t, "The vendor to evaluate", workflows[0].Input.Description)
+}
+
 func TestGetRun(t *testing.T) {
 	_, ts, _ := newTestServer(t)
 

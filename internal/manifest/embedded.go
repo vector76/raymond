@@ -50,9 +50,16 @@ func ExtractEmbeddedManifest(data []byte) (*Manifest, error) {
 	if m.RequiresHumanInput == "" {
 		m.RequiresHumanInput = "auto"
 	}
+	if m.Input.Mode == "" {
+		m.Input.Mode = InputModeOptional
+	}
 
 	if !validHumanInput[m.RequiresHumanInput] {
 		return nil, fmt.Errorf("embedded manifest validation: requires_human_input must be one of auto, true, false; got %q", m.RequiresHumanInput)
+	}
+
+	if !validInputMode[m.Input.Mode] {
+		return nil, fmt.Errorf("embedded manifest validation: input.mode must be one of required, optional, none; got %q", m.Input.Mode)
 	}
 
 	return m, nil

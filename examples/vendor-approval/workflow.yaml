@@ -3,8 +3,9 @@ name: Vendor Approval Workflow
 description: >
   Evaluates a vendor against company policy, pauses for human approval,
   and generates a recommendation report.
-input_schema:
-  vendor_name: string
-  budget_limit: string
+input:
+  mode: required
+  label: Vendor name
+  description: The vendor to evaluate (the first state receives this as {{result}}).
 default_budget: 5.0
 requires_human_input: auto

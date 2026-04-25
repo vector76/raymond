@@ -14,8 +14,10 @@ func TestExtractEmbeddedManifest_FullManifestAlongsideStates(t *testing.T) {
 id: my-workflow
 name: My Workflow
 description: A test workflow
-input_schema:
-  query: string
+input:
+  mode: required
+  label: Query
+  description: A search query
 default_budget: 2.5
 working_directory: /tmp/work
 environment:
@@ -32,11 +34,39 @@ states:
 	assert.Equal(t, "my-workflow", m.ID)
 	assert.Equal(t, "My Workflow", m.Name)
 	assert.Equal(t, "A test workflow", m.Description)
-	assert.Equal(t, map[string]string{"query": "string"}, m.InputSchema)
+	assert.Equal(t, InputSpec{Mode: "required", Label: "Query", Description: "A search query"}, m.Input)
 	assert.Equal(t, 2.5, m.DefaultBudget)
 	assert.Equal(t, "/tmp/work", m.WorkingDirectory)
 	assert.Equal(t, map[string]string{"FOO": "bar"}, m.Environment)
 	assert.Equal(t, "true", m.RequiresHumanInput)
+}
+
+func TestExtractEmbeddedManifest_InvalidInputMode_ReturnsError(t *testing.T) {
+	yaml := `
+id: bad-input-mode
+input:
+  mode: maybe
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.Error(t, err)
+	assert.Nil(t, m)
+	assert.Contains(t, err.Error(), "input.mode")
+}
+
+func TestExtractEmbeddedManifest_InputModeDefaultsToOptional(t *testing.T) {
+	yaml := `
+id: default-mode
+states:
+  START:
+    prompt: Hello
+`
+	m, err := ExtractEmbeddedManifest([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, "optional", m.Input.Mode)
 }
 
 func TestExtractEmbeddedManifest_StatesWithoutID_ReturnsNilNil(t *testing.T) {
@@ -169,7 +199,7 @@ states:
 	assert.Equal(t, "minimal", m.ID)
 	assert.Equal(t, "", m.Name)
 	assert.Equal(t, "", m.Description)
-	assert.Nil(t, m.InputSchema)
+	assert.Equal(t, InputSpec{Mode: "optional"}, m.Input)
 	assert.Equal(t, 0.0, m.DefaultBudget)
 	assert.Equal(t, "", m.WorkingDirectory)
 	assert.Nil(t, m.Environment)

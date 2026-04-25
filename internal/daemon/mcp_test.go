@@ -406,6 +406,54 @@ func TestMCPRequiresHumanInput_Allowed(t *testing.T) {
 	assert.Equal(t, "running", result["status"])
 }
 
+// newMCPTestSetupWithManifest builds an MCP test setup backed by a workflow
+// whose workflow.yaml is the given yaml. Used by input-mode tests.
+func newMCPTestSetupWithManifest(t *testing.T, manifestYAML string) *mcpTestClient {
+	t.Helper()
+	scopeDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "START.md"),
+		[]byte("# Start\nDo something."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "workflow.yaml"),
+		[]byte(manifestYAML),
+		0o644,
+	))
+	reg, err := NewRegistry([]string{filepath.Dir(scopeDir)})
+	require.NoError(t, err)
+	stateDir := ensureStateDir(t)
+	fake := &fakeOrchestrator{}
+	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+	srv := NewMCPServer(reg, rm)
+	return newMCPTestClient(t, srv)
+}
+
+func TestMCPRun_InputModeRequired_RejectsEmpty(t *testing.T) {
+	client := newMCPTestSetupWithManifest(t, "id: req-wf\ninput:\n  mode: required\n")
+	client.initialize(false)
+
+	resp := client.callTool(2, "raymond_run", map[string]any{
+		"workflow_id": "req-wf",
+	})
+	assert.True(t, toolIsError(t, resp))
+	assert.Contains(t, toolResultText(t, resp), "requires non-empty input")
+}
+
+func TestMCPRun_InputModeNone_RejectsNonEmpty(t *testing.T) {
+	client := newMCPTestSetupWithManifest(t, "id: none-wf\ninput:\n  mode: none\n")
+	client.initialize(false)
+
+	resp := client.callTool(2, "raymond_run", map[string]any{
+		"workflow_id": "none-wf",
+		"input":       "should not be here",
+	})
+	assert.True(t, toolIsError(t, resp))
+	assert.Contains(t, toolResultText(t, resp), "does not accept input")
+}
+
 func TestMCPListPendingInputs(t *testing.T) {
 	client, fake := newMCPTestSetup(t)
 	client.initialize(false)

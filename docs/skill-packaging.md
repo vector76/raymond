@@ -209,9 +209,10 @@ discovers and indexes skills.
 id: vendor-approval
 name: Vendor Approval Workflow
 description: Evaluates a vendor and routes through human approval before generating a recommendation report.
-input_schema:
-  vendor_name: string
-  budget_limit: string
+input:
+  mode: required
+  label: Vendor name
+  description: The vendor to evaluate.
 default_budget: 5.0
 requires_human_input: auto
 ```
@@ -223,7 +224,7 @@ requires_human_input: auto
 | `id` | Unique identifier — used as the tool name in MCP and the endpoint name in the HTTP API. |
 | `name` | Human-readable display name. |
 | `description` | Shown in tool/endpoint documentation. |
-| `input_schema` | Parameters the skill accepts — used for API validation and documentation. |
+| `input` | Describes the single optional input string passed to the first state as `{{result}}`. `mode` is `required`, `optional`, or `none`; `label` and `description` are UI/MCP hints. |
 | `default_budget` | Default USD budget when callers don't specify one. |
 | `requires_human_input` | `"auto"` (scan states for `<await>` tags), `"true"` (always), or `"false"` (never). Controls how the daemon handles the workflow. |
 

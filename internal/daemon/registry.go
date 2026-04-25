@@ -20,7 +20,7 @@ type WorkflowEntry struct {
 	ID                 string
 	Name               string
 	Description        string
-	InputSchema        map[string]string
+	Input              manifest.InputSpec
 	DefaultBudget      float64
 	RequiresHumanInput bool
 	ScopeDir           string
@@ -133,7 +133,7 @@ func (r *Registry) tryIndexDir(dir string) {
 		ID:                 m.ID,
 		Name:               m.Name,
 		Description:        m.Description,
-		InputSchema:        m.InputSchema,
+		Input:              m.Input,
 		DefaultBudget:      m.DefaultBudget,
 		RequiresHumanInput: humanInput,
 		ScopeDir:           dir,
@@ -162,7 +162,7 @@ func (r *Registry) tryIndexZip(zipPath string) {
 		ID:                 m.ID,
 		Name:               m.Name,
 		Description:        m.Description,
-		InputSchema:        m.InputSchema,
+		Input:              m.Input,
 		DefaultBudget:      m.DefaultBudget,
 		RequiresHumanInput: humanInput,
 		ScopeDir:           zipPath,
@@ -187,7 +187,7 @@ func (r *Registry) tryIndexYaml(yamlPath string) {
 		ID:                 m.ID,
 		Name:               m.Name,
 		Description:        m.Description,
-		InputSchema:        m.InputSchema,
+		Input:              m.Input,
 		DefaultBudget:      m.DefaultBudget,
 		RequiresHumanInput: humanInput,
 		ScopeDir:           yamlPath,

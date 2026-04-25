@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vector76/raymond/internal/manifest"
 )
 
 // makeWorkflowDir creates a workflow directory with a workflow.yaml manifest
@@ -63,8 +65,9 @@ default_budget: 10.0
 id: beta
 name: Beta Workflow
 description: Second workflow
-input_schema:
-  query: string
+input:
+  mode: required
+  label: Query
 requires_human_input: "true"
 `)
 
@@ -85,7 +88,10 @@ requires_human_input: "true"
 	assert.Equal(t, "beta", entries[1].ID)
 	assert.Equal(t, "Beta Workflow", entries[1].Name)
 	assert.True(t, entries[1].RequiresHumanInput)
-	assert.Equal(t, map[string]string{"query": "string"}, entries[1].InputSchema)
+	assert.Equal(t, manifest.InputSpec{Mode: "required", Label: "Query"}, entries[1].Input)
+
+	// Workflow without an input block defaults to optional mode.
+	assert.Equal(t, manifest.InputSpec{Mode: "optional"}, entries[0].Input)
 }
 
 func TestNewRegistry_SkipsWorkflowWithoutManifest(t *testing.T) {
@@ -351,8 +357,9 @@ func TestNewRegistry_ScansYamlWorkflows(t *testing.T) {
 id: review
 name: Review Workflow
 description: Embedded review workflow
-input_schema:
-  query: string
+input:
+  mode: required
+  label: Query
 default_budget: 7.5
 requires_human_input: "true"
 states:
@@ -370,7 +377,7 @@ states:
 	assert.Equal(t, "review", e.ID)
 	assert.Equal(t, "Review Workflow", e.Name)
 	assert.Equal(t, "Embedded review workflow", e.Description)
-	assert.Equal(t, map[string]string{"query": "string"}, e.InputSchema)
+	assert.Equal(t, manifest.InputSpec{Mode: "required", Label: "Query"}, e.Input)
 	assert.Equal(t, 7.5, e.DefaultBudget)
 	assert.True(t, e.RequiresHumanInput)
 	assert.Equal(t, yamlPath, e.ScopeDir)

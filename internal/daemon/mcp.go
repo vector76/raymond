@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/vector76/raymond/internal/manifest"
 )
 
 // --- JSON-RPC 2.0 types ---
@@ -458,12 +460,12 @@ func (s *MCPServer) toolListWorkflows() mcpToolResult {
 	entries := s.registry.ListWorkflows()
 
 	type wfItem struct {
-		ID                 string            `json:"id"`
-		Name               string            `json:"name"`
-		Description        string            `json:"description"`
-		InputSchema        map[string]string `json:"input_schema"`
-		DefaultBudget      float64           `json:"default_budget"`
-		RequiresHumanInput bool              `json:"requires_human_input"`
+		ID                 string             `json:"id"`
+		Name               string             `json:"name"`
+		Description        string             `json:"description"`
+		Input              manifest.InputSpec `json:"input"`
+		DefaultBudget      float64            `json:"default_budget"`
+		RequiresHumanInput bool               `json:"requires_human_input"`
 	}
 
 	items := make([]wfItem, len(entries))
@@ -472,7 +474,7 @@ func (s *MCPServer) toolListWorkflows() mcpToolResult {
 			ID:                 e.ID,
 			Name:               e.Name,
 			Description:        e.Description,
-			InputSchema:        e.InputSchema,
+			Input:              e.Input,
 			DefaultBudget:      e.DefaultBudget,
 			RequiresHumanInput: e.RequiresHumanInput,
 		}
@@ -512,6 +514,10 @@ func (s *MCPServer) toolRun(ctx context.Context, args json.RawMessage) mcpToolRe
 			"workflow %q requires human input but the MCP client does not support elicitation",
 			params.WorkflowID,
 		))
+	}
+
+	if err := validateInputMode(entry.Input.Mode, params.Input); err != nil {
+		return toolError(err.Error())
 	}
 
 	budget := resolveBudget(params.Budget, entry.DefaultBudget, s.defaultBudget)

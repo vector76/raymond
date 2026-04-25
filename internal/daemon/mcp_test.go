@@ -17,6 +17,8 @@ import (
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/orchestrator"
+	"github.com/vector76/raymond/internal/parsing"
+	wfstate "github.com/vector76/raymond/internal/state"
 )
 
 // mcpTestClient manages pipes for communicating with an MCPServer under test.
@@ -174,10 +176,19 @@ func toolIsError(t *testing.T, resp map[string]any) bool {
 // --- Setup helpers ---
 
 func newMCPTestSetup(t *testing.T) (*mcpTestClient, *fakeOrchestrator) {
-	return newMCPTestSetupOpts(t, false)
+	c, fake, _, _ := newMCPTestSetupFull(t, false)
+	return c, fake
 }
 
 func newMCPTestSetupOpts(t *testing.T, requiresHumanInput bool) (*mcpTestClient, *fakeOrchestrator) {
+	c, fake, _, _ := newMCPTestSetupFull(t, requiresHumanInput)
+	return c, fake
+}
+
+// newMCPTestSetupFull builds a wired MCP test stack and returns the client,
+// fake orchestrator, MCP server, and pending registry. Tests that need to
+// inspect or mutate the registry / server directly use this variant.
+func newMCPTestSetupFull(t *testing.T, requiresHumanInput bool) (*mcpTestClient, *fakeOrchestrator, *MCPServer, *PendingRegistry) {
 	t.Helper()
 
 	scopeDir := t.TempDir()
@@ -220,7 +231,7 @@ func newMCPTestSetupOpts(t *testing.T, requiresHumanInput bool) (*mcpTestClient,
 	rm.SetAwaitNotifier(srv.HandleAwaitNotification)
 
 	client := newMCPTestClient(t, srv)
-	return client, fake
+	return client, fake, srv, pr
 }
 
 // --- Tests ---
@@ -686,4 +697,167 @@ func TestMCPElicitation(t *testing.T) {
 	assert.Equal(t, runID, parsed["run_id"])
 	assert.Equal(t, "completed", parsed["status"])
 	assert.Equal(t, "done with input", parsed["result"])
+}
+
+// TestMCPElicitation_RequiredUpload_NotDelivered exercises Phase 9: an
+// <await> that declares an upload affordance must not be delivered via MCP
+// elicitation; the input stays pending so the user completes it via HTTP.
+func TestMCPElicitation_RequiredUpload_NotDelivered(t *testing.T) {
+	client, fake, _, pr := newMCPTestSetupFull(t, false)
+	client.initialize(true) // elicitation supported
+
+	startAwait := make(chan struct{})
+
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+		select {
+		case <-startAwait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if opts.AwaitCallback != nil {
+			fa := &parsing.FileAffordance{
+				Mode:  parsing.ModeSlot,
+				Slots: []parsing.SlotSpec{{Name: "resume.pdf"}},
+			}
+			opts.AwaitCallback("main", "upload-input-1", "Upload your resume.", "NEXT.md", fa, nil)
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	runResp := client.callTool(2, "raymond_run", map[string]any{
+		"workflow_id": "test-workflow",
+	})
+	runResult := toolResultJSON(t, runResp)
+	runID := runResult["run_id"].(string)
+
+	// Begin awaiting; the goroutine registers the active-await before we
+	// signal the orchestrator to fire its callback.
+	client.writeRequest(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      10,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "raymond_await",
+			"arguments": map[string]any{"run_id": runID},
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	close(startAwait)
+
+	// The await callback registered the pending input; HandleAwaitNotification
+	// must skip delivery because of the upload affordance. Allow time for the
+	// notifier to run.
+	require.Eventually(t, func() bool {
+		return len(pr.ListByRun(runID)) == 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Confirm no elicitation/create message has been emitted by the server.
+	// Read with a short timeout — receiving anything here means the gate
+	// failed.
+	gotMsg := readMessageWithTimeout(t, client, 200*time.Millisecond)
+	assert.Nil(t, gotMsg, "expected no elicitation/create for an upload-required await, got: %v", gotMsg)
+
+	// The pending input is still in the registry, ready for HTTP delivery.
+	pending := pr.ListByRun(runID)
+	require.Len(t, pending, 1)
+	assert.Equal(t, "upload-input-1", pending[0].InputID)
+	require.NotNil(t, pending[0].FileAffordance)
+	assert.Equal(t, parsing.ModeSlot, pending[0].FileAffordance.Mode)
+}
+
+// TestMCPElicitation_DisplayOnly_IncludesURLs verifies that display-only
+// awaits are delivered via elicitation with absolute file URLs appended
+// to the prompt so an MCP client can fetch the staged files out of band.
+func TestMCPElicitation_DisplayOnly_IncludesURLs(t *testing.T) {
+	client, fake, srv, _ := newMCPTestSetupFull(t, false)
+	srv.SetBaseURL("http://localhost:8080/")
+	client.initialize(true)
+
+	startAwait := make(chan struct{})
+
+	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+		b := bus.New()
+		if opts.ObserverSetup != nil {
+			opts.ObserverSetup(b)
+		}
+		select {
+		case <-startAwait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if opts.AwaitCallback != nil {
+			fa := &parsing.FileAffordance{
+				Mode: parsing.ModeDisplayOnly,
+				DisplayFiles: []parsing.DisplaySpec{
+					{SourcePath: "out/report.pdf", DisplayName: "report.pdf"},
+				},
+			}
+			staged := []wfstate.FileRecord{
+				{Name: "report.pdf", Size: 42, ContentType: "application/pdf", Source: "display"},
+			}
+			opts.AwaitCallback("main", "display-input-1", "Please review the report.", "NEXT.md", fa, staged)
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	runResp := client.callTool(2, "raymond_run", map[string]any{
+		"workflow_id": "test-workflow",
+	})
+	runResult := toolResultJSON(t, runResp)
+	runID := runResult["run_id"].(string)
+
+	client.writeRequest(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      10,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "raymond_await",
+			"arguments": map[string]any{"run_id": runID},
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	close(startAwait)
+
+	elicitReq := client.readMessage()
+	assert.Equal(t, "elicitation/create", elicitReq["method"])
+	params := elicitReq["params"].(map[string]any)
+	message := params["message"].(string)
+	assert.Contains(t, message, "Please review the report.")
+	assert.Contains(t, message, "report.pdf")
+	expectedURL := fmt.Sprintf("http://localhost:8080/runs/%s/inputs/display-input-1/files/report.pdf", runID)
+	assert.Contains(t, message, expectedURL)
+}
+
+// readMessageWithTimeout reads the next JSON message from the MCP server
+// in a goroutine and returns it, or nil if no message arrives before
+// timeout. Used by tests that assert *no* message is sent.
+func readMessageWithTimeout(t *testing.T, c *mcpTestClient, timeout time.Duration) map[string]any {
+	t.Helper()
+	ch := make(chan map[string]any, 1)
+	go func() {
+		if !c.scanner.Scan() {
+			ch <- nil
+			return
+		}
+		var msg map[string]any
+		if err := json.Unmarshal(c.scanner.Bytes(), &msg); err != nil {
+			ch <- nil
+			return
+		}
+		ch <- msg
+	}()
+	select {
+	case m := <-ch:
+		return m
+	case <-time.After(timeout):
+		return nil
+	}
 }

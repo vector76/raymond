@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/vector76/raymond/internal/manifest"
+	"github.com/vector76/raymond/internal/parsing"
 )
 
 // --- JSON-RPC 2.0 types ---
@@ -73,6 +77,11 @@ type MCPServer struct {
 	// manifest both leave it unset.
 	defaultBudget float64
 
+	// baseURL is the absolute prefix used to construct file-content URLs
+	// embedded in display-only elicitation prompts. Empty means "no URL
+	// prefix"; staged-file URLs are then omitted from the prompt.
+	baseURL string
+
 	// Encoder for writing to the output stream (set by Serve).
 	enc   *json.Encoder
 	encMu sync.Mutex
@@ -105,6 +114,14 @@ func (s *MCPServer) SetDefaultBudget(budget float64) {
 	s.defaultBudget = budget
 }
 
+// SetBaseURL configures the absolute URL prefix used when embedding
+// file-content URLs in display-only elicitation prompts. The prefix should
+// not end with a slash (e.g. "http://localhost:8080"). When empty, staged
+// file URLs are omitted from the prompt.
+func (s *MCPServer) SetBaseURL(u string) {
+	s.baseURL = strings.TrimRight(u, "/")
+}
+
 // HasElicitation reports whether the MCP client declared elicitation support
 // during initialization.
 func (s *MCPServer) HasElicitation() bool {
@@ -115,17 +132,95 @@ func (s *MCPServer) HasElicitation() bool {
 // an agent enters <await>. If there is an active raymond_await call with
 // elicitation support for the run, it issues an elicitation request to the
 // MCP client and delivers the response.
+//
+// Awaits that declare upload affordance (slot or bucket mode) are not
+// delivered via MCP: the elicitation channel cannot asymmetrically carry a
+// rejection of a text-only response, so we leave the input pending and let
+// the user complete it via the HTTP UI. A warning is logged for visibility.
+//
+// Display-only awaits are delivered via elicitation with the prompt
+// augmented by absolute URLs for the staged files so an MCP client can
+// fetch them out of band.
 func (s *MCPServer) HandleAwaitNotification(runID, inputID, prompt string) {
 	if _, ok := s.activeAwaits.Load(runID); !ok {
 		return
 	}
+
+	pi, ok := s.lookupPendingInput(inputID)
+	if ok && requiresUpload(pi.FileAffordance) {
+		log.Printf("mcp: skipping elicitation for input %q (run %q): upload affordance present, deliver via HTTP UI", inputID, runID)
+		return
+	}
+
+	finalPrompt := prompt
+	if ok {
+		finalPrompt = s.augmentPromptWithFileURLs(prompt, pi)
+	}
+
 	go func() {
-		response, err := s.sendElicitation(prompt)
+		response, err := s.sendElicitation(finalPrompt)
 		if err != nil {
 			return // elicitation failed; input stays pending for manual delivery
 		}
 		s.runManager.DeliverInput(runID, inputID, response, nil)
 	}()
+}
+
+// lookupPendingInput returns the registered PendingInput for the given input
+// ID, if the registry is configured and the input is still pending.
+func (s *MCPServer) lookupPendingInput(inputID string) (*PendingInput, bool) {
+	if s.pendingRegistry == nil {
+		return nil, false
+	}
+	return s.pendingRegistry.Get(inputID)
+}
+
+// requiresUpload reports whether the affordance includes any non-zero upload
+// affordance (slot mode with declared slots, or bucket mode). Display-only
+// and text-only awaits do not require uploads.
+func requiresUpload(fa *parsing.FileAffordance) bool {
+	if fa == nil {
+		return false
+	}
+	switch fa.Mode {
+	case parsing.ModeSlot, parsing.ModeBucket:
+		return true
+	}
+	return false
+}
+
+// augmentPromptWithFileURLs appends absolute URLs for the input's staged
+// files to the prompt so an MCP client can fetch them out of band. Returns
+// the prompt unchanged when there are no staged files or no base URL is
+// configured.
+func (s *MCPServer) augmentPromptWithFileURLs(prompt string, pi *PendingInput) string {
+	if s.baseURL == "" || len(pi.StagedFiles) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString(prompt)
+	if !strings.HasSuffix(prompt, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\nAttached files:\n")
+	for _, f := range pi.StagedFiles {
+		b.WriteString("- ")
+		b.WriteString(f.Name)
+		b.WriteString(": ")
+		b.WriteString(s.fileContentURL(pi.RunID, pi.InputID, f.Name))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// fileContentURL builds the absolute URL for the file content endpoint.
+func (s *MCPServer) fileContentURL(runID, inputID, name string) string {
+	return fmt.Sprintf("%s/runs/%s/inputs/%s/files/%s",
+		s.baseURL,
+		url.PathEscape(runID),
+		url.PathEscape(inputID),
+		url.PathEscape(name),
+	)
 }
 
 // Serve reads JSON-RPC 2.0 requests from in (newline-delimited) and writes
@@ -750,13 +845,19 @@ func (s *MCPServer) toolAwaitWithElicitation(ctx context.Context, args json.RawM
 	// Elicit any inputs that were already pending before we registered.
 	if s.pendingRegistry != nil {
 		for _, pi := range s.pendingRegistry.ListByRun(params.RunID) {
+			if requiresUpload(pi.FileAffordance) {
+				log.Printf("mcp: skipping elicitation for input %q (run %q): upload affordance present, deliver via HTTP UI", pi.InputID, params.RunID)
+				continue
+			}
+			prompt := s.augmentPromptWithFileURLs(pi.Prompt, &pi)
+			inputID := pi.InputID
 			go func(inputID, prompt string) {
 				response, err := s.sendElicitation(prompt)
 				if err != nil {
 					return
 				}
 				s.runManager.DeliverInput(params.RunID, inputID, response, nil)
-			}(pi.InputID, pi.Prompt)
+			}(inputID, prompt)
 		}
 	}
 

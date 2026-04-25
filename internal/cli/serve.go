@@ -159,6 +159,9 @@ are appended to (not replacing) the config file's root.`,
 				mcpSrv := daemon.NewMCPServer(reg, rm)
 				mcpSrv.SetPendingRegistry(pr)
 				mcpSrv.SetDefaultBudget(configBudget)
+				if !merged.NoHTTP {
+					mcpSrv.SetBaseURL(fmt.Sprintf("http://localhost:%d", merged.Port))
+				}
 				go func() {
 					defer close(mcpDone)
 					if err := mcpSrv.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {

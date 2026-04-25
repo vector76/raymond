@@ -883,6 +883,20 @@ func (rm *RunManager) LookupResolvedInput(runID, inputID string) (*wfstate.Resol
 	return nil, false
 }
 
+// ListResolvedInputs reads the workflow state for runID and returns a copy of
+// its ResolvedInputs history in persisted order. Returns nil and false when
+// the state file cannot be read; an empty history yields an empty slice and
+// true.
+func (rm *RunManager) ListResolvedInputs(runID string) ([]wfstate.ResolvedInput, bool) {
+	ws, err := wfstate.ReadState(runID, rm.stateDir)
+	if err != nil {
+		return nil, false
+	}
+	out := make([]wfstate.ResolvedInput, len(ws.ResolvedInputs))
+	copy(out, ws.ResolvedInputs)
+	return out, true
+}
+
 // SetPendingRegistry configures the pending input registry. When set, runs
 // are launched in daemon mode with an AwaitCallback that registers pending
 // inputs automatically.

@@ -6,6 +6,11 @@
   var eventSource = null;
   var pollTimer = null;
   var POLL_INTERVAL = 3000;
+  // Cached signature of the last resolved-inputs payload we rendered, scoped
+  // to the run it was for. Resolved inputs are append-only and immutable per
+  // the design, so polling can short-circuit DOM rebuilds when the response
+  // hasn't changed — preventing image/PDF embeds from flashing every tick.
+  var lastResolvedSig = null;
 
   // --- DOM refs ---
   var workflowsEl = document.getElementById("workflows");
@@ -14,6 +19,7 @@
   var pendingSection = document.getElementById("pending-inputs-section");
   var pendingEl = document.getElementById("pending-inputs");
   var outputSection = document.getElementById("output-section");
+  var resolvedInputsEl = document.getElementById("resolved-inputs");
   var outputLog = document.getElementById("output-log");
   var outputRunID = document.getElementById("output-run-id");
   var cancelBtn = document.getElementById("cancel-btn");
@@ -707,12 +713,112 @@
     return card;
   }
 
+  // buildResolvedInputCard renders a historical resolved input: the prompt,
+  // any display files the user saw, the response text, then any uploaded
+  // files. File rendering reuses buildDisplayFileEl so pending and historical
+  // views look identical.
+  function buildResolvedInputCard(runID, ri) {
+    var card = document.createElement("div");
+    card.className = "input-card resolved-input-card";
+    card.dataset.inputId = ri.input_id;
+
+    var shortInput = ri.input_id && ri.input_id.length > 12
+      ? ri.input_id.substring(0, 12) + "..."
+      : (ri.input_id || "");
+
+    var header = document.createElement("div");
+    header.className = "input-card-header";
+    header.innerHTML =
+      '<span>Resolved input: ' + escapeHTML(shortInput) + '</span>' +
+      (ri.agent_id ? '<span>Agent: ' + escapeHTML(ri.agent_id) + '</span>' : '');
+    card.appendChild(header);
+
+    if (ri.prompt) {
+      var promptEl = document.createElement("div");
+      promptEl.className = "input-prompt";
+      promptEl.textContent = ri.prompt;
+      card.appendChild(promptEl);
+    }
+
+    var staged = ri.staged_files || [];
+    if (staged.length > 0) {
+      var stagedSection = document.createElement("div");
+      stagedSection.className = "input-display-files";
+      staged.forEach(function (f) {
+        stagedSection.appendChild(buildDisplayFileEl(runID, ri.input_id, f));
+      });
+      card.appendChild(stagedSection);
+    }
+
+    if (ri.response_text) {
+      var resp = document.createElement("div");
+      resp.className = "resolved-response";
+      var label = document.createElement("div");
+      label.className = "resolved-response-label";
+      label.textContent = "Response";
+      resp.appendChild(label);
+      var body = document.createElement("div");
+      body.className = "resolved-response-body";
+      body.textContent = ri.response_text;
+      resp.appendChild(body);
+      card.appendChild(resp);
+    }
+
+    var uploaded = ri.uploaded_files || [];
+    if (uploaded.length > 0) {
+      var upLabel = document.createElement("div");
+      upLabel.className = "resolved-uploads-label";
+      upLabel.textContent = "Uploaded files";
+      card.appendChild(upLabel);
+      var uploadSection = document.createElement("div");
+      uploadSection.className = "input-display-files";
+      uploaded.forEach(function (f) {
+        uploadSection.appendChild(buildDisplayFileEl(runID, ri.input_id, f));
+      });
+      card.appendChild(uploadSection);
+    }
+
+    return card;
+  }
+
+  function renderResolvedInputs(runID, items) {
+    resolvedInputsEl.innerHTML = "";
+    if (!items || items.length === 0) {
+      resolvedInputsEl.style.display = "none";
+      return;
+    }
+    resolvedInputsEl.style.display = "";
+    items.forEach(function (ri) {
+      resolvedInputsEl.appendChild(buildResolvedInputCard(runID, ri));
+    });
+  }
+
+  function refreshResolvedInputs(runID) {
+    if (!runID) return Promise.resolve();
+    return apiGet("/runs/" + encodeURIComponent(runID) + "/resolved-inputs").then(function (items) {
+      // Guard against stale fetches racing a run switch.
+      if (selectedRunID !== runID) return;
+      var sig = runID + ":" + JSON.stringify(items || []);
+      if (sig === lastResolvedSig) return;
+      lastResolvedSig = sig;
+      renderResolvedInputs(runID, items);
+    }).catch(function () {
+      // Leave previously-rendered cards in place on a transient fetch
+      // failure — resolved inputs are immutable, so stale-but-correct beats
+      // a flash of empty state. The next successful poll repopulates.
+    });
+  }
+
   // --- Actions ---
   function selectRun(runID, status) {
     selectedRunID = runID;
     outputSection.style.display = "";
     outputRunID.textContent = runID;
     outputLog.textContent = "";
+    resolvedInputsEl.innerHTML = "";
+    resolvedInputsEl.style.display = "none";
+    // Reset the dedup signature so the new run's history renders fresh.
+    lastResolvedSig = null;
 
     // Show cancel button for active runs
     if (isActive(status)) {
@@ -723,6 +829,10 @@
 
     // Re-render cards to update selection
     refreshRuns();
+
+    // Fetch resolved-input history so the panel shows past prompts, files,
+    // and responses alongside the live log.
+    refreshResolvedInputs(runID);
 
     // Connect SSE
     connectSSE(runID);
@@ -951,7 +1061,11 @@
   function refreshAll() {
     return refreshRuns().then(function (runs) {
       connStatus.textContent = runs.length + " run" + (runs.length !== 1 ? "s" : "");
-      return refreshPendingInputs(runs);
+      var pendingP = refreshPendingInputs(runs);
+      // Re-fetch resolved inputs for the selected run so the history view
+      // updates as new awaits resolve while the panel is open.
+      var resolvedP = selectedRunID ? refreshResolvedInputs(selectedRunID) : Promise.resolve();
+      return Promise.all([pendingP, resolvedP]);
     }).catch(function (err) {
       connStatus.textContent = "Error: " + err.message;
     });

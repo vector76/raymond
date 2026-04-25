@@ -161,6 +161,7 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
 	mux.HandleFunc("DELETE /runs/{id}", s.handleDeleteRun)
 	mux.HandleFunc("GET /runs/{id}/pending-inputs", s.handleListPendingInputs)
+	mux.HandleFunc("GET /runs/{id}/resolved-inputs", s.handleListResolvedInputs)
 	mux.HandleFunc("GET /runs/{id}/inputs/{input_id}/files", s.handleListInputFiles)
 	mux.HandleFunc("GET /runs/{id}/inputs/{input_id}/files/{path...}", s.handleGetInputFile)
 	mux.HandleFunc("POST /runs/{id}/inputs/{input_id}", s.handleDeliverInput)
@@ -309,6 +310,23 @@ type fileAffordanceResponse struct {
 	Slots        []fileSlotResponse    `json:"slots,omitempty"`
 	Bucket       *bucketSpecResponse   `json:"bucket,omitempty"`
 	DisplayFiles []displayFileResponse `json:"display_files,omitempty"`
+}
+
+// resolvedInputResponse is the JSON shape for one entry returned by
+// GET /runs/{id}/resolved-inputs. It mirrors state.ResolvedInput but renders
+// StagedFiles and UploadedFiles using the shared inputFileMetadata shape so
+// the dashboard can reuse the same file-row helper for pending and
+// historical views.
+type resolvedInputResponse struct {
+	InputID       string              `json:"input_id"`
+	AgentID       string              `json:"agent_id"`
+	Prompt        string              `json:"prompt,omitempty"`
+	NextState     string              `json:"next_state,omitempty"`
+	ResponseText  string              `json:"response_text,omitempty"`
+	StagedFiles   []inputFileMetadata `json:"staged_files,omitempty"`
+	UploadedFiles []inputFileMetadata `json:"uploaded_files,omitempty"`
+	EnteredAt     *string             `json:"entered_at,omitempty"`
+	ResolvedAt    *string             `json:"resolved_at,omitempty"`
 }
 
 type deliverInputRequest struct {
@@ -534,6 +552,52 @@ func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request)
 			t := pi.TimeoutAt.Format(time.RFC3339)
 			resp[i].TimeoutAt = &t
 		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleListResolvedInputs serves GET /runs/{id}/resolved-inputs. It returns
+// the run's history of resolved input steps so the dashboard can re-display
+// the full context (prompt, display files, response text, uploaded files)
+// after the await has resolved and the per-agent await fields have been
+// cleared. File catalogs are projected through fileRecordsToMetadata so the
+// pending-input and historical views render through the same client-side
+// helper.
+func (s *Server) handleListResolvedInputs(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if _, ok := s.runManager.GetRun(runID); !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q not found", runID)})
+		return
+	}
+
+	resolved, ok := s.runManager.ListResolvedInputs(runID)
+	if !ok {
+		// State file unreadable — distinct from "no resolved inputs yet",
+		// which yields an empty slice with ok=true.
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q state not found", runID)})
+		return
+	}
+
+	resp := make([]resolvedInputResponse, len(resolved))
+	for i, ri := range resolved {
+		entry := resolvedInputResponse{
+			InputID:       ri.InputID,
+			AgentID:       ri.AgentID,
+			Prompt:        ri.Prompt,
+			NextState:     ri.NextState,
+			ResponseText:  ri.ResponseText,
+			StagedFiles:   fileRecordsToMetadata(ri.StagedFiles),
+			UploadedFiles: fileRecordsToMetadata(ri.UploadedFiles),
+		}
+		if !ri.EnteredAt.IsZero() {
+			t := ri.EnteredAt.Format(time.RFC3339)
+			entry.EnteredAt = &t
+		}
+		if !ri.ResolvedAt.IsZero() {
+			t := ri.ResolvedAt.Format(time.RFC3339)
+			entry.ResolvedAt = &t
+		}
+		resp[i] = entry
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

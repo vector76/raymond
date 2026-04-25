@@ -1176,6 +1176,145 @@ func TestListInputFiles_EmptyReturnsArrayNotNull(t *testing.T) {
 	assert.Equal(t, "[]", strings.TrimSpace(string(body)))
 }
 
+func TestListResolvedInputs_UnknownRun(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/runs/no-such-run/resolved-inputs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestListResolvedInputs_EmptyReturnsEmptyArray(t *testing.T) {
+	// A run that hasn't resolved any inputs yet must return `[]` so the UI
+	// can iterate without a null check.
+	_, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/resolved-inputs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "[]", strings.TrimSpace(string(body)))
+}
+
+func TestListResolvedInputs_ReturnsPromptResponseAndFiles(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	statePath := filepath.Join(srv.runManager.stateDir, runID+".json")
+	raw, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	var ws wfstate.WorkflowState
+	require.NoError(t, json.Unmarshal(raw, &ws))
+	entered := time.Now().Add(-2 * time.Minute).UTC().Truncate(time.Second)
+	resolved := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	ws.ResolvedInputs = append(ws.ResolvedInputs,
+		wfstate.ResolvedInput{
+			InputID:      "inp-1",
+			AgentID:      "main",
+			Prompt:       "review the chart",
+			NextState:    "step-2.md",
+			ResponseText: "looks good",
+			StagedFiles: []wfstate.FileRecord{
+				{Name: "chart.png", Size: 512, ContentType: "image/png", Source: "display"},
+			},
+			EnteredAt:  entered,
+			ResolvedAt: resolved,
+		},
+		wfstate.ResolvedInput{
+			InputID:      "inp-2",
+			AgentID:      "main",
+			Prompt:       "upload corrections",
+			ResponseText: "see attached",
+			UploadedFiles: []wfstate.FileRecord{
+				{Name: "fixed.csv", Size: 200, ContentType: "text/csv", Source: "upload"},
+				{Name: "notes.txt", Size: 64, ContentType: "text/plain", Source: "upload"},
+			},
+			ResolvedAt: resolved.Add(30 * time.Second),
+		},
+	)
+	out, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(statePath, out, 0o644))
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/resolved-inputs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got []resolvedInputResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got, 2)
+
+	assert.Equal(t, "inp-1", got[0].InputID)
+	assert.Equal(t, "main", got[0].AgentID)
+	assert.Equal(t, "review the chart", got[0].Prompt)
+	assert.Equal(t, "step-2.md", got[0].NextState)
+	assert.Equal(t, "looks good", got[0].ResponseText)
+	require.Len(t, got[0].StagedFiles, 1)
+	assert.Equal(t, "chart.png", got[0].StagedFiles[0].Name)
+	assert.Equal(t, int64(512), got[0].StagedFiles[0].Size)
+	assert.Equal(t, "image/png", got[0].StagedFiles[0].ContentType)
+	assert.Equal(t, "display", got[0].StagedFiles[0].Source)
+	assert.Empty(t, got[0].UploadedFiles)
+	require.NotNil(t, got[0].EnteredAt)
+	assert.Equal(t, entered.Format(time.RFC3339), *got[0].EnteredAt)
+	require.NotNil(t, got[0].ResolvedAt)
+	assert.Equal(t, resolved.Format(time.RFC3339), *got[0].ResolvedAt)
+
+	assert.Equal(t, "inp-2", got[1].InputID)
+	assert.Empty(t, got[1].StagedFiles)
+	require.Len(t, got[1].UploadedFiles, 2)
+	assert.Equal(t, "fixed.csv", got[1].UploadedFiles[0].Name)
+	assert.Equal(t, "upload", got[1].UploadedFiles[0].Source)
+	assert.Equal(t, "notes.txt", got[1].UploadedFiles[1].Name)
+}
+
+func TestListResolvedInputs_OmitsZeroTimestampsAndEmptyFileFields(t *testing.T) {
+	// A text-only resolved input (no files, no timestamps recorded) must
+	// serialize without staged_files/uploaded_files/entered_at/resolved_at
+	// keys so the UI can rely on omitempty for those fields.
+	srv, ts, fake := newTestServer(t)
+	runID := createPendingRunForFiles(t, ts, fake)
+
+	statePath := filepath.Join(srv.runManager.stateDir, runID+".json")
+	raw, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	var ws wfstate.WorkflowState
+	require.NoError(t, json.Unmarshal(raw, &ws))
+	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
+		InputID:      "inp-text",
+		AgentID:      "main",
+		Prompt:       "yes or no?",
+		ResponseText: "yes",
+	})
+	out, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(statePath, out, 0o644))
+
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/resolved-inputs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var rawArr []map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rawArr))
+	require.Len(t, rawArr, 1)
+	_, hasStaged := rawArr[0]["staged_files"]
+	_, hasUploaded := rawArr[0]["uploaded_files"]
+	_, hasEntered := rawArr[0]["entered_at"]
+	_, hasResolved := rawArr[0]["resolved_at"]
+	assert.False(t, hasStaged, "text-only resolved input should omit staged_files")
+	assert.False(t, hasUploaded, "text-only resolved input should omit uploaded_files")
+	assert.False(t, hasEntered, "missing EnteredAt should omit entered_at")
+	assert.False(t, hasResolved, "missing ResolvedAt should omit resolved_at")
+	assert.Equal(t, "inp-text", rawArr[0]["input_id"])
+	assert.Equal(t, "yes", rawArr[0]["response_text"])
+}
+
 func TestListPendingInputs_BucketModeReturnsBucketObject(t *testing.T) {
 	// Bucket mode must always emit a bucket sub-object so the client can
 	// rely on (mode == "bucket") <=> (bucket != null), even when no

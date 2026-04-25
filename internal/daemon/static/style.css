@@ -448,6 +448,46 @@ section h2 {
   font-family: var(--mono);
 }
 
+/* Resolved (historical) input cards in the output panel. Reuse .input-card
+ * for the prompt + display-file rendering; only the response and uploaded
+ * sections are bespoke. The card border is muted (vs. the awaiting color)
+ * because these are history, not actionable. */
+#resolved-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.resolved-input-card {
+  border-color: var(--border);
+}
+
+.resolved-response {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.resolved-response-label,
+.resolved-uploads-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+
+.resolved-response-body {
+  font-size: 14px;
+  white-space: pre-wrap;
+  line-height: 1.6;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
 .input-form {
   display: flex;
   gap: 8px;

@@ -124,7 +124,7 @@ func (s *MCPServer) HandleAwaitNotification(runID, inputID, prompt string) {
 		if err != nil {
 			return // elicitation failed; input stays pending for manual delivery
 		}
-		s.runManager.DeliverInput(runID, inputID, response)
+		s.runManager.DeliverInput(runID, inputID, response, nil)
 	}()
 }
 
@@ -708,7 +708,7 @@ func (s *MCPServer) toolProvideInput(args json.RawMessage) mcpToolResult {
 	}
 	runID := pi.RunID
 
-	if err := s.runManager.DeliverInput("", params.InputID, params.Response); err != nil {
+	if err := s.runManager.DeliverInput("", params.InputID, params.Response, nil); err != nil {
 		return toolError(err.Error())
 	}
 
@@ -755,7 +755,7 @@ func (s *MCPServer) toolAwaitWithElicitation(ctx context.Context, args json.RawM
 				if err != nil {
 					return
 				}
-				s.runManager.DeliverInput(params.RunID, inputID, response)
+				s.runManager.DeliverInput(params.RunID, inputID, response, nil)
 			}(pi.InputID, pi.Prompt)
 		}
 	}

@@ -3361,6 +3361,133 @@ func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
 	mu.Unlock()
 }
 
+// runResolvedInputTest runs a daemon-mode workflow that hits one <await>,
+// receives the supplied AwaitInput on AwaitInputCh, and then enters a second
+// <await> so the workflow stays alive long enough for the test to read
+// persisted state. It returns the captured PendingResult observed at the
+// post-await state and the on-disk WorkflowState after ctx cancellation.
+func runResolvedInputTest(t *testing.T, deliver orchestrator.AwaitInput) (string, *wfstate.WorkflowState) {
+	t.Helper()
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	inputCh := make(chan orchestrator.AwaitInput, 1)
+
+	var capturedMu sync.Mutex
+	var capturedPendingResult string
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			switch agent.CurrentState {
+			case "START.md":
+				return awaitResult("NEXT.md", "Need input"), nil
+			case "NEXT.md":
+				capturedMu.Lock()
+				if agent.PendingResult != nil {
+					capturedPendingResult = *agent.PendingResult
+				}
+				capturedMu.Unlock()
+				// Re-await so the workflow stays alive long enough to observe state.
+				return awaitResult("DONE.md", "second prompt"), nil
+			default:
+				return resultExecResult("done"), nil
+			}
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	secondAwait := make(chan struct{})
+	var secondAwaitOnce sync.Once
+	var startedCount atomic.Int32
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+			n := startedCount.Add(1)
+			if n == 1 {
+				di := deliver
+				di.InputID = e.InputID
+				inputCh <- di
+			} else {
+				secondAwaitOnce.Do(func() { close(secondAwait) })
+			}
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAwait = "pause"
+	opts.DaemonMode = true
+	opts.AwaitInputCh = inputCh
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- orchestrator.RunAllAgents(runCtx, wfID, opts)
+	}()
+
+	select {
+	case <-secondAwait:
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("workflow did not reach the second await")
+	}
+	cancel()
+	<-done
+
+	ws, err := wfstate.ReadState(wfID, dir)
+	require.NoError(t, err)
+
+	capturedMu.Lock()
+	pr := capturedPendingResult
+	capturedMu.Unlock()
+	return pr, ws
+}
+
+func TestDaemonModeAwaitResolvedInputRecorded_EmptyUploads(t *testing.T) {
+	// Delivering with empty uploads writes a ResolvedInput with empty
+	// UploadedFiles. The {{result}} ({{PendingResult}}) plumbing is
+	// unchanged.
+	pendingResult, ws := runResolvedInputTest(t, orchestrator.AwaitInput{
+		Response: "user-typed-value",
+	})
+
+	// PendingResult ({{result}}) plumbing unchanged.
+	assert.Equal(t, "user-typed-value", pendingResult)
+
+	require.Len(t, ws.ResolvedInputs, 1, "expected exactly one ResolvedInput emitted on the daemon-mode resume")
+	ri := ws.ResolvedInputs[0]
+	assert.NotEmpty(t, ri.InputID)
+	assert.Equal(t, "main", ri.AgentID)
+	assert.Equal(t, "Need input", ri.Prompt)
+	assert.Equal(t, "NEXT.md", ri.NextState)
+	assert.Equal(t, "user-typed-value", ri.ResponseText)
+	assert.Empty(t, ri.UploadedFiles, "no uploads were delivered")
+	assert.False(t, ri.EnteredAt.IsZero(), "EnteredAt should be carried from AwaitEnteredAt")
+	assert.False(t, ri.ResolvedAt.IsZero(), "ResolvedAt should be stamped at resume")
+	assert.False(t, ri.ResolvedAt.Before(ri.EnteredAt), "ResolvedAt must not precede EnteredAt")
+}
+
+func TestDaemonModeAwaitResolvedInputRecorded_NonEmptyUploads(t *testing.T) {
+	// Delivering with a non-empty uploads slice carries the FileRecords into
+	// ResolvedInput.UploadedFiles.
+	uploads := []wfstate.FileRecord{
+		{Name: "report.txt", Size: 42, ContentType: "text/plain", Source: "upload"},
+		{Name: "data.csv", Size: 1024, ContentType: "text/csv", Source: "upload"},
+	}
+	pendingResult, ws := runResolvedInputTest(t, orchestrator.AwaitInput{
+		Response:      "with files",
+		UploadedFiles: uploads,
+	})
+
+	assert.Equal(t, "with files", pendingResult)
+
+	require.Len(t, ws.ResolvedInputs, 1)
+	ri := ws.ResolvedInputs[0]
+	assert.Equal(t, "with files", ri.ResponseText)
+	assert.Equal(t, uploads, ri.UploadedFiles)
+}
+
 // --------------------------------------------------------------------------
 // AwaitingInputError structured output
 // --------------------------------------------------------------------------

@@ -423,7 +423,7 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.runManager.DeliverInput(runID, inputID, req.Response); err != nil {
+	if err := s.runManager.DeliverInput(runID, inputID, req.Response, nil); err != nil {
 		if errors.Is(err, ErrRunNotFound) ||
 			errors.Is(err, ErrPendingInputNotFound) ||
 			errors.Is(err, ErrPendingInputMismatch) {

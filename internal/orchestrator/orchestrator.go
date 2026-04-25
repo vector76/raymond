@@ -56,8 +56,9 @@ var busHook func(*bus.Bus)
 
 // AwaitInput carries a response to a pending await from the daemon layer.
 type AwaitInput struct {
-	InputID  string
-	Response string
+	InputID       string
+	Response      string
+	UploadedFiles []wfstate.FileRecord
 }
 
 // AwaitingInputError is returned from RunAllAgents when the quiesce point is
@@ -585,6 +586,19 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			pr := input.Response
 			a.PendingResult = &pr
 			a.PendingInputID = input.InputID
+
+			ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
+				InputID:       input.InputID,
+				AgentID:       a.ID,
+				Prompt:        a.AwaitPrompt,
+				NextState:     a.AwaitNextState,
+				ResponseText:  input.Response,
+				StagedFiles:   a.AwaitStagedFiles,
+				UploadedFiles: input.UploadedFiles,
+				EnteredAt:     a.AwaitEnteredAt,
+				ResolvedAt:    time.Now(),
+			})
+
 			a.CurrentState = a.AwaitNextState
 			a.Status = ""
 			a.AwaitPrompt = ""
@@ -592,6 +606,9 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			a.AwaitTimeout = ""
 			a.AwaitTimeoutNext = ""
 			a.AwaitInputID = ""
+			a.AwaitFileAffordance = nil
+			a.AwaitStagedFiles = nil
+			a.AwaitEnteredAt = time.Time{}
 			b.Emit(events.AgentAwaitResumed{
 				AgentID:   a.ID,
 				InputID:   input.InputID,

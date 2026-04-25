@@ -876,11 +876,13 @@ func (rm *RunManager) SetAwaitNotifier(fn func(runID, inputID, prompt string)) {
 }
 
 // DeliverInput delivers a response to a pending await input. If runID is
-// non-empty, the input must belong to that run.
+// non-empty, the input must belong to that run. uploadedFiles carries
+// metadata for any files the caller attached to the response; nil is
+// equivalent to an empty slice.
 //
 // It uses GetAndRemove to atomically claim the input, preventing duplicate
 // delivery when multiple callers race on the same input ID.
-func (rm *RunManager) DeliverInput(runID, inputID, response string) error {
+func (rm *RunManager) DeliverInput(runID, inputID, response string, uploadedFiles []wfstate.FileRecord) error {
 	if rm.pendingRegistry == nil {
 		return fmt.Errorf("pending registry not configured")
 	}
@@ -915,7 +917,7 @@ func (rm *RunManager) DeliverInput(runID, inputID, response string) error {
 	}
 
 	select {
-	case re.awaitInputCh <- orchestrator.AwaitInput{InputID: inputID, Response: response}:
+	case re.awaitInputCh <- orchestrator.AwaitInput{InputID: inputID, Response: response, UploadedFiles: uploadedFiles}:
 		return nil
 	default:
 		return fmt.Errorf("await input channel for run %q is full", pi.RunID)

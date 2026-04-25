@@ -663,7 +663,56 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				// Await handling: detect when an agent enters awaiting
 				// status and apply the mode-specific strategy.
 				if idx := findAgentByID(ws.Agents, agentBefore.ID); idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAwaiting {
-					if opts.DaemonMode {
+					// Stamp the await-entry timestamp for every await
+					// (text-only or file-bearing) so the eventual
+					// resolved-input record carries a true entry time.
+					ws.Agents[idx].AwaitEnteredAt = time.Now()
+
+					// Stage display files (and create the per-input
+					// directory so uploads have a place to land) before
+					// notifying anyone the await has started, so the
+					// notification carries the staged-file metadata.
+					stageFailed := false
+					var stageErr error
+					if affordance := ws.Agents[idx].AwaitFileAffordance; affordance != nil {
+						records, err := StageInputFiles(
+							ws.Agents[idx].TaskFolder,
+							ws.Agents[idx].AwaitInputID,
+							*affordance,
+						)
+						if err != nil {
+							stageFailed = true
+							stageErr = err
+						} else {
+							ws.Agents[idx].AwaitStagedFiles = records
+						}
+					}
+
+					if stageFailed {
+						// Do not enter the await: clear the await fields
+						// and pause the agent with a descriptive error
+						// (mirrors the on-await=reject branch below).
+						a := &ws.Agents[idx]
+						a.Status = wfstate.AgentStatusPaused
+						a.Error = fmt.Sprintf(
+							"failed to stage files for <await> in agent %q: %v",
+							agentBefore.ID, stageErr,
+						)
+						a.AwaitPrompt = ""
+						a.AwaitNextState = ""
+						a.AwaitTimeout = ""
+						a.AwaitTimeoutNext = ""
+						a.AwaitInputID = ""
+						a.AwaitFileAffordance = nil
+						a.AwaitStagedFiles = nil
+						a.AwaitEnteredAt = time.Time{}
+						b.Emit(events.AgentPaused{
+							AgentID:   agentBefore.ID,
+							Reason:    "await_stage_error",
+							Error:     a.Error,
+							Timestamp: time.Now(),
+						})
+					} else if opts.DaemonMode {
 						// Daemon mode: siblings keep running. Notify
 						// the daemon layer via callback; the agent
 						// stays awaiting until input arrives on

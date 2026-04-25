@@ -874,5 +874,16 @@ func HandleAwait(
 	agent.AwaitTimeoutNext = transition.Attributes["timeout_next"]
 	agent.AwaitInputID = fmt.Sprintf("inp_%s_%d", agent.ID, time.Now().UnixNano())
 
+	// Clear file-affordance fields from any prior await on this agent so a
+	// text-only await never inherits a stale FileAffordance / staged-file
+	// list. The orchestrator re-populates these for the new await below.
+	agent.AwaitFileAffordance = nil
+	agent.AwaitStagedFiles = nil
+
+	if transition.FileAffordance.Mode != parsing.ModeTextOnly {
+		fa := transition.FileAffordance
+		agent.AwaitFileAffordance = &fa
+	}
+
 	return TransitionResult{Agent: &agent, Worker: nil}, nil
 }

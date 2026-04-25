@@ -3366,6 +3366,67 @@ func TestApplyTransitionDispatchesAwait(t *testing.T) {
 	assert.Equal(t, "REVIEW.md", result.Agent.CurrentState)
 }
 
+func TestHandleAwaitCopiesFileAffordance(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	tr := awaitTransition("DEPLOY.md", "Upload", nil)
+	tr.FileAffordance = parsing.FileAffordance{
+		Mode: parsing.ModeDisplayOnly,
+		DisplayFiles: []parsing.DisplaySpec{
+			{SourcePath: "out/report.pdf", DisplayName: "Final Report"},
+		},
+	}
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.HandleAwait(agent, tr, wfState)
+	require.NoError(t, err)
+
+	require.NotNil(t, result.Agent.AwaitFileAffordance,
+		"AwaitFileAffordance should be propagated for non-text-only awaits")
+	assert.Equal(t, parsing.ModeDisplayOnly, result.Agent.AwaitFileAffordance.Mode)
+	require.Len(t, result.Agent.AwaitFileAffordance.DisplayFiles, 1)
+	assert.Equal(t, "out/report.pdf", result.Agent.AwaitFileAffordance.DisplayFiles[0].SourcePath)
+	assert.Equal(t, "Final Report", result.Agent.AwaitFileAffordance.DisplayFiles[0].DisplayName)
+}
+
+func TestHandleAwaitNilFileAffordanceForTextOnly(t *testing.T) {
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	tr := awaitTransition("DEPLOY.md", "Approve?", nil)
+	wfState := &wfstate.WorkflowState{}
+
+	result, err := transitions.HandleAwait(agent, tr, wfState)
+	require.NoError(t, err)
+
+	assert.Nil(t, result.Agent.AwaitFileAffordance,
+		"AwaitFileAffordance should remain nil for text-only awaits")
+}
+
+func TestHandleAwaitClearsStaleFileAffordance(t *testing.T) {
+	// Resume paths only clear AwaitPrompt/NextState/Timeout/InputID — not
+	// AwaitFileAffordance / AwaitStagedFiles (those are bead-8's province).
+	// HandleAwait must therefore defensively reset them so a follow-up
+	// text-only await doesn't inherit stale file metadata from a previous
+	// file-bearing await.
+	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
+	agent.AwaitFileAffordance = &parsing.FileAffordance{
+		Mode: parsing.ModeDisplayOnly,
+		DisplayFiles: []parsing.DisplaySpec{
+			{SourcePath: "old.pdf", DisplayName: "old.pdf"},
+		},
+	}
+	agent.AwaitStagedFiles = []wfstate.FileRecord{
+		{Name: "old.pdf", Size: 1, ContentType: "application/pdf", Source: "display"},
+	}
+
+	tr := awaitTransition("DEPLOY.md", "Approve?", nil) // text-only
+	result, err := transitions.HandleAwait(agent, tr, &wfstate.WorkflowState{})
+	require.NoError(t, err)
+
+	assert.Nil(t, result.Agent.AwaitFileAffordance,
+		"stale AwaitFileAffordance from a prior await should be cleared")
+	assert.Nil(t, result.Agent.AwaitStagedFiles,
+		"stale AwaitStagedFiles from a prior await should be cleared")
+}
+
 func TestApplyTransitionAwaitClearsPendingResult(t *testing.T) {
 	agent := makeAgent("main", "REVIEW.md", strPtr("session_abc"))
 	agent.PendingResult = strPtr("old result")

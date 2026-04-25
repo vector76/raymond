@@ -2846,6 +2846,8 @@ func TestQuiesceSingleAgentAwaits(t *testing.T) {
 	assert.Equal(t, "NEXT.md", ws.Agents[0].AwaitNextState)
 	assert.Equal(t, "Need input", ws.Agents[0].AwaitPrompt)
 	assert.NotEmpty(t, ws.Agents[0].AwaitInputID)
+	assert.False(t, ws.Agents[0].AwaitEnteredAt.IsZero(),
+		"AwaitEnteredAt should be stamped on every await, even text-only ones")
 
 	// AgentAwaitStarted emitted.
 	require.Len(t, awaitEvents, 1)

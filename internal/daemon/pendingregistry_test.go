@@ -8,6 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vector76/raymond/internal/parsing"
+	wfstate "github.com/vector76/raymond/internal/state"
 )
 
 func TestPendingRegistry_RegisterAndGet(t *testing.T) {
@@ -247,6 +250,105 @@ func TestPendingRegistry_DuplicateRegister(t *testing.T) {
 
 	err = reg.Register(pi)
 	assert.Error(t, err)
+}
+
+func TestPendingRegistry_WithFileAffordanceAndStagedFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	affordance := parsing.FileAffordance{
+		Mode: parsing.ModeBucket,
+		Bucket: parsing.BucketSpec{
+			MaxCount:       3,
+			MaxSizePerFile: 1024,
+			MaxTotalSize:   4096,
+			MIME:           []string{"image/png"},
+		},
+		DisplayFiles: []parsing.DisplaySpec{
+			{SourcePath: "out/report.pdf", DisplayName: "Final Report"},
+		},
+	}
+	staged := []wfstate.FileRecord{
+		{Name: "Final Report", Size: 2048, ContentType: "application/pdf", Source: "display"},
+	}
+
+	// Register with affordance + staged files in the first instance.
+	{
+		reg, err := NewPendingRegistry(dir)
+		require.NoError(t, err)
+
+		require.NoError(t, reg.Register(PendingInput{
+			RunID:          "run-1",
+			AgentID:        "main",
+			InputID:        "inp-001",
+			Prompt:         "Attach images",
+			NextState:      "NEXT.md",
+			CreatedAt:      time.Now().Truncate(time.Millisecond),
+			FileAffordance: &affordance,
+			StagedFiles:    staged,
+		}))
+
+		got, ok := reg.Get("inp-001")
+		require.True(t, ok)
+		require.NotNil(t, got.FileAffordance)
+		assert.Equal(t, parsing.ModeBucket, got.FileAffordance.Mode)
+		assert.Equal(t, 3, got.FileAffordance.Bucket.MaxCount)
+		assert.Equal(t, []string{"image/png"}, got.FileAffordance.Bucket.MIME)
+		require.Len(t, got.FileAffordance.DisplayFiles, 1)
+		assert.Equal(t, "out/report.pdf", got.FileAffordance.DisplayFiles[0].SourcePath)
+		require.Len(t, got.StagedFiles, 1)
+		assert.Equal(t, "Final Report", got.StagedFiles[0].Name)
+		assert.Equal(t, int64(2048), got.StagedFiles[0].Size)
+		assert.Equal(t, "display", got.StagedFiles[0].Source)
+	}
+
+	// Replay in a second instance: the new fields must survive.
+	{
+		reg, err := NewPendingRegistry(dir)
+		require.NoError(t, err)
+
+		got, ok := reg.Get("inp-001")
+		require.True(t, ok)
+		require.NotNil(t, got.FileAffordance)
+		assert.Equal(t, parsing.ModeBucket, got.FileAffordance.Mode)
+		assert.Equal(t, int64(1024), got.FileAffordance.Bucket.MaxSizePerFile)
+		require.Len(t, got.FileAffordance.DisplayFiles, 1)
+		assert.Equal(t, "Final Report", got.FileAffordance.DisplayFiles[0].DisplayName)
+		require.Len(t, got.StagedFiles, 1)
+		assert.Equal(t, "application/pdf", got.StagedFiles[0].ContentType)
+	}
+
+	// A second open triggers compaction; verify the compacted log preserves
+	// the new fields too.
+	{
+		reg, err := NewPendingRegistry(dir)
+		require.NoError(t, err)
+		got, ok := reg.Get("inp-001")
+		require.True(t, ok)
+		require.NotNil(t, got.FileAffordance)
+		assert.Equal(t, parsing.ModeBucket, got.FileAffordance.Mode)
+		require.Len(t, got.StagedFiles, 1)
+	}
+}
+
+func TestPendingRegistry_OldFormatEntryWithoutFileFields(t *testing.T) {
+	// Legacy log entries written before the file-affordance fields existed
+	// must still replay cleanly with empty file fields.
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, pendingLogFile)
+
+	// Write a hand-crafted JSONL line that omits the new fields entirely.
+	legacy := `{"op":"register","input":{"run_id":"run-1","agent_id":"main","input_id":"inp-legacy","prompt":"old","next_state":"N.md","created_at":"2025-01-01T00:00:00Z"}}` + "\n"
+	require.NoError(t, os.WriteFile(logPath, []byte(legacy), 0o600))
+
+	reg, err := NewPendingRegistry(dir)
+	require.NoError(t, err)
+
+	got, ok := reg.Get("inp-legacy")
+	require.True(t, ok)
+	assert.Equal(t, "run-1", got.RunID)
+	assert.Equal(t, "old", got.Prompt)
+	assert.Nil(t, got.FileAffordance)
+	assert.Empty(t, got.StagedFiles)
 }
 
 func TestPendingRegistry_WithTimeout(t *testing.T) {

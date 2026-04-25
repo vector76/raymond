@@ -16,6 +16,7 @@ import (
 	"github.com/vector76/raymond/internal/events"
 	debugobs "github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/orchestrator"
+	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
@@ -236,15 +237,17 @@ func (rm *RunManager) LaunchRun(
 		re.awaitInputCh = awaitInputCh
 		opts.DaemonMode = true
 		opts.AwaitInputCh = awaitInputCh
-		opts.AwaitCallback = func(agentID, inputID, prompt, nextState string) {
+		opts.AwaitCallback = func(agentID, inputID, prompt, nextState string, affordance *parsing.FileAffordance, stagedFiles []wfstate.FileRecord) {
 			pi := PendingInput{
-				RunID:      runID,
-				AgentID:    agentID,
-				InputID:    inputID,
-				WorkflowID: entry.ID,
-				Prompt:     prompt,
-				NextState:  nextState,
-				CreatedAt:  time.Now(),
+				RunID:          runID,
+				AgentID:        agentID,
+				InputID:        inputID,
+				WorkflowID:     entry.ID,
+				Prompt:         prompt,
+				NextState:      nextState,
+				CreatedAt:      time.Now(),
+				FileAffordance: affordance,
+				StagedFiles:    stagedFiles,
 			}
 			if err := rm.pendingRegistry.Register(pi); err != nil {
 				return // registration failed; skip notification

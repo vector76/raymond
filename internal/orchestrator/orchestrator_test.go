@@ -3210,7 +3210,7 @@ func TestDaemonModeAwaitCallbackCalledWithCorrectParams(t *testing.T) {
 	opts.OnAwait = "pause"
 	opts.DaemonMode = true
 	opts.AwaitInputCh = inputCh
-	opts.AwaitCallback = func(agentID, inputID, prompt, nextState string) {
+	opts.AwaitCallback = func(agentID, inputID, prompt, nextState string, _ *parsing.FileAffordance, _ []wfstate.FileRecord) {
 		cbAgentID = agentID
 		cbInputID = inputID
 		cbPrompt = prompt

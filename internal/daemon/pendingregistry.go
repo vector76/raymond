@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/vector76/raymond/internal/parsing"
+	wfstate "github.com/vector76/raymond/internal/state"
 )
 
 // pendingLogFile is the JSONL file that stores the append-only operation log.
@@ -15,15 +18,17 @@ const pendingLogFile = "pending_inputs.jsonl"
 
 // PendingInput represents a pending await input request from a running workflow.
 type PendingInput struct {
-	RunID       string     `json:"run_id"`
-	AgentID     string     `json:"agent_id"`
-	InputID     string     `json:"input_id"`
-	WorkflowID  string     `json:"workflow_id,omitempty"`
-	Prompt      string     `json:"prompt,omitempty"`
-	NextState   string     `json:"next_state,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	TimeoutAt   *time.Time `json:"timeout_at,omitempty"`
-	TimeoutNext string     `json:"timeout_next,omitempty"`
+	RunID          string                  `json:"run_id"`
+	AgentID        string                  `json:"agent_id"`
+	InputID        string                  `json:"input_id"`
+	WorkflowID     string                  `json:"workflow_id,omitempty"`
+	Prompt         string                  `json:"prompt,omitempty"`
+	NextState      string                  `json:"next_state,omitempty"`
+	CreatedAt      time.Time               `json:"created_at"`
+	TimeoutAt      *time.Time              `json:"timeout_at,omitempty"`
+	TimeoutNext    string                  `json:"timeout_next,omitempty"`
+	FileAffordance *parsing.FileAffordance `json:"file_affordance,omitempty"`
+	StagedFiles    []wfstate.FileRecord    `json:"staged_files,omitempty"`
 }
 
 // logEntry is the on-disk JSONL record format.

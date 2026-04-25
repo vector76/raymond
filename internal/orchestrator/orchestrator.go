@@ -137,8 +137,11 @@ type RunOptions struct {
 	DaemonMode bool
 
 	// AwaitCallback is called (from the main goroutine) when an agent enters
-	// <await> in daemon mode. It notifies the daemon layer of the new await.
-	AwaitCallback func(agentID, inputID, prompt, nextState string)
+	// <await> in daemon mode. It notifies the daemon layer of the new await,
+	// passing the file affordance descriptor (nil for text-only awaits) and
+	// any files staged for the per-input directory so the daemon can record
+	// them on the pending input.
+	AwaitCallback func(agentID, inputID, prompt, nextState string, affordance *parsing.FileAffordance, stagedFiles []wfstate.FileRecord)
 
 	// AwaitInputCh delivers responses to pending awaits in daemon mode. The
 	// orchestrator reads from this channel in its main select loop and
@@ -748,6 +751,8 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 								ws.Agents[idx].AwaitInputID,
 								ws.Agents[idx].AwaitPrompt,
 								ws.Agents[idx].AwaitNextState,
+								ws.Agents[idx].AwaitFileAffordance,
+								ws.Agents[idx].AwaitStagedFiles,
 							)
 						}
 					} else if opts.OnAwait == "pause" {

@@ -702,7 +702,7 @@ func TestListPendingInputs(t *testing.T) {
 
 		// In daemon mode the callback registers the pending input.
 		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md")
+			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md", nil, nil)
 		}
 
 		close(awaitReady)
@@ -765,7 +765,7 @@ func TestDeliverInput(t *testing.T) {
 		})
 
 		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md")
+			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md", nil, nil)
 		}
 
 		close(awaitReady)
@@ -866,7 +866,7 @@ func TestDeliverInput_WrongRun(t *testing.T) {
 			opts.ObserverSetup(b)
 		}
 		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "prompt", "NEXT.md")
+			opts.AwaitCallback("main", "test-input-1", "prompt", "NEXT.md", nil, nil)
 		}
 		close(awaitReady)
 		<-ctx.Done()

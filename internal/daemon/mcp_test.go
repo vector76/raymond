@@ -465,7 +465,7 @@ func TestMCPListPendingInputs(t *testing.T) {
 			opts.ObserverSetup(b)
 		}
 		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md")
+			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md", nil, nil)
 		}
 		close(awaitReady)
 		<-ctx.Done()
@@ -512,7 +512,7 @@ func TestMCPProvideInput(t *testing.T) {
 			opts.ObserverSetup(b)
 		}
 		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md")
+			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md", nil, nil)
 		}
 		close(awaitReady)
 
@@ -592,7 +592,7 @@ func TestMCPElicitation(t *testing.T) {
 		}
 
 		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "elicit-input-1", "What should I do?", "NEXT.md")
+			opts.AwaitCallback("main", "elicit-input-1", "What should I do?", "NEXT.md", nil, nil)
 		}
 
 		// Wait for input delivery.

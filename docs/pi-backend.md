@@ -20,20 +20,23 @@ already drives. Specifically:
   and `--mode rpc` for a bidirectional JSONL channel on stdin/stdout) that is
   better-suited to long-lived orchestration than codex / gemini / cursor /
   copilot.
-- It supports first-class `--system-prompt` and `--append-system-prompt`
-  (parity with Claude on a forward-looking knob).
+- It supports first-class `--system-prompt` (replace) and
+  `--append-system-prompt` (append) — strictly more than Claude, which has
+  only `--append-system-prompt`. Useful as a forward-looking knob even
+  though raymond doesn't drive system prompts today.
 - It supports session resume by id (`--session <path|id>`, `-c` for most
   recent) and a separate `--fork <path|id>` operation that branches from a
-  specific session — which maps cleanly onto raymond's `<fork>` and
-  cross-workflow call/return semantics.
+  specific session — which is what raymond's `<call>` and cross-workflow
+  call/return need (the callee inheriting the caller's history).
 - Its multi-provider model selector (`--provider <name>`, `--model <pattern>`,
   `--thinking <level>`) lets raymond authors run workflows against models from
   Anthropic, OpenAI, Google, and others without changing backend.
 
-The trade-off is that pi has a smaller user base and is less battle-tested than
-the vendor CLIs, and a few raymond-internal assumptions (cost-per-event,
-permission-mode shape, Claude-specific tool disallow names) need to be
-generalized before the backend can be added.
+The trade-off is that pi has a smaller user base and is less battle-tested
+than the vendor CLIs, and a few raymond-internal assumptions
+(per-event-cost telemetry on the live stream and Claude's
+`--permission-mode acceptEdits` shape) have no direct equivalent on pi
+and degrade as documented in "Features that are unavailable" below.
 
 ## User-visible surface
 
@@ -67,22 +70,25 @@ backend:
   options:
     provider: anthropic              # --provider
     thinking: medium                 # --thinking <off|low|medium|high|xhigh>
-    tools: [read, bash, edit, write, grep, find, ls]  # --tools allowlist
-    no_builtin_tools: false          # --no-builtin-tools / -nbt
-    no_tools: false                  # --no-tools / -nt
-    extensions:                      # --extension (repeatable)
-      - "@some-org/pi-extension-foo"
-    skills:                          # --skill (repeatable)
-      - ./skills/my-skill
-    no_extensions: false             # --no-extensions
-    no_skills: false                 # --no-skills
-    session_dir: ""                  # --session-dir
+    tools: [read, edit, write, grep, find, ls]  # --tools allowlist (omit `bash` unless needed)
+    no_builtin_tools: true           # --no-builtin-tools / -nbt (mutually exclusive with `tools`)
+    no_tools: true                   # --no-tools / -nt (mutually exclusive with the above)
+    extensions:                      # --extension (repeatable; npm package, git URL, or local path)
+      - <extension-source>
+    skills:                          # --skill (repeatable; local path)
+      - ./skills/<skill-dir>
+    no_extensions: true              # --no-extensions (disables auto-discovery)
+    no_skills: true                  # --no-skills (disables auto-discovery)
+    session_dir: <path>              # --session-dir (override pi's default)
 ```
 
-All fields are optional. The intent is that pi's flag surface is exposed
-faithfully under `options:` rather than translated through a generic
-vocabulary, because the meanings are pi-specific (especially the tool
-allowlist and skill/extension model).
+All fields are optional; the example above shows the shapes, not a
+recommended set. The intent is that pi's flag surface is exposed faithfully
+under `options:` rather than translated through a generic vocabulary,
+because the meanings are pi-specific (especially the tool allowlist and
+skill/extension model). The boolean flags shown as `true` above are pi's
+"opt out" switches; their default is implicitly `false` (don't pass the
+corresponding pi flag).
 
 ### Per-state model knobs
 
@@ -108,25 +114,34 @@ prompts the way Claude does. Instead, pi's safety boundary is the
 pi backend:
 
 - `--dangerously-skip-permissions` (raymond CLI) ⇒ raymond passes the workflow's
-  declared `tools` allowlist (or pi's default full allowlist if none was
-  declared) without further restriction.
-- The default (no flag) ⇒ raymond passes a conservative allowlist that
-  excludes `bash` unless the workflow has explicitly opted in via
-  `backend.options.tools`. This preserves the spirit of "ask before risky
-  things" for pi, even though the mechanism differs.
+  declared `tools` allowlist if present, otherwise no `--tools` flag at all
+  (pi runs with its default tool surface).
+- The default (no flag) ⇒ raymond passes the workflow's declared `tools`
+  allowlist if present, otherwise it passes a conservative built-in default:
+  `read, edit, write, grep, find, ls` — pi's built-in tools minus `bash`. A
+  workflow that needs `bash` under the default safety mode must opt in by
+  listing it explicitly in `backend.options.tools`. This preserves the
+  spirit of "ask before risky things" for pi, even though the mechanism
+  differs from Claude's per-call prompts.
 
 This is the most user-visible semantic difference between the two backends and
 will be called out in the authoring guide.
 
 ### Preflight check
 
-When a workflow declares `backend: pi`, raymond probes for the `pi` binary at
-workflow start (a single `pi --version` invocation) and fails fast with a
-clear "pi not found in PATH" message that points at install instructions
-(pi is distributed as an npm package — `npm install -g
-@mariozechner/pi-coding-agent` — and therefore requires a Node.js runtime
-on the host). The cost is one process spawn; the payoff is that a missing
-binary surfaces immediately instead of mid-workflow.
+When a workflow declares `backend: pi`, raymond probes for the `pi` binary
+once at workflow start (and once on resume) via a single `pi --version`
+invocation with a 5-second timeout, and fails fast with a clear "pi not
+found in PATH" message that points at install instructions (pi is
+distributed as an npm package — `npm install -g @mariozechner/pi-coding-agent`
+— and therefore requires a Node.js runtime on the host). The cost is one
+process spawn; the payoff is that a missing binary surfaces immediately
+instead of mid-workflow.
+
+Raymond does **not** validate API credentials at preflight. Pi is expected
+to be already authenticated against whatever provider the workflow uses
+(`pi auth` or environment variables); credential errors surface from pi's
+first real invocation just as they do for Claude today.
 
 ## What is preserved (parity with Claude backend)
 
@@ -146,9 +161,9 @@ difference.
   workflow may declare its own backend; raymond launches the appropriate
   backend per nested workflow.)
 - **Per-workflow cost budget.** The dollar budget is enforced at the
-  orchestrator level. Raymond reads pi's per-turn cost via `get_session_stats`
-  (RPC mode) or by parsing the session JSONL after each turn, then applies the
-  same budget-overrides-transition rule as Claude.
+  orchestrator level. Raymond reads pi's per-turn cost by parsing the
+  session JSONL file after each turn, then applies the same
+  budget-overrides-transition rule as Claude.
 - **Crash recovery and `--resume`.** Raymond's persisted workflow state is
   backend-agnostic; resume continues to work. Each agent state record carries
   its backend-specific session id (a pi session UUID for pi, a Claude session
@@ -159,14 +174,24 @@ difference.
 - **`raymond serve` daemon.** HTTP API, MCP tool surface, web UI, and input
   delivery all continue to work. The dashboard learns to display the active
   backend and per-agent backend session ids.
-- **`<fork>` (multi-agent within a workflow), `<call>` (stack frame that
-  inherits parent context).** Both are implemented by invoking pi with
-  `--fork <parent-session-id>`, which branches a new session off the
-  parent's. The orchestrator-level distinction (parallel worker vs. push a
-  return frame) is unchanged from Claude.
-- **`<function>` (stack frame with fresh context).** Started as a brand-new
-  pi session with no `--fork` / `--session` flag, so the callee has no
-  inherited history.
+- **`<call>` (stack frame that inherits parent context).** Implemented by
+  invoking pi with `--fork <caller-session-id>`, which branches a new
+  session off the caller's so the callee starts with the caller's history.
+  Same shape as Claude (`--fork-session` after `--resume <caller>`); only
+  the flag name changes.
+- **`<fork>` (spawn a parallel agent).** Despite the flag name overlap,
+  `<fork>` is *not* related to pi's `--fork` (or Claude's `--fork-session`).
+  It is a Unix-`fork()`-style operation that launches an additional
+  independent agent within the workflow. Whether the child inherits any
+  session history is decided at the orchestrator/transitions layer (the
+  same way it's decided for Claude today); the pi backend just executes
+  whatever session-id wiring the orchestrator hands it.
+- **`<function>` (stack frame with fresh context) and `<reset>` (replace
+  current context).** Both run pi with neither `--session` nor `--fork`, so
+  the agent starts a brand-new pi session with no inherited history. There
+  is no fork flag involved — the previous session is simply abandoned.
+  `<reset>` additionally clears the agent's persisted session id so
+  subsequent `<goto>` turns continue against the new session.
 
 ## What changes (different mechanism, same intent)
 
@@ -179,7 +204,9 @@ Raymond currently parses Claude's `--output-format stream-json` shape
 backend implementation parses pi's `--mode json` event stream instead. The
 event types raymond consumes from pi:
 
-- `agent_start` — once at session begin, exposes the session UUID.
+- `agent_start` — once at session begin, exposes the session UUID. Raymond
+  records this id on the agent state so the next turn can pass it to
+  `--session` or `--fork`.
 - `message_update` (assistant `text_delta` events) — drives `ProgressMessage`
   events on the bus.
 - `tool_execution_start` (with `toolName`, `args`) — drives `ToolInvocation`
@@ -190,46 +217,139 @@ event types raymond consumes from pi:
   and to extract the assistant's final message text (which carries the
   transition tag raymond is looking for).
 
-The backend abstraction normalizes these into the same orchestrator-facing
-events the Claude path emits today, so the rest of raymond is unchanged.
+Other pi event types (`turn_start`, `turn_end`, `message_start`,
+`message_end`, `compaction_start`, `compaction_end`, `queue_update`) are
+read off the stream but produce no orchestrator-facing events. They may be
+written to the per-state debug log if `--debug-dir` is set. In particular,
+**pi's automatic context compaction is assumed to be transparent to
+raymond**: the session id is unchanged across compaction, and the next
+turn's `--session <id>` invocation should work as if compaction had not
+happened.
+
+> **Action item for the implementer:** verify this assumption before relying
+> on it. Force a compaction (e.g. via pi's `/compact` slash command in an
+> interactive session, or by stuffing enough context to trigger
+> auto-compaction) and confirm that the session id reported by `agent_start`
+> on the next turn matches the pre-compaction id and that `--session <id>`
+> resumes correctly. If compaction does change the session id, raymond will
+> need to re-read it from `agent_start` after every turn (a minor change but
+> a real one) and update its persisted agent state accordingly.
+
+The backend abstraction normalizes the consumed events into the same
+orchestrator-facing events the Claude path emits today, so the rest of
+raymond is unchanged.
+
+### Idle and total timeouts
+
+Raymond's idle timeout (default 600 s, resets on each chunk received) and
+total timeout apply to pi turns identically: any line on pi's stdout
+resets the idle timer. The same `ClaudeCodeTimeoutError`-shaped error is
+raised on timeout (renamed at the abstraction layer to a backend-neutral
+`AgentTimeoutError` or similar — orchestrator-level naming is implementer's
+choice).
+
+### Process model
+
+Raymond invokes pi the same way it invokes claude: **one pi process per
+state turn**. Each turn either resumes the agent's existing session
+(`--session <id>` for `<goto>`), branches a new session off a caller's
+history (`--fork <caller-session-id>` for `<call>`), or starts fresh (no
+session flag, for `<reset>` / `<function>` / first turn). When the turn
+completes (pi emits `agent_end` and exits), raymond reads cost/usage and
+decides the next state. No long-lived pi process is held open between
+turns.
+
+This matches the Claude code path (`InvokeStream` per turn) and keeps
+crash recovery simple: workflow state on disk plus the pi session JSONL
+on disk are sufficient to resume after any failure.
+
+### Stream protocol
+
+Raymond uses pi's `--mode json` (per-turn event stream on stdout). Pi's
+`--mode rpc` (bidirectional long-lived JSONL channel) is **not** used in
+v1. Rationale:
+
+- `--mode json` matches the per-turn invocation pattern raymond already
+  uses for Claude; the existing `InvokeStream`-shaped abstraction maps
+  directly.
+- The features `--mode rpc` adds (`steer`, `abort`, queue management,
+  `get_session_stats`) are not currently needed: raymond's cancellation
+  is process-kill, raymond never queues prompts to a running agent, and
+  cost/usage can be read from the session JSONL file at turn end.
+- One process per turn means pi's exit code is the natural failure
+  signal, mirroring Claude's contract.
+
+The protocol mode is an internal detail of the pi backend, not exposed to
+workflow authors.
 
 ### Cost and token accounting
 
 Pi's `--mode json` event stream does not include per-event cost or token
-counts. Raymond gets this data either by:
+counts. After each turn (when pi exits), raymond parses the session JSONL
+file and sums usage records to derive `total_cost_usd` and token counts
+identical in shape to what Claude reports. The session JSONL lives under
+pi's session storage (default `~/.pi/agent/sessions/<cwd>/<id>.jsonl`, or
+under `backend.options.session_dir` if set); raymond locates the file by
+the session id captured from the `agent_start` event.
 
-- Running pi in `--mode rpc` and calling `get_session_stats` after each turn,
-  or
-- Parsing pi's session JSONL file (`~/.pi/agent/sessions/<...>/<id>.jsonl`)
-  after each turn and summing usage records.
+The orchestrator's per-workflow cost budget is enforced from these reads
+exactly as it is for Claude.
 
-Either way, the orchestrator receives the same `total_cost_usd` and token
-counts it gets from Claude, and the budget enforcement rule is unchanged.
-Which path is taken depends on the protocol-mode decision in "Open issues"
-below.
+### Session storage
+
+By default raymond does **not** pass `--session-dir`; pi stores sessions in
+its normal location (`~/.pi/agent/sessions/<cwd>/`), the same way the
+existing Claude integration relies on Claude's normal session storage under
+`~/.claude/`.
+
+Pi organizes session files under sub-directories keyed by the working
+directory at session-creation time. This is *not* a new constraint for
+raymond: Claude Code's session storage has the same property, and raymond
+already only allows the working directory to change at points where the
+session is being abandoned anyway (`<reset>`, `<function>`, `<fork>`,
+cross-workflow boundaries). Within a single continuous session — `<goto>`
+loops, `<call>`/return — the cwd stays put, so the cwd-keyed organization
+is invisible.
+
+A workflow author may set `backend.options.session_dir` to relocate
+sessions — for example to keep them with the workflow run state for
+archival, or to share them with an interactive pi TUI. Raymond passes the
+value through to pi's `--session-dir` flag verbatim.
 
 ### Per-state command construction
 
 The pi-backend equivalent of `BuildClaudeCommand` assembles a different flag
 list:
 
-- Always: `pi`, `-p` (or `--mode json` / `--mode rpc` depending on the
-  selected protocol — see "Open issues" below).
+- Always: `pi --mode json` (and `--session-dir <dir>` only if the workflow
+  set `backend.options.session_dir`).
 - If model is set: `--model <value>` (and optionally `--provider <value>` from
   `backend.options.provider`).
 - If effort is set: `--thinking <translated value>`.
-- For session continuation: `--session <session-id>` to resume, or
-  `--fork <session-id>` to branch. Pi's `-c` ("most recent session") is *not*
+- For session continuation: `--session <session-id>` to resume the agent's
+  existing session (the `<goto>` case), or `--fork <caller-session-id>` to
+  branch a new session from a caller's history (the `<call>` case). The
+  first turn after `<reset>` or `<function>` passes neither flag, so pi
+  starts a brand-new session. Pi's `-c` ("most recent session") is *not*
   used — raymond always knows the exact session id it wants and passes it
   explicitly.
 - Tool allowlist derived from `--dangerously-skip-permissions` and
-  `backend.options.tools` (see "Launch flags" above).
+  `backend.options.tools` (see "Launch flags" above). One of `--tools`,
+  `--no-tools`, or `--no-builtin-tools` may apply, derived as follows:
+  `backend.options.no_tools: true` ⇒ `--no-tools`;
+  `backend.options.no_builtin_tools: true` ⇒ `--no-builtin-tools`;
+  otherwise `--tools <comma-list>` per the Launch-flags table.
 - If declared: `--system-prompt` / `--append-system-prompt` (currently unused
   by raymond; reserved for future use).
 - If declared: each `--extension <source>` and `--skill <path>` from
   `backend.options`.
-- The state's prompt body, delivered either as a positional argument
-  (`-p` mode) or as an RPC `prompt` request (rpc mode).
+- The state's prompt body, delivered as a single trailing positional
+  argument. Raymond invokes pi via Go's `exec.Command`, which passes argv
+  as raw bytes to the child process — **no shell interprets the prompt**,
+  so quotes, newlines, backticks, dollar signs, etc. cannot be
+  misinterpreted. This is the same pattern raymond uses for Claude
+  (`ccwrap.go` line 217, with tests at `ccwrap_test.go:47-65` verifying
+  the argv layout) and is robust by construction.
 
 ### Tool disallow list
 
@@ -282,12 +402,12 @@ the workflow author should know about.
    errors or `agent_end` errors, and raymond classifies them as generic
    failures.
 
-4. **Per-event cost reporting on the live event stream.** Cost arrives at
-   `agent_end` (or via a separate `get_session_stats` call) rather than on
-   each `result` message as Claude does. The end-of-turn cost is identical;
-   what is missing is intra-turn cost telemetry that some observers display
-   in the dashboard. The dashboard will show `—` for in-flight cost on pi
-   states until the turn completes.
+4. **Per-event cost reporting on the live event stream.** Cost is read
+   from the session JSONL after the turn ends, not from each `result`
+   message during the turn as Claude does. The end-of-turn cost is
+   identical; what is missing is intra-turn cost telemetry that some
+   observers display in the dashboard. The dashboard will show `—` for
+   in-flight cost on pi states until the turn completes.
 
 5. **Claude-specific `model:` values.** A workflow that hardcodes
    `model: opus` only makes sense against Claude. Under pi the workflow
@@ -326,10 +446,11 @@ the workflow author should know about.
 | State graph + transition tags | ✓ | ✓ (orchestrator-level) |
 | Shell-script states | ✓ | ✓ (orchestrator-level) |
 | `<await>` / human-in-the-loop | ✓ | ✓ (orchestrator-level) |
-| `<fork>` (parallel agents) | ✓ | ✓ via `--fork <session-id>` |
-| `<call>` / `<function>` | ✓ | ✓ (`call` forks the parent session; `function` starts fresh) |
+| `<fork>` (spawn parallel agent) | ✓ | ✓ (orchestrator-level; not related to `--fork`) |
+| `<call>` (inherit caller context) | ✓ (`--fork-session`) | ✓ (`--fork <caller-session-id>`) |
+| `<function>` / `<reset>` (fresh context) | ✓ | ✓ (no `--session` or `--fork` flag) |
 | Cross-workflow invocation | ✓ | ✓ (orchestrator-level) |
-| Per-workflow cost budget | ✓ | ✓ (cost via `get_session_stats` or session JSONL) |
+| Per-workflow cost budget | ✓ | ✓ (cost summed from session JSONL after each turn) |
 | `--resume <run_id>` after crash | ✓ | ✓ (pi session UUID persisted) |
 | `raymond lint` / `diagram` / `convert` | ✓ | ✓ (orchestrator-level) |
 | `raymond serve` daemon + web UI | ✓ | ✓ (UI shows pi session ids) |
@@ -352,8 +473,9 @@ A workflow author writing for pi specifically should:
 3. Decide tool safety up front: declare `backend.options.tools` with the
    minimum set the workflow needs. Pi has no per-call permission prompts to
    fall back on — the allowlist is the only gate.
-4. Avoid `--continue-and-fork` at the CLI; use explicit session resume if
-   needed.
+4. Don't pass `--continue-and-fork` at the CLI — raymond rejects it for pi
+   workflows. Use `--session <id>` explicitly if you need to resume a known
+   session.
 5. If the workflow integrates with external tools, do **not** assume MCP
    is available — pi is not MCP-native. Express tool integrations as pi
    extensions (`backend.options.extensions`) or skills
@@ -368,34 +490,24 @@ A workflow that is meant to run portably across both backends should:
 - Not depend on Claude usage-limit detection or live per-event cost.
 - Not use `--continue-and-fork`.
 
-## Open issues
+## Open issues and pre-implementation action items
 
-These are decisions deferred to implementation; the feature spec does not
-fix them.
+Resolved in the body of this spec: protocol mode (`--mode json`), cost data
+path (post-turn JSONL parse), session storage (pi's default with optional
+override). Remaining items:
 
-1. **`--mode json` vs `--mode rpc`.** Both can satisfy the requirements
-   above. RPC mode allows in-flight commands (`steer`, `abort`, queue
-   management) and a single long-lived process per workflow run; JSON mode
-   is simpler and matches the per-turn invocation pattern raymond already
-   uses for Claude. The first implementation may pick whichever is faster
-   to land and revisit later.
+### Action items to validate before implementation
 
-2. **Cost data path.** Per-turn `get_session_stats` over RPC vs.
-   post-turn JSONL parse. Tied to the previous decision.
+1. **Confirm session id is stable across pi's auto-compaction.** Detail in
+   the "Stream parsing" section above. If the assumption is false, the
+   implementation must re-read the session id from `agent_start` on every
+   turn and persist it; the workflow contract is unaffected but the
+   bookkeeping changes.
 
-3. **Mapping between raymond's persisted "session id" and pi's session
-   storage.** Pi sessions live as files under `~/.pi/agent/sessions/<cwd>/`;
-   raymond may want to set `--session-dir` to a workflow-local directory
-   (e.g. `.raymond/state/<run_id>/pi-sessions/`) so that workflow runs are
-   self-contained and resume is independent of the user's home directory.
+### Genuinely open / forward-looking
 
-4. **System prompt usage.** Raymond does not currently set a system prompt
+2. **System prompt usage.** Raymond does not currently set a system prompt
    for either backend. If the orchestrator-level instructions feature
    (open question 1 in the multi-backend design notes) lands, pi already
    supports `--append-system-prompt`; no further pi-specific work is
    required.
-
-5. **Termux / non-glibc support.** Pi explicitly documents Termux and
-   Windows support. If raymond ever targets those platforms, pi may be a
-   better-supported backend than Claude there. Out of scope for this
-   feature, but worth noting.

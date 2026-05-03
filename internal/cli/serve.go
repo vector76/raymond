@@ -45,8 +45,14 @@ Defaults for --root, --port, --mcp, --no-http, --workdir, --max-file-size,
 under the [raymond.serve] section. CLI --root values are appended to (not
 replacing) the config file's root.
 
-Use --launch <workflow_id> (repeatable) to dispatch one or more workflows
-automatically once transports are up.`,
+Use --launch <workflow_id> (repeatable) to auto-dispatch one or more
+workflows after the HTTP/MCP transports come up. Launches apply only to
+this invocation — there is no scheduling, retry, or persistence across
+restarts. Each id must already be discoverable via --root, and launch
+outcomes are logged on the same channel as other startup status messages
+(stdout by default; stderr under --mcp). Workflows whose first state
+requires input cannot be auto-launched and must be started via the HTTP
+API or web UI.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fileCfg, err := config.LoadServeConfig("")
 			if err != nil {

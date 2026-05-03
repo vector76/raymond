@@ -21,6 +21,7 @@ raymond serve --root <dir> [--root <dir2> ...] [flags]
 | `--mcp` | bool | false | Enable the MCP transport interface. |
 | `--no-http` | bool | false | Disable the HTTP server entirely. Requires `--mcp` — at least one transport must be active. |
 | `--workdir` | string | (none) | Default working directory for workflow runs. |
+| `--launch` | string slice | (none) | Workflow id to dispatch automatically once transports are up. May be repeated. The id must be discoverable via `--root`. |
 
 ### Examples
 
@@ -41,6 +42,37 @@ MCP-only mode (no HTTP server):
 ```
 raymond serve --root ./workflows --mcp --no-http
 ```
+
+### Auto-launching workflows on startup
+
+Pass one or more `--launch <workflow_id>` flags to dispatch workflows
+automatically once the daemon's transports are ready:
+
+```
+raymond serve --root ./workflows --launch nightly-report --launch health-check
+```
+
+Each `--launch` is equivalent to a `POST /runs` with body
+`{"workflow_id": "<id>"}` and no other fields — input, budget, model,
+working directory, and environment are all left to the workflow's defaults
+and the server-wide configuration.
+
+Operational properties:
+
+1. **Per-invocation only** — there is no cron schedule, retry, or
+   persistence across restarts. Each `serve` invocation launches exactly
+   the ids it was given on the command line.
+2. **Failures do not abort startup** — if a launch fails (unknown id,
+   `input.mode: required` workflow, etc.), the error is logged alongside
+   other startup status messages and the daemon continues serving. Other
+   launches and the HTTP/MCP transports are unaffected.
+3. **Order of run creation is not guaranteed** — launches are dispatched
+   concurrently. Do not depend on the flag order matching run start order.
+
+The typical use case is capturing `--launch` flags in a systemd unit or
+Docker entrypoint so that operationally-required workflows (health checks,
+periodic reports driven by an external scheduler that restarts the daemon,
+etc.) start automatically with the server.
 
 ## Workflow Registry
 

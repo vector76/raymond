@@ -183,6 +183,10 @@ automatically once transports are up.`,
 				fmt.Fprintf(logOut, "MCP transport enabled on stdio\n")
 			}
 
+			if err := launchStartupRuns(cmd.Context(), reg, rm, configBudget, launches, logOut); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "startup launches aborted: %v\n", err)
+			}
+
 			// Block until interrupted or MCP transport closes.
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

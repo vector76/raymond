@@ -20,6 +20,7 @@ import (
 func (c *CLI) newServeCmd() *cobra.Command {
 	var (
 		roots        []string
+		launches     []string
 		port         int
 		mcp          bool
 		noHTTP       bool
@@ -42,7 +43,10 @@ clients.
 Defaults for --root, --port, --mcp, --no-http, --workdir, --max-file-size,
 --max-total-size, and --max-file-count may also be set in .raymond/config.toml
 under the [raymond.serve] section. CLI --root values are appended to (not
-replacing) the config file's root.`,
+replacing) the config file's root.
+
+Use --launch <workflow_id> (repeatable) to dispatch one or more workflows
+automatically once transports are up.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fileCfg, err := config.LoadServeConfig("")
 			if err != nil {
@@ -195,6 +199,7 @@ replacing) the config file's root.`,
 
 	f := cmd.Flags()
 	f.StringArrayVar(&roots, "root", nil, "scope root directory (may be specified multiple times; appended to [raymond.serve].root from config)")
+	f.StringArrayVar(&launches, "launch", nil, "workflow id to launch on startup (may be repeated; the workflow must be discoverable via --root)")
 	f.IntVar(&port, "port", config.DefaultServePort, "HTTP server port")
 	f.BoolVar(&mcp, "mcp", false, "enable MCP transport")
 	f.BoolVar(&noHTTP, "no-http", false, "disable HTTP server (requires --mcp)")

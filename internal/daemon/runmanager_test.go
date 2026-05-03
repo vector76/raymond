@@ -86,7 +86,7 @@ func TestLaunchRun_CreatesRunAndReturnsID(t *testing.T) {
 	scopeDir := t.TempDir()
 
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -107,7 +107,7 @@ func TestGetRun_ReturnsCorrectStatusAfterLaunch(t *testing.T) {
 	scopeDir := t.TempDir()
 
 	fake := &fakeOrchestrator{} // blocks forever
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -128,7 +128,7 @@ func TestGetRun_ReturnsCorrectStatusAfterLaunch(t *testing.T) {
 
 func TestGetRun_NotFound(t *testing.T) {
 	stateDir := ensureStateDir(t)
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	_, ok := rm.GetRun("nonexistent")
@@ -140,7 +140,7 @@ func TestCancelRun_CancelsRunningWorkflow(t *testing.T) {
 	scopeDir := t.TempDir()
 
 	fake := &fakeOrchestrator{} // blocks until ctx cancelled
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -182,7 +182,7 @@ func TestCancelRun_AwaitingRun(t *testing.T) {
 			return nil
 		},
 	}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -207,7 +207,7 @@ func TestCancelRun_AwaitingRun(t *testing.T) {
 
 func TestCancelRun_NotFound(t *testing.T) {
 	stateDir := ensureStateDir(t)
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	err = rm.CancelRun("nonexistent")
@@ -233,7 +233,7 @@ func TestCancelRun_AlreadyTerminal(t *testing.T) {
 			return nil
 		},
 	}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -266,7 +266,7 @@ func TestDeleteRun_RemovesTerminalRun(t *testing.T) {
 			return nil
 		},
 	}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -305,7 +305,7 @@ func TestDeleteRun_RemovesRecoveredFailedRun(t *testing.T) {
 	}
 	require.NoError(t, wfstate.WriteState(ws.WorkflowID, ws, stateDir))
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	info, ok := rm.GetRun(ws.WorkflowID)
@@ -328,7 +328,7 @@ func TestDeleteRun_RejectsActiveRun(t *testing.T) {
 	scopeDir := t.TempDir()
 
 	fake := &fakeOrchestrator{} // blocks until cancelled
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -350,7 +350,7 @@ func TestDeleteRun_RejectsActiveRun(t *testing.T) {
 
 func TestDeleteRun_NotFound(t *testing.T) {
 	stateDir := ensureStateDir(t)
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	err = rm.DeleteRun("nonexistent")
@@ -384,7 +384,7 @@ func TestAgentAwaitStarted_FlipsRunToAwaitingInput(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -441,7 +441,7 @@ func TestStateStarted_FlipsRunBackToRunning(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -500,7 +500,7 @@ func TestWaitForCompletion_BlocksUntilDone(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "go", 5.0, "", "", nil)
@@ -518,7 +518,7 @@ func TestWaitForCompletion_Timeout(t *testing.T) {
 	scopeDir := t.TempDir()
 
 	fake := &fakeOrchestrator{} // blocks forever
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -534,7 +534,7 @@ func TestWaitForCompletion_Timeout(t *testing.T) {
 
 func TestWaitForCompletion_NotFound(t *testing.T) {
 	stateDir := ensureStateDir(t)
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	_, err = rm.WaitForCompletion("nonexistent", time.Second)
@@ -577,7 +577,7 @@ func TestConcurrentRuns_DoNotInterfere(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	entry := testWorkflowEntry(t, scopeDir)
@@ -620,7 +620,7 @@ func TestListRuns_ReturnsAllRuns(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	entry := testWorkflowEntry(t, scopeDir)
@@ -675,7 +675,7 @@ func TestRestartRecovery_DiscoversInProgressWorkflows(t *testing.T) {
 	))
 
 	// Create a RunManager — it should discover the state file.
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	info, ok := rm.GetRun("recovered-run-1")
@@ -712,7 +712,7 @@ func TestRestartRecovery_AwaitingWorkflow(t *testing.T) {
 		data, 0o644,
 	))
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	info, ok := rm.GetRun("awaiting-run")
@@ -723,7 +723,7 @@ func TestRestartRecovery_AwaitingWorkflow(t *testing.T) {
 func TestRestartRecovery_EmptyStateDir(t *testing.T) {
 	stateDir := ensureStateDir(t)
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	runs := rm.ListRuns()
@@ -744,7 +744,7 @@ func TestRestartRecovery_RecoveredRunDoneChannelClosed(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "old-run.json"), data, 0o644))
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	// WaitForCompletion on a recovered run should return immediately since
@@ -763,7 +763,7 @@ func TestLaunchRun_FailedOrchestrator(t *testing.T) {
 			return assert.AnError
 		},
 	}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -801,7 +801,7 @@ func TestLaunchRun_AwaitingInputStatus(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -865,7 +865,7 @@ func TestLaunchRun_EventsUpdateAgentInfo(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -926,7 +926,7 @@ states:
 
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1013,7 +1013,7 @@ func TestRestartRecovery_PrefersPersistedStartedAt(t *testing.T) {
 		data, 0o644,
 	))
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	info, ok := rm.GetRun(ws.WorkflowID)
@@ -1044,7 +1044,7 @@ func TestRestartRecovery_FallsBackToRunIDTimestamp(t *testing.T) {
 		data, 0o644,
 	))
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
 	info, ok := rm.GetRun(ws.WorkflowID)
@@ -1089,7 +1089,7 @@ func TestSubscribeRunEvents_DeliversLiveEventsAfterReplay(t *testing.T) {
 			return nil
 		},
 	}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -1171,7 +1171,7 @@ func TestSubscribeRunEvents_ReplaysPastEventsAfterCompletion(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -1219,7 +1219,7 @@ func TestSubscribeRunEvents_RingBufferEvictsOldestEvents(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
@@ -1265,7 +1265,7 @@ func TestSubscribeRunEvents_MultipleSubscribersIndependent(t *testing.T) {
 		},
 	}
 
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)

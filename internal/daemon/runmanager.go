@@ -125,9 +125,10 @@ func NewRunManager(stateDir string, cwd string) (*RunManager, error) {
 	return rm, nil
 }
 
-// newRunManagerWithOrchestrator creates a RunManager with a custom orchestrator
-// (used in tests).
-func newRunManagerWithOrchestrator(stateDir string, cwd string, orch Orchestrator) (*RunManager, error) {
+// NewRunManagerWithOrchestrator creates a RunManager with a custom orchestrator.
+// Used by tests and by the CLI helper for `ray serve --launch`, which injects
+// a noop orchestrator so its tests don't spawn real LLM work.
+func NewRunManagerWithOrchestrator(stateDir string, cwd string, orch Orchestrator) (*RunManager, error) {
 	rm := &RunManager{
 		runs:         make(map[string]*runEntry),
 		stateDir:     stateDir,

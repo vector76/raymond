@@ -218,7 +218,7 @@ func newMCPTestSetupFull(t *testing.T, requiresHumanInput bool) (*mcpTestClient,
 
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	pendingDir := t.TempDir()
@@ -436,7 +436,7 @@ func newMCPTestSetupWithManifest(t *testing.T, manifestYAML string) *mcpTestClie
 	require.NoError(t, err)
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 	srv := NewMCPServer(reg, rm)
 	return newMCPTestClient(t, srv)

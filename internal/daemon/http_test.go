@@ -21,6 +21,7 @@ import (
 
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
+	"github.com/vector76/raymond/internal/manifest"
 	"github.com/vector76/raymond/internal/orchestrator"
 	"github.com/vector76/raymond/internal/parsing"
 	wfstate "github.com/vector76/raymond/internal/state"
@@ -51,7 +52,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server, *fakeOrchestrator) 
 
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	pendingDir := t.TempDir()
@@ -131,12 +132,26 @@ func TestCreateRun(t *testing.T) {
 
 func TestResolveBudget(t *testing.T) {
 	// Precedence: request > manifest > server > hardcoded constant.
-	assert.Equal(t, 3.0, resolveBudget(3.0, 2.0, 1.0))
-	assert.Equal(t, 2.0, resolveBudget(0, 2.0, 1.0))
-	assert.Equal(t, 1.0, resolveBudget(0, 0, 1.0))
-	assert.Equal(t, daemonDefaultBudgetUSD, resolveBudget(0, 0, 0))
+	assert.Equal(t, 3.0, ResolveBudget(3.0, 2.0, 1.0))
+	assert.Equal(t, 2.0, ResolveBudget(0, 2.0, 1.0))
+	assert.Equal(t, 1.0, ResolveBudget(0, 0, 1.0))
+	assert.Equal(t, daemonDefaultBudgetUSD, ResolveBudget(0, 0, 0))
 	// Negative values are treated as unset at every level.
-	assert.Equal(t, 2.0, resolveBudget(-5, 2.0, 1.0))
+	assert.Equal(t, 2.0, ResolveBudget(-5, 2.0, 1.0))
+}
+
+func TestValidateInputMode(t *testing.T) {
+	// required: empty rejected, non-empty accepted.
+	require.Error(t, ValidateInputMode(manifest.InputModeRequired, ""))
+	require.NoError(t, ValidateInputMode(manifest.InputModeRequired, "hello"))
+
+	// optional: both empty and non-empty are accepted.
+	require.NoError(t, ValidateInputMode(manifest.InputModeOptional, ""))
+	require.NoError(t, ValidateInputMode(manifest.InputModeOptional, "hello"))
+
+	// none: empty accepted, non-empty rejected.
+	require.NoError(t, ValidateInputMode(manifest.InputModeNone, ""))
+	require.Error(t, ValidateInputMode(manifest.InputModeNone, "hello"))
 }
 
 func TestResolveUploadCaps_PerAwaitOverridesAll(t *testing.T) {
@@ -255,7 +270,7 @@ func TestCreateRun_AppliesServerDefaultBudgetWhenUnspecified(t *testing.T) {
 
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	srv := NewServer(reg, rm, 0)
@@ -305,7 +320,7 @@ func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
 
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
 	srv := NewServer(reg, rm, 0)
@@ -387,7 +402,7 @@ func newTestServerWithManifest(t *testing.T, manifestYAML string) *httptest.Serv
 	require.NoError(t, err)
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
-	rm, err := newRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 	srv := NewServer(reg, rm, 0)
 	ts := httptest.NewServer(srv.Handler())

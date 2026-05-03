@@ -42,10 +42,10 @@ const (
 	daemonDefaultMaxFileCount       = 10
 )
 
-// validateInputMode enforces the manifest's input.mode constraint at launch.
+// ValidateInputMode enforces the manifest's input.mode constraint at launch.
 // mode: required rejects an empty input; mode: none rejects a non-empty input.
 // mode: optional (or any unknown value, defensively) accepts anything.
-func validateInputMode(mode, input string) error {
+func ValidateInputMode(mode, input string) error {
 	switch mode {
 	case manifest.InputModeRequired:
 		if input == "" {
@@ -59,11 +59,11 @@ func validateInputMode(mode, input string) error {
 	return nil
 }
 
-// resolveBudget picks the effective budget for a run, walking the
+// ResolveBudget picks the effective budget for a run, walking the
 // precedence ladder: explicit request budget > workflow manifest
 // default_budget > server-wide config budget > hardcoded constant. Zero
 // and negative values are treated as "unset" at every level.
-func resolveBudget(reqBudget, manifestBudget, serverBudget float64) float64 {
+func ResolveBudget(reqBudget, manifestBudget, serverBudget float64) float64 {
 	if reqBudget > 0 {
 		return reqBudget
 	}
@@ -77,7 +77,7 @@ func resolveBudget(reqBudget, manifestBudget, serverBudget float64) float64 {
 }
 
 // resolveUploadCaps picks the effective upload caps for an await, mirroring
-// resolveBudget's precedence ladder: per-await override (from
+// ResolveBudget's precedence ladder: per-await override (from
 // FileAffordance.Bucket) > server config > hardcoded constant. Zero and
 // negative values are treated as "unset" at every level.
 //
@@ -391,12 +391,12 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validateInputMode(entry.Input.Mode, req.Input); err != nil {
+	if err := ValidateInputMode(entry.Input.Mode, req.Input); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
 		return
 	}
 
-	budget := resolveBudget(req.Budget, entry.DefaultBudget, s.defaultBudget)
+	budget := ResolveBudget(req.Budget, entry.DefaultBudget, s.defaultBudget)
 
 	// Use a background context so the run outlives the HTTP request.
 	runID, err := s.runManager.LaunchRun(

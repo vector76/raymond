@@ -611,11 +611,11 @@ func (s *MCPServer) toolRun(ctx context.Context, args json.RawMessage) mcpToolRe
 		))
 	}
 
-	if err := validateInputMode(entry.Input.Mode, params.Input); err != nil {
+	if err := ValidateInputMode(entry.Input.Mode, params.Input); err != nil {
 		return toolError(err.Error())
 	}
 
-	budget := resolveBudget(params.Budget, entry.DefaultBudget, s.defaultBudget)
+	budget := ResolveBudget(params.Budget, entry.DefaultBudget, s.defaultBudget)
 
 	runID, err := s.runManager.LaunchRun(
 		context.Background(),

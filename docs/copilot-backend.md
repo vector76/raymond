@@ -51,13 +51,17 @@ backend:
   name: copilot
   options:
     agent: my-raymond-agent           # see §4.4
-    config_dir: ~/.copilot-raymond    # see §4.5
-    require_auth: true                # preflight, see §6
-    use_acp: false                    # see §3
     excluded_tools: []                # see §4.3
     available_tools: []               # see §4.3
-    usd_per_premium_request: 0.0      # see §5.3
+    usd_per_premium_request: 0.0      # see §5.2
 ```
+
+Auto-approve is not a workflow-author option. Whether Copilot runs in
+auto-approve mode is controlled at the raymond-invocation level by the
+existing `--dangerously-skip-permissions` flag (and the corresponding
+config-file setting), exactly as on the Claude backend. When that flag
+is set, raymond passes `--yolo` to Copilot; otherwise it does not.
+Workflows do not opt themselves into or out of `--yolo`.
 
 ### 2.2 Defaults
 
@@ -66,20 +70,19 @@ backend:
 | `model` | unset → CLI default (`claude-sonnet-4.5` at time of writing) | Per-state `model:` frontmatter overrides. |
 | `effort` | unset | Per-state `effort:` frontmatter maps to `--reasoning-effort`. |
 | `agent` | unset | When unset, Copilot uses its built-in default agent. |
-| `config_dir` | unset → `~/.copilot` | Used to isolate raymond runs from a user's interactive Copilot state when desired. |
-| `require_auth` | `true` | Preflight checks GH auth before launching the first state. |
-| `use_acp` | `false` | When `true`, raymond drives Copilot via Agent Client Protocol instead of `-p` one-shots. v1 is `-p`-only. |
-| `auto_approve` | derived from raymond's `--dangerously-skip-permissions` flag | Maps to `--yolo`. |
 
 Copilot's `-p` mode is non-interactive — there is no terminal to prompt
 on — so any tool that would normally request permission cannot get one.
 The exact failure mode (silently abort vs. fail-the-state) is
 implementation-defined by the CLI and has historically shifted between
-versions. To avoid relying on that behavior, the backend **requires
-`--dangerously-skip-permissions`** in v1, mapped to `--yolo`. Workflows
-launched without it fail preflight with a clear message rather than
-risking an inconsistent mid-state failure. Future versions may relax
-this when ACP mode (§3) lands.
+versions. Running without `--yolo` is therefore likely to produce poor
+or surprising outcomes for any workflow whose tools would normally
+request approval, but it is fully legal: raymond does not refuse to
+launch in that configuration, mirroring the Claude backend's stance
+where `--dangerously-skip-permissions` is also optional. Workflow
+authors and operators who want reliable execution under `-p` should
+pass `--dangerously-skip-permissions` (or set it in the raymond config
+file).
 
 ### 2.3 Model field
 
@@ -94,22 +97,19 @@ joined by cross-workflow calls.
 
 `effort` maps to `--reasoning-effort` with values `low | medium | high`.
 The same per-state frontmatter that raymond already uses for Claude works
-unchanged. When the chosen `model` does not support reasoning, the flag is
-silently dropped before launch (Copilot CLI rejects `--reasoning-effort`
-on unsupported models, so raymond gates this client-side).
+unchanged. The flag is **passed through verbatim** alongside `--model`;
+when the model/effort combination is unsupported, Copilot rejects the
+invocation and the resulting error surfaces as a normal state failure.
+Raymond does not maintain a model→effort compatibility table, consistent
+with the opaque-pass-through stance for `model` in §2.3.
 
-## 3. Invocation mode (v1)
+## 3. Invocation mode
 
-The v1 backend uses **non-interactive one-shot invocations**: each state
+The backend uses **non-interactive one-shot invocations**: each state
 spawns a fresh `copilot -p "<prompt>" --output-format=json …` subprocess,
 streams its JSONL events, and exits when the process closes its stdout.
 This mirrors the current Claude Code wrapping and reuses raymond's
 streaming infrastructure (idle timeout, kill-and-drain, debug recording).
-
-**ACP mode (`copilot --acp`)** — a long-lived bidirectional protocol
-intended for SDK integrations — is **out of scope for v1** but explicitly
-preserved as a forward path. The backend's selection block reserves
-`use_acp` so workflows do not need rewriting when ACP mode lands.
 
 ## 4. Per-feature behavior
 
@@ -129,13 +129,13 @@ backend.
 | `<call-workflow>` | **Degrades to `<function-workflow>` semantics on Copilot**, for the same reason as `<call>`. Lint warns. See §5.1. |
 | `<function-workflow>` / `<fork-workflow>` / `<reset-workflow>` | Identical (these already use a fresh session by design). |
 | Mixing backends across cross-workflow calls | **Allowed.** Per [multi-backend-design.md §2](multi-backend-design.md), cross-workflow invocation is the supported way to compose heterogeneous backends. Each callee runs on whatever backend its own manifest declares; sessions never cross backend boundaries. A caller's session ID is meaningless to a callee on a different backend, so any cross-backend `<call-workflow>` likewise degrades to fresh-session semantics. |
-| `--continue-session` (resume the user's most recent interactive Claude session) | **Unavailable.** See §5.2. |
-| Cost tracking | Best-effort. See §5.3. |
+| `--continue-session` | **Available.** Raymond passes Copilot's `--continue` flag (resumes the most recent local session in `cwd` without forking). The intended hand-off use case — quitting an interactive Copilot session and launching raymond to continue from there — works exactly as on Claude. Subsequent `<goto>` operations continue against that session, which is the desired behavior. |
+| Cost tracking | Best-effort. See §5.2. |
 | Token tracking | Available, summed from `assistant.usage` events. |
 | Per-state model / effort | Available via `--model` and `--reasoning-effort`. |
-| `--dangerously-skip-permissions` | Required (§2.2). Maps to `--yolo`. |
+| `--dangerously-skip-permissions` | Optional (same as Claude). When set, raymond passes `--yolo`; otherwise it does not. See §2.2. |
 | Tool disallow list | Reinterpreted (§4.3). |
-| MCP servers | Available via Copilot's own MCP config (§4.5). |
+| MCP servers | Operator-configured via Copilot's own MCP config; raymond is oblivious (§4.5). |
 | Crash recovery / resume by run id | Available. Session IDs are persisted as today; resuming a run reattaches to the live Copilot session via `--resume`. |
 | Debug stream capture | Available. Raymond records the raw JSONL stream as it does for Claude; on-disk format is the Copilot envelope shape (different from Claude's), so debug viewers must be backend-aware. |
 | Lint / diagram | Identical. These are static-analysis surfaces and do not run the backend. |
@@ -147,8 +147,11 @@ envelope (events form a `parentId`-linked list within a single
 subprocess). Across raymond's per-state subprocesses, session continuity
 is preserved by **naming the session deterministically**:
 
-- The first invocation for an agent passes `--name raymond-<workflow-id>-<agent-id>`.
-  The name is stable for the lifetime of the agent.
+- The first invocation for an agent passes
+  `--name raymond-<workflow-id>-<agent-id>`. The name is stable for the
+  lifetime of the agent. Raymond's `<workflow-id>` is a per-run
+  identifier (timestamp-based, generated by `state.GenerateWorkflowID`),
+  so concurrent runs of the same workflow definition do not collide.
 - Subsequent invocations pass `--resume raymond-<workflow-id>-<agent-id>`.
   Copilot's `--resume` accepts a session name as well as a session ID
   or task ID, so raymond does not need to extract the canonical session
@@ -156,9 +159,12 @@ is preserved by **naming the session deterministically**:
 
 The agent's `SessionID` field in raymond's persisted state holds this
 deterministic name; the existing crash-recovery path therefore works
-unchanged. Raymond never uses `--continue`, which means "most recent
-local session in `cwd`" — a global notion that would race between
-concurrent agents and could pick up an unrelated user session.
+unchanged. Raymond uses `--continue` only at launch when the operator
+passed `raymond --continue-session` (the explicit hand-off path
+described in the §4 capability table); during normal state-to-state
+transitions it always uses the deterministic `--resume <name>` form,
+which never collides with another raymond run or an unrelated
+interactive session.
 
 ### 4.2 Stream parsing
 
@@ -180,11 +186,15 @@ parser produces today, so observers (`ProgressMessage`, `ToolInvocation`,
 **Token field mapping.** Raymond's existing extractor sums Claude-shaped
 fields (`cache_creation_input_tokens`, `cache_read_input_tokens`,
 `input_tokens` — see `internal/executors/executors.go`). The Copilot
-backend translates Copilot's camelCase fields into the same internal
-running total: `inputTokens` + `cacheReadTokens` + `cacheWriteTokens`.
-`outputTokens` is tracked separately and surfaced to observers but is
+backend translates Copilot's `assistant.usage` fields into the same
+internal running total. The exact field names (assumed `inputTokens` /
+`cacheReadTokens` / `cacheWriteTokens` / `outputTokens` in camelCase)
+are taken from the live Copilot stream during implementation and pinned
+there; this spec records the mapping intent rather than the wire names.
+The summed input-side total comprises input + cache-read + cache-write.
+Output tokens are tracked separately and surfaced to observers but are
 **not** added to the running input-side total, mirroring how the Claude
-extractor treats output tokens today (it does not include them).
+extractor treats output tokens today.
 
 The `assistant.message_delta`, `assistant.reasoning_delta`,
 `assistant.reasoning`, `tool.execution_partial_result`, and
@@ -212,41 +222,33 @@ reinterpreted as follows for Copilot:
   to the allow list via `backend.options.available_tools`. These map
   directly to `--excluded-tools` and `--available-tools`.
 
-### 4.4 Agent files (system prompt analogue)
+### 4.4 Agent option
 
-Raymond does not currently use system prompts. Copilot does not expose
-`--append-system-prompt`; instead it has `--agent <name>`, which selects
-a named agent definition resolved by Copilot itself from its agents
-directory (under the active `config_dir`; the exact filename and
-extension are Copilot's contract, not raymond's). The backend exposes
-this through `backend.options.agent: <name>`. Raymond does not write or
-mutate agent files for the user — they are managed out-of-band.
+Copilot exposes `--agent <name>`, which selects a named agent
+definition resolved by Copilot itself from its native agents directory
+(the exact location, filename, and extension are Copilot's contract,
+not raymond's). The backend exposes this through
+`backend.options.agent: <name>` for workflow authors who want their
+states to run under a particular Copilot agent definition. Raymond does
+not write or mutate agent files — they are managed out-of-band.
 
-If a future raymond feature wants to inject orchestration-level
-instructions as a system prompt, the chosen strategy on Copilot is **(a)
-prepend into the user prompt** for v1 (per
-[multi-backend-design.md §1](multi-backend-design.md)). Writing into
-agent files is rejected because it mutates user configuration.
+System prompts are out of scope. Raymond does not currently expose any
+system-prompt affordance to workflows on the Claude backend
+(`--append-system-prompt` is not invoked anywhere in `ccwrap`, and
+neither the manifest nor the per-state policy carries a system-prompt
+field), so there is no parity gap to close on Copilot. If a system-prompt
+feature is added to raymond in the future, the cross-backend strategy
+will be designed at that time.
 
 ### 4.5 MCP servers
 
-Copilot's MCP configuration lives under `<config_dir>/mcp-config.json`
-(default `~/.copilot/mcp-config.json`). The backend takes one of three
-positions on MCP:
-
-- **Default:** raymond does not write MCP config. Operators wire up
-  their MCP servers via Copilot's normal mechanisms, and workflows
-  declare an MCP requirement in metadata. Raymond preflight verifies
-  declared servers are present in the config and fails fast if they
-  are not.
-- **Optional `config_dir` isolation:** when `backend.options.config_dir`
-  is set, raymond uses that directory for the run. This lets operators
-  keep a raymond-specific MCP / agent / settings tree separate from
-  their interactive Copilot setup, by pointing `config_dir` at a tree
-  they pre-populate.
-- **No raymond-managed MCP servers in v1.** The "raymond launches the
-  MCP server itself and points the backend at it" path described in
-  [multi-backend-design.md §6](multi-backend-design.md) is deferred.
+Raymond is oblivious to MCP at the orchestrator and backend layers in
+v1. MCP servers, if any, are configured by the operator via Copilot's
+normal mechanisms; raymond neither writes that config, validates its
+contents, nor declares MCP requirements in workflow manifests.
+Workflows that depend on a particular MCP server simply assume Copilot
+is configured for it on the host; if it is not, the failure surfaces
+from the agent's first attempt to use the missing tool.
 
 ### 4.6 Working directory
 
@@ -262,13 +264,11 @@ These are the explicit gaps a workflow author must know about.
 
 ### 5.1 No session forking (`<call>` and `<call-workflow>` degrade)
 
-Three raymond features rely on Claude's `--fork-session` to make a
+Two raymond features rely on Claude's `--fork-session` to make a
 callee inherit the caller's transcript:
 
 - `<call>` (in-workflow subroutine call)
 - `<call-workflow>` (cross-workflow blocking call)
-- `--continue-session` at launch (covered separately in §5.2 because
-  its failure mode is a launch-time error, not a runtime degradation)
 
 **Copilot has no fork-session equivalent.** On Copilot, `<call>` and
 `<call-workflow>` therefore degrade to their non-forking siblings —
@@ -292,27 +292,21 @@ Lint: a `<call>` or `<call-workflow>` in a workflow declared
 this section. Note that `<fork>` is **not** affected — it already uses
 a fresh session on Claude.
 
-### 5.2 No `--continue-session` at launch
-
-`raymond --continue-session` (which uses Claude's `-c --fork-session`
-to pick up the user's most recent interactive Claude session and fork
-it for the workflow) has **no counterpart on Copilot**. Copilot's
-`--continue` resumes the most recent local session in `cwd` but does
-not fork it, so any subsequent `<goto>` would mutate the user's
-interactive session — unacceptable.
-
-Behavior on Copilot: invoking raymond with `--continue-session` against
-a workflow declared `backend: copilot` is a **launch-time error** with
-a message that names this section.
-
-### 5.3 Cost reporting is approximate
+### 5.2 Cost reporting is approximate
 
 Copilot reports cost in two forms:
 
 - `assistant.usage.cost` — a per-call cost value emitted on each turn.
-  Treated as USD when present.
+  Treated as USD when present (this is an assumption about Copilot's
+  field semantics that the implementation pins against the live stream;
+  if Copilot publishes a unit other than USD, this is reduced to a
+  display-only field and the premium-request count becomes the sole
+  budget input).
 - `session.shutdown.totalPremiumRequests` — a count of premium-request
   units consumed by the session, which is the unit Copilot bills in.
+  Treated as session-cumulative; raymond computes the increment per
+  state from the difference between successive `session.shutdown`
+  observations.
 
 Raymond's `BudgetUSD` accounting accumulates `assistant.usage.cost`
 when present and falls back to a configurable
@@ -324,15 +318,14 @@ real usage occurred. The dashboard surfaces both numbers (USD and
 premium requests) so the user can see when they are diverging.
 
 A workflow declared with a non-zero `default_budget` and
-`backend: copilot` whose multiplier is `0.0` produces a **lint warning**
-that the budget will not be enforceable.
+`backend: copilot` whose `usd_per_premium_request` is `0.0` produces a
+**lint warning** that the budget *may* not be enforceable: Copilot is
+not contractually required to emit `assistant.usage.cost`, and when it
+does not the budget cap will never trip without a multiplier. The
+warning is conservative — if `cost` is emitted, the budget accumulates
+normally.
 
-### 5.4 No `--append-system-prompt` flag
-
-Already covered in §4.4. The forward-looking system-prompt feature, if
-it lands, will use the prepend-into-user-prompt strategy on Copilot.
-
-### 5.5 No nested-session protection
+### 5.3 No nested-session protection
 
 Claude Code respects the `CLAUDECODE` env var to prevent nested
 sessions, and raymond strips it deliberately
@@ -343,7 +336,7 @@ Copilot sessions with no special handling. Workflow authors should
 avoid having Copilot agents shell out to `copilot` themselves; the
 disallow list cannot enforce this because tool names are dynamic.
 
-### 5.6 Stream-JSON shape is not interchangeable
+### 5.4 Stream-JSON shape is not interchangeable
 
 Debug captures, transcript dumps, and any third-party tooling that
 parses raymond's recorded stream are **backend-specific**. A debug
@@ -351,38 +344,7 @@ stream file recorded on Copilot is not consumable by tools that expect
 the Claude shape, and vice versa. Recorded streams therefore include
 a backend tag header so consumers can route correctly.
 
-## 6. Preflight and authentication
-
-When the first state of a Copilot-backed workflow is about to launch,
-raymond performs the following checks. Each failure produces a clear,
-actionable error before the agent process is spawned:
-
-- **§6.1 Binary present.** `copilot` is on `PATH` (or the configured
-  override path). Failure → "GitHub Copilot CLI not found; install
-  per …".
-- **§6.2 Auth available.** One of:
-  - `GH_TOKEN` or `GITHUB_TOKEN` is set with a token that includes the
-    Copilot scope, or
-  - A prior `/login` has populated the configured `config_dir` with a
-    usable credential.
-
-  Raymond does not interactively log the user in. Failure → "GitHub
-  Copilot is not authenticated. Run `copilot` interactively and
-  `/login`, or set GH_TOKEN."
-- **§6.3 Auto-approve compatibility.** If the workflow does not have
-  `--dangerously-skip-permissions`, fail per §2.2.
-- **§6.4 `--continue-session` rejection.** If the workflow was launched
-  with `--continue-session`, fail per §5.2.
-- **§6.5 MCP requirements.** Any MCP server declared in workflow
-  metadata is present in Copilot's MCP configuration under the active
-  `config_dir`.
-- **§6.6 Agent file presence.** If `backend.options.agent: <name>` is
-  set, the corresponding agent definition resolves under the active
-  `config_dir`'s agents directory.
-
-Preflight runs at workflow start, not per state — once per run.
-
-## 7. Observability and event mapping
+## 6. Observability and event mapping
 
 Beyond the event-mapping table in §4.2, the backend surfaces two
 Copilot-specific signals to the existing observers:
@@ -398,7 +360,7 @@ Copilot-specific signals to the existing observers:
   with a Copilot-aware branch (file path for `write`/`edit`, command
   for `shell`).
 
-## 8. Compatibility with the rest of raymond
+## 7. Compatibility with the rest of raymond
 
 - **YAML scope and zip workflows.** The `backend:` field is read from
   the same manifest layer as `name`, `description`, and `input`, with
@@ -409,32 +371,36 @@ Copilot-specific signals to the existing observers:
   alongside other metadata; skills that require Copilot are visible as
   such in the picker.
 - **Lint.** New checks: `<call>` and `<call-workflow>` degradation
-  warning (§5.1), `--continue-session` launch-time error (§5.2),
-  unenforceable-budget warning (§5.3), declared-but-missing MCP server
-  error (§6.5).
+  warning (§5.1), unenforceable-budget warning (§5.2).
 - **Diagram.** No change; the diagram surface is backend-agnostic.
 - **Daemon UI.** Run rows show a backend badge. The cost cell shows
   USD and (for Copilot) an additional "PR" (premium-request) count.
   The MCP tools surface is not affected — MCP tools exposed *by*
   raymond are independent of which backend a run uses internally.
 
-## 9. Out of scope for v1
+## 8. Out of scope for v1
 
 Captured here so future work has a record of what was deliberately
 deferred:
 
-- ACP mode (`copilot --acp`) as an alternative to one-shot.
-- Auto-approve semantics that work without `--yolo` (i.e. interactive
-  permission-prompt-on-stderr).
+- ACP mode (`copilot --acp`, a long-lived bidirectional protocol
+  intended for SDK integrations) as an alternative to one-shot. Noted
+  here only as a possible future direction; nothing in the v1 surface
+  is shaped around it.
+- A non-`--yolo` execution path that surfaces Copilot's permission
+  prompts through raymond rather than letting tools fail under `-p`.
 - Raymond-managed MCP server launching.
 - Copilot autopilot / experimental modes.
-- Enterprise SSO / token-refresh flows beyond honoring `GH_TOKEN`.
+- Enterprise SSO / token-refresh / non-interactive auth flows. Raymond
+  relies on Copilot already being authenticated on the host (typically
+  via a prior `copilot` interactive `/login`) and does not introspect,
+  refresh, or supplement Copilot's credential store.
 - A unified, cross-backend cost normalization model. The Copilot cost
   is reported as it is; comparisons across backends are the user's
   responsibility.
 - Per-state backend switching (precluded by the multi-backend design).
 
-## 10. Acceptance criteria
+## 9. Acceptance criteria
 
 The Copilot backend is considered complete when:
 
@@ -449,9 +415,7 @@ The Copilot backend is considered complete when:
    correct Copilot session.
 4. The dashboard displays the run with backend-correct cost, tool
    names, and progress messages.
-5. Preflight produces clear errors for each of the §6 failure modes,
-   with no false positives in the happy path.
-6. Lint produces the §8 warnings/errors on the documented inputs.
-7. The Claude backend continues to pass its existing test suite
+5. Lint produces the §7 warnings on the documented inputs.
+6. The Claude backend continues to pass its existing test suite
    unchanged — i.e. introducing the Copilot backend has not regressed
    the default path.

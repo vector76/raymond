@@ -14,7 +14,18 @@ import (
 
 	"github.com/vector76/raymond/internal/config"
 	"github.com/vector76/raymond/internal/daemon"
+	"github.com/vector76/raymond/internal/orchestrator"
 )
+
+// cliOrch adapts c.runner to the daemon.Orchestrator interface so that
+// tests injecting a no-op runner via NewTestCLI never spawn real LLM work.
+type cliOrch struct {
+	fn func(context.Context, string, orchestrator.RunOptions) error
+}
+
+func (a *cliOrch) RunAllAgents(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+	return a.fn(ctx, workflowID, opts)
+}
 
 // newServeCmd builds the "serve" subcommand that starts the Raymond daemon.
 func (c *CLI) newServeCmd() *cobra.Command {
@@ -120,7 +131,7 @@ API or web UI.`,
 				cwd, _ = os.Getwd()
 			}
 
-			rm, err := daemon.NewRunManager("", cwd)
+			rm, err := daemon.NewRunManagerWithOrchestrator("", cwd, &cliOrch{fn: c.runner})
 			if err != nil {
 				return fmt.Errorf("initializing run manager: %w", err)
 			}

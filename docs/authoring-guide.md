@@ -245,7 +245,7 @@ Scripts receive workflow context via environment variables:
 |----------|-------------|---------|
 | `RAYMOND_WORKFLOW_ID` | Workflow run identifier | `wf-2026-01-15-abc123` |
 | `RAYMOND_AGENT_ID` | Current agent identifier | `main`, `main_worker1` |
-| `RAYMOND_INPUT` | Result payload from a `<call>` return, or the `--input` value for the first state | (unset when empty) |
+| `RAYMOND_INPUT` | Inbound payload — same channel as `{{input}}` for markdown states (see [Template Variables](#template-variables)) | (unset when empty) |
 
 ### Persisting Data Between Script Runs
 

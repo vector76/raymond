@@ -11,7 +11,7 @@ import (
 type TimeoutDelivery struct {
 	RunID       string
 	AgentID     string
-	InputID     string
+	AskID     string
 	Response    string // empty when TimeoutNext is set
 	TimeoutNext string // state to transition to (empty when Err is set)
 	Err         error  // non-nil when TimeoutNext is empty (timeout error)
@@ -19,7 +19,7 @@ type TimeoutDelivery struct {
 
 // TimeoutCallback is called by the monitor when a pending input times out.
 // The callback should deliver the response (or error) to the orchestrator's
-// await input channel.
+// ask input channel.
 type TimeoutCallback func(TimeoutDelivery)
 
 // TimeoutMonitor periodically checks the pending registry for expired inputs
@@ -87,7 +87,7 @@ func (tm *TimeoutMonitor) CheckNow() {
 			delivery = TimeoutDelivery{
 				RunID:       pi.RunID,
 				AgentID:     pi.AgentID,
-				InputID:     pi.InputID,
+				AskID:     pi.AskID,
 				Response:    "",
 				TimeoutNext: pi.TimeoutNext,
 				Err:         nil,
@@ -97,8 +97,8 @@ func (tm *TimeoutMonitor) CheckNow() {
 			delivery = TimeoutDelivery{
 				RunID:   pi.RunID,
 				AgentID: pi.AgentID,
-				InputID: pi.InputID,
-				Err:     fmt.Errorf("await timeout expired for agent %q input %q", pi.AgentID, pi.InputID),
+				AskID: pi.AskID,
+				Err:     fmt.Errorf("ask timeout expired for agent %q input %q", pi.AgentID, pi.AskID),
 			}
 		}
 
@@ -106,7 +106,7 @@ func (tm *TimeoutMonitor) CheckNow() {
 
 		// Remove the expired record from the registry. Ignore errors from
 		// concurrent removal (e.g. input was delivered just before timeout).
-		_ = tm.registry.Remove(pi.InputID)
+		_ = tm.registry.Remove(pi.AskID)
 	}
 }
 

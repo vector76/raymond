@@ -44,7 +44,7 @@ import (
 const (
 	AgentStatusPaused   = "paused"
 	AgentStatusFailed   = "failed"
-	AgentStatusAwaiting = "awaiting"
+	AgentStatusAsking = "asking"
 )
 
 // StateFileError is returned when a state file cannot be parsed.
@@ -74,7 +74,7 @@ type AgentState struct {
 	SessionID      *string      `json:"session_id"`                 // null when no session has been started
 	Stack          []StackFrame `json:"stack"`                      // call-return stack of frames
 	PendingResult  *string      `json:"pending_result,omitempty"`   // absent from JSON when nil
-	PendingInputID string       `json:"pending_input_id,omitempty"` // {{input_id}} for the immediately-following state
+	PendingAskID string       `json:"pending_ask_id,omitempty"` // {{ask_id}} for the immediately-following state
 	Cwd            string       `json:"cwd,omitempty"`              // per-agent working directory; empty = inherit
 	ScopeDir       string       `json:"scope_dir,omitempty"`        // per-agent scope directory; empty = use workflow ScopeDir
 	ScopeURL       string       `json:"scope_url,omitempty"`        // original URL when scope was fetched from a remote URL
@@ -84,7 +84,7 @@ type AgentState struct {
 	NestingDepth int `json:"nesting_depth,omitempty"`
 
 	// Orchestrator-managed lifecycle fields.
-	Status     string `json:"status,omitempty"`      // "paused", "failed", "awaiting", or "" (active)
+	Status     string `json:"status,omitempty"`      // "paused", "failed", "asking", or "" (active)
 	RetryCount int    `json:"retry_count,omitempty"` // transient error retry counter
 	Error      string `json:"error,omitempty"`       // last error message when paused/failed
 
@@ -96,19 +96,19 @@ type AgentState struct {
 	TaskFolder string `json:"task_folder,omitempty"` // output folder for this agent's tasks
 	TaskCount  int    `json:"task_count,omitempty"`  // number of tasks spawned so far
 
-	// Await fields — populated by the await transition handler when an agent
-	// emits an <await> tag. All zero-value safe for backward compatibility.
-	AwaitPrompt      string `json:"await_prompt,omitempty"`       // human-facing prompt text from <await> tag content
-	AwaitNextState   string `json:"await_next_state,omitempty"`   // state to transition to when input arrives
-	AwaitTimeout     string `json:"await_timeout,omitempty"`      // timeout duration string (e.g. "24h")
-	AwaitTimeoutNext string `json:"await_timeout_next,omitempty"` // state to transition to on timeout
-	AwaitInputID     string `json:"await_input_id,omitempty"`     // unique identifier for correlating the response
+	// Ask fields — populated by the ask transition handler when an agent
+	// emits an <ask> tag. All zero-value safe for backward compatibility.
+	AskPrompt      string `json:"ask_prompt,omitempty"`       // human-facing prompt text from <ask> tag content
+	AskNextState   string `json:"ask_next_state,omitempty"`   // state to transition to when input arrives
+	AskTimeout     string `json:"ask_timeout,omitempty"`      // timeout duration string (e.g. "24h")
+	AskTimeoutNext string `json:"ask_timeout_next,omitempty"` // state to transition to on timeout
+	AskID     string `json:"ask_id,omitempty"`     // unique identifier for correlating the response
 
-	// File-affordance fields — populated when a file-bearing await is entered.
+	// File-affordance fields — populated when a file-bearing ask is entered.
 	// All zero-value safe for backward compatibility.
-	AwaitFileAffordance *parsing.FileAffordance `json:"await_file_affordance,omitempty"` // descriptor parsed from the <await> tag
-	AwaitStagedFiles    []FileRecord            `json:"await_staged_files,omitempty"`    // display files staged into the input subdirectory at await-entry
-	AwaitEnteredAt      time.Time               `json:"await_entered_at,omitempty"`      // wall-clock time the await was entered; stamped onto the ResolvedInput record on resume
+	AskFileAffordance *parsing.FileAffordance `json:"ask_file_affordance,omitempty"` // descriptor parsed from the <ask> tag
+	AskStagedFiles    []FileRecord            `json:"ask_staged_files,omitempty"`    // display files staged into the input subdirectory at ask-entry
+	AskEnteredAt      time.Time               `json:"ask_entered_at,omitempty"`      // wall-clock time the ask was entered; stamped onto the ResolvedInput record on resume
 
 	// Transient execution fields — not persisted to JSON.
 	// Set by the orchestrator / transition handlers; consumed by the next executor step.
@@ -125,7 +125,7 @@ type LaunchParams struct {
 	Effort                     string  `json:"effort,omitempty"`
 	Timeout                    float64 `json:"timeout,omitempty"`
 	ContinueAndFork            bool    `json:"continue_and_fork,omitempty"`
-	OnAwait                    string  `json:"on_await,omitempty"`
+	OnAsk                    string  `json:"on_ask,omitempty"`
 }
 
 // WorkflowState is the top-level structure persisted for each workflow.

@@ -14,21 +14,21 @@ import (
 )
 
 // StageInputFiles creates the per-input subdirectory under
-// <taskFolder>/inputs/<inputID>/, copies each declared display file into it
+// <taskFolder>/asks/<askID>/, copies each declared display file into it
 // (under its display name, or the source basename if no display name was
 // given), sniffs each file's content type, and returns the resulting
 // FileRecord metadata.
 //
 // The function is idempotent: re-running it with the same inputs leaves
 // already-staged files in place rather than failing or duplicating, which
-// supports daemon-restart recovery on a pending await.
+// supports daemon-restart recovery on a pending ask.
 //
 // Source paths are interpreted strictly relative to taskFolder. Absolute
 // paths, paths containing ".." segments, and symlinks that escape the task
 // folder are rejected. A missing source file is reported as a descriptive
 // error rather than silently skipped.
-func StageInputFiles(taskFolder, inputID string, affordance parsing.FileAffordance) ([]wfstate.FileRecord, error) {
-	inputDir := filepath.Join(taskFolder, "inputs", inputID)
+func StageInputFiles(taskFolder, askID string, affordance parsing.FileAffordance) ([]wfstate.FileRecord, error) {
+	inputDir := filepath.Join(taskFolder, "asks", askID)
 	if err := os.MkdirAll(inputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create input subdirectory %q: %w", inputDir, err)
 	}

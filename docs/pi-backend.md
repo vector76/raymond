@@ -150,11 +150,11 @@ backend abstraction handles the translation; workflow authors notice no
 difference.
 
 - **State graph and transition tags.** All seven transition tags (`goto`,
-  `reset`, `call`, `function`, `fork`, `await`, `result`) work unchanged.
+  `reset`, `call`, `function`, `fork`, `ask`, `result`) work unchanged.
   Their semantics live in the orchestrator, not in the backend.
 - **Shell-script states.** Shell, batch, and PowerShell states do not use any
   backend; they continue to run as plain subprocesses with zero token cost.
-- **`<await>` and human-in-the-loop.** The orchestrator suspends the workflow
+- **`<ask>` and human-in-the-loop.** The orchestrator suspends the workflow
   to disk and resumes when input arrives. Independent of the backend.
 - **Cross-workflow invocation.** `<call-workflow>`, `<function-workflow>`,
   `<fork-workflow>`, `<reset-workflow>` — independent of backend. (A called
@@ -445,7 +445,7 @@ the workflow author should know about.
 |---|---|---|
 | State graph + transition tags | ✓ | ✓ (orchestrator-level) |
 | Shell-script states | ✓ | ✓ (orchestrator-level) |
-| `<await>` / human-in-the-loop | ✓ | ✓ (orchestrator-level) |
+| `<ask>` / human-in-the-loop | ✓ | ✓ (orchestrator-level) |
 | `<fork>` (spawn parallel agent) | ✓ | ✓ (orchestrator-level; not related to `--fork`) |
 | `<call>` (inherit caller context) | ✓ (`--fork-session`) | ✓ (`--fork <caller-session-id>`) |
 | `<function>` / `<reset>` (fresh context) | ✓ | ✓ (no `--session` or `--fork` flag) |

@@ -16,7 +16,7 @@ Raymond interprets workflows as a sequence of Claude Code runs. Each run:
   - `<function ...>...</function>`
   - `<call ...>...</call>`
   - `<fork ...>...</fork>`
-  - `<await ...>...</await>`
+  - `<ask ...>...</ask>`
   - `<result>...</result>`
 
 **Tag placement:** The single protocol tag may appear **anywhere** in the final
@@ -295,7 +295,7 @@ available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
 - **Payload**: The raw text between the tags is passed as-is (no summarization by
   the orchestrator). The return state's prompt receives it via `{{input}}`.
 
-### `<await next="NEXT.md" ...>prompt</await>`
+### `<ask next="NEXT.md" ...>prompt</ask>`
 
 - **Meaning**: Suspend the agent and request human input. The tag content is the
   human-facing prompt — presented to the human via the CLI, HTTP API, or MCP
@@ -308,44 +308,44 @@ available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
 - **Optional attribute**: `timeout_next="ESCALATE.md"` — state to transition to
   on timeout. If omitted and the timeout elapses, the workflow fails.
 - **Return stack**: Preserved unchanged.
-- **Session behavior**: The LLM session is preserved across the await (like
-  `<goto>`). The agent resumes into the same session that produced the await,
+- **Session behavior**: The LLM session is preserved across the ask (like
+  `<goto>`). The agent resumes into the same session that produced the ask,
   so the LLM has full history when it enters `next`.
-- **Tag content**: The text between `<await>` and `</await>` is the authoritative
+- **Tag content**: The text between `<ask>` and `</ask>` is the authoritative
   human-facing prompt. Text the LLM writes *before* the tag is the reasoning
   trail, visible in the console output but not presented to the human.
 - **Input delivery**: Depends on the launch context:
-  - **CLI with `--on-await=pause`**: Raymond quiesces all agents, writes
+  - **CLI with `--on-ask=pause`**: Raymond quiesces all agents, writes
     structured JSON to stdout, and exits with code 2. Input is delivered via
     `raymond --resume <id> --input "..."`.
   - **Daemon mode**: The pending input is registered and delivered via the HTTP
-    API (`POST /runs/{id}/inputs/{input_id}`) or MCP elicitation.
-- **`cd` attribute**: Not supported on `<await>`.
+    API (`POST /runs/{id}/asks/{ask_id}`) or MCP elicitation.
+- **`cd` attribute**: Not supported on `<ask>`.
 
 **Example:**
 
 ```
-<await next="HANDLE_DECISION.md" timeout="48h" timeout_next="ESCALATE.md">
+<ask next="HANDLE_DECISION.md" timeout="48h" timeout_next="ESCALATE.md">
 I have completed my analysis. Please respond with your decision:
 - "approve" to proceed
 - "reject" to cancel
 - "more info [question]" to request additional analysis
-</await>
+</ask>
 ```
 
 #### File Attachments
 
-`<await>` can also exchange files with the user — uploads from the user, files
+`<ask>` can also exchange files with the user — uploads from the user, files
 the workflow exposes for inspection, or both. The affordance is declared via
 optional attributes on the opening tag and carries through to the daemon's web
-UI and HTTP API. Awaits without any of these attributes behave as text-only
+UI and HTTP API. Asks without any of these attributes behave as text-only
 (current behavior preserved).
 
 The full design rationale lives in
-[input-file-attachments-design.md](input-file-attachments-design.md); the
+[ask-file-attachments-design.md](ask-file-attachments-design.md); the
 attribute reference and surface contract are summarized here.
 
-**Modes.** An await opts into one of three file modes:
+**Modes.** An ask opts into one of three file modes:
 
 - **Slot mode** — declares one or more named upload slots. The user uploads
   exactly one file per slot.
@@ -362,7 +362,7 @@ Display files may be combined with slot or bucket mode. `upload_slots` and
 | Attribute | Mode | Value | Description |
 |-----------|------|-------|-------------|
 | `upload_slots` | slot | `name[:mime\|mime,...](,name...)` | Comma-separated slot list. Per-slot MIME allowlist (separated by `\|`) is optional. |
-| `upload_bucket` | bucket | `"true"` or `"false"` | Switches the await into bucket mode. |
+| `upload_bucket` | bucket | `"true"` or `"false"` | Switches the ask into bucket mode. |
 | `upload_max_count` | bucket | positive integer | Maximum number of files per submission. |
 | `upload_max_size` | bucket | positive integer | Maximum bytes per file. |
 | `upload_max_total_size` | bucket | positive integer | Maximum total bytes across all files in the submission. |
@@ -374,73 +374,73 @@ The bucket-mode caps (`upload_max_count`, `upload_max_size`,
 and display-only inherit the daemon's server-wide upload caps; per-slot MIME
 allowlists ride on `upload_slots` independently.
 
-**Staging behavior.** When the agent enters a file-bearing await, the runtime
-creates `<task folder>/inputs/<input_id>/` and copies each declared display
+**Staging behavior.** When the agent enters a file-bearing ask, the runtime
+creates `<task folder>/asks/<ask_id>/` and copies each declared display
 file into it (under its `:label`, or the source basename if no label is
 given). Display sources are read strictly relative to the task folder; absolute
 paths, `..` segments, and symlinks that escape the task folder are rejected. A
-missing source file is reported as a startup-of-await error rather than a
+missing source file is reported as a startup-of-ask error rather than a
 silent omission. Uploads, when they arrive, land in the same directory.
 
-The `inputs/<input_id>/` segment is part of the runtime-managed layout — the
-workflow author should not write to it directly before the await, and the
-directory is not created until the await is entered. Staging is idempotent
+The `asks/<ask_id>/` segment is part of the runtime-managed layout — the
+workflow author should not write to it directly before the ask, and the
+directory is not created until the ask is entered. Staging is idempotent
 across daemon restarts.
 
-**The `{{input_id}}` template variable.** The state **immediately following**
-an input step receives an additional template substitution, `{{input_id}}`,
+**The `{{ask_id}}` template variable.** The state **immediately following**
+an input step receives an additional template substitution, `{{ask_id}}`,
 bound to the ID of the input that resolved to reach that state. This is the
-only state in which `{{input_id}}` is bound automatically — it is cleared
+only state in which `{{ask_id}}` is bound automatically — it is cleared
 before the next state runs (one transition deep). If a workflow needs the ID
 in a state further along, the author plumbs it forward explicitly through the
 transition `input` attribute (e.g. by writing it to a file in the task folder
 during the immediately-following state, or by passing a structured payload
 that bundles the response with the input id). Most workflows will not need
-this — the post-await state is the natural place to consume uploads.
+this — the post-ask state is the natural place to consume uploads.
 
 **Examples — slot mode:**
 
 ```
-<await next="REVIEW_DOCS.md"
+<ask next="REVIEW_DOCS.md"
        upload_slots="resume.pdf:application/pdf,cover.txt:text/plain">
 Please upload your résumé as `resume.pdf` and a plain-text cover letter as
 `cover.txt`.
-</await>
+</ask>
 ```
 
-The post-await `REVIEW_DOCS.md` reads each slot at its known path:
+The post-ask `REVIEW_DOCS.md` reads each slot at its known path:
 ```
-{{task_folder}}/inputs/{{input_id}}/resume.pdf
-{{task_folder}}/inputs/{{input_id}}/cover.txt
+{{task_folder}}/asks/{{ask_id}}/resume.pdf
+{{task_folder}}/asks/{{ask_id}}/cover.txt
 ```
 
 **Example — bucket mode:**
 
 ```
-<await next="PROCESS_IMAGES.md"
+<ask next="PROCESS_IMAGES.md"
        upload_bucket="true"
        upload_max_count="5"
        upload_max_size="10485760"
        upload_max_total_size="52428800"
        upload_mime="image/png,image/jpeg">
 Attach up to 5 PNG or JPEG images (≤10 MiB each, ≤50 MiB total).
-</await>
+</ask>
 ```
 
-The post-await state discovers the actual filenames by listing
-`{{task_folder}}/inputs/{{input_id}}/`.
+The post-ask state discovers the actual filenames by listing
+`{{task_folder}}/asks/{{ask_id}}/`.
 
 **Example — display only:**
 
 ```
-<await next="HANDLE_REVIEW.md"
+<ask next="HANDLE_REVIEW.md"
        display_files="out/report.pdf:Final Report,out/chart.png">
 Please review the attached report and chart and respond with your decision.
-</await>
+</ask>
 ```
 
 The runtime stages `out/report.pdf` (shown as `Final Report`) and `out/chart.png`
-(shown by its basename) into the input subdirectory at await entry.
+(shown by its basename) into the input subdirectory at ask entry.
 
 ## Working Directory (`cd` Attribute)
 
@@ -458,7 +458,7 @@ directory where `raymond` was launched). The `cd` attribute on `<fork>` and
 - `<call>` — branches from the caller's session context, which is tied to
   the original directory
 - `<function>` — not supported (could be added in future if needed)
-- `<await>` — suspends the agent; the directory is irrelevant during suspension
+- `<ask>` — suspends the agent; the directory is irrelevant during suspension
 
 **Behavior:**
 - The `cd` value is always resolved to an absolute, normalized path and stored
@@ -497,7 +497,7 @@ passed as a template variable or fork attribute.
 
 ## The `input` Attribute
 
-All transition tags except `<result>` and `<await>` support an optional `input` attribute
+All transition tags except `<result>` and `<ask>` support an optional `input` attribute
 that injects a string as `{{input}}` into the target state's prompt:
 
 ```xml
@@ -604,7 +604,7 @@ allowed_transitions:
   - tag: fork
     target: WORKER.md
     next: CONTINUE.md
-  - tag: await
+  - tag: ask
     next: HANDLE_RESPONSE.md
     timeout: "48h"
     timeout_next: ESCALATE.md

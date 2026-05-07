@@ -27,7 +27,7 @@ const (
 	RunStatusCompleted     = "completed"
 	RunStatusFailed        = "failed"
 	RunStatusCancelled     = "cancelled"
-	RunStatusAwaitingInput = "awaiting_input"
+	RunStatusAsking = "asking"
 )
 
 // AgentInfo holds a snapshot of an agent's state within a run.
@@ -64,8 +64,8 @@ const subscriberHeadroom = 1024
 // match these via errors.Is rather than inspecting the error message text.
 var (
 	ErrRunNotFound           = errors.New("run not found")
-	ErrPendingInputNotFound  = errors.New("pending input not found")
-	ErrPendingInputMismatch  = errors.New("pending input does not belong to run")
+	ErrPendingAskNotFound  = errors.New("pending input not found")
+	ErrPendingAskMismatch  = errors.New("pending input does not belong to run")
 )
 
 // runEntry is the internal bookkeeping for a tracked run.
@@ -76,7 +76,7 @@ type runEntry struct {
 	doneCh       chan struct{}                      // closed when the run reaches a terminal state
 	eventBus     *bus.Bus                           // set by ObserverSetup; nil for recovered runs
 	busReady     chan struct{}                      // closed when eventBus is set
-	awaitInputCh chan orchestrator.AwaitInput // delivers responses to pending awaits
+	askInputCh chan orchestrator.AskInput // delivers responses to pending asks
 
 	// logMu protects eventLog and subscribers. Held briefly when recording a
 	// new event (append to eventLog + fan-out to subscribers) and when adding
@@ -107,7 +107,7 @@ type RunManager struct {
 	cwd             string // daemon working directory (fallback for workDir)
 	orchestrator    Orchestrator
 	pendingRegistry *PendingRegistry
-	awaitNotify     func(runID, inputID, prompt string) // optional, called when an agent enters <await>
+	askNotify     func(runID, askID, prompt string) // optional, called when an agent enters <ask>
 }
 
 // NewRunManager creates a RunManager and recovers any in-progress workflows
@@ -176,7 +176,7 @@ func (rm *RunManager) LaunchRun(
 
 	lp := &wfstate.LaunchParams{
 		Model:   model,
-		OnAwait: "pause", // daemon always allows await
+		OnAsk: "pause", // daemon always allows ask
 	}
 
 	ws := wfstate.CreateInitialState(runID, entry.ScopeDir, initialState, budget, inputPtr, "", lp)
@@ -214,7 +214,7 @@ func (rm *RunManager) LaunchRun(
 		StateDir:     stateDir,
 		DefaultModel: model,
 		Quiet:        true,
-		OnAwait:      "pause",
+		OnAsk:      "pause",
 		// Match the CLI's default behavior so raw Claude stream output
 		// lands on disk (.raymond/debug/<run_id>/*.jsonl). Without this,
 		// daemon-launched runs produce no artifact for diagnosing what
@@ -232,17 +232,17 @@ func (rm *RunManager) LaunchRun(
 	}
 
 	// When a pending registry is configured, enable daemon mode so the
-	// orchestrator calls AwaitCallback instead of quiescing on <await>.
+	// orchestrator calls AskCallback instead of quiescing on <ask>.
 	if rm.pendingRegistry != nil {
-		awaitInputCh := make(chan orchestrator.AwaitInput, 16)
-		re.awaitInputCh = awaitInputCh
+		askInputCh := make(chan orchestrator.AskInput, 16)
+		re.askInputCh = askInputCh
 		opts.DaemonMode = true
-		opts.AwaitInputCh = awaitInputCh
-		opts.AwaitCallback = func(agentID, inputID, prompt, nextState string, affordance *parsing.FileAffordance, stagedFiles []wfstate.FileRecord) {
-			pi := PendingInput{
+		opts.AskInputCh = askInputCh
+		opts.AskCallback = func(agentID, askID, prompt, nextState string, affordance *parsing.FileAffordance, stagedFiles []wfstate.FileRecord) {
+			pi := PendingAsk{
 				RunID:          runID,
 				AgentID:        agentID,
-				InputID:        inputID,
+				AskID:        askID,
 				WorkflowID:     entry.ID,
 				Prompt:         prompt,
 				NextState:      nextState,
@@ -253,8 +253,8 @@ func (rm *RunManager) LaunchRun(
 			if err := rm.pendingRegistry.Register(pi); err != nil {
 				return // registration failed; skip notification
 			}
-			if rm.awaitNotify != nil {
-				rm.awaitNotify(runID, inputID, prompt)
+			if rm.askNotify != nil {
+				rm.askNotify(runID, askID, prompt)
 			}
 		}
 	}
@@ -279,7 +279,7 @@ func (rm *RunManager) runOrchestrator(ctx context.Context, runID string, re *run
 
 	// If already in a terminal state (set by event handlers), keep it.
 	switch re.info.Status {
-	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled, RunStatusAwaitingInput:
+	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled, RunStatusAsking:
 		return
 	}
 
@@ -314,9 +314,9 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 		if len(re.info.Agents) > 0 {
 			re.info.CurrentState = re.info.Agents[0].CurrentState
 		}
-		// An agent that just entered a new state has cleared its await
+		// An agent that just entered a new state has cleared its ask
 		// status; recompute the run-level status so the UI moves the run
-		// out of "awaiting_input" when the last awaiting agent resumes.
+		// out of "asking" when the last asking agent resumes.
 		recomputeRunStatus(&re.info)
 	})
 
@@ -366,19 +366,19 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 		}
 	})
 
-	// Track await start (agent is waiting for human input).
-	bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+	// Track ask start (agent is waiting for human input).
+	bus.Subscribe(b, func(e events.AgentAskStarted) {
 		re.mu.Lock()
 		defer re.mu.Unlock()
 		for i := range re.info.Agents {
 			if re.info.Agents[i].ID == e.AgentID {
-				re.info.Agents[i].Status = wfstate.AgentStatusAwaiting
+				re.info.Agents[i].Status = wfstate.AgentStatusAsking
 				break
 			}
 		}
-		// Daemon mode doesn't emit WorkflowPaused for a single await
+		// Daemon mode doesn't emit WorkflowPaused for a single ask
 		// (siblings keep running), so the run-level status won't flip to
-		// "awaiting_input" via that path. Recompute here so the UI polls
+		// "asking" via that path. Recompute here so the UI polls
 		// the pending-inputs endpoint and surfaces an input card.
 		recomputeRunStatus(&re.info)
 	})
@@ -392,17 +392,17 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 		re.info.ElapsedDuration = time.Since(re.info.StartedAt)
 	})
 
-	// Workflow paused: check if it's awaiting input or just paused.
+	// Workflow paused: check if it's pending an ask or just paused.
 	bus.Subscribe(b, func(e events.WorkflowPaused) {
 		re.mu.Lock()
 		defer re.mu.Unlock()
 		re.info.CostUSD = e.TotalCostUSD
 		re.info.ElapsedDuration = time.Since(re.info.StartedAt)
 
-		// If any agent is in awaiting status, the run is awaiting input.
+		// If any agent is in asking status, the run is pending an ask.
 		for _, a := range re.info.Agents {
-			if a.Status == wfstate.AgentStatusAwaiting {
-				re.info.Status = RunStatusAwaitingInput
+			if a.Status == wfstate.AgentStatusAsking {
+				re.info.Status = RunStatusAsking
 				return
 			}
 		}
@@ -412,8 +412,8 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 }
 
 // recomputeRunStatus flips a non-terminal run between "running" and
-// "awaiting_input" based on whether any agent currently has
-// AgentStatusAwaiting. Terminal statuses (completed, failed, cancelled)
+// "asking" based on whether any agent currently has
+// AgentStatusAsking. Terminal statuses (completed, failed, cancelled)
 // are left alone — once a run is done it does not un-terminate just
 // because an event handler runs late.
 //
@@ -424,8 +424,8 @@ func recomputeRunStatus(info *RunInfo) {
 		return
 	}
 	for _, a := range info.Agents {
-		if a.Status == wfstate.AgentStatusAwaiting {
-			info.Status = RunStatusAwaitingInput
+		if a.Status == wfstate.AgentStatusAsking {
+			info.Status = RunStatusAsking
 			return
 		}
 	}
@@ -522,7 +522,7 @@ func (rm *RunManager) CancelRun(runID string) error {
 
 	re.mu.Lock()
 	switch re.info.Status {
-	case RunStatusRunning, RunStatusAwaitingInput:
+	case RunStatusRunning, RunStatusAsking:
 		re.info.Status = RunStatusCancelled
 		re.info.ElapsedDuration = time.Since(re.info.StartedAt)
 	}
@@ -532,13 +532,13 @@ func (rm *RunManager) CancelRun(runID string) error {
 }
 
 // ErrRunActive is returned by DeleteRun when the run is still running or
-// awaiting input. The caller must cancel the run before it can be deleted.
+// pending an ask. The caller must cancel the run before it can be deleted.
 var ErrRunActive = errors.New("run is active")
 
 // DeleteRun removes a terminal run from tracking and deletes its on-disk
 // artifacts: the state file (if still present) and the per-run tasks
 // directory. Returns ErrRunNotFound if the run is unknown and ErrRunActive
-// if the run is still running or awaiting input.
+// if the run is still running or pending an ask.
 //
 // A missing tasks directory is not an error (RemoveAll is idempotent), but
 // a RemoveAll failure (e.g. EACCES) is surfaced so the caller can tell the
@@ -559,7 +559,7 @@ func (rm *RunManager) DeleteRun(runID string) error {
 	re.mu.Unlock()
 
 	switch status {
-	case RunStatusRunning, RunStatusAwaitingInput:
+	case RunStatusRunning, RunStatusAsking:
 		rm.mu.Unlock()
 		return fmt.Errorf("%w: %q (status: %s); cancel it first", ErrRunActive, runID, status)
 	}
@@ -727,8 +727,8 @@ func classifyRecoveredStatus(agents []wfstate.AgentState) string {
 	}
 
 	for _, a := range agents {
-		if a.Status == wfstate.AgentStatusAwaiting {
-			return RunStatusAwaitingInput
+		if a.Status == wfstate.AgentStatusAsking {
+			return RunStatusAsking
 		}
 	}
 
@@ -777,8 +777,8 @@ func (re *runEntry) startRecorder(b *bus.Bus) {
 		bus.Subscribe(b, func(e events.AgentSpawned) { record(e) }),
 		bus.Subscribe(b, func(e events.AgentTerminated) { record(e) }),
 		bus.Subscribe(b, func(e events.AgentPaused) { record(e) }),
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) { record(e) }),
-		bus.Subscribe(b, func(e events.AgentAwaitResumed) { record(e) }),
+		bus.Subscribe(b, func(e events.AgentAskStarted) { record(e) }),
+		bus.Subscribe(b, func(e events.AgentAskResumed) { record(e) }),
 		bus.Subscribe(b, func(e events.ClaudeStreamOutput) { record(e) }),
 		bus.Subscribe(b, func(e events.ClaudeInvocationStarted) { record(e) }),
 		bus.Subscribe(b, func(e events.ScriptOutput) { record(e) }),
@@ -866,17 +866,17 @@ func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-c
 }
 
 // LookupResolvedInput reads the workflow state for runID and returns the
-// ResolvedInput record matching inputID, if any. The state file is the source
+// ResolvedInput record matching askID, if any. The state file is the source
 // of truth after a pending input has been claimed and removed from the
 // pending registry. Returns false when the state cannot be read or no such
 // resolved input exists.
-func (rm *RunManager) LookupResolvedInput(runID, inputID string) (*wfstate.ResolvedInput, bool) {
+func (rm *RunManager) LookupResolvedInput(runID, askID string) (*wfstate.ResolvedInput, bool) {
 	ws, err := wfstate.ReadState(runID, rm.stateDir)
 	if err != nil {
 		return nil, false
 	}
 	for i := range ws.ResolvedInputs {
-		if ws.ResolvedInputs[i].InputID == inputID {
+		if ws.ResolvedInputs[i].AskID == askID {
 			ri := ws.ResolvedInputs[i]
 			return &ri, true
 		}
@@ -899,47 +899,47 @@ func (rm *RunManager) ListResolvedInputs(runID string) ([]wfstate.ResolvedInput,
 }
 
 // SetPendingRegistry configures the pending input registry. When set, runs
-// are launched in daemon mode with an AwaitCallback that registers pending
+// are launched in daemon mode with an AskCallback that registers pending
 // inputs automatically.
 func (rm *RunManager) SetPendingRegistry(pr *PendingRegistry) {
 	rm.pendingRegistry = pr
 }
 
-// SetAwaitNotifier sets an optional callback invoked when an agent enters
-// <await> in daemon mode. The callback receives (runID, inputID, prompt).
+// SetAskNotifier sets an optional callback invoked when an agent enters
+// <ask> in daemon mode. The callback receives (runID, askID, prompt).
 // It is called from the orchestrator's main goroutine and must not block.
-func (rm *RunManager) SetAwaitNotifier(fn func(runID, inputID, prompt string)) {
-	rm.awaitNotify = fn
+func (rm *RunManager) SetAskNotifier(fn func(runID, askID, prompt string)) {
+	rm.askNotify = fn
 }
 
-// DeliverInput delivers a response to a pending await input. If runID is
+// DeliverInput delivers a response to a pending ask input. If runID is
 // non-empty, the input must belong to that run. uploadedFiles carries
 // metadata for any files the caller attached to the response; nil is
 // equivalent to an empty slice.
 //
 // It uses GetAndRemove to atomically claim the input, preventing duplicate
 // delivery when multiple callers race on the same input ID.
-func (rm *RunManager) DeliverInput(runID, inputID, response string, uploadedFiles []wfstate.FileRecord) error {
+func (rm *RunManager) DeliverInput(runID, askID, response string, uploadedFiles []wfstate.FileRecord) error {
 	if rm.pendingRegistry == nil {
 		return fmt.Errorf("pending registry not configured")
 	}
 
 	// Peek first to validate run ownership before the destructive remove.
 	if runID != "" {
-		pi, ok := rm.pendingRegistry.Get(inputID)
+		pi, ok := rm.pendingRegistry.Get(askID)
 		if !ok {
-			return fmt.Errorf("%w: %q", ErrPendingInputNotFound, inputID)
+			return fmt.Errorf("%w: %q", ErrPendingAskNotFound, askID)
 		}
 		if pi.RunID != runID {
 			return fmt.Errorf("%w: input %q belongs to run %q, not %q",
-				ErrPendingInputMismatch, inputID, pi.RunID, runID)
+				ErrPendingAskMismatch, askID, pi.RunID, runID)
 		}
 	}
 
 	// Atomically claim the input so no other caller can deliver it.
-	pi, ok := rm.pendingRegistry.GetAndRemove(inputID)
+	pi, ok := rm.pendingRegistry.GetAndRemove(askID)
 	if !ok {
-		return fmt.Errorf("%w: %q", ErrPendingInputNotFound, inputID)
+		return fmt.Errorf("%w: %q", ErrPendingAskNotFound, askID)
 	}
 
 	rm.mu.RLock()
@@ -949,14 +949,14 @@ func (rm *RunManager) DeliverInput(runID, inputID, response string, uploadedFile
 		return fmt.Errorf("%w: %q", ErrRunNotFound, pi.RunID)
 	}
 
-	if re.awaitInputCh == nil {
-		return fmt.Errorf("run %q has no active await input channel", pi.RunID)
+	if re.askInputCh == nil {
+		return fmt.Errorf("run %q has no active ask input channel", pi.RunID)
 	}
 
 	select {
-	case re.awaitInputCh <- orchestrator.AwaitInput{InputID: inputID, Response: response, UploadedFiles: uploadedFiles}:
+	case re.askInputCh <- orchestrator.AskInput{AskID: askID, Response: response, UploadedFiles: uploadedFiles}:
 		return nil
 	default:
-		return fmt.Errorf("await input channel for run %q is full", pi.RunID)
+		return fmt.Errorf("ask input channel for run %q is full", pi.RunID)
 	}
 }

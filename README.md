@@ -17,10 +17,10 @@ themselves.
   markdown prompts and shell scripts that reference each other via transition
   tags
 - **Context control** — Seven transition tags (`goto`, `reset`, `call`,
-  `function`, `fork`, `await`, `result`) give precise control over what
+  `function`, `fork`, `ask`, `result`) give precise control over what
   context carries forward, gets discarded, branches, pauses for input, or
   terminates the current state
-- **Human-in-the-loop** — The `<await>` transition suspends an agent and
+- **Human-in-the-loop** — The `<ask>` transition suspends an agent and
   presents a prompt to a human; the workflow resumes when input arrives
 - **Shell script states** — Deterministic operations (polling, builds, data
   processing) run as shell scripts with zero token cost
@@ -62,7 +62,7 @@ raymond workflows/test_cases/START.md --budget 5.0 --model sonnet
 raymond --resume workflow_2026-01-15_14-30-22
 
 # Run a workflow with human-in-the-loop support
-raymond workflow/ --on-await=pause
+raymond workflow/ --on-ask=pause
 # If it exits with code 2, deliver input and resume:
 raymond --resume <run_id> --input "approved"
 

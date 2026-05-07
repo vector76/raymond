@@ -54,34 +54,34 @@ var executorFactory func(string) executors.StateExecutor = executors.GetExecutor
 // Overridable in tests to subscribe to events before the workflow runs.
 var busHook func(*bus.Bus)
 
-// AwaitInput carries a response to a pending await from the daemon layer.
-type AwaitInput struct {
-	InputID       string
+// AskInput carries a response to a pending ask from the daemon layer.
+type AskInput struct {
+	AskID         string
 	Response      string
 	UploadedFiles []wfstate.FileRecord
 }
 
-// AwaitingInputError is returned from RunAllAgents when the quiesce point is
-// reached with OnAwait="pause". It carries structured data describing the
-// active await so the CLI can emit JSON and exit with code 2.
-type AwaitingInputError struct {
-	Status       string                `json:"status"`
-	RunID        string                `json:"run_id"`
-	Workflow     string                `json:"workflow"`
-	Awaiting     AwaitingInputDetail   `json:"awaiting"`
-	PendingCount int                   `json:"pending_count"`
-	Resume       string                `json:"resume"`
+// PendingAskError is returned from RunAllAgents when the quiesce point is
+// reached with OnAsk="pause". It carries structured data describing the
+// active ask so the CLI can emit JSON and exit with code 2.
+type PendingAskError struct {
+	Status       string           `json:"status"`
+	RunID        string           `json:"run_id"`
+	Workflow     string           `json:"workflow"`
+	Asking       PendingAskDetail `json:"asking"`
+	PendingCount int              `json:"pending_count"`
+	Resume       string           `json:"resume"`
 }
 
-// AwaitingInputDetail describes the active await within an AwaitingInputError.
-type AwaitingInputDetail struct {
-	InputID string `json:"input_id"`
+// PendingAskDetail describes the active ask within a PendingAskError.
+type PendingAskDetail struct {
+	AskID   string `json:"ask_id"`
 	AgentID string `json:"agent_id"`
 	Prompt  string `json:"prompt"`
 }
 
-func (e *AwaitingInputError) Error() string {
-	return fmt.Sprintf("workflow %q is awaiting input (input_id=%s)", e.RunID, e.Awaiting.InputID)
+func (e *PendingAskError) Error() string {
+	return fmt.Sprintf("workflow %q has a pending ask (ask_id=%s)", e.RunID, e.Asking.AskID)
 }
 
 // RunOptions configures a RunAllAgents invocation.
@@ -125,33 +125,33 @@ type RunOptions struct {
 	// If nil, a registry.Registry rooted at the state directory's parent is used.
 	Fetcher specifier.Fetcher
 
-	// OnAwait controls behaviour when a workflow declares or produces <await>
-	// transitions. "pause" allows awaiting; "reject" (default when empty)
+	// OnAsk controls behaviour when a workflow declares or produces <ask>
+	// transitions. "pause" allows asking; "reject" (default when empty)
 	// rejects at launch time and at runtime.
-	OnAwait string
+	OnAsk string
 
-	// DaemonMode changes await behaviour: when true the orchestrator does NOT
-	// quiesce sibling agents when one hits <await>. Instead it calls
-	// AwaitCallback and keeps running. The awaiting agent stays idle until
-	// input arrives on AwaitInputCh.
+	// DaemonMode changes ask behaviour: when true the orchestrator does NOT
+	// quiesce sibling agents when one hits <ask>. Instead it calls
+	// AskCallback and keeps running. The asking agent stays idle until
+	// input arrives on AskInputCh.
 	DaemonMode bool
 
-	// AwaitCallback is called (from the main goroutine) when an agent enters
-	// <await> in daemon mode. It notifies the daemon layer of the new await,
-	// passing the file affordance descriptor (nil for text-only awaits) and
+	// AskCallback is called (from the main goroutine) when an agent enters
+	// <ask> in daemon mode. It notifies the daemon layer of the new ask,
+	// passing the file affordance descriptor (nil for text-only asks) and
 	// any files staged for the per-input directory so the daemon can record
 	// them on the pending input.
-	AwaitCallback func(agentID, inputID, prompt, nextState string, affordance *parsing.FileAffordance, stagedFiles []wfstate.FileRecord)
+	AskCallback func(agentID, askID, prompt, nextState string, affordance *parsing.FileAffordance, stagedFiles []wfstate.FileRecord)
 
-	// AwaitInputCh delivers responses to pending awaits in daemon mode. The
+	// AskInputCh delivers responses to pending asks in daemon mode. The
 	// orchestrator reads from this channel in its main select loop and
 	// resumes the matching agent.
-	AwaitInputCh <-chan AwaitInput
+	AskInputCh <-chan AskInput
 
-	// AwaitInput is the --input value provided on --resume. When non-empty
-	// and agents are in the awaiting state, this value is delivered to the
-	// active await agent before the main loop starts.
-	AwaitInput string
+	// AskInput is the --input value provided on --resume. When non-empty
+	// and agents are in the asking state, this value is delivered to the
+	// active ask agent before the main loop starts.
+	AskInput string
 
 	// ObserverSetup, if non-nil, is called with the Bus immediately after it
 	// is created (before WorkflowStarted is emitted). Use it to register
@@ -194,16 +194,16 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		resetPausedAgents(ws)
 	}
 
-	// Launch-time check: if OnAwait is "reject" (or empty, which defaults to
+	// Launch-time check: if OnAsk is "reject" (or empty, which defaults to
 	// reject), determine whether the workflow requires human input and reject
 	// early with a helpful error. Skipped when DaemonMode is true because
-	// daemon mode handles awaits natively.
+	// daemon mode handles asks natively.
 	//
 	// When the scope has a workflow manifest, use ResolveRequiresHumanInput
 	// (which honours the manifest's requires_human_input field and follows
 	// cross-workflow references transitively). Otherwise fall back to the
 	// simple frontmatter scan.
-	if opts.OnAwait != "pause" && !opts.DaemonMode {
+	if opts.OnAsk != "pause" && !opts.DaemonMode {
 		manifestUsed := false
 		if manifestPath, ok := manifest.FindManifest(ws.ScopeDir); ok {
 			m, parseErr := manifest.ParseManifest(manifestPath)
@@ -218,7 +218,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				if requiresHuman {
 					return fmt.Errorf(
 						"workflow %q requires human input. "+
-							"Use --on-await=pause to allow awaiting, or use `raymond serve` for interactive workflows",
+							"Use --on-ask=pause to allow asking, or use `raymond serve` for interactive workflows",
 						workflowID,
 					)
 				}
@@ -228,15 +228,15 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			// through to the frontmatter scan below.
 		}
 		if !manifestUsed {
-			awaitStates, scanErr := scanForAwaitTransitions(ws.ScopeDir)
+			askStates, scanErr := scanForAskTransitions(ws.ScopeDir)
 			if scanErr != nil {
-				return fmt.Errorf("scan for await transitions: %w", scanErr)
+				return fmt.Errorf("scan for ask transitions: %w", scanErr)
 			}
-			if len(awaitStates) > 0 {
+			if len(askStates) > 0 {
 				return fmt.Errorf(
-					"workflow %q declares <await> transitions in state(s): %s. "+
-						"Use --on-await=pause to allow awaiting, or use `raymond serve` for interactive workflows",
-					workflowID, strings.Join(awaitStates, ", "),
+					"workflow %q declares <ask> transitions in state(s): %s. "+
+						"Use --on-ask=pause to allow asking, or use `raymond serve` for interactive workflows",
+					workflowID, strings.Join(askStates, ", "),
 				)
 			}
 		}
@@ -300,78 +300,78 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Resume-from-await: when resuming a paused workflow, detect agents in
-	// the awaiting state and either deliver input or re-present the prompt.
-	if hasAwaitingAgents(ws.Agents) {
-		if opts.AwaitInput == "" {
-			// No input provided — re-present the active await's prompt so
+	// Resume-from-ask: when resuming a paused workflow, detect agents in
+	// the asking state and either deliver input or re-present the prompt.
+	if hasAskingAgents(ws.Agents) {
+		if opts.AskInput == "" {
+			// No input provided — re-present the active ask's prompt so
 			// the caller can see what's pending.
-			activeAgent, pendingCount := firstAwaitingAndCount(ws.Agents)
-			return &AwaitingInputError{
-				Status:   "awaiting_input",
+			activeAgent, pendingCount := firstAskingAndCount(ws.Agents)
+			return &PendingAskError{
+				Status:   "asking",
 				RunID:    workflowID,
 				Workflow: filepath.Base(ws.ScopeDir),
-				Awaiting: AwaitingInputDetail{
-					InputID: activeAgent.AwaitInputID,
+				Asking: PendingAskDetail{
+					AskID: activeAgent.AskID,
 					AgentID: activeAgent.ID,
-					Prompt:  activeAgent.AwaitPrompt,
+					Prompt:  activeAgent.AskPrompt,
 				},
 				PendingCount: pendingCount - 1,
 				Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
 			}
 		}
 
-		// Deliver input to the first awaiting agent.
-		activeIdx := firstAwaitingIndex(ws.Agents)
+		// Deliver input to the first asking agent.
+		activeIdx := firstAskingIndex(ws.Agents)
 		a := &ws.Agents[activeIdx]
-		awaitInput := opts.AwaitInput
-		inputID := a.AwaitInputID
-		a.PendingResult = &awaitInput
-		a.PendingInputID = inputID
-		a.CurrentState = a.AwaitNextState
-		a.AwaitPrompt = ""
-		a.AwaitNextState = ""
-		a.AwaitTimeout = ""
-		a.AwaitTimeoutNext = ""
-		a.AwaitInputID = ""
+		askInput := opts.AskInput
+		askID := a.AskID
+		a.PendingResult = &askInput
+		a.PendingAskID = askID
+		a.CurrentState = a.AskNextState
+		a.AskPrompt = ""
+		a.AskNextState = ""
+		a.AskTimeout = ""
+		a.AskTimeoutNext = ""
+		a.AskID = ""
 		a.Status = ""
 
-		b.Emit(events.AgentAwaitResumed{
+		b.Emit(events.AgentAskResumed{
 			AgentID:   a.ID,
-			InputID:   inputID,
+			AskID:   askID,
 			Timestamp: time.Now(),
 		})
 
-		// Check for remaining awaiting agents (pre-await queue).
-		if nextAgent, remaining := firstAwaitingAndCount(ws.Agents); nextAgent != nil {
-			// More awaiting agents remain. Persist the delivery and return
+		// Check for remaining asking agents (pre-ask queue).
+		if nextAgent, remaining := firstAskingAndCount(ws.Agents); nextAgent != nil {
+			// More asking agents remain. Persist the delivery and return
 			// the next agent's prompt — no agents proceed yet.
 			if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
 				return fmt.Errorf("write state: %w", err)
 			}
-			return &AwaitingInputError{
-				Status:   "awaiting_input",
+			return &PendingAskError{
+				Status:   "asking",
 				RunID:    workflowID,
 				Workflow: filepath.Base(ws.ScopeDir),
-				Awaiting: AwaitingInputDetail{
-					InputID: nextAgent.AwaitInputID,
+				Asking: PendingAskDetail{
+					AskID: nextAgent.AskID,
 					AgentID: nextAgent.ID,
-					Prompt:  nextAgent.AwaitPrompt,
+					Prompt:  nextAgent.AskPrompt,
 				},
 				PendingCount: remaining - 1,
 				Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
 			}
 		}
 
-		// No more awaiting agents — persist the delivery and let all agents
+		// No more asking agents — persist the delivery and let all agents
 		// proceed together in the normal main loop below.
 		if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
 			return fmt.Errorf("write state: %w", err)
 		}
-	} else if opts.AwaitInput != "" {
+	} else if opts.AskInput != "" {
 		return fmt.Errorf(
-			"no agents are awaiting input; " +
-				"the --input flag on --resume is only valid when a workflow is paused at an <await> point",
+			"no agents are pending an ask; " +
+				"the --input flag on --resume is only valid when a workflow is paused at an <ask> point",
 		)
 	}
 
@@ -382,17 +382,17 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// Only accessed from the main goroutine.
 	running := make(map[string]bool)
 
-	// Quiesce state: when an agent hits <await> and OnAwait == "pause",
+	// Quiesce state: when an agent hits <ask> and OnAsk == "pause",
 	// pausing prevents launching new agent goroutines so the system can
 	// reach a clean quiesce point.
 	pausing := false
 
-	// Resolved once: the channel for daemon-mode await input delivery.
+	// Resolved once: the channel for daemon-mode ask input delivery.
 	// nil when not in daemon mode (nil channels block forever in select,
 	// effectively disabling the case).
-	daemonInputCh := awaitInputCh(opts)
-	activeAwait := ""
-	var preAwaitQueue []string
+	daemonInputCh := askInputCh(opts)
+	activeAsk := ""
+	var preAskQueue []string
 
 	// launch starts an executor goroutine for the given agent. It takes a
 	// snapshot of the mutable workflow fields needed by the executor (to avoid
@@ -442,7 +442,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// launchActive launches goroutines for all active agents that don't already
 	// have one running. Called after every state change to ensure all active
 	// agents (including newly spawned workers) are running. Agents with any
-	// non-empty status (paused, awaiting, failed) are skipped.
+	// non-empty status (paused, asking, failed) are skipped.
 	launchActive := func() error {
 		if err := initTaskFolders(ws); err != nil {
 			return err
@@ -476,17 +476,17 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				return nil
 			}
 
-			// Daemon mode: if agents are awaiting input, don't exit.
+			// Daemon mode: if agents are pending an ask, don't exit.
 			// Fall through to the select loop which will read from
-			// AwaitInputCh and resume agents as input arrives.
-			if opts.DaemonMode && hasAwaitingAgents(ws.Agents) {
+			// AskInputCh and resume agents as input arrives.
+			if opts.DaemonMode && hasAskingAgents(ws.Agents) {
 				// fall through to select
-			} else if pausing && opts.OnAwait == "pause" {
+			} else if pausing && opts.OnAsk == "pause" {
 				// Quiesce point: all goroutines have drained while pausing was
-				// in effect (at least one agent hit <await>). The remaining
-				// agents are either awaiting or held at their next state
+				// in effect (at least one agent hit <ask>). The remaining
+				// agents are either asking or held at their next state
 				// boundary. Write state and exit so the caller can serve the
-				// await or resume later.
+				// ask or resume later.
 				b.Emit(events.WorkflowPaused{
 					WorkflowID:       workflowID,
 					TotalCostUSD:     ws.TotalCostUSD,
@@ -497,33 +497,33 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					return err
 				}
 
-				// Find the active awaiting agent to populate the structured output.
+				// Find the active asking agent to populate the structured output.
 				var activeAgent *wfstate.AgentState
-				if activeAwait != "" {
-					if idx := findAgentByID(ws.Agents, activeAwait); idx >= 0 {
+				if activeAsk != "" {
+					if idx := findAgentByID(ws.Agents, activeAsk); idx >= 0 {
 						activeAgent = &ws.Agents[idx]
 					}
 				}
 				if activeAgent == nil {
-					// Fallback: find the first awaiting agent.
+					// Fallback: find the first asking agent.
 					for i := range ws.Agents {
-						if ws.Agents[i].Status == wfstate.AgentStatusAwaiting {
+						if ws.Agents[i].Status == wfstate.AgentStatusAsking {
 							activeAgent = &ws.Agents[i]
 							break
 						}
 					}
 				}
 				if activeAgent != nil {
-					return &AwaitingInputError{
-						Status:   "awaiting_input",
+					return &PendingAskError{
+						Status:   "asking",
 						RunID:    workflowID,
 						Workflow: filepath.Base(ws.ScopeDir),
-						Awaiting: AwaitingInputDetail{
-							InputID: activeAgent.AwaitInputID,
+						Asking: PendingAskDetail{
+							AskID: activeAgent.AskID,
 							AgentID: activeAgent.ID,
-							Prompt:  activeAgent.AwaitPrompt,
+							Prompt:  activeAgent.AskPrompt,
 						},
-						PendingCount: len(preAwaitQueue),
+						PendingCount: len(preAskQueue),
 						Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
 					}
 				}
@@ -575,46 +575,46 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			}
 		}
 
-		// Wait for the next goroutine result or daemon-mode await input.
+		// Wait for the next goroutine result or daemon-mode ask input.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 
 		case input := <-daemonInputCh:
-			idx := findAwaitingAgent(ws.Agents, input.InputID)
+			idx := findAskingAgent(ws.Agents, input.AskID)
 			if idx < 0 {
-				continue // unknown InputID; ignore
+				continue // unknown AskID; ignore
 			}
 			a := &ws.Agents[idx]
 			pr := input.Response
 			a.PendingResult = &pr
-			a.PendingInputID = input.InputID
+			a.PendingAskID = input.AskID
 
 			ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-				InputID:       input.InputID,
+				AskID:       input.AskID,
 				AgentID:       a.ID,
-				Prompt:        a.AwaitPrompt,
-				NextState:     a.AwaitNextState,
+				Prompt:        a.AskPrompt,
+				NextState:     a.AskNextState,
 				ResponseText:  input.Response,
-				StagedFiles:   a.AwaitStagedFiles,
+				StagedFiles:   a.AskStagedFiles,
 				UploadedFiles: input.UploadedFiles,
-				EnteredAt:     a.AwaitEnteredAt,
+				EnteredAt:     a.AskEnteredAt,
 				ResolvedAt:    time.Now(),
 			})
 
-			a.CurrentState = a.AwaitNextState
+			a.CurrentState = a.AskNextState
 			a.Status = ""
-			a.AwaitPrompt = ""
-			a.AwaitNextState = ""
-			a.AwaitTimeout = ""
-			a.AwaitTimeoutNext = ""
-			a.AwaitInputID = ""
-			a.AwaitFileAffordance = nil
-			a.AwaitStagedFiles = nil
-			a.AwaitEnteredAt = time.Time{}
-			b.Emit(events.AgentAwaitResumed{
+			a.AskPrompt = ""
+			a.AskNextState = ""
+			a.AskTimeout = ""
+			a.AskTimeoutNext = ""
+			a.AskID = ""
+			a.AskFileAffordance = nil
+			a.AskStagedFiles = nil
+			a.AskEnteredAt = time.Time{}
+			b.Emit(events.AgentAskResumed{
 				AgentID:   a.ID,
-				InputID:   input.InputID,
+				AskID:   input.AskID,
 				Timestamp: time.Now(),
 			})
 			if err := launchActive(); err != nil {
@@ -680,115 +680,115 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				// append worker if present.
 				applyResult(tr, agentIdx, agentBefore.CurrentState, ws, b)
 
-				// Await handling: detect when an agent enters awaiting
+				// Ask handling: detect when an agent enters asking
 				// status and apply the mode-specific strategy.
-				if idx := findAgentByID(ws.Agents, agentBefore.ID); idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAwaiting {
-					// Stamp the await-entry timestamp for every await
+				if idx := findAgentByID(ws.Agents, agentBefore.ID); idx >= 0 && ws.Agents[idx].Status == wfstate.AgentStatusAsking {
+					// Stamp the ask-entry timestamp for every ask
 					// (text-only or file-bearing) so the eventual
 					// resolved-input record carries a true entry time.
-					ws.Agents[idx].AwaitEnteredAt = time.Now()
+					ws.Agents[idx].AskEnteredAt = time.Now()
 
 					// Stage display files (and create the per-input
 					// directory so uploads have a place to land) before
-					// notifying anyone the await has started, so the
+					// notifying anyone the ask has started, so the
 					// notification carries the staged-file metadata.
 					stageFailed := false
 					var stageErr error
-					if affordance := ws.Agents[idx].AwaitFileAffordance; affordance != nil {
+					if affordance := ws.Agents[idx].AskFileAffordance; affordance != nil {
 						records, err := StageInputFiles(
 							ws.Agents[idx].TaskFolder,
-							ws.Agents[idx].AwaitInputID,
+							ws.Agents[idx].AskID,
 							*affordance,
 						)
 						if err != nil {
 							stageFailed = true
 							stageErr = err
 						} else {
-							ws.Agents[idx].AwaitStagedFiles = records
+							ws.Agents[idx].AskStagedFiles = records
 						}
 					}
 
 					if stageFailed {
-						// Do not enter the await: clear the await fields
+						// Do not enter the ask: clear the ask fields
 						// and pause the agent with a descriptive error
-						// (mirrors the on-await=reject branch below).
+						// (mirrors the on-ask=reject branch below).
 						a := &ws.Agents[idx]
 						a.Status = wfstate.AgentStatusPaused
 						a.Error = fmt.Sprintf(
-							"failed to stage files for <await> in agent %q: %v",
+							"failed to stage files for <ask> in agent %q: %v",
 							agentBefore.ID, stageErr,
 						)
-						a.AwaitPrompt = ""
-						a.AwaitNextState = ""
-						a.AwaitTimeout = ""
-						a.AwaitTimeoutNext = ""
-						a.AwaitInputID = ""
-						a.AwaitFileAffordance = nil
-						a.AwaitStagedFiles = nil
-						a.AwaitEnteredAt = time.Time{}
+						a.AskPrompt = ""
+						a.AskNextState = ""
+						a.AskTimeout = ""
+						a.AskTimeoutNext = ""
+						a.AskID = ""
+						a.AskFileAffordance = nil
+						a.AskStagedFiles = nil
+						a.AskEnteredAt = time.Time{}
 						b.Emit(events.AgentPaused{
 							AgentID:   agentBefore.ID,
-							Reason:    "await_stage_error",
+							Reason:    "ask_stage_error",
 							Error:     a.Error,
 							Timestamp: time.Now(),
 						})
 					} else if opts.DaemonMode {
 						// Daemon mode: siblings keep running. Notify
 						// the daemon layer via callback; the agent
-						// stays awaiting until input arrives on
-						// AwaitInputCh.
-						b.Emit(events.AgentAwaitStarted{
+						// stays asking until input arrives on
+						// AskInputCh.
+						b.Emit(events.AgentAskStarted{
 							AgentID:   ws.Agents[idx].ID,
-							InputID:   ws.Agents[idx].AwaitInputID,
-							Prompt:    ws.Agents[idx].AwaitPrompt,
-							NextState: ws.Agents[idx].AwaitNextState,
-							Timeout:   ws.Agents[idx].AwaitTimeout,
+							AskID:   ws.Agents[idx].AskID,
+							Prompt:    ws.Agents[idx].AskPrompt,
+							NextState: ws.Agents[idx].AskNextState,
+							Timeout:   ws.Agents[idx].AskTimeout,
 							Timestamp: time.Now(),
 						})
-						if opts.AwaitCallback != nil {
-							opts.AwaitCallback(
+						if opts.AskCallback != nil {
+							opts.AskCallback(
 								ws.Agents[idx].ID,
-								ws.Agents[idx].AwaitInputID,
-								ws.Agents[idx].AwaitPrompt,
-								ws.Agents[idx].AwaitNextState,
-								ws.Agents[idx].AwaitFileAffordance,
-								ws.Agents[idx].AwaitStagedFiles,
+								ws.Agents[idx].AskID,
+								ws.Agents[idx].AskPrompt,
+								ws.Agents[idx].AskNextState,
+								ws.Agents[idx].AskFileAffordance,
+								ws.Agents[idx].AskStagedFiles,
 							)
 						}
-					} else if opts.OnAwait == "pause" {
+					} else if opts.OnAsk == "pause" {
 						// CLI pause mode: quiesce all agents. The
-						// first agent to await is the active await;
+						// first agent to ask is the active ask;
 						// subsequent ones are queued.
-						if activeAwait == "" {
-							activeAwait = ws.Agents[idx].ID
+						if activeAsk == "" {
+							activeAsk = ws.Agents[idx].ID
 						} else {
-							preAwaitQueue = append(preAwaitQueue, ws.Agents[idx].ID)
+							preAskQueue = append(preAskQueue, ws.Agents[idx].ID)
 						}
 						pausing = true
-						b.Emit(events.AgentAwaitStarted{
+						b.Emit(events.AgentAskStarted{
 							AgentID:   ws.Agents[idx].ID,
-							InputID:   ws.Agents[idx].AwaitInputID,
-							Prompt:    ws.Agents[idx].AwaitPrompt,
-							NextState: ws.Agents[idx].AwaitNextState,
-							Timeout:   ws.Agents[idx].AwaitTimeout,
+							AskID:   ws.Agents[idx].AskID,
+							Prompt:    ws.Agents[idx].AskPrompt,
+							NextState: ws.Agents[idx].AskNextState,
+							Timeout:   ws.Agents[idx].AskTimeout,
 							Timestamp: time.Now(),
 						})
 					} else {
 						// Runtime reject: fail the agent immediately.
 						ws.Agents[idx].Status = wfstate.AgentStatusPaused
 						ws.Agents[idx].Error = fmt.Sprintf(
-							"agent %q produced <await> but --on-await=reject is in effect; "+
-								"use --on-await=pause or `raymond serve`",
+							"agent %q produced <ask> but --on-ask=reject is in effect; "+
+								"use --on-ask=pause or `raymond serve`",
 							agentBefore.ID,
 						)
-						ws.Agents[idx].AwaitPrompt = ""
-						ws.Agents[idx].AwaitNextState = ""
-						ws.Agents[idx].AwaitTimeout = ""
-						ws.Agents[idx].AwaitTimeoutNext = ""
-						ws.Agents[idx].AwaitInputID = ""
+						ws.Agents[idx].AskPrompt = ""
+						ws.Agents[idx].AskNextState = ""
+						ws.Agents[idx].AskTimeout = ""
+						ws.Agents[idx].AskTimeoutNext = ""
+						ws.Agents[idx].AskID = ""
 						b.Emit(events.AgentPaused{
 							AgentID:   agentBefore.ID,
-							Reason:    "await_rejected",
+							Reason:    "ask_rejected",
 							Error:     ws.Agents[idx].Error,
 							Timestamp: time.Now(),
 						})
@@ -840,34 +840,34 @@ func findAgentByID(agents []wfstate.AgentState, id string) int {
 	return -1
 }
 
-// hasAwaitingAgents reports whether any agent in the slice has awaiting status.
-func hasAwaitingAgents(agents []wfstate.AgentState) bool {
+// hasAskingAgents reports whether any agent in the slice has asking status.
+func hasAskingAgents(agents []wfstate.AgentState) bool {
 	for _, a := range agents {
-		if a.Status == wfstate.AgentStatusAwaiting {
+		if a.Status == wfstate.AgentStatusAsking {
 			return true
 		}
 	}
 	return false
 }
 
-// firstAwaitingIndex returns the index of the first agent with awaiting status,
+// firstAskingIndex returns the index of the first agent with asking status,
 // or -1 if none exists.
-func firstAwaitingIndex(agents []wfstate.AgentState) int {
+func firstAskingIndex(agents []wfstate.AgentState) int {
 	for i, a := range agents {
-		if a.Status == wfstate.AgentStatusAwaiting {
+		if a.Status == wfstate.AgentStatusAsking {
 			return i
 		}
 	}
 	return -1
 }
 
-// firstAwaitingAndCount returns the first awaiting agent and the total count of
-// awaiting agents. Returns (nil, 0) when none are awaiting.
-func firstAwaitingAndCount(agents []wfstate.AgentState) (*wfstate.AgentState, int) {
+// firstAskingAndCount returns the first asking agent and the total count of
+// asking agents. Returns (nil, 0) when none are asking.
+func firstAskingAndCount(agents []wfstate.AgentState) (*wfstate.AgentState, int) {
 	var first *wfstate.AgentState
 	count := 0
 	for i, a := range agents {
-		if a.Status == wfstate.AgentStatusAwaiting {
+		if a.Status == wfstate.AgentStatusAsking {
 			if first == nil {
 				first = &agents[i]
 			}
@@ -877,22 +877,22 @@ func firstAwaitingAndCount(agents []wfstate.AgentState) (*wfstate.AgentState, in
 	return first, count
 }
 
-// findAwaitingAgent returns the index of the awaiting agent whose AwaitInputID
-// matches inputID, or -1 if not found.
-func findAwaitingAgent(agents []wfstate.AgentState, inputID string) int {
+// findAskingAgent returns the index of the asking agent whose AskID
+// matches askID, or -1 if not found.
+func findAskingAgent(agents []wfstate.AgentState, askID string) int {
 	for i, a := range agents {
-		if a.Status == wfstate.AgentStatusAwaiting && a.AwaitInputID == inputID {
+		if a.Status == wfstate.AgentStatusAsking && a.AskID == askID {
 			return i
 		}
 	}
 	return -1
 }
 
-// awaitInputCh returns opts.AwaitInputCh when daemon mode is active, or a nil
+// askInputCh returns opts.AskInputCh when daemon mode is active, or a nil
 // channel (which blocks forever in select) when it is not.
-func awaitInputCh(opts RunOptions) <-chan AwaitInput {
-	if opts.DaemonMode && opts.AwaitInputCh != nil {
-		return opts.AwaitInputCh
+func askInputCh(opts RunOptions) <-chan AskInput {
+	if opts.DaemonMode && opts.AskInputCh != nil {
+		return opts.AskInputCh
 	}
 	return nil
 }
@@ -1127,7 +1127,7 @@ func applyMultiFork(
 	// Advance the caller to the continuation state.
 	callerCopy.CurrentState = continuation
 	callerCopy.PendingResult = nil
-	callerCopy.PendingInputID = ""
+	callerCopy.PendingAskID = ""
 	callerCopy.ForkSessionID = nil
 	callerCopy.ForkAttributes = nil
 
@@ -1298,13 +1298,13 @@ func resetPausedAgents(ws *wfstate.WorkflowState) {
 }
 
 // allPaused reports whether every agent in the slice is quiesced (paused or
-// awaiting external input). Returns false for an empty slice.
+// asking external input). Returns false for an empty slice.
 func allPaused(agents []wfstate.AgentState) bool {
 	if len(agents) == 0 {
 		return false
 	}
 	for _, a := range agents {
-		if a.Status != wfstate.AgentStatusPaused && a.Status != wfstate.AgentStatusAwaiting {
+		if a.Status != wfstate.AgentStatusPaused && a.Status != wfstate.AgentStatusAsking {
 			return false
 		}
 	}
@@ -1376,7 +1376,7 @@ func stateType(filename string) string {
 
 // computeAutoWait inspects all paused agents for limit-reset times and returns
 // the longest wait in seconds plus true, or (0, false) if any paused agent has
-// no parseable reset time or if no paused agents exist (e.g. all awaiting).
+// no parseable reset time or if no paused agents exist (e.g. all asking).
 func computeAutoWait(agents []wfstate.AgentState) (float64, bool) {
 	var maxWait float64
 	found := false
@@ -1416,14 +1416,14 @@ func parseLimitResetWait(msg string) (float64, bool) {
 	return secs, ok
 }
 
-// scanForAwaitTransitions examines all state files in scopeDir for
-// allowed_transitions entries with tag "await". Returns the list of state
-// filenames that declare await transitions.
+// scanForAskTransitions examines all state files in scopeDir for
+// allowed_transitions entries with tag "ask". Returns the list of state
+// filenames that declare ask transitions.
 //
 // Supports directory, zip, and YAML scopes.
-func scanForAwaitTransitions(scopeDir string) ([]string, error) {
+func scanForAskTransitions(scopeDir string) ([]string, error) {
 	if yamlscope.IsYamlScope(scopeDir) {
-		return scanYamlForAwait(scopeDir)
+		return scanYamlForAsk(scopeDir)
 	}
 
 	// List files in scope (zip or directory).
@@ -1438,7 +1438,7 @@ func scanForAwaitTransitions(scopeDir string) ([]string, error) {
 		return nil, err
 	}
 
-	var awaitStates []string
+	var askStates []string
 	for _, f := range files {
 		if !strings.HasSuffix(strings.ToLower(f), ".md") {
 			continue
@@ -1461,32 +1461,32 @@ func scanForAwaitTransitions(scopeDir string) ([]string, error) {
 			continue
 		}
 		for _, entry := range p.AllowedTransitions {
-			if entry["tag"] == "await" {
-				awaitStates = append(awaitStates, f)
+			if entry["tag"] == "ask" {
+				askStates = append(askStates, f)
 				break
 			}
 		}
 	}
-	return awaitStates, nil
+	return askStates, nil
 }
 
-// scanYamlForAwait checks a YAML scope for states declaring await transitions.
-func scanYamlForAwait(yamlPath string) ([]string, error) {
+// scanYamlForAsk checks a YAML scope for states declaring ask transitions.
+func scanYamlForAsk(yamlPath string) ([]string, error) {
 	wf, err := yamlscope.Parse(yamlPath)
 	if err != nil {
 		return nil, err
 	}
-	var awaitStates []string
+	var askStates []string
 	for _, name := range wf.StateOrder {
 		st := wf.States[name]
 		for _, entry := range st.AllowedTransitions {
-			if entry["tag"] == "await" {
-				awaitStates = append(awaitStates, name+".md")
+			if entry["tag"] == "ask" {
+				askStates = append(askStates, name+".md")
 				break
 			}
 		}
 	}
-	return awaitStates, nil
+	return askStates, nil
 }
 
 // listDirMDFiles lists .md files in a directory scope.

@@ -815,15 +815,15 @@ const configTemplate = `# Raymond configuration file
 # Default working directory for workflow runs (default: process cwd)
 # workdir = ""
 
-# Maximum bytes per uploaded file when an <await> does not declare its own
+# Maximum bytes per uploaded file when an <ask> does not declare its own
 # limit (default: 10485760, i.e. 10 MiB)
 # max_file_size = 10485760
 
-# Maximum total bytes per upload submission when an <await> does not declare
+# Maximum total bytes per upload submission when an <ask> does not declare
 # its own limit (default: 104857600, i.e. 100 MiB)
 # max_total_size = 104857600
 
-# Maximum number of files per upload submission when an <await> does not
+# Maximum number of files per upload submission when an <ask> does not
 # declare its own limit (default: 10)
 # max_file_count = 10
 `
@@ -885,15 +885,15 @@ dangerously_skip_permissions = true
 # Default working directory for workflow runs (default: process cwd)
 # workdir = ""
 
-# Maximum bytes per uploaded file when an <await> does not declare its own
+# Maximum bytes per uploaded file when an <ask> does not declare its own
 # limit (default: 10485760, i.e. 10 MiB)
 # max_file_size = 10485760
 
-# Maximum total bytes per upload submission when an <await> does not declare
+# Maximum total bytes per upload submission when an <ask> does not declare
 # its own limit (default: 104857600, i.e. 100 MiB)
 # max_total_size = 104857600
 
-# Maximum number of files per upload submission when an <await> does not
+# Maximum number of files per upload submission when an <ask> does not
 # declare its own limit (default: 10)
 # max_file_count = 10
 `

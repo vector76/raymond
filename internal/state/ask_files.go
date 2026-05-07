@@ -15,10 +15,10 @@ type FileRecord struct {
 // ResolvedInput is the durable history record for an input step that has
 // resolved. It lets the run-history view re-display the full context of a
 // past input (prompt, files the user saw, text they returned, files they
-// uploaded) after the await has resolved and the per-agent await fields have
+// uploaded) after the ask has resolved and the per-agent ask fields have
 // been cleared.
 type ResolvedInput struct {
-	InputID       string       `json:"input_id"`
+	AskID       string       `json:"ask_id"`
 	AgentID       string       `json:"agent_id"`
 	Prompt        string       `json:"prompt,omitempty"`
 	NextState     string       `json:"next_state,omitempty"`

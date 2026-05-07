@@ -124,7 +124,7 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 	// Tags that do not support the "task" attribute at all.
 	unsupportedTaskTags := map[string]bool{
 		"goto": true, "call": true, "function": true, "result": true,
-		"call-workflow": true, "function-workflow": true, "await": true,
+		"call-workflow": true, "function-workflow": true, "ask": true,
 	}
 
 	// Deduplicate ambiguous stems across all files.
@@ -184,16 +184,16 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 			}
 		}
 
-		// missing-target check for await: next and timeout_next attributes.
+		// missing-target check for ask: next and timeout_next attributes.
 		for _, t := range pf.transitions {
-			if t.Tag != "await" {
+			if t.Tag != "ask" {
 				continue
 			}
 			if !targetExists(t.Target, knownFiles, opts.WindowsMode) {
 				diags = append(diags, Diagnostic{
 					Severity: Error,
 					File:     filename,
-					Message:  fmt.Sprintf("<await> in %s has next=%q which does not exist in this workflow", filename, t.Target),
+					Message:  fmt.Sprintf("<ask> in %s has next=%q which does not exist in this workflow", filename, t.Target),
 					Check:    "missing-target",
 				})
 			}
@@ -202,7 +202,7 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 					diags = append(diags, Diagnostic{
 						Severity: Error,
 						File:     filename,
-						Message:  fmt.Sprintf("<await> in %s has timeout_next=%q which does not exist in this workflow", filename, tn),
+						Message:  fmt.Sprintf("<ask> in %s has timeout_next=%q which does not exist in this workflow", filename, tn),
 						Check:    "missing-target",
 					})
 				}
@@ -328,7 +328,7 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 		// are implicit and the prompt is not expected to mention the target.
 		if pf.pol != nil && len(pf.pol.AllowedTransitions) > 1 {
 			for _, entry := range pf.pol.AllowedTransitions {
-				if entry["tag"] == "result" || entry["tag"] == "await" {
+				if entry["tag"] == "result" || entry["tag"] == "ask" {
 					continue
 				}
 				target := entry["target"]
@@ -415,28 +415,28 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 			}
 		}
 
-		// missing-await-next check: allowed_transitions entry with tag=await
+		// missing-ask-next check: allowed_transitions entry with tag=ask
 		// must have a "next" attribute.
 		if pf.pol != nil {
 			for _, entry := range pf.pol.AllowedTransitions {
-				if entry["tag"] == "await" && entry["next"] == "" {
+				if entry["tag"] == "ask" && entry["next"] == "" {
 					diags = append(diags, Diagnostic{
 						Severity: Error,
 						File:     filename,
-						Message:  fmt.Sprintf("allowed_transitions in %s has <await> entry missing required \"next\" attribute", filename),
-						Check:    "missing-await-next",
+						Message:  fmt.Sprintf("allowed_transitions in %s has <ask> entry missing required \"next\" attribute", filename),
+						Check:    "missing-ask-next",
 					})
 				}
 			}
 		}
 
-		// unsupported-cd-attribute check: await does not support "cd".
+		// unsupported-cd-attribute check: ask does not support "cd".
 		for _, t := range pf.transitions {
-			if t.Tag == "await" && t.Attributes["cd"] != "" {
+			if t.Tag == "ask" && t.Attributes["cd"] != "" {
 				diags = append(diags, Diagnostic{
 					Severity: Error,
 					File:     filename,
-					Message:  fmt.Sprintf("<await> in %s does not support the \"cd\" attribute", filename),
+					Message:  fmt.Sprintf("<ask> in %s does not support the \"cd\" attribute", filename),
 					Check:    "unsupported-cd-attribute",
 				})
 			}
@@ -474,7 +474,7 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 				if next := t.Attributes["next"]; next != "" {
 					fullAdj[stateName] = append(fullAdj[stateName], parsing.ExtractStateName(next))
 				}
-			case "await":
+			case "ask":
 				if t.Target != "" {
 					fullAdj[stateName] = append(fullAdj[stateName], parsing.ExtractStateName(t.Target))
 				}

@@ -430,12 +430,12 @@ func TestMarkdownExecutor_TaskFolderSubstitutedInBody(t *testing.T) {
 	}
 }
 
-// TestMarkdownExecutor_InputIDSubstitutedInImmediatelyFollowingState verifies
-// that {{input_id}} is substituted with the agent's PendingInputID when the
-// state runs immediately after an await resolves.
-func TestMarkdownExecutor_InputIDSubstitutedInImmediatelyFollowingState(t *testing.T) {
+// TestMarkdownExecutor_AskIDSubstitutedInImmediatelyFollowingState verifies
+// that {{ask_id}} is substituted with the agent's PendingAskID when the
+// state runs immediately after an ask resolves.
+func TestMarkdownExecutor_AskIDSubstitutedInImmediatelyFollowingState(t *testing.T) {
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "START.md"), "Resumed by input {{input_id}}")
+	write(t, filepath.Join(dir, "START.md"), "Resumed by input {{ask_id}}")
 	write(t, filepath.Join(dir, "NEXT.md"), "next")
 
 	ws := &wfstate.WorkflowState{
@@ -447,7 +447,7 @@ func TestMarkdownExecutor_InputIDSubstitutedInImmediatelyFollowingState(t *testi
 			CurrentState:   "START.md",
 			ScopeDir:       dir,
 			Stack:          []wfstate.StackFrame{},
-			PendingInputID: "input-abc-123",
+			PendingAskID: "input-abc-123",
 		}},
 	}
 
@@ -470,18 +470,18 @@ func TestMarkdownExecutor_InputIDSubstitutedInImmediatelyFollowingState(t *testi
 	if !strings.Contains(capturedPrompt, "Resumed by input input-abc-123") {
 		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, "Resumed by input input-abc-123")
 	}
-	if strings.Contains(capturedPrompt, "{{input_id}}") {
-		t.Errorf("prompt still contains literal {{input_id}}: %q", capturedPrompt)
+	if strings.Contains(capturedPrompt, "{{ask_id}}") {
+		t.Errorf("prompt still contains literal {{ask_id}}: %q", capturedPrompt)
 	}
 }
 
-// TestMarkdownExecutor_InputIDUnsubstitutedWhenNotPending verifies that
-// {{input_id}} is left as a literal placeholder when PendingInputID is empty
-// (i.e. the state is not the immediately-following state after an await).
+// TestMarkdownExecutor_AskIDUnsubstitutedWhenNotPending verifies that
+// {{ask_id}} is left as a literal placeholder when PendingAskID is empty
+// (i.e. the state is not the immediately-following state after an ask).
 // This matches the missing-key behavior of RenderPrompt.
-func TestMarkdownExecutor_InputIDUnsubstitutedWhenNotPending(t *testing.T) {
+func TestMarkdownExecutor_AskIDUnsubstitutedWhenNotPending(t *testing.T) {
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "START.md"), "No input here: {{input_id}}")
+	write(t, filepath.Join(dir, "START.md"), "No input here: {{ask_id}}")
 	write(t, filepath.Join(dir, "NEXT.md"), "next")
 
 	ws := &wfstate.WorkflowState{
@@ -493,7 +493,7 @@ func TestMarkdownExecutor_InputIDUnsubstitutedWhenNotPending(t *testing.T) {
 			CurrentState: "START.md",
 			ScopeDir:     dir,
 			Stack:        []wfstate.StackFrame{},
-			// PendingInputID intentionally empty.
+			// PendingAskID intentionally empty.
 		}},
 	}
 
@@ -513,7 +513,7 @@ func TestMarkdownExecutor_InputIDUnsubstitutedWhenNotPending(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	if !strings.Contains(capturedPrompt, "{{input_id}}") {
-		t.Errorf("prompt = %q, want literal {{input_id}} to remain", capturedPrompt)
+	if !strings.Contains(capturedPrompt, "{{ask_id}}") {
+		t.Errorf("prompt = %q, want literal {{ask_id}} to remain", capturedPrompt)
 	}
 }

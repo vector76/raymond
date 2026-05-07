@@ -2417,23 +2417,23 @@ func TestTaskFolderCreated_OnRun(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// --on-await launch-time and runtime enforcement
+// --on-ask launch-time and runtime enforcement
 // --------------------------------------------------------------------------
 
-func TestOnAwaitRejectWithAwaitInFrontmatter(t *testing.T) {
-	// Workflow with await in frontmatter + OnAwait="reject" → launch-time rejection.
+func TestOnAskRejectWithAskInFrontmatter(t *testing.T) {
+	// Workflow with ask in frontmatter + OnAsk="reject" → launch-time rejection.
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".raymond", "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o755))
 
-	// Create a scope directory with a state file that declares await in frontmatter.
+	// Create a scope directory with a state file that declares ask in frontmatter.
 	scopeDir := filepath.Join(tmpDir, "workflow")
 	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
 allowed_transitions:
-  - { tag: await, next: DONE.md }
+  - { tag: ask, next: DONE.md }
 ---
-Do work and maybe await.
+Do work and maybe ask.
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "DONE.md"), []byte(`---
 allowed_transitions:
@@ -2442,7 +2442,7 @@ allowed_transitions:
 Done.
 `), 0o644))
 
-	wfID := "test-await-reject"
+	wfID := "test-ask-reject"
 	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
 
@@ -2451,17 +2451,17 @@ Done.
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(stateDir)
-	opts.OnAwait = "reject"
+	opts.OnAsk = "reject"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "declares <await> transitions")
+	assert.Contains(t, err.Error(), "declares <ask> transitions")
 	assert.Contains(t, err.Error(), "START.md")
-	assert.Contains(t, err.Error(), "--on-await=pause")
+	assert.Contains(t, err.Error(), "--on-ask=pause")
 }
 
-func TestOnAwaitPauseWithAwaitInFrontmatter(t *testing.T) {
-	// Workflow with await in frontmatter + OnAwait="pause" → no rejection.
+func TestOnAskPauseWithAskInFrontmatter(t *testing.T) {
+	// Workflow with ask in frontmatter + OnAsk="pause" → no rejection.
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".raymond", "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o755))
@@ -2470,9 +2470,9 @@ func TestOnAwaitPauseWithAwaitInFrontmatter(t *testing.T) {
 	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
 allowed_transitions:
-  - { tag: await, next: DONE.md }
+  - { tag: ask, next: DONE.md }
 ---
-Do work and maybe await.
+Do work and maybe ask.
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "DONE.md"), []byte(`---
 allowed_transitions:
@@ -2481,7 +2481,7 @@ allowed_transitions:
 Done.
 `), 0o644))
 
-	wfID := "test-await-pause"
+	wfID := "test-ask-pause"
 	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
 
@@ -2490,14 +2490,14 @@ Done.
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(stateDir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 }
 
-func TestOnAwaitRejectWithoutAwaitInFrontmatter(t *testing.T) {
-	// Workflow without await + OnAwait="reject" → normal execution.
+func TestOnAskRejectWithoutAskInFrontmatter(t *testing.T) {
+	// Workflow without ask + OnAsk="reject" → normal execution.
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".raymond", "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o755))
@@ -2517,7 +2517,7 @@ allowed_transitions:
 Done.
 `), 0o644))
 
-	wfID := "test-no-await"
+	wfID := "test-no-ask"
 	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
 
@@ -2526,16 +2526,16 @@ Done.
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(stateDir)
-	opts.OnAwait = "reject"
+	opts.OnAsk = "reject"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 }
 
-func TestOnAwaitRejectRuntimeEnforcement(t *testing.T) {
-	// Runtime reject: mock executor returns <await> transition, OnAwait="reject" → agent fails.
-	// Use a real scope directory without await in frontmatter so the launch-time
-	// check passes; the runtime enforcement catches the unexpected <await>.
+func TestOnAskRejectRuntimeEnforcement(t *testing.T) {
+	// Runtime reject: mock executor returns <ask> transition, OnAsk="reject" → agent fails.
+	// Use a real scope directory without ask in frontmatter so the launch-time
+	// check passes; the runtime enforcement catches the unexpected <ask>.
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".raymond", "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o755))
@@ -2553,9 +2553,9 @@ Do work.
 	ws := wfstate.CreateInitialState(wfID, scopeDir, "START.md", 10.0, nil, "")
 	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
 
-	awaitExecResult := executors.ExecutionResult{
+	askExecResult := executors.ExecutionResult{
 		Transition: parsing.Transition{
-			Tag:     "await",
+			Tag:     "ask",
 			Target:  "NEXT.md",
 			Payload: "Please provide input",
 			Attributes: map[string]string{
@@ -2564,12 +2564,12 @@ Do work.
 		},
 	}
 
-	mock := newMock(awaitExecResult)
+	mock := newMock(askExecResult)
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(stateDir)
-	opts.OnAwait = "reject"
+	opts.OnAsk = "reject"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	// The workflow should complete (the agent is failed/paused, not a fatal error).
@@ -2580,8 +2580,8 @@ Do work.
 	require.NoError(t, readErr)
 	require.Len(t, ws2.Agents, 1)
 	assert.Equal(t, wfstate.AgentStatusPaused, ws2.Agents[0].Status)
-	assert.Contains(t, ws2.Agents[0].Error, "await")
-	assert.Contains(t, ws2.Agents[0].Error, "--on-await=reject")
+	assert.Contains(t, ws2.Agents[0].Error, "ask")
+	assert.Contains(t, ws2.Agents[0].Error, "--on-ask=reject")
 }
 
 // --------------------------------------------------------------------------
@@ -2589,7 +2589,7 @@ Do work.
 // --------------------------------------------------------------------------
 
 func TestManifestRequiresHumanInputTrue_RejectsAtLaunch(t *testing.T) {
-	// Manifest says requires_human_input: true + OnAwait=reject → rejection.
+	// Manifest says requires_human_input: true + OnAsk=reject → rejection.
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".raymond", "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o755))
@@ -2603,12 +2603,12 @@ id: manifest-true-test
 requires_human_input: "true"
 `), 0o644))
 
-	// State file has NO await — manifest overrides.
+	// State file has NO ask — manifest overrides.
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
 allowed_transitions:
   - { tag: goto, target: DONE.md }
 ---
-No await here.
+No ask here.
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "DONE.md"), []byte("Done.\n"), 0o644))
 
@@ -2621,16 +2621,16 @@ No await here.
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(stateDir)
-	opts.OnAwait = "reject"
+	opts.OnAsk = "reject"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires human input")
-	assert.Contains(t, err.Error(), "--on-await=pause")
+	assert.Contains(t, err.Error(), "--on-ask=pause")
 }
 
 func TestManifestRequiresHumanInputFalse_NoRejection(t *testing.T) {
-	// Manifest says requires_human_input: false + workflow has await → no rejection.
+	// Manifest says requires_human_input: false + workflow has ask → no rejection.
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".raymond", "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o755))
@@ -2644,12 +2644,12 @@ id: manifest-false-test
 requires_human_input: "false"
 `), 0o644))
 
-	// State file declares await — but manifest says false, so no rejection.
+	// State file declares ask — but manifest says false, so no rejection.
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
 allowed_transitions:
-  - { tag: await }
+  - { tag: ask }
 ---
-This state awaits, but manifest overrides to false.
+This state asks, but manifest overrides to false.
 `), 0o644))
 
 	wfID := "test-manifest-false"
@@ -2661,7 +2661,7 @@ This state awaits, but manifest overrides to false.
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(stateDir)
-	opts.OnAwait = "reject"
+	opts.OnAsk = "reject"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	// Should succeed — manifest overrides to false.
@@ -2687,12 +2687,12 @@ states:
     prompt: hello
 `), 0o644))
 
-	// Actual state file with await in frontmatter — the fallback scan finds it.
+	// Actual state file with ask in frontmatter — the fallback scan finds it.
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "START.md"), []byte(`---
 allowed_transitions:
-  - { tag: await }
+  - { tag: ask }
 ---
-Awaiting.
+Asking.
 `), 0o644))
 
 	wfID := "test-yaml-scope-fallback"
@@ -2704,12 +2704,12 @@ Awaiting.
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(stateDir)
-	opts.OnAwait = "reject"
+	opts.OnAsk = "reject"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
-	// Should hit the fallback scan path and report await states.
-	assert.Contains(t, err.Error(), "declares <await> transitions")
+	// Should hit the fallback scan path and report ask states.
+	assert.Contains(t, err.Error(), "declares <ask> transitions")
 	assert.Contains(t, err.Error(), "START.md")
 }
 
@@ -2744,11 +2744,11 @@ func TestTaskFolderRecreated_OnResume(t *testing.T) {
 // Orchestrator quiesce mechanism
 // --------------------------------------------------------------------------
 
-// awaitResult returns an ExecutionResult carrying an await transition.
-func awaitResult(next, prompt string) executors.ExecutionResult {
+// askResult returns an ExecutionResult carrying an ask transition.
+func askResult(next, prompt string) executors.ExecutionResult {
 	return executors.ExecutionResult{
 		Transition: parsing.Transition{
-			Tag:     "await",
+			Tag:     "ask",
 			Target:  next,
 			Payload: prompt,
 			Attributes: map[string]string{
@@ -2812,48 +2812,48 @@ func setupMultiAgentWorkflow(t *testing.T, agents []wfstate.AgentState) (stateDi
 	return stateDir, workflowID
 }
 
-func TestQuiesceSingleAgentAwaits(t *testing.T) {
-	// Single agent hits await → quiesce point reached, agent kept in list
-	// with awaiting status, AgentAwaitStarted event emitted.
+func TestQuiesceSingleAgentAsks(t *testing.T) {
+	// Single agent hits ask → quiesce point reached, agent kept in list
+	// with asking status, AgentAskStarted event emitted.
 	dir, wfID := setupWorkflow(t, "START.md")
 
-	mock := newMock(awaitResult("NEXT.md", "Need input"))
+	mock := newMock(askResult("NEXT.md", "Need input"))
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
 	defer orchestrator.ResetExecutorFactory()
 
-	var awaitEvents []events.AgentAwaitStarted
+	var askEvents []events.AgentAskStarted
 	var pausedEvents []events.WorkflowPaused
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) { awaitEvents = append(awaitEvents, e) })
+		bus.Subscribe(b, func(e events.AgentAskStarted) { askEvents = append(askEvents, e) })
 		bus.Subscribe(b, func(e events.WorkflowPaused) { pausedEvents = append(pausedEvents, e) })
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	// Quiesce point returns AwaitingInputError.
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	// Quiesce point returns PendingAskError.
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
-	// Agent preserved in state with awaiting status.
+	// Agent preserved in state with asking status.
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
 	require.Len(t, ws.Agents, 1)
-	assert.Equal(t, wfstate.AgentStatusAwaiting, ws.Agents[0].Status)
-	assert.Equal(t, "START.md", ws.Agents[0].CurrentState) // await keeps current state
-	assert.Equal(t, "NEXT.md", ws.Agents[0].AwaitNextState)
-	assert.Equal(t, "Need input", ws.Agents[0].AwaitPrompt)
-	assert.NotEmpty(t, ws.Agents[0].AwaitInputID)
-	assert.False(t, ws.Agents[0].AwaitEnteredAt.IsZero(),
-		"AwaitEnteredAt should be stamped on every await, even text-only ones")
+	assert.Equal(t, wfstate.AgentStatusAsking, ws.Agents[0].Status)
+	assert.Equal(t, "START.md", ws.Agents[0].CurrentState) // ask keeps current state
+	assert.Equal(t, "NEXT.md", ws.Agents[0].AskNextState)
+	assert.Equal(t, "Need input", ws.Agents[0].AskPrompt)
+	assert.NotEmpty(t, ws.Agents[0].AskID)
+	assert.False(t, ws.Agents[0].AskEnteredAt.IsZero(),
+		"AskEnteredAt should be stamped on every ask, even text-only ones")
 
-	// AgentAwaitStarted emitted.
-	require.Len(t, awaitEvents, 1)
-	assert.Equal(t, "main", awaitEvents[0].AgentID)
-	assert.Equal(t, "Need input", awaitEvents[0].Prompt)
-	assert.Equal(t, "NEXT.md", awaitEvents[0].NextState)
+	// AgentAskStarted emitted.
+	require.Len(t, askEvents, 1)
+	assert.Equal(t, "main", askEvents[0].AgentID)
+	assert.Equal(t, "Need input", askEvents[0].Prompt)
+	assert.Equal(t, "NEXT.md", askEvents[0].NextState)
 
 	// WorkflowPaused emitted for quiesce point.
 	require.Len(t, pausedEvents, 1)
@@ -2863,20 +2863,20 @@ func TestQuiesceSingleAgentAwaits(t *testing.T) {
 	assert.Equal(t, 1, mock.idx)
 }
 
-func TestQuiesceAgentAwaitHoldsPeerAtBoundary(t *testing.T) {
-	// Two agents: alpha hits await, beta completes a goto → beta held at
+func TestQuiesceAgentAskHoldsPeerAtBoundary(t *testing.T) {
+	// Two agents: alpha hits ask, beta completes a goto → beta held at
 	// its next state boundary (not relaunched).
 	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
 		{ID: "alpha", CurrentState: "A.md"},
 		{ID: "beta", CurrentState: "B.md"},
 	})
 
-	var awaitProcessed atomic.Bool
+	var askProcessed atomic.Bool
 	var callCount atomic.Int32
 
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(_ events.AgentAwaitStarted) {
-			awaitProcessed.Store(true)
+		bus.Subscribe(b, func(_ events.AgentAskStarted) {
+			askProcessed.Store(true)
 		})
 	})
 	defer orchestrator.ResetBusHook()
@@ -2885,11 +2885,11 @@ func TestQuiesceAgentAwaitHoldsPeerAtBoundary(t *testing.T) {
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			callCount.Add(1)
 			if agent.ID == "alpha" {
-				return awaitResult("ALPHA_NEXT.md", "Need input"), nil
+				return askResult("ALPHA_NEXT.md", "Need input"), nil
 			}
-			// Beta waits for alpha's await to be processed before returning,
+			// Beta waits for alpha's ask to be processed before returning,
 			// so pausing is guaranteed to be set when beta's result arrives.
-			for !awaitProcessed.Load() {
+			for !askProcessed.Load() {
 				select {
 				case <-ctx.Done():
 					return executors.ExecutionResult{}, ctx.Err()
@@ -2903,11 +2903,11 @@ func TestQuiesceAgentAwaitHoldsPeerAtBoundary(t *testing.T) {
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
@@ -2918,7 +2918,7 @@ func TestQuiesceAgentAwaitHoldsPeerAtBoundary(t *testing.T) {
 	require.NotNil(t, alpha)
 	require.NotNil(t, beta)
 
-	assert.Equal(t, wfstate.AgentStatusAwaiting, alpha.Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, alpha.Status)
 	assert.Equal(t, "BETA_NEXT.md", beta.CurrentState)
 	assert.Equal(t, "", beta.Status) // held at boundary, not relaunched
 
@@ -2926,8 +2926,8 @@ func TestQuiesceAgentAwaitHoldsPeerAtBoundary(t *testing.T) {
 	assert.Equal(t, int32(2), callCount.Load())
 }
 
-func TestQuiesceTwoAgentsBothAwait(t *testing.T) {
-	// Two agents both hit await → both in awaiting state, two events emitted.
+func TestQuiesceTwoAgentsBothAsk(t *testing.T) {
+	// Two agents both hit ask → both in asking state, two events emitted.
 	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
 		{ID: "alpha", CurrentState: "A.md"},
 		{ID: "beta", CurrentState: "B.md"},
@@ -2936,57 +2936,57 @@ func TestQuiesceTwoAgentsBothAwait(t *testing.T) {
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			if agent.ID == "alpha" {
-				return awaitResult("ALPHA_NEXT.md", "Input 1"), nil
+				return askResult("ALPHA_NEXT.md", "Input 1"), nil
 			}
-			return awaitResult("BETA_NEXT.md", "Input 2"), nil
+			return askResult("BETA_NEXT.md", "Input 2"), nil
 		}}
 	})
 	defer orchestrator.ResetExecutorFactory()
 
-	var awaitEvents []events.AgentAwaitStarted
+	var askEvents []events.AgentAskStarted
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
-			awaitEvents = append(awaitEvents, e)
+		bus.Subscribe(b, func(e events.AgentAskStarted) {
+			askEvents = append(askEvents, e)
 		})
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
 	require.Len(t, ws.Agents, 2)
 
 	for _, a := range ws.Agents {
-		assert.Equal(t, wfstate.AgentStatusAwaiting, a.Status,
-			"agent %s should be awaiting", a.ID)
-		assert.NotEmpty(t, a.AwaitInputID,
-			"agent %s should have AwaitInputID", a.ID)
+		assert.Equal(t, wfstate.AgentStatusAsking, a.Status,
+			"agent %s should be asking", a.ID)
+		assert.NotEmpty(t, a.AskID,
+			"agent %s should have AskID", a.ID)
 	}
 
-	// Two AgentAwaitStarted events emitted (one per agent).
-	require.Len(t, awaitEvents, 2)
+	// Two AgentAskStarted events emitted (one per agent).
+	require.Len(t, askEvents, 2)
 }
 
-func TestQuiesceThreeAgents_AwaitTerminateAwait(t *testing.T) {
-	// Three agents: alpha awaits, beta terminates normally, gamma awaits.
-	// Result: only alpha and gamma remain, both awaiting.
+func TestQuiesceThreeAgents_AskTerminateAsk(t *testing.T) {
+	// Three agents: alpha asks, beta terminates normally, gamma asks.
+	// Result: only alpha and gamma remain, both asking.
 	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
 		{ID: "alpha", CurrentState: "A.md"},
 		{ID: "beta", CurrentState: "B.md"},
 		{ID: "gamma", CurrentState: "C.md"},
 	})
 
-	var awaitProcessed atomic.Bool
+	var askProcessed atomic.Bool
 
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(_ events.AgentAwaitStarted) {
-			awaitProcessed.Store(true)
+		bus.Subscribe(b, func(_ events.AgentAskStarted) {
+			askProcessed.Store(true)
 		})
 	})
 	defer orchestrator.ResetBusHook()
@@ -2995,10 +2995,10 @@ func TestQuiesceThreeAgents_AwaitTerminateAwait(t *testing.T) {
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			switch agent.ID {
 			case "alpha":
-				return awaitResult("ALPHA_NEXT.md", "Input alpha"), nil
+				return askResult("ALPHA_NEXT.md", "Input alpha"), nil
 			case "beta":
-				// Wait for alpha's await before terminating.
-				for !awaitProcessed.Load() {
+				// Wait for alpha's ask before terminating.
+				for !askProcessed.Load() {
 					select {
 					case <-ctx.Done():
 						return executors.ExecutionResult{}, ctx.Err()
@@ -3008,7 +3008,7 @@ func TestQuiesceThreeAgents_AwaitTerminateAwait(t *testing.T) {
 				}
 				return resultExecResult("beta done"), nil
 			default: // gamma
-				for !awaitProcessed.Load() {
+				for !askProcessed.Load() {
 					select {
 					case <-ctx.Done():
 						return executors.ExecutionResult{}, ctx.Err()
@@ -3016,18 +3016,18 @@ func TestQuiesceThreeAgents_AwaitTerminateAwait(t *testing.T) {
 						time.Sleep(time.Millisecond)
 					}
 				}
-				return awaitResult("GAMMA_NEXT.md", "Input gamma"), nil
+				return askResult("GAMMA_NEXT.md", "Input gamma"), nil
 			}
 		}}
 	})
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
@@ -3036,8 +3036,8 @@ func TestQuiesceThreeAgents_AwaitTerminateAwait(t *testing.T) {
 	require.Len(t, ws.Agents, 2)
 	for _, a := range ws.Agents {
 		assert.Contains(t, []string{"alpha", "gamma"}, a.ID)
-		assert.Equal(t, wfstate.AgentStatusAwaiting, a.Status,
-			"agent %s should be awaiting", a.ID)
+		assert.Equal(t, wfstate.AgentStatusAsking, a.Status,
+			"agent %s should be asking", a.ID)
 	}
 }
 
@@ -3048,12 +3048,12 @@ func TestQuiescePointEmitsWorkflowPausedAndPersistsState(t *testing.T) {
 		{ID: "beta", CurrentState: "B.md"},
 	})
 
-	var awaitProcessed atomic.Bool
+	var askProcessed atomic.Bool
 	var pausedEvents []events.WorkflowPaused
 
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(_ events.AgentAwaitStarted) {
-			awaitProcessed.Store(true)
+		bus.Subscribe(b, func(_ events.AgentAskStarted) {
+			askProcessed.Store(true)
 		})
 		bus.Subscribe(b, func(e events.WorkflowPaused) {
 			pausedEvents = append(pausedEvents, e)
@@ -3064,10 +3064,10 @@ func TestQuiescePointEmitsWorkflowPausedAndPersistsState(t *testing.T) {
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			if agent.ID == "alpha" {
-				return awaitResult("ALPHA_NEXT.md", "Need input"), nil
+				return askResult("ALPHA_NEXT.md", "Need input"), nil
 			}
 			// Beta waits, then completes a goto → held at boundary.
-			for !awaitProcessed.Load() {
+			for !askProcessed.Load() {
 				select {
 				case <-ctx.Done():
 					return executors.ExecutionResult{}, ctx.Err()
@@ -3081,11 +3081,11 @@ func TestQuiescePointEmitsWorkflowPausedAndPersistsState(t *testing.T) {
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
 	// WorkflowPaused emitted with correct agent count.
 	require.Len(t, pausedEvents, 1)
@@ -3102,36 +3102,36 @@ func TestQuiescePointEmitsWorkflowPausedAndPersistsState(t *testing.T) {
 	require.NotNil(t, alpha)
 	require.NotNil(t, beta)
 
-	assert.Equal(t, wfstate.AgentStatusAwaiting, alpha.Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, alpha.Status)
 	assert.Equal(t, "", beta.Status) // active but held
 	assert.Equal(t, "BETA_NEXT.md", beta.CurrentState)
 }
 
 // --------------------------------------------------------------------------
-// Daemon-mode await strategy
+// Daemon-mode ask strategy
 // --------------------------------------------------------------------------
 
-func TestDaemonModeAwaitSiblingsKeepRunning(t *testing.T) {
-	// In DaemonMode, when alpha hits <await>, beta must NOT be held at the
+func TestDaemonModeAskSiblingsKeepRunning(t *testing.T) {
+	// In DaemonMode, when alpha hits <ask>, beta must NOT be held at the
 	// boundary — it should complete its goto and be relaunched normally.
-	// We verify beta advances through two states while alpha is awaiting.
+	// We verify beta advances through two states while alpha is asking.
 
 	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
 		{ID: "alpha", CurrentState: "A.md"},
 		{ID: "beta", CurrentState: "B1.md"},
 	})
 
-	inputCh := make(chan orchestrator.AwaitInput, 1)
+	inputCh := make(chan orchestrator.AskInput, 1)
 
 	var betaSteps atomic.Int32
 
-	var awaitEvents []events.AgentAwaitStarted
+	var askEvents []events.AgentAskStarted
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
-			awaitEvents = append(awaitEvents, e)
-			// Once alpha is awaiting, deliver input so the workflow terminates.
-			inputCh <- orchestrator.AwaitInput{
-				InputID:  e.InputID,
+		bus.Subscribe(b, func(e events.AgentAskStarted) {
+			askEvents = append(askEvents, e)
+			// Once alpha is asking, deliver input so the workflow terminates.
+			inputCh <- orchestrator.AskInput{
+				AskID:  e.AskID,
 				Response: "user-response",
 			}
 		})
@@ -3142,7 +3142,7 @@ func TestDaemonModeAwaitSiblingsKeepRunning(t *testing.T) {
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			switch {
 			case agent.ID == "alpha" && agent.CurrentState == "A.md":
-				return awaitResult("ALPHA_NEXT.md", "Need input"), nil
+				return askResult("ALPHA_NEXT.md", "Need input"), nil
 			case agent.ID == "alpha" && agent.CurrentState == "ALPHA_NEXT.md":
 				// After resume: terminate.
 				return resultExecResult("alpha-done"), nil
@@ -3160,9 +3160,9 @@ func TestDaemonModeAwaitSiblingsKeepRunning(t *testing.T) {
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.DaemonMode = true
-	opts.AwaitInputCh = inputCh
+	opts.AskInputCh = inputCh
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
@@ -3171,26 +3171,26 @@ func TestDaemonModeAwaitSiblingsKeepRunning(t *testing.T) {
 	assert.GreaterOrEqual(t, betaSteps.Load(), int32(2),
 		"beta should have run through both states, not been held at boundary")
 
-	// AgentAwaitStarted should have been emitted for alpha.
-	require.Len(t, awaitEvents, 1)
-	assert.Equal(t, "alpha", awaitEvents[0].AgentID)
+	// AgentAskStarted should have been emitted for alpha.
+	require.Len(t, askEvents, 1)
+	assert.Equal(t, "alpha", askEvents[0].AgentID)
 }
 
-func TestDaemonModeAwaitCallbackCalledWithCorrectParams(t *testing.T) {
-	// Verify AwaitCallback is called with the right agentID, inputID,
-	// prompt, and nextState when an agent hits <await> in daemon mode.
+func TestDaemonModeAskCallbackCalledWithCorrectParams(t *testing.T) {
+	// Verify AskCallback is called with the right agentID, askID,
+	// prompt, and nextState when an agent hits <ask> in daemon mode.
 
 	dir, wfID := setupWorkflow(t, "START.md")
 
-	inputCh := make(chan orchestrator.AwaitInput, 1)
+	inputCh := make(chan orchestrator.AskInput, 1)
 
-	var cbAgentID, cbInputID, cbPrompt, cbNextState string
+	var cbAgentID, cbAskID, cbPrompt, cbNextState string
 	var cbCalled atomic.Bool
 
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			if agent.CurrentState == "START.md" {
-				return awaitResult("DONE.md", "Please provide data"), nil
+				return askResult("DONE.md", "Please provide data"), nil
 			}
 			// After resume.
 			return resultExecResult("finished"), nil
@@ -3199,20 +3199,20 @@ func TestDaemonModeAwaitCallbackCalledWithCorrectParams(t *testing.T) {
 	defer orchestrator.ResetExecutorFactory()
 
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+		bus.Subscribe(b, func(e events.AgentAskStarted) {
 			// Deliver input so the workflow completes.
-			inputCh <- orchestrator.AwaitInput{InputID: e.InputID, Response: "data"}
+			inputCh <- orchestrator.AskInput{AskID: e.AskID, Response: "data"}
 		})
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.DaemonMode = true
-	opts.AwaitInputCh = inputCh
-	opts.AwaitCallback = func(agentID, inputID, prompt, nextState string, _ *parsing.FileAffordance, _ []wfstate.FileRecord) {
+	opts.AskInputCh = inputCh
+	opts.AskCallback = func(agentID, askID, prompt, nextState string, _ *parsing.FileAffordance, _ []wfstate.FileRecord) {
 		cbAgentID = agentID
-		cbInputID = inputID
+		cbAskID = askID
 		cbPrompt = prompt
 		cbNextState = nextState
 		cbCalled.Store(true)
@@ -3221,26 +3221,26 @@ func TestDaemonModeAwaitCallbackCalledWithCorrectParams(t *testing.T) {
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 
-	assert.True(t, cbCalled.Load(), "AwaitCallback should have been called")
+	assert.True(t, cbCalled.Load(), "AskCallback should have been called")
 	assert.Equal(t, "main", cbAgentID)
-	assert.NotEmpty(t, cbInputID)
+	assert.NotEmpty(t, cbAskID)
 	assert.Equal(t, "Please provide data", cbPrompt)
 	assert.Equal(t, "DONE.md", cbNextState)
 }
 
-func TestDaemonModeInputResumesAwaitingAgent(t *testing.T) {
-	// Single agent awaits, input arrives on AwaitInputCh → agent resumes
+func TestDaemonModeInputResumesAskingAgent(t *testing.T) {
+	// Single agent asks, input arrives on AskInputCh → agent resumes
 	// with PendingResult set, transitions to next state, and terminates.
 
 	dir, wfID := setupWorkflow(t, "START.md")
 
-	inputCh := make(chan orchestrator.AwaitInput, 1)
+	inputCh := make(chan orchestrator.AskInput, 1)
 
 	var capturedPendingResult string
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			if agent.CurrentState == "START.md" {
-				return awaitResult("NEXT.md", "Enter value"), nil
+				return askResult("NEXT.md", "Enter value"), nil
 			}
 			// After resume at NEXT.md: capture PendingResult and terminate.
 			if agent.PendingResult != nil {
@@ -3251,29 +3251,29 @@ func TestDaemonModeInputResumesAwaitingAgent(t *testing.T) {
 	})
 	defer orchestrator.ResetExecutorFactory()
 
-	var resumeEvents []events.AgentAwaitResumed
+	var resumeEvents []events.AgentAskResumed
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
-			inputCh <- orchestrator.AwaitInput{
-				InputID:  e.InputID,
+		bus.Subscribe(b, func(e events.AgentAskStarted) {
+			inputCh <- orchestrator.AskInput{
+				AskID:  e.AskID,
 				Response: "user-typed-value",
 			}
 		})
-		bus.Subscribe(b, func(e events.AgentAwaitResumed) {
+		bus.Subscribe(b, func(e events.AgentAskResumed) {
 			resumeEvents = append(resumeEvents, e)
 		})
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.DaemonMode = true
-	opts.AwaitInputCh = inputCh
+	opts.AskInputCh = inputCh
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 
-	// AgentAwaitResumed emitted.
+	// AgentAskResumed emitted.
 	require.Len(t, resumeEvents, 1)
 	assert.Equal(t, "main", resumeEvents[0].AgentID)
 
@@ -3281,16 +3281,16 @@ func TestDaemonModeInputResumesAwaitingAgent(t *testing.T) {
 	assert.Equal(t, "user-typed-value", capturedPendingResult)
 }
 
-func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
-	// Two agents each hit await at different times. Each gets independent
-	// input delivery via AwaitInputCh, resumes, and terminates.
+func TestDaemonModeMultipleAgentsAskIndependently(t *testing.T) {
+	// Two agents each hit ask at different times. Each gets independent
+	// input delivery via AskInputCh, resumes, and terminates.
 
 	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
 		{ID: "alpha", CurrentState: "A.md"},
 		{ID: "beta", CurrentState: "B.md"},
 	})
 
-	inputCh := make(chan orchestrator.AwaitInput, 2)
+	inputCh := make(chan orchestrator.AskInput, 2)
 
 	var mu sync.Mutex
 	pendingResults := map[string]string{}
@@ -3299,7 +3299,7 @@ func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			switch {
 			case agent.ID == "alpha" && agent.CurrentState == "A.md":
-				return awaitResult("A_NEXT.md", "Alpha input"), nil
+				return askResult("A_NEXT.md", "Alpha input"), nil
 			case agent.ID == "alpha" && agent.CurrentState == "A_NEXT.md":
 				if agent.PendingResult != nil {
 					mu.Lock()
@@ -3308,7 +3308,7 @@ func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
 				}
 				return resultExecResult("alpha-done"), nil
 			case agent.ID == "beta" && agent.CurrentState == "B.md":
-				return awaitResult("B_NEXT.md", "Beta input"), nil
+				return askResult("B_NEXT.md", "Beta input"), nil
 			case agent.ID == "beta" && agent.CurrentState == "B_NEXT.md":
 				if agent.PendingResult != nil {
 					mu.Lock()
@@ -3323,36 +3323,36 @@ func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
 	})
 	defer orchestrator.ResetExecutorFactory()
 
-	var awaitMu sync.Mutex
-	var awaitEvents []events.AgentAwaitStarted
+	var askMu sync.Mutex
+	var askEvents []events.AgentAskStarted
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
-			awaitMu.Lock()
-			awaitEvents = append(awaitEvents, e)
-			awaitMu.Unlock()
+		bus.Subscribe(b, func(e events.AgentAskStarted) {
+			askMu.Lock()
+			askEvents = append(askEvents, e)
+			askMu.Unlock()
 			// Deliver per-agent responses.
 			switch e.AgentID {
 			case "alpha":
-				inputCh <- orchestrator.AwaitInput{InputID: e.InputID, Response: "alpha-response"}
+				inputCh <- orchestrator.AskInput{AskID: e.AskID, Response: "alpha-response"}
 			case "beta":
-				inputCh <- orchestrator.AwaitInput{InputID: e.InputID, Response: "beta-response"}
+				inputCh <- orchestrator.AskInput{AskID: e.AskID, Response: "beta-response"}
 			}
 		})
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.DaemonMode = true
-	opts.AwaitInputCh = inputCh
+	opts.AskInputCh = inputCh
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 
-	// Both agents should have awaited.
-	awaitMu.Lock()
-	assert.Len(t, awaitEvents, 2)
-	awaitMu.Unlock()
+	// Both agents should have asked.
+	askMu.Lock()
+	assert.Len(t, askEvents, 2)
+	askMu.Unlock()
 
 	// Both agents received their individual responses.
 	mu.Lock()
@@ -3361,16 +3361,16 @@ func TestDaemonModeMultipleAgentsAwaitIndependently(t *testing.T) {
 	mu.Unlock()
 }
 
-// runResolvedInputTest runs a daemon-mode workflow that hits one <await>,
-// receives the supplied AwaitInput on AwaitInputCh, and then enters a second
-// <await> so the workflow stays alive long enough for the test to read
+// runResolvedInputTest runs a daemon-mode workflow that hits one <ask>,
+// receives the supplied AskInput on AskInputCh, and then enters a second
+// <ask> so the workflow stays alive long enough for the test to read
 // persisted state. It returns the captured PendingResult observed at the
-// post-await state and the on-disk WorkflowState after ctx cancellation.
-func runResolvedInputTest(t *testing.T, deliver orchestrator.AwaitInput) (string, *wfstate.WorkflowState) {
+// post-ask state and the on-disk WorkflowState after ctx cancellation.
+func runResolvedInputTest(t *testing.T, deliver orchestrator.AskInput) (string, *wfstate.WorkflowState) {
 	t.Helper()
 	dir, wfID := setupWorkflow(t, "START.md")
 
-	inputCh := make(chan orchestrator.AwaitInput, 1)
+	inputCh := make(chan orchestrator.AskInput, 1)
 
 	var capturedMu sync.Mutex
 	var capturedPendingResult string
@@ -3379,15 +3379,15 @@ func runResolvedInputTest(t *testing.T, deliver orchestrator.AwaitInput) (string
 		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			switch agent.CurrentState {
 			case "START.md":
-				return awaitResult("NEXT.md", "Need input"), nil
+				return askResult("NEXT.md", "Need input"), nil
 			case "NEXT.md":
 				capturedMu.Lock()
 				if agent.PendingResult != nil {
 					capturedPendingResult = *agent.PendingResult
 				}
 				capturedMu.Unlock()
-				// Re-await so the workflow stays alive long enough to observe state.
-				return awaitResult("DONE.md", "second prompt"), nil
+				// Re-ask so the workflow stays alive long enough to observe state.
+				return askResult("DONE.md", "second prompt"), nil
 			default:
 				return resultExecResult("done"), nil
 			}
@@ -3395,27 +3395,27 @@ func runResolvedInputTest(t *testing.T, deliver orchestrator.AwaitInput) (string
 	})
 	defer orchestrator.ResetExecutorFactory()
 
-	secondAwait := make(chan struct{})
-	var secondAwaitOnce sync.Once
+	secondAsk := make(chan struct{})
+	var secondAskOnce sync.Once
 	var startedCount atomic.Int32
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitStarted) {
+		bus.Subscribe(b, func(e events.AgentAskStarted) {
 			n := startedCount.Add(1)
 			if n == 1 {
 				di := deliver
-				di.InputID = e.InputID
+				di.AskID = e.AskID
 				inputCh <- di
 			} else {
-				secondAwaitOnce.Do(func() { close(secondAwait) })
+				secondAskOnce.Do(func() { close(secondAsk) })
 			}
 		})
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.DaemonMode = true
-	opts.AwaitInputCh = inputCh
+	opts.AskInputCh = inputCh
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -3426,11 +3426,11 @@ func runResolvedInputTest(t *testing.T, deliver orchestrator.AwaitInput) (string
 	}()
 
 	select {
-	case <-secondAwait:
+	case <-secondAsk:
 	case <-time.After(5 * time.Second):
 		cancel()
 		<-done
-		t.Fatal("workflow did not reach the second await")
+		t.Fatal("workflow did not reach the second ask")
 	}
 	cancel()
 	<-done
@@ -3444,11 +3444,11 @@ func runResolvedInputTest(t *testing.T, deliver orchestrator.AwaitInput) (string
 	return pr, ws
 }
 
-func TestDaemonModeAwaitResolvedInputRecorded_EmptyUploads(t *testing.T) {
+func TestDaemonModeAskResolvedInputRecorded_EmptyUploads(t *testing.T) {
 	// Delivering with empty uploads writes a ResolvedInput with empty
 	// UploadedFiles. The {{input}} ({{PendingResult}}) plumbing is
 	// unchanged.
-	pendingResult, ws := runResolvedInputTest(t, orchestrator.AwaitInput{
+	pendingResult, ws := runResolvedInputTest(t, orchestrator.AskInput{
 		Response: "user-typed-value",
 	})
 
@@ -3457,25 +3457,25 @@ func TestDaemonModeAwaitResolvedInputRecorded_EmptyUploads(t *testing.T) {
 
 	require.Len(t, ws.ResolvedInputs, 1, "expected exactly one ResolvedInput emitted on the daemon-mode resume")
 	ri := ws.ResolvedInputs[0]
-	assert.NotEmpty(t, ri.InputID)
+	assert.NotEmpty(t, ri.AskID)
 	assert.Equal(t, "main", ri.AgentID)
 	assert.Equal(t, "Need input", ri.Prompt)
 	assert.Equal(t, "NEXT.md", ri.NextState)
 	assert.Equal(t, "user-typed-value", ri.ResponseText)
 	assert.Empty(t, ri.UploadedFiles, "no uploads were delivered")
-	assert.False(t, ri.EnteredAt.IsZero(), "EnteredAt should be carried from AwaitEnteredAt")
+	assert.False(t, ri.EnteredAt.IsZero(), "EnteredAt should be carried from AskEnteredAt")
 	assert.False(t, ri.ResolvedAt.IsZero(), "ResolvedAt should be stamped at resume")
 	assert.False(t, ri.ResolvedAt.Before(ri.EnteredAt), "ResolvedAt must not precede EnteredAt")
 }
 
-func TestDaemonModeAwaitResolvedInputRecorded_NonEmptyUploads(t *testing.T) {
+func TestDaemonModeAskResolvedInputRecorded_NonEmptyUploads(t *testing.T) {
 	// Delivering with a non-empty uploads slice carries the FileRecords into
 	// ResolvedInput.UploadedFiles.
 	uploads := []wfstate.FileRecord{
 		{Name: "report.txt", Size: 42, ContentType: "text/plain", Source: "upload"},
 		{Name: "data.csv", Size: 1024, ContentType: "text/csv", Source: "upload"},
 	}
-	pendingResult, ws := runResolvedInputTest(t, orchestrator.AwaitInput{
+	pendingResult, ws := runResolvedInputTest(t, orchestrator.AskInput{
 		Response:      "with files",
 		UploadedFiles: uploads,
 	})
@@ -3489,15 +3489,15 @@ func TestDaemonModeAwaitResolvedInputRecorded_NonEmptyUploads(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// AwaitingInputError structured output
+// PendingAskError structured output
 // --------------------------------------------------------------------------
 
-func TestQuiesceSingleAgentReturnsAwaitingInputError(t *testing.T) {
-	// Single agent hits await with OnAwait="pause" → RunAllAgents returns
-	// *AwaitingInputError with correct fields.
+func TestQuiesceSingleAgentReturnsPendingAskError(t *testing.T) {
+	// Single agent hits ask with OnAsk="pause" → RunAllAgents returns
+	// *PendingAskError with correct fields.
 	dir, wfID := setupWorkflow(t, "START.md")
 
-	mock := newMock(awaitResult("NEXT.md", "Need input"))
+	mock := newMock(askResult("NEXT.md", "Need input"))
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
 	defer orchestrator.ResetExecutorFactory()
 
@@ -3505,34 +3505,34 @@ func TestQuiesceSingleAgentReturnsAwaitingInputError(t *testing.T) {
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
 
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
-	assert.Equal(t, "awaiting_input", awaitErr.Status)
-	assert.Equal(t, wfID, awaitErr.RunID)
-	assert.NotEmpty(t, awaitErr.Workflow)
-	assert.NotEmpty(t, awaitErr.Awaiting.InputID)
-	assert.Equal(t, "main", awaitErr.Awaiting.AgentID)
-	assert.Equal(t, "Need input", awaitErr.Awaiting.Prompt)
-	assert.Equal(t, 0, awaitErr.PendingCount)
-	assert.Contains(t, awaitErr.Resume, "--resume")
-	assert.Contains(t, awaitErr.Resume, wfID)
+	assert.Equal(t, "asking", askErr.Status)
+	assert.Equal(t, wfID, askErr.RunID)
+	assert.NotEmpty(t, askErr.Workflow)
+	assert.NotEmpty(t, askErr.Asking.AskID)
+	assert.Equal(t, "main", askErr.Asking.AgentID)
+	assert.Equal(t, "Need input", askErr.Asking.Prompt)
+	assert.Equal(t, 0, askErr.PendingCount)
+	assert.Contains(t, askErr.Resume, "--resume")
+	assert.Contains(t, askErr.Resume, wfID)
 
 	// State file should be written before the error is returned.
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
 	require.Len(t, ws.Agents, 1)
-	assert.Equal(t, wfstate.AgentStatusAwaiting, ws.Agents[0].Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, ws.Agents[0].Status)
 }
 
-func TestQuiesceMultipleAgentsAwaitPendingCount(t *testing.T) {
-	// Two agents both hit await → AwaitingInputError has pending_count=1
-	// (the second agent is in the pre-await queue).
+func TestQuiesceMultipleAgentsAskPendingCount(t *testing.T) {
+	// Two agents both hit ask → PendingAskError has pending_count=1
+	// (the second agent is in the pre-ask queue).
 	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
 		{ID: "alpha", CurrentState: "A.md"},
 		{ID: "beta", CurrentState: "B.md"},
@@ -3541,9 +3541,9 @@ func TestQuiesceMultipleAgentsAwaitPendingCount(t *testing.T) {
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			if agent.ID == "alpha" {
-				return awaitResult("ALPHA_NEXT.md", "Input 1"), nil
+				return askResult("ALPHA_NEXT.md", "Input 1"), nil
 			}
-			return awaitResult("BETA_NEXT.md", "Input 2"), nil
+			return askResult("BETA_NEXT.md", "Input 2"), nil
 		}}
 	})
 	defer orchestrator.ResetExecutorFactory()
@@ -3552,30 +3552,30 @@ func TestQuiesceMultipleAgentsAwaitPendingCount(t *testing.T) {
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
 
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
-	assert.Equal(t, "awaiting_input", awaitErr.Status)
-	assert.Equal(t, wfID, awaitErr.RunID)
-	// The first agent to await becomes the active await; the second is pending.
-	assert.Equal(t, 1, awaitErr.PendingCount)
-	assert.NotEmpty(t, awaitErr.Awaiting.InputID)
-	assert.NotEmpty(t, awaitErr.Awaiting.AgentID)
-	assert.NotEmpty(t, awaitErr.Awaiting.Prompt)
+	assert.Equal(t, "asking", askErr.Status)
+	assert.Equal(t, wfID, askErr.RunID)
+	// The first agent to ask becomes the active ask; the second is pending.
+	assert.Equal(t, 1, askErr.PendingCount)
+	assert.NotEmpty(t, askErr.Asking.AskID)
+	assert.NotEmpty(t, askErr.Asking.AgentID)
+	assert.NotEmpty(t, askErr.Asking.Prompt)
 }
 
 // --------------------------------------------------------------------------
-// Resume-from-await: --input delivery on --resume
+// Resume-from-ask: --input delivery on --resume
 // --------------------------------------------------------------------------
 
-// setupAwaitingState creates a state file with the given agents already in
-// the awaiting status, simulating a prior run that quiesced at an <await>.
-func setupAwaitingState(t *testing.T, agents []wfstate.AgentState) (stateDir, workflowID string) {
+// setupAskingState creates a state file with the given agents already in
+// the asking status, simulating a prior run that quiesced at an <ask>.
+func setupAskingState(t *testing.T, agents []wfstate.AgentState) (stateDir, workflowID string) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	stateDir = filepath.Join(tmpDir, ".raymond", "state")
@@ -3593,7 +3593,7 @@ func setupAwaitingState(t *testing.T, agents []wfstate.AgentState) (stateDir, wo
 		}
 	}
 
-	workflowID = "test-resume-await"
+	workflowID = "test-resume-ask"
 	ws := &wfstate.WorkflowState{
 		WorkflowID: workflowID,
 		ScopeDir:   scopeDir,
@@ -3603,18 +3603,18 @@ func setupAwaitingState(t *testing.T, agents []wfstate.AgentState) (stateDir, wo
 	return stateDir, workflowID
 }
 
-func TestResumeWithInputDeliversToAwaitAgent(t *testing.T) {
-	// Resume with --input delivers input to the active awaiting agent,
+func TestResumeWithInputDeliversToAskAgent(t *testing.T) {
+	// Resume with --input delivers input to the active asking agent,
 	// agent transitions to next state with PendingResult ({{input}}) set,
-	// and AgentAwaitResumed event is emitted.
-	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+	// and AgentAskResumed event is emitted.
+	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
 			ID:             "main",
 			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAwaiting,
-			AwaitPrompt:    "Please provide data",
-			AwaitNextState: "NEXT.md",
-			AwaitInputID:   "inp_main_123",
+			Status:         wfstate.AgentStatusAsking,
+			AskPrompt:    "Please provide data",
+			AskNextState: "NEXT.md",
+			AskID:   "ask_main_123",
 		},
 	})
 
@@ -3629,49 +3629,49 @@ func TestResumeWithInputDeliversToAwaitAgent(t *testing.T) {
 	})
 	defer orchestrator.ResetExecutorFactory()
 
-	var resumeEvents []events.AgentAwaitResumed
+	var resumeEvents []events.AgentAskResumed
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitResumed) {
+		bus.Subscribe(b, func(e events.AgentAskResumed) {
 			resumeEvents = append(resumeEvents, e)
 		})
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.NoResetPaused = true
-	opts.AwaitInput = "user-response"
+	opts.AskInput = "user-response"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 
-	// AgentAwaitResumed emitted with correct fields.
+	// AgentAskResumed emitted with correct fields.
 	require.Len(t, resumeEvents, 1)
 	assert.Equal(t, "main", resumeEvents[0].AgentID)
-	assert.Equal(t, "inp_main_123", resumeEvents[0].InputID)
+	assert.Equal(t, "ask_main_123", resumeEvents[0].AskID)
 
 	// PendingResult was delivered as {{input}}.
 	assert.Equal(t, "user-response", capturedPendingResult)
 }
 
-func TestResumeWithInputBindsPendingInputIDForOneState(t *testing.T) {
-	// When an await resolves, PendingInputID is bound for the immediately-
+func TestResumeWithInputBindsPendingAskIDForOneState(t *testing.T) {
+	// When an ask resolves, PendingAskID is bound for the immediately-
 	// following state and cleared before the state two transitions deep runs.
-	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
 			ID:             "main",
 			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAwaiting,
-			AwaitPrompt:    "Please provide data",
-			AwaitNextState: "NEXT.md",
-			AwaitInputID:   "inp_main_xyz",
+			Status:         wfstate.AgentStatusAsking,
+			AskPrompt:    "Please provide data",
+			AskNextState: "NEXT.md",
+			AskID:   "ask_main_xyz",
 		},
 	})
 
-	captured := map[string]string{} // state name -> PendingInputID seen
+	captured := map[string]string{} // state name -> PendingAskID seen
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
-			captured[agent.CurrentState] = agent.PendingInputID
+			captured[agent.CurrentState] = agent.PendingAskID
 			switch agent.CurrentState {
 			case "NEXT.md":
 				return gotoResult("DEEP.md"), nil
@@ -3683,42 +3683,42 @@ func TestResumeWithInputBindsPendingInputIDForOneState(t *testing.T) {
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.NoResetPaused = true
-	opts.AwaitInput = "user-response"
+	opts.AskInput = "user-response"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 
 	// Immediately-following state sees the input ID.
-	assert.Equal(t, "inp_main_xyz", captured["NEXT.md"],
-		"PendingInputID should be set on the state running right after the await resolves")
+	assert.Equal(t, "ask_main_xyz", captured["NEXT.md"],
+		"PendingAskID should be set on the state running right after the ask resolves")
 
 	// State two transitions deep does not.
 	assert.Equal(t, "", captured["DEEP.md"],
-		"PendingInputID should be cleared after the immediately-following state runs")
+		"PendingAskID should be cleared after the immediately-following state runs")
 }
 
-func TestResumeWithInputClearsPendingInputIDAcrossMultiFork(t *testing.T) {
+func TestResumeWithInputClearsPendingAskIDAcrossMultiFork(t *testing.T) {
 	// When the immediately-following state emits a multi-fork (fork + goto
-	// continuation), PendingInputID must be cleared on the caller's
-	// continuation, just like PendingResult. Otherwise {{input_id}} would
+	// continuation), PendingAskID must be cleared on the caller's
+	// continuation, just like PendingResult. Otherwise {{ask_id}} would
 	// leak into a state two transitions deep.
-	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
 			ID:             "main",
 			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAwaiting,
-			AwaitPrompt:    "Please provide data",
-			AwaitNextState: "NEXT.md",
-			AwaitInputID:   "inp_mf_xyz",
+			Status:         wfstate.AgentStatusAsking,
+			AskPrompt:    "Please provide data",
+			AskNextState: "NEXT.md",
+			AskID:   "ask_mf_xyz",
 		},
 	})
 
-	captured := map[string]string{} // state name -> PendingInputID seen
+	captured := map[string]string{} // state name -> PendingAskID seen
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
-			captured[agent.CurrentState+"@"+agent.ID] = agent.PendingInputID
+			captured[agent.CurrentState+"@"+agent.ID] = agent.PendingAskID
 			switch agent.CurrentState {
 			case "NEXT.md":
 				// multi-fork: one fork worker + one goto continuation
@@ -3734,33 +3734,33 @@ func TestResumeWithInputClearsPendingInputIDAcrossMultiFork(t *testing.T) {
 	defer orchestrator.ResetExecutorFactory()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.NoResetPaused = true
-	opts.AwaitInput = "user-response"
+	opts.AskInput = "user-response"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
 
 	// Immediately-following state sees the input ID.
-	assert.Equal(t, "inp_mf_xyz", captured["NEXT.md@main"],
-		"PendingInputID should be set on the post-await state")
+	assert.Equal(t, "ask_mf_xyz", captured["NEXT.md@main"],
+		"PendingAskID should be set on the post-ask state")
 
 	// Continuation after the multi-fork must NOT see it.
 	assert.Equal(t, "", captured["CONT.md@main"],
-		"PendingInputID should be cleared on the multi-fork continuation")
+		"PendingAskID should be cleared on the multi-fork continuation")
 }
 
 func TestResumeWithoutInputRepresentsPrompt(t *testing.T) {
-	// Resume without --input when agents are awaiting → re-presents the
-	// active await's prompt via AwaitingInputError.
-	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+	// Resume without --input when agents are asking → re-presents the
+	// active ask's prompt via PendingAskError.
+	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
 			ID:             "main",
 			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAwaiting,
-			AwaitPrompt:    "What is the answer?",
-			AwaitNextState: "NEXT.md",
-			AwaitInputID:   "inp_main_456",
+			Status:         wfstate.AgentStatusAsking,
+			AskPrompt:    "What is the answer?",
+			AskNextState: "NEXT.md",
+			AskID:   "ask_main_456",
 		},
 	})
 
@@ -3773,34 +3773,34 @@ func TestResumeWithoutInputRepresentsPrompt(t *testing.T) {
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.NoResetPaused = true
-	// AwaitInput deliberately left empty.
+	// AskInput deliberately left empty.
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
 
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
-	assert.Equal(t, "awaiting_input", awaitErr.Status)
-	assert.Equal(t, wfID, awaitErr.RunID)
-	assert.Equal(t, "main", awaitErr.Awaiting.AgentID)
-	assert.Equal(t, "inp_main_456", awaitErr.Awaiting.InputID)
-	assert.Equal(t, "What is the answer?", awaitErr.Awaiting.Prompt)
-	assert.Equal(t, 0, awaitErr.PendingCount)
-	assert.Contains(t, awaitErr.Resume, "--resume")
-	assert.Contains(t, awaitErr.Resume, wfID)
+	assert.Equal(t, "asking", askErr.Status)
+	assert.Equal(t, wfID, askErr.RunID)
+	assert.Equal(t, "main", askErr.Asking.AgentID)
+	assert.Equal(t, "ask_main_456", askErr.Asking.AskID)
+	assert.Equal(t, "What is the answer?", askErr.Asking.Prompt)
+	assert.Equal(t, 0, askErr.PendingCount)
+	assert.Contains(t, askErr.Resume, "--resume")
+	assert.Contains(t, askErr.Resume, wfID)
 
-	// State should NOT be modified — agent still awaiting.
+	// State should NOT be modified — agent still asking.
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
 	require.Len(t, ws.Agents, 1)
-	assert.Equal(t, wfstate.AgentStatusAwaiting, ws.Agents[0].Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, ws.Agents[0].Status)
 }
 
-func TestResumeWithInputNoAwaitingAgentsErrors(t *testing.T) {
-	// Resume with --input when no agents are awaiting → clear error.
+func TestResumeWithInputNoAskingAgentsErrors(t *testing.T) {
+	// Resume with --input when no agents are asking → clear error.
 	dir, wfID := setupWorkflow(t, "START.md")
 
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
@@ -3812,34 +3812,34 @@ func TestResumeWithInputNoAwaitingAgentsErrors(t *testing.T) {
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.AwaitInput = "some-value"
+	opts.AskInput = "some-value"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no agents are awaiting input")
+	assert.Contains(t, err.Error(), "no agents are pending an ask")
 	assert.Contains(t, err.Error(), "--input")
-	assert.Contains(t, err.Error(), "<await>")
+	assert.Contains(t, err.Error(), "<ask>")
 }
 
-func TestResumeMultipleAwaitsDeliverSequentially(t *testing.T) {
-	// Two agents awaiting: first resume delivers to agent A and returns
+func TestResumeMultipleAsksDeliverSequentially(t *testing.T) {
+	// Two agents asking: first resume delivers to agent A and returns
 	// agent B's prompt. Second resume delivers to agent B, all proceed.
-	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
 			ID:             "alpha",
 			CurrentState:   "A.md",
-			Status:         wfstate.AgentStatusAwaiting,
-			AwaitPrompt:    "Alpha needs input",
-			AwaitNextState: "A_NEXT.md",
-			AwaitInputID:   "inp_alpha_1",
+			Status:         wfstate.AgentStatusAsking,
+			AskPrompt:    "Alpha needs input",
+			AskNextState: "A_NEXT.md",
+			AskID:   "ask_alpha_1",
 		},
 		{
 			ID:             "beta",
 			CurrentState:   "B.md",
-			Status:         wfstate.AgentStatusAwaiting,
-			AwaitPrompt:    "Beta needs input",
-			AwaitNextState: "B_NEXT.md",
-			AwaitInputID:   "inp_beta_1",
+			Status:         wfstate.AgentStatusAsking,
+			AskPrompt:    "Beta needs input",
+			AskNextState: "B_NEXT.md",
+			AskID:   "ask_beta_1",
 		},
 	})
 
@@ -3850,37 +3850,37 @@ func TestResumeMultipleAwaitsDeliverSequentially(t *testing.T) {
 	})
 	defer orchestrator.ResetExecutorFactory()
 
-	var resumeEvents []events.AgentAwaitResumed
+	var resumeEvents []events.AgentAskResumed
 	orchestrator.SetBusHook(func(b *bus.Bus) {
-		bus.Subscribe(b, func(e events.AgentAwaitResumed) {
+		bus.Subscribe(b, func(e events.AgentAskResumed) {
 			resumeEvents = append(resumeEvents, e)
 		})
 	})
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.NoResetPaused = true
-	opts.AwaitInput = "alpha-answer"
+	opts.AskInput = "alpha-answer"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
 
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr), "expected *AwaitingInputError, got %T: %v", err, err)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr), "expected *PendingAskError, got %T: %v", err, err)
 
 	// Beta's prompt is returned.
-	assert.Equal(t, "beta", awaitErr.Awaiting.AgentID)
-	assert.Equal(t, "inp_beta_1", awaitErr.Awaiting.InputID)
-	assert.Equal(t, "Beta needs input", awaitErr.Awaiting.Prompt)
-	assert.Equal(t, 0, awaitErr.PendingCount, "no more pending after beta")
+	assert.Equal(t, "beta", askErr.Asking.AgentID)
+	assert.Equal(t, "ask_beta_1", askErr.Asking.AskID)
+	assert.Equal(t, "Beta needs input", askErr.Asking.Prompt)
+	assert.Equal(t, 0, askErr.PendingCount, "no more pending after beta")
 
-	// Alpha's delivery emitted AgentAwaitResumed.
+	// Alpha's delivery emitted AgentAskResumed.
 	require.Len(t, resumeEvents, 1)
 	assert.Equal(t, "alpha", resumeEvents[0].AgentID)
-	assert.Equal(t, "inp_alpha_1", resumeEvents[0].InputID)
+	assert.Equal(t, "ask_alpha_1", resumeEvents[0].AskID)
 
-	// Verify persisted state: alpha is now active with PendingResult, beta still awaiting.
+	// Verify persisted state: alpha is now active with PendingResult, beta still asking.
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
 	require.Len(t, ws.Agents, 2)
@@ -3891,12 +3891,12 @@ func TestResumeMultipleAwaitsDeliverSequentially(t *testing.T) {
 	assert.Equal(t, "A_NEXT.md", alphaAgent.CurrentState)
 	require.NotNil(t, alphaAgent.PendingResult)
 	assert.Equal(t, "alpha-answer", *alphaAgent.PendingResult)
-	assert.Empty(t, alphaAgent.AwaitPrompt)
-	assert.Empty(t, alphaAgent.AwaitInputID)
+	assert.Empty(t, alphaAgent.AskPrompt)
+	assert.Empty(t, alphaAgent.AskID)
 
 	betaAgent := findTestAgent(ws.Agents, "beta")
 	require.NotNil(t, betaAgent)
-	assert.Equal(t, wfstate.AgentStatusAwaiting, betaAgent.Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, betaAgent.Status)
 
 	// -- Second resume: deliver to beta, all agents proceed --
 
@@ -3907,29 +3907,29 @@ func TestResumeMultipleAwaitsDeliverSequentially(t *testing.T) {
 		}}
 	})
 
-	opts.AwaitInput = "beta-answer"
+	opts.AskInput = "beta-answer"
 	err = orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err, "second resume should complete without error")
 
-	// Beta's delivery emitted AgentAwaitResumed.
+	// Beta's delivery emitted AgentAskResumed.
 	require.Len(t, resumeEvents, 1)
 	assert.Equal(t, "beta", resumeEvents[0].AgentID)
 }
 
-func TestResumeAwaitWithCallStack(t *testing.T) {
-	// An agent with a non-empty call stack awaits. On resume, the input is
+func TestResumeAskWithCallStack(t *testing.T) {
+	// An agent with a non-empty call stack asks. On resume, the input is
 	// delivered, agent transitions, and the stack is preserved.
-	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
+	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
 			ID:           "main",
 			CurrentState: "INNER.md",
-			Status:       wfstate.AgentStatusAwaiting,
+			Status:       wfstate.AgentStatusAsking,
 			Stack: []wfstate.StackFrame{
 				{State: "OUTER_RETURN.md"},
 			},
-			AwaitPrompt:    "Need confirmation",
-			AwaitNextState: "INNER_NEXT.md",
-			AwaitInputID:   "inp_main_stack",
+			AskPrompt:    "Need confirmation",
+			AskNextState: "INNER_NEXT.md",
+			AskID:   "ask_main_stack",
 		},
 	})
 
@@ -3956,9 +3956,9 @@ func TestResumeAwaitWithCallStack(t *testing.T) {
 	defer orchestrator.ResetBusHook()
 
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 	opts.NoResetPaused = true
-	opts.AwaitInput = "confirmed"
+	opts.AskInput = "confirmed"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err)
@@ -3971,8 +3971,8 @@ func TestResumeAwaitWithCallStack(t *testing.T) {
 	assert.Equal(t, "confirmed", capturedPendingResult)
 }
 
-func TestResumeAwaitSerializationRoundTrip(t *testing.T) {
-	// End-to-end: first run quiesces at await, second run resumes with
+func TestResumeAskSerializationRoundTrip(t *testing.T) {
+	// End-to-end: first run quiesces at ask, second run resumes with
 	// input, workflow completes. Validates that persisted state survives
 	// the round-trip.
 	dir, wfID := setupWorkflow(t, "START.md")
@@ -3982,7 +3982,7 @@ func TestResumeAwaitSerializationRoundTrip(t *testing.T) {
 		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
 			callCount.Add(1)
 			if agent.CurrentState == "START.md" {
-				return awaitResult("FINISH.md", "Give me data"), nil
+				return askResult("FINISH.md", "Give me data"), nil
 			}
 			// FINISH.md: terminate.
 			return resultExecResult("workflow-complete"), nil
@@ -3993,25 +3993,25 @@ func TestResumeAwaitSerializationRoundTrip(t *testing.T) {
 	orchestrator.SetBusHook(func(_ *bus.Bus) {})
 	defer orchestrator.ResetBusHook()
 
-	// -- Run 1: agent hits await, quiesces --
+	// -- Run 1: agent hits ask, quiesces --
 	opts := defaultOpts(dir)
-	opts.OnAwait = "pause"
+	opts.OnAsk = "pause"
 
 	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.Error(t, err)
-	var awaitErr *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &awaitErr))
-	assert.Equal(t, "Give me data", awaitErr.Awaiting.Prompt)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr))
+	assert.Equal(t, "Give me data", askErr.Asking.Prompt)
 
-	// Verify state was written with awaiting agent.
+	// Verify state was written with asking agent.
 	ws, readErr := wfstate.ReadState(wfID, dir)
 	require.NoError(t, readErr)
 	require.Len(t, ws.Agents, 1)
-	assert.Equal(t, wfstate.AgentStatusAwaiting, ws.Agents[0].Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, ws.Agents[0].Status)
 
 	// -- Run 2: resume with input, workflow completes --
 	opts.NoResetPaused = true
-	opts.AwaitInput = "the-data"
+	opts.AskInput = "the-data"
 
 	err = orchestrator.RunAllAgents(context.Background(), wfID, opts)
 	require.NoError(t, err, "resumed workflow should complete")

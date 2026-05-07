@@ -123,7 +123,7 @@ backend.
 | `<reset>` | Identical: discards the current session ID, starts the next state with no `--resume`. |
 | `<call>` | **Degrades to `<function>` semantics on Copilot.** On Claude, `<call>` sets `ForkSessionID` ([transitions.go:446](../internal/transitions/transitions.go)) so the callee inherits the caller's transcript via `--fork-session`. Copilot cannot fork, so the callee runs with a fresh session and no transcript. The caller's session is still resumed on return. Lint warns. See §5.1. |
 | `<function>` | Identical (fresh session by design on both backends). |
-| `<await>` | Identical. Await semantics (suspend the agent, expose a prompt to the human, resume on input) live above the backend layer; file-bearing awaits work without change. |
+| `<ask>` | Identical. Ask semantics (suspend the agent, expose a prompt to the human, resume on input) live above the backend layer; file-bearing asks work without change. |
 | `<result>` | Identical. |
 | `<fork>` (parallel agents) | Identical. `<fork>` already uses a fresh session on Claude (`SessionID: nil` in [transitions.go:485](../internal/transitions/transitions.go)); no transcript carry-over to lose. Template variables passed via `ForkAttributes` work unchanged. |
 | `<call-workflow>` | **Degrades to `<function-workflow>` semantics on Copilot**, for the same reason as `<call>`. Lint warns. See §5.1. |
@@ -405,7 +405,7 @@ deferred:
 The Copilot backend is considered complete when:
 
 1. A workflow declaring `backend: copilot` runs end-to-end with the
-   same `<goto>`, `<reset>`, `<call>`, `<function>`, `<await>`,
+   same `<goto>`, `<reset>`, `<call>`, `<function>`, `<ask>`,
    `<result>` semantics as the same workflow on Claude — verified by
    parallel test workflows in `workflows/test_cases/backends/`.
 2. `<call>` runs and the lint warning fires; the callee receives a

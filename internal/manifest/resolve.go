@@ -16,7 +16,7 @@ import (
 //
 //   - "true"  → always returns true.
 //   - "false" → always returns false.
-//   - "auto"  → scans state files for await transitions, including transitive
+//   - "auto"  → scans state files for ask transitions, including transitive
 //     propagation through call-workflow and function-workflow targets.
 //
 // fetcher is used for resolving remote cross-workflow targets (may be nil if
@@ -34,7 +34,7 @@ func ResolveRequiresHumanInput(m *Manifest, scopeDir string, fetcher specifier.F
 	}
 }
 
-// scanScopeForHumanInput recursively scans a workflow scope for await
+// scanScopeForHumanInput recursively scans a workflow scope for ask
 // transitions. It dispatches to YAML-specific or file-based scanning depending
 // on the scope type, and follows call-workflow / function-workflow targets
 // transitively.
@@ -92,7 +92,7 @@ func scanFileScopeForHumanInput(scopeDir string, fetcher specifier.Fetcher, visi
 		}
 		for _, entry := range p.AllowedTransitions {
 			tag := entry["tag"]
-			if tag == "await" {
+			if tag == "ask" {
 				return true, nil
 			}
 			if (tag == "call-workflow" || tag == "function-workflow") && entry["target"] != "" {
@@ -104,7 +104,7 @@ func scanFileScopeForHumanInput(scopeDir string, fetcher specifier.Fetcher, visi
 	return checkCrossWorkflowTargets(crossTargets, scopeDir, fetcher, visited)
 }
 
-// scanYamlScopeForHumanInput scans a YAML scope's states for await transitions.
+// scanYamlScopeForHumanInput scans a YAML scope's states for ask transitions.
 func scanYamlScopeForHumanInput(yamlPath string, fetcher specifier.Fetcher, visited map[string]bool) (bool, error) {
 	wf, err := yamlscope.Parse(yamlPath)
 	if err != nil {
@@ -117,7 +117,7 @@ func scanYamlScopeForHumanInput(yamlPath string, fetcher specifier.Fetcher, visi
 		st := wf.States[name]
 		for _, entry := range st.AllowedTransitions {
 			tag := entry["tag"]
-			if tag == "await" {
+			if tag == "ask" {
 				return true, nil
 			}
 			if (tag == "call-workflow" || tag == "function-workflow") && entry["target"] != "" {

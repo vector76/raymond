@@ -91,7 +91,7 @@ type MCPServer struct {
 	nextReqID        atomic.Int64
 
 	// Active raymond_await calls that support elicitation (runID → struct{}).
-	activeAwaits sync.Map
+	activeAsks sync.Map
 }
 
 // NewMCPServer creates an MCPServer wired to the given registry and run manager.
@@ -128,27 +128,27 @@ func (s *MCPServer) HasElicitation() bool {
 	return s.hasElicitation
 }
 
-// HandleAwaitNotification is called by the RunManager's await notifier when
-// an agent enters <await>. If there is an active raymond_await call with
+// HandleAskNotification is called by the RunManager's ask notifier when
+// an agent enters <ask>. If there is an active raymond_await call with
 // elicitation support for the run, it issues an elicitation request to the
 // MCP client and delivers the response.
 //
-// Awaits that declare upload affordance (slot or bucket mode) are not
+// Asks that declare upload affordance (slot or bucket mode) are not
 // delivered via MCP: the elicitation channel cannot asymmetrically carry a
 // rejection of a text-only response, so we leave the input pending and let
 // the user complete it via the HTTP UI. A warning is logged for visibility.
 //
-// Display-only awaits are delivered via elicitation with the prompt
+// Display-only asks are delivered via elicitation with the prompt
 // augmented by absolute URLs for the staged files so an MCP client can
 // fetch them out of band.
-func (s *MCPServer) HandleAwaitNotification(runID, inputID, prompt string) {
-	if _, ok := s.activeAwaits.Load(runID); !ok {
+func (s *MCPServer) HandleAskNotification(runID, askID, prompt string) {
+	if _, ok := s.activeAsks.Load(runID); !ok {
 		return
 	}
 
-	pi, ok := s.lookupPendingInput(inputID)
+	pi, ok := s.lookupPendingAsk(askID)
 	if ok && requiresUpload(pi.FileAffordance) {
-		log.Printf("mcp: skipping elicitation for input %q (run %q): upload affordance present, deliver via HTTP UI", inputID, runID)
+		log.Printf("mcp: skipping elicitation for input %q (run %q): upload affordance present, deliver via HTTP UI", askID, runID)
 		return
 	}
 
@@ -162,22 +162,22 @@ func (s *MCPServer) HandleAwaitNotification(runID, inputID, prompt string) {
 		if err != nil {
 			return // elicitation failed; input stays pending for manual delivery
 		}
-		s.runManager.DeliverInput(runID, inputID, response, nil)
+		s.runManager.DeliverInput(runID, askID, response, nil)
 	}()
 }
 
-// lookupPendingInput returns the registered PendingInput for the given input
+// lookupPendingAsk returns the registered PendingAsk for the given input
 // ID, if the registry is configured and the input is still pending.
-func (s *MCPServer) lookupPendingInput(inputID string) (*PendingInput, bool) {
+func (s *MCPServer) lookupPendingAsk(askID string) (*PendingAsk, bool) {
 	if s.pendingRegistry == nil {
 		return nil, false
 	}
-	return s.pendingRegistry.Get(inputID)
+	return s.pendingRegistry.Get(askID)
 }
 
 // requiresUpload reports whether the affordance includes any non-zero upload
 // affordance (slot mode with declared slots, or bucket mode). Display-only
-// and text-only awaits do not require uploads.
+// and text-only asks do not require uploads.
 func requiresUpload(fa *parsing.FileAffordance) bool {
 	if fa == nil {
 		return false
@@ -193,7 +193,7 @@ func requiresUpload(fa *parsing.FileAffordance) bool {
 // files to the prompt so an MCP client can fetch them out of band. Returns
 // the prompt unchanged when there are no staged files or no base URL is
 // configured.
-func (s *MCPServer) augmentPromptWithFileURLs(prompt string, pi *PendingInput) string {
+func (s *MCPServer) augmentPromptWithFileURLs(prompt string, pi *PendingAsk) string {
 	if s.baseURL == "" || len(pi.StagedFiles) == 0 {
 		return prompt
 	}
@@ -207,18 +207,18 @@ func (s *MCPServer) augmentPromptWithFileURLs(prompt string, pi *PendingInput) s
 		b.WriteString("- ")
 		b.WriteString(f.Name)
 		b.WriteString(": ")
-		b.WriteString(s.fileContentURL(pi.RunID, pi.InputID, f.Name))
+		b.WriteString(s.fileContentURL(pi.RunID, pi.AskID, f.Name))
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
 // fileContentURL builds the absolute URL for the file content endpoint.
-func (s *MCPServer) fileContentURL(runID, inputID, name string) string {
-	return fmt.Sprintf("%s/runs/%s/inputs/%s/files/%s",
+func (s *MCPServer) fileContentURL(runID, askID, name string) string {
+	return fmt.Sprintf("%s/runs/%s/asks/%s/files/%s",
 		s.baseURL,
 		url.PathEscape(runID),
-		url.PathEscape(inputID),
+		url.PathEscape(askID),
 		url.PathEscape(name),
 	)
 }
@@ -459,7 +459,7 @@ func (s *MCPServer) toolDefinitions() []mcpToolDef {
 			},
 		},
 		{
-			Name:        "raymond_list_pending_inputs",
+			Name:        "raymond_list_pending_asks",
 			Description: "List all pending human-input requests across all runs.",
 			InputSchema: map[string]any{
 				"type":       "object",
@@ -467,21 +467,21 @@ func (s *MCPServer) toolDefinitions() []mcpToolDef {
 			},
 		},
 		{
-			Name:        "raymond_provide_input",
-			Description: "Provide a response to a pending human-input request.",
+			Name:        "raymond_answer_ask",
+			Description: "Answer a pending <ask> from a workflow run.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"input_id": map[string]any{
+					"ask_id": map[string]any{
 						"type":        "string",
-						"description": "ID of the pending input to respond to.",
+						"description": "ID of the pending ask to answer.",
 					},
 					"response": map[string]any{
 						"type":        "string",
 						"description": "The response text to deliver.",
 					},
 				},
-				"required": []string{"input_id", "response"},
+				"required": []string{"ask_id", "response"},
 			},
 		},
 	}
@@ -531,10 +531,10 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *j
 		result = s.toolAwait(params.Arguments)
 	case "raymond_cancel":
 		result = s.toolCancel(params.Arguments)
-	case "raymond_list_pending_inputs":
-		result = s.toolListPendingInputs()
-	case "raymond_provide_input":
-		result = s.toolProvideInput(params.Arguments)
+	case "raymond_list_pending_asks":
+		result = s.toolListPendingAsks()
+	case "raymond_answer_ask":
+		result = s.toolAnswerAsk(params.Arguments)
 	default:
 		result = mcpToolResult{
 			Content: []mcpContent{{Type: "text", Text: fmt.Sprintf("unknown tool: %s", params.Name)}},
@@ -741,16 +741,16 @@ func (s *MCPServer) toolCancel(args json.RawMessage) mcpToolResult {
 	}
 }
 
-func (s *MCPServer) toolListPendingInputs() mcpToolResult {
+func (s *MCPServer) toolListPendingAsks() mcpToolResult {
 	if s.pendingRegistry == nil {
-		return toolError("pending input registry not configured")
+		return toolError("pending ask registry not configured")
 	}
 
 	inputs := s.pendingRegistry.ListAll()
 
 	type item struct {
 		RunID      string  `json:"run_id"`
-		InputID    string  `json:"input_id"`
+		AskID    string  `json:"ask_id"`
 		WorkflowID string  `json:"workflow_id"`
 		Prompt     string  `json:"prompt"`
 		CreatedAt  string  `json:"created_at"`
@@ -761,7 +761,7 @@ func (s *MCPServer) toolListPendingInputs() mcpToolResult {
 	for i, pi := range inputs {
 		items[i] = item{
 			RunID:      pi.RunID,
-			InputID:    pi.InputID,
+			AskID:    pi.AskID,
 			WorkflowID: pi.WorkflowID,
 			Prompt:     pi.Prompt,
 			CreatedAt:  pi.CreatedAt.Format(time.RFC3339),
@@ -778,39 +778,39 @@ func (s *MCPServer) toolListPendingInputs() mcpToolResult {
 	}
 }
 
-func (s *MCPServer) toolProvideInput(args json.RawMessage) mcpToolResult {
+func (s *MCPServer) toolAnswerAsk(args json.RawMessage) mcpToolResult {
 	var params struct {
-		InputID  string `json:"input_id"`
+		AskID  string `json:"ask_id"`
 		Response string `json:"response"`
 	}
 	if err := unmarshalArgs(args, &params); err != nil {
 		return toolError("invalid arguments: " + err.Error())
 	}
-	if params.InputID == "" {
-		return toolError("input_id is required")
+	if params.AskID == "" {
+		return toolError("ask_id is required")
 	}
 	if params.Response == "" {
 		return toolError("response is required")
 	}
 
-	// Look up the pending input to get the run_id.
+	// Look up the pending ask to get the run_id.
 	if s.pendingRegistry == nil {
-		return toolError("pending input registry not configured")
+		return toolError("pending ask registry not configured")
 	}
-	pi, ok := s.pendingRegistry.Get(params.InputID)
+	pi, ok := s.pendingRegistry.Get(params.AskID)
 	if !ok {
-		return toolError(fmt.Sprintf("pending input %q not found", params.InputID))
+		return toolError(fmt.Sprintf("pending ask %q not found", params.AskID))
 	}
 	runID := pi.RunID
 
-	if err := s.runManager.DeliverInput("", params.InputID, params.Response, nil); err != nil {
+	if err := s.runManager.DeliverInput("", params.AskID, params.Response, nil); err != nil {
 		return toolError(err.Error())
 	}
 
 	result := map[string]any{
-		"run_id":   runID,
-		"input_id": params.InputID,
-		"status":   "resumed",
+		"run_id": runID,
+		"ask_id": params.AskID,
+		"status": "resumed",
 	}
 	data, _ := json.Marshal(result)
 	return mcpToolResult{
@@ -819,8 +819,8 @@ func (s *MCPServer) toolProvideInput(args json.RawMessage) mcpToolResult {
 }
 
 // toolAwaitWithElicitation is the elicitation-capable version of toolAwait.
-// It registers as an active await so that HandleAwaitNotification can issue
-// elicitation requests when the workflow hits <await>.
+// It registers as an active ask so that HandleAskNotification can issue
+// elicitation requests when the workflow hits <ask>.
 func (s *MCPServer) toolAwaitWithElicitation(ctx context.Context, args json.RawMessage) mcpToolResult {
 	var params struct {
 		RunID          string  `json:"run_id"`
@@ -838,26 +838,26 @@ func (s *MCPServer) toolAwaitWithElicitation(ctx context.Context, args json.RawM
 		timeout = time.Duration(params.TimeoutSeconds * float64(time.Second))
 	}
 
-	// Register this run as having an active elicitation-capable await.
-	s.activeAwaits.Store(params.RunID, struct{}{})
-	defer s.activeAwaits.Delete(params.RunID)
+	// Register this run as having an active elicitation-capable ask.
+	s.activeAsks.Store(params.RunID, struct{}{})
+	defer s.activeAsks.Delete(params.RunID)
 
 	// Elicit any inputs that were already pending before we registered.
 	if s.pendingRegistry != nil {
 		for _, pi := range s.pendingRegistry.ListByRun(params.RunID) {
 			if requiresUpload(pi.FileAffordance) {
-				log.Printf("mcp: skipping elicitation for input %q (run %q): upload affordance present, deliver via HTTP UI", pi.InputID, params.RunID)
+				log.Printf("mcp: skipping elicitation for input %q (run %q): upload affordance present, deliver via HTTP UI", pi.AskID, params.RunID)
 				continue
 			}
 			prompt := s.augmentPromptWithFileURLs(pi.Prompt, &pi)
-			inputID := pi.InputID
-			go func(inputID, prompt string) {
+			askID := pi.AskID
+			go func(askID, prompt string) {
 				response, err := s.sendElicitation(prompt)
 				if err != nil {
 					return
 				}
-				s.runManager.DeliverInput(params.RunID, inputID, response, nil)
-			}(inputID, prompt)
+				s.runManager.DeliverInput(params.RunID, askID, response, nil)
+			}(askID, prompt)
 		}
 	}
 

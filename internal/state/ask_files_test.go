@@ -17,7 +17,7 @@ import (
 // File-affordance and resolved-input persistence on AgentState / WorkflowState
 // ----------------------------------------------------------------------------
 
-func TestAgentStateAwaitFileAffordanceRoundTrip(t *testing.T) {
+func TestAgentStateAskFileAffordanceRoundTrip(t *testing.T) {
 	dir := stateDir(t)
 
 	fa := &parsing.FileAffordance{
@@ -41,15 +41,15 @@ func TestAgentStateAwaitFileAffordanceRoundTrip(t *testing.T) {
 				ID:                  "main",
 				CurrentState:        "REVIEW.md",
 				Stack:               []state.StackFrame{},
-				Status:              state.AgentStatusAwaiting,
-				AwaitPrompt:         "Upload corrected dataset",
-				AwaitNextState:      "PROCESS.md",
-				AwaitInputID:        "inp_main_42",
-				AwaitFileAffordance: fa,
-				AwaitStagedFiles: []state.FileRecord{
+				Status:              state.AgentStatusAsking,
+				AskPrompt:         "Upload corrected dataset",
+				AskNextState:      "PROCESS.md",
+				AskID:        "ask_main_42",
+				AskFileAffordance: fa,
+				AskStagedFiles: []state.FileRecord{
 					{Name: "Final Report", Size: 12345, ContentType: "application/pdf", Source: "display"},
 				},
-				AwaitEnteredAt: entered,
+				AskEnteredAt: entered,
 			},
 		},
 	}
@@ -61,26 +61,26 @@ func TestAgentStateAwaitFileAffordanceRoundTrip(t *testing.T) {
 	require.Len(t, got.Agents, 1)
 	a := got.Agents[0]
 
-	require.NotNil(t, a.AwaitFileAffordance)
-	assert.Equal(t, parsing.ModeBucket, a.AwaitFileAffordance.Mode)
-	assert.Equal(t, 3, a.AwaitFileAffordance.Bucket.MaxCount)
-	assert.Equal(t, int64(1024*1024), a.AwaitFileAffordance.Bucket.MaxSizePerFile)
-	assert.Equal(t, []string{"image/png", "image/jpeg"}, a.AwaitFileAffordance.Bucket.MIME)
-	require.Len(t, a.AwaitFileAffordance.DisplayFiles, 1)
-	assert.Equal(t, "out/report.pdf", a.AwaitFileAffordance.DisplayFiles[0].SourcePath)
-	assert.Equal(t, "Final Report", a.AwaitFileAffordance.DisplayFiles[0].DisplayName)
+	require.NotNil(t, a.AskFileAffordance)
+	assert.Equal(t, parsing.ModeBucket, a.AskFileAffordance.Mode)
+	assert.Equal(t, 3, a.AskFileAffordance.Bucket.MaxCount)
+	assert.Equal(t, int64(1024*1024), a.AskFileAffordance.Bucket.MaxSizePerFile)
+	assert.Equal(t, []string{"image/png", "image/jpeg"}, a.AskFileAffordance.Bucket.MIME)
+	require.Len(t, a.AskFileAffordance.DisplayFiles, 1)
+	assert.Equal(t, "out/report.pdf", a.AskFileAffordance.DisplayFiles[0].SourcePath)
+	assert.Equal(t, "Final Report", a.AskFileAffordance.DisplayFiles[0].DisplayName)
 
-	require.Len(t, a.AwaitStagedFiles, 1)
-	assert.Equal(t, "Final Report", a.AwaitStagedFiles[0].Name)
-	assert.Equal(t, int64(12345), a.AwaitStagedFiles[0].Size)
-	assert.Equal(t, "application/pdf", a.AwaitStagedFiles[0].ContentType)
-	assert.Equal(t, "display", a.AwaitStagedFiles[0].Source)
+	require.Len(t, a.AskStagedFiles, 1)
+	assert.Equal(t, "Final Report", a.AskStagedFiles[0].Name)
+	assert.Equal(t, int64(12345), a.AskStagedFiles[0].Size)
+	assert.Equal(t, "application/pdf", a.AskStagedFiles[0].ContentType)
+	assert.Equal(t, "display", a.AskStagedFiles[0].Source)
 
-	assert.True(t, a.AwaitEnteredAt.Equal(entered),
-		"AwaitEnteredAt should round-trip (got %v want %v)", a.AwaitEnteredAt, entered)
+	assert.True(t, a.AskEnteredAt.Equal(entered),
+		"AskEnteredAt should round-trip (got %v want %v)", a.AskEnteredAt, entered)
 }
 
-func TestAgentStateAwaitFileAffordanceOmittedWhenZero(t *testing.T) {
+func TestAgentStateAskFileAffordanceOmittedWhenZero(t *testing.T) {
 	agent := state.AgentState{
 		ID:           "main",
 		CurrentState: "START.md",
@@ -93,16 +93,16 @@ func TestAgentStateAwaitFileAffordanceOmittedWhenZero(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 
-	_, hasFA := raw["await_file_affordance"]
-	assert.False(t, hasFA, "await_file_affordance should be absent from JSON when nil")
-	_, hasStaged := raw["await_staged_files"]
-	assert.False(t, hasStaged, "await_staged_files should be absent from JSON when empty")
+	_, hasFA := raw["ask_file_affordance"]
+	assert.False(t, hasFA, "ask_file_affordance should be absent from JSON when nil")
+	_, hasStaged := raw["ask_staged_files"]
+	assert.False(t, hasStaged, "ask_staged_files should be absent from JSON when empty")
 	// Note: time.Time always serializes (omitempty has no effect on struct types),
 	// matching the convention already used by WorkflowState.StartedAt.
 }
 
-func TestAgentStateAwaitEnteredAtZeroValueRoundTrip(t *testing.T) {
-	// A zero AwaitEnteredAt round-trips through ReadState/WriteState as a zero
+func TestAgentStateAskEnteredAtZeroValueRoundTrip(t *testing.T) {
+	// A zero AskEnteredAt round-trips through ReadState/WriteState as a zero
 	// time, satisfying the "writes tolerate empty descriptors" guarantee.
 	dir := stateDir(t)
 	ws := &state.WorkflowState{
@@ -117,11 +117,11 @@ func TestAgentStateAwaitEnteredAtZeroValueRoundTrip(t *testing.T) {
 	got, err := state.ReadState("ent-zero", dir)
 	require.NoError(t, err)
 	require.Len(t, got.Agents, 1)
-	assert.True(t, got.Agents[0].AwaitEnteredAt.IsZero(),
-		"AwaitEnteredAt should round-trip as zero time")
+	assert.True(t, got.Agents[0].AskEnteredAt.IsZero(),
+		"AskEnteredAt should round-trip as zero time")
 }
 
-func TestAgentStateAwaitFileAffordanceBackwardCompatibility(t *testing.T) {
+func TestAgentStateAskFileAffordanceBackwardCompatibility(t *testing.T) {
 	// Pre-bead state JSON has none of the new file-affordance fields.
 	dir := stateDir(t)
 	raw := `{
@@ -140,9 +140,9 @@ func TestAgentStateAwaitFileAffordanceBackwardCompatibility(t *testing.T) {
 	require.Len(t, got.Agents, 1)
 	a := got.Agents[0]
 
-	assert.Nil(t, a.AwaitFileAffordance, "AwaitFileAffordance should be nil for old state files")
-	assert.Empty(t, a.AwaitStagedFiles, "AwaitStagedFiles should be empty for old state files")
-	assert.True(t, a.AwaitEnteredAt.IsZero(), "AwaitEnteredAt should be zero for old state files")
+	assert.Nil(t, a.AskFileAffordance, "AskFileAffordance should be nil for old state files")
+	assert.Empty(t, a.AskStagedFiles, "AskStagedFiles should be empty for old state files")
+	assert.True(t, a.AskEnteredAt.IsZero(), "AskEnteredAt should be zero for old state files")
 }
 
 func TestWorkflowStateResolvedInputsRoundTrip(t *testing.T) {
@@ -156,7 +156,7 @@ func TestWorkflowStateResolvedInputsRoundTrip(t *testing.T) {
 		Agents:     []state.AgentState{},
 		ResolvedInputs: []state.ResolvedInput{
 			{
-				InputID:      "inp_main_1",
+				AskID:      "ask_main_1",
 				AgentID:      "main",
 				Prompt:       "Please review",
 				NextState:    "AFTER.md",
@@ -179,7 +179,7 @@ func TestWorkflowStateResolvedInputsRoundTrip(t *testing.T) {
 
 	require.Len(t, got.ResolvedInputs, 1)
 	r := got.ResolvedInputs[0]
-	assert.Equal(t, "inp_main_1", r.InputID)
+	assert.Equal(t, "ask_main_1", r.AskID)
 	assert.Equal(t, "main", r.AgentID)
 	assert.Equal(t, "Please review", r.Prompt)
 	assert.Equal(t, "AFTER.md", r.NextState)
@@ -230,7 +230,7 @@ func TestWorkflowStateResolvedInputsBackwardCompatibility(t *testing.T) {
 
 func TestResolvedInputEmptyFileSlicesOmittedFromJSON(t *testing.T) {
 	r := state.ResolvedInput{
-		InputID: "inp_x",
+		AskID: "ask_x",
 		AgentID: "main",
 	}
 	data, err := json.Marshal(r)

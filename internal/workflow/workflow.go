@@ -116,8 +116,8 @@ func frontmatterToTransitions(entries []map[string]string, filename string) ([]p
 			continue
 		}
 		target := entry["target"]
-		// Await uses "next" instead of "target" in frontmatter.
-		if tag == "await" {
+		// Ask uses "next" instead of "target" in frontmatter.
+		if tag == "ask" {
 			target = entry["next"]
 		}
 

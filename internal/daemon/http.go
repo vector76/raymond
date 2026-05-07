@@ -32,10 +32,10 @@ var staticFiles embed.FS
 // in the markdown executor.
 const daemonDefaultBudgetUSD = 10.0
 
-// Upload-cap fallbacks applied when neither the await nor the server
+// Upload-cap fallbacks applied when neither the ask nor the server
 // configuration supplies a value. These are intentionally conservative; an
 // operator who needs higher limits sets them via CLI flag or config file,
-// and a workflow can raise its own ceiling per-await on a bucket-mode <await>.
+// and a workflow can raise its own ceiling per-ask on a bucket-mode <ask>.
 const (
 	daemonDefaultMaxFileSize  int64 = 10 * 1024 * 1024  // 10 MiB per file
 	daemonDefaultMaxTotalSize int64 = 100 * 1024 * 1024 // 100 MiB per submission
@@ -76,36 +76,36 @@ func ResolveBudget(reqBudget, manifestBudget, serverBudget float64) float64 {
 	return daemonDefaultBudgetUSD
 }
 
-// resolveUploadCaps picks the effective upload caps for an await, mirroring
-// ResolveBudget's precedence ladder: per-await override (from
+// resolveUploadCaps picks the effective upload caps for an ask, mirroring
+// ResolveBudget's precedence ladder: per-ask override (from
 // FileAffordance.Bucket) > server config > hardcoded constant. Zero and
 // negative values are treated as "unset" at every level.
 //
-// Bucket mode is the only level at which an await may raise or lower the
-// caps; slot-mode and display-only awaits leave the per-await values at zero
+// Bucket mode is the only level at which an ask may raise or lower the
+// caps; slot-mode and display-only asks leave the per-ask values at zero
 // and therefore inherit the server-wide defaults for size and count. Per-slot
 // MIME allowlists ride on parsing.SlotSpec and are enforced at upload time
 // independently of these size caps.
 //
-// perAwait may be nil for awaits that did not declare a file affordance; the
+// perAsk may be nil for asks that did not declare a file affordance; the
 // caller still gets the server-wide caps so a misuse of the upload endpoint
-// is bounded by the same defaults as a declared bucket await.
-func resolveUploadCaps(perAwait *parsing.FileAffordance, serverPerFile, serverTotal int64, serverCount int) (perFile, total int64, count int) {
-	var awaitPerFile, awaitTotal int64
-	var awaitCount int
-	if perAwait != nil && perAwait.Mode == parsing.ModeBucket {
-		awaitPerFile = perAwait.Bucket.MaxSizePerFile
-		awaitTotal = perAwait.Bucket.MaxTotalSize
-		awaitCount = perAwait.Bucket.MaxCount
+// is bounded by the same defaults as a declared bucket ask.
+func resolveUploadCaps(perAsk *parsing.FileAffordance, serverPerFile, serverTotal int64, serverCount int) (perFile, total int64, count int) {
+	var askPerFile, askTotal int64
+	var askCount int
+	if perAsk != nil && perAsk.Mode == parsing.ModeBucket {
+		askPerFile = perAsk.Bucket.MaxSizePerFile
+		askTotal = perAsk.Bucket.MaxTotalSize
+		askCount = perAsk.Bucket.MaxCount
 	}
-	return pickInt64Cap(awaitPerFile, serverPerFile, daemonDefaultMaxFileSize),
-		pickInt64Cap(awaitTotal, serverTotal, daemonDefaultMaxTotalSize),
-		pickIntCap(awaitCount, serverCount, daemonDefaultMaxFileCount)
+	return pickInt64Cap(askPerFile, serverPerFile, daemonDefaultMaxFileSize),
+		pickInt64Cap(askTotal, serverTotal, daemonDefaultMaxTotalSize),
+		pickIntCap(askCount, serverCount, daemonDefaultMaxFileCount)
 }
 
-func pickInt64Cap(awaitVal, serverVal, fallback int64) int64 {
-	if awaitVal > 0 {
-		return awaitVal
+func pickInt64Cap(askVal, serverVal, fallback int64) int64 {
+	if askVal > 0 {
+		return askVal
 	}
 	if serverVal > 0 {
 		return serverVal
@@ -113,9 +113,9 @@ func pickInt64Cap(awaitVal, serverVal, fallback int64) int64 {
 	return fallback
 }
 
-func pickIntCap(awaitVal, serverVal, fallback int) int {
-	if awaitVal > 0 {
-		return awaitVal
+func pickIntCap(askVal, serverVal, fallback int) int {
+	if askVal > 0 {
+		return askVal
 	}
 	if serverVal > 0 {
 		return serverVal
@@ -135,7 +135,7 @@ type Server struct {
 	// default_budget. Configured by SetDefaultBudget; defaults to 0
 	// (meaning the handler falls through to daemonDefaultBudgetUSD).
 	defaultBudget float64
-	// Server-wide upload caps applied when an <await> does not declare its
+	// Server-wide upload caps applied when an <ask> does not declare its
 	// own. Configured by SetDefaultUploadCaps; zero values mean "unset" and
 	// let resolveUploadCaps fall through to the daemonDefaultMax* constants.
 	defaultMaxFileSize  int64
@@ -160,11 +160,11 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("GET /runs/{id}/output", s.handleRunOutput)
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
 	mux.HandleFunc("DELETE /runs/{id}", s.handleDeleteRun)
-	mux.HandleFunc("GET /runs/{id}/pending-inputs", s.handleListPendingInputs)
+	mux.HandleFunc("GET /runs/{id}/pending-asks", s.handleListPendingInputs)
 	mux.HandleFunc("GET /runs/{id}/resolved-inputs", s.handleListResolvedInputs)
-	mux.HandleFunc("GET /runs/{id}/inputs/{input_id}/files", s.handleListInputFiles)
-	mux.HandleFunc("GET /runs/{id}/inputs/{input_id}/files/{path...}", s.handleGetInputFile)
-	mux.HandleFunc("POST /runs/{id}/inputs/{input_id}", s.handleDeliverInput)
+	mux.HandleFunc("GET /runs/{id}/asks/{ask_id}/files", s.handleListInputFiles)
+	mux.HandleFunc("GET /runs/{id}/asks/{ask_id}/files/{path...}", s.handleGetInputFile)
+	mux.HandleFunc("POST /runs/{id}/asks/{ask_id}", s.handleDeliverInput)
 
 	// Serve embedded static UI files at root; API routes above take precedence.
 	staticSub, _ := fs.Sub(staticFiles, "static")
@@ -193,7 +193,7 @@ func (s *Server) SetDefaultBudget(budget float64) {
 }
 
 // SetDefaultUploadCaps configures the server-wide fallback upload caps used
-// when an <await> declares no caps of its own. Any non-positive value is
+// when an <ask> declares no caps of its own. Any non-positive value is
 // treated as "unset" and lets resolveUploadCaps fall through to the
 // daemonDefaultMax* constants. Typically called by the serve command after
 // loading .raymond/config.toml and merging CLI flags.
@@ -270,7 +270,7 @@ type cancelRunResponse struct {
 
 type pendingInputResponse struct {
 	RunID          string                  `json:"run_id"`
-	InputID        string                  `json:"input_id"`
+	AskID        string                  `json:"ask_id"`
 	Prompt         string                  `json:"prompt"`
 	CreatedAt      string                  `json:"created_at"`
 	TimeoutAt      *string                 `json:"timeout_at,omitempty"`
@@ -318,7 +318,7 @@ type fileAffordanceResponse struct {
 // the dashboard can reuse the same file-row helper for pending and
 // historical views.
 type resolvedInputResponse struct {
-	InputID       string              `json:"input_id"`
+	AskID       string              `json:"ask_id"`
 	AgentID       string              `json:"agent_id"`
 	Prompt        string              `json:"prompt,omitempty"`
 	NextState     string              `json:"next_state,omitempty"`
@@ -335,7 +335,7 @@ type deliverInputRequest struct {
 
 type deliverInputResponse struct {
 	RunID   string `json:"run_id"`
-	InputID string `json:"input_id"`
+	AskID string `json:"ask_id"`
 	Status  string `json:"status"`
 }
 
@@ -542,7 +542,7 @@ func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request)
 	for i, pi := range inputs {
 		resp[i] = pendingInputResponse{
 			RunID:          pi.RunID,
-			InputID:        pi.InputID,
+			AskID:        pi.AskID,
 			Prompt:         pi.Prompt,
 			CreatedAt:      pi.CreatedAt.Format(time.RFC3339),
 			FileAffordance: fileAffordanceToResponse(pi.FileAffordance),
@@ -559,7 +559,7 @@ func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request)
 // handleListResolvedInputs serves GET /runs/{id}/resolved-inputs. It returns
 // the run's history of resolved input steps so the dashboard can re-display
 // the full context (prompt, display files, response text, uploaded files)
-// after the await has resolved and the per-agent await fields have been
+// after the ask has resolved and the per-agent ask fields have been
 // cleared. File catalogs are projected through fileRecordsToMetadata so the
 // pending-input and historical views render through the same client-side
 // helper.
@@ -581,7 +581,7 @@ func (s *Server) handleListResolvedInputs(w http.ResponseWriter, r *http.Request
 	resp := make([]resolvedInputResponse, len(resolved))
 	for i, ri := range resolved {
 		entry := resolvedInputResponse{
-			InputID:       ri.InputID,
+			AskID:       ri.AskID,
 			AgentID:       ri.AgentID,
 			Prompt:        ri.Prompt,
 			NextState:     ri.NextState,
@@ -602,14 +602,14 @@ func (s *Server) handleListResolvedInputs(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleListInputFiles serves GET /runs/{id}/inputs/{input_id}/files. It
+// handleListInputFiles serves GET /runs/{id}/asks/{ask_id}/files. It
 // returns the file catalog for an input — staged display files and any
-// uploaded files. Pending inputs (still awaiting a response) are resolved
+// uploaded files. Pending inputs (still asking a response) are resolved
 // through the pending registry; once the input has been delivered, its
 // catalog is sourced from the workflow state's ResolvedInputs history.
 func (s *Server) handleListInputFiles(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
-	inputID := r.PathValue("input_id")
+	askID := r.PathValue("ask_id")
 
 	if _, ok := s.runManager.GetRun(runID); !ok {
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q not found", runID)})
@@ -617,9 +617,9 @@ func (s *Server) handleListInputFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.pendingRegistry != nil {
-		if pi, ok := s.pendingRegistry.Get(inputID); ok {
+		if pi, ok := s.pendingRegistry.Get(askID); ok {
 			if pi.RunID != runID {
-				writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", inputID, runID)})
+				writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", askID, runID)})
 				return
 			}
 			writeJSON(w, http.StatusOK, fileRecordsToMetadata(pi.StagedFiles))
@@ -627,9 +627,9 @@ func (s *Server) handleListInputFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ri, ok := s.runManager.LookupResolvedInput(runID, inputID)
+	ri, ok := s.runManager.LookupResolvedInput(runID, askID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", inputID, runID)})
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", askID, runID)})
 		return
 	}
 
@@ -663,15 +663,15 @@ var inlineAllowedContentTypes = map[string]bool{
 	"application/pdf": true,
 }
 
-// handleGetInputFile serves GET /runs/{id}/inputs/{input_id}/files/{path...}.
+// handleGetInputFile serves GET /runs/{id}/asks/{ask_id}/files/{path...}.
 // It looks up the recorded FileRecord for `path` (first via the pending
 // registry, then via the resolved-input history) and serves the on-disk file
-// at `<task folder>/inputs/<input_id>/<path>`. The recorded content type is
+// at `<task folder>/asks/<ask_id>/<path>`. The recorded content type is
 // authoritative — the server does not re-sniff at view time. Path traversal
 // is rejected by SafeJoinUnderDir.
 func (s *Server) handleGetInputFile(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
-	inputID := r.PathValue("input_id")
+	askID := r.PathValue("ask_id")
 	path := r.PathValue("path")
 
 	if _, ok := s.runManager.GetRun(runID); !ok {
@@ -679,9 +679,9 @@ func (s *Server) handleGetInputFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, agentID, ok := s.lookupInputCatalog(runID, inputID)
+	records, agentID, ok := s.lookupInputCatalog(runID, askID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", inputID, runID)})
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("input %q not found in run %q", askID, runID)})
 		return
 	}
 
@@ -690,7 +690,7 @@ func (s *Server) handleGetInputFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: "task folder not assigned for input"})
 		return
 	}
-	inputDir := filepath.Join(taskFolder, "inputs", inputID)
+	inputDir := filepath.Join(taskFolder, "asks", askID)
 
 	// Validate the path against the input subdirectory before matching it to
 	// the catalog: traversal attempts must return 400 even when the cleaned
@@ -755,16 +755,16 @@ func (s *Server) handleGetInputFile(w http.ResponseWriter, r *http.Request) {
 // as "not found" (consistent with handleListInputFiles); we never fall
 // through to the resolved history in that case, so a cross-run input ID
 // collision cannot leak the wrong file catalog.
-func (s *Server) lookupInputCatalog(runID, inputID string) ([]wfstate.FileRecord, string, bool) {
+func (s *Server) lookupInputCatalog(runID, askID string) ([]wfstate.FileRecord, string, bool) {
 	if s.pendingRegistry != nil {
-		if pi, ok := s.pendingRegistry.Get(inputID); ok {
+		if pi, ok := s.pendingRegistry.Get(askID); ok {
 			if pi.RunID != runID {
 				return nil, "", false
 			}
 			return pi.StagedFiles, pi.AgentID, true
 		}
 	}
-	ri, ok := s.runManager.LookupResolvedInput(runID, inputID)
+	ri, ok := s.runManager.LookupResolvedInput(runID, askID)
 	if !ok {
 		return nil, "", false
 	}
@@ -804,11 +804,11 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runID := r.PathValue("id")
-	inputID := r.PathValue("input_id")
+	askID := r.PathValue("ask_id")
 
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mediaType == "multipart/form-data" {
-		s.handleDeliverInputMultipart(w, r, runID, inputID)
+		s.handleDeliverInputMultipart(w, r, runID, askID)
 		return
 	}
 
@@ -818,10 +818,10 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.runManager.DeliverInput(runID, inputID, req.Response, nil); err != nil {
+	if err := s.runManager.DeliverInput(runID, askID, req.Response, nil); err != nil {
 		if errors.Is(err, ErrRunNotFound) ||
-			errors.Is(err, ErrPendingInputNotFound) ||
-			errors.Is(err, ErrPendingInputMismatch) {
+			errors.Is(err, ErrPendingAskNotFound) ||
+			errors.Is(err, ErrPendingAskMismatch) {
 			writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
 		} else {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
@@ -831,7 +831,7 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, deliverInputResponse{
 		RunID:   runID,
-		InputID: inputID,
+		AskID: askID,
 		Status:  "resumed",
 	})
 }
@@ -845,19 +845,19 @@ func writeUploadError(w http.ResponseWriter, status int, constraint, msg string)
 
 // handleDeliverInputMultipart accepts a multipart/form-data submission to a
 // pending input. The text response lives in a form field named "response";
-// file parts are validated against the await's declared FileAffordance,
+// file parts are validated against the ask's declared FileAffordance,
 // staged into a per-submission directory, and renamed into place atomically
 // before the pending input is claimed via DeliverInput.
-func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Request, runID, inputID string) {
-	pi, ok := s.pendingRegistry.Get(inputID)
+func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Request, runID, askID string) {
+	pi, ok := s.pendingRegistry.Get(askID)
 	if !ok {
 		writeUploadError(w, http.StatusNotFound, "input_not_pending",
-			fmt.Sprintf("pending input %q not found", inputID))
+			fmt.Sprintf("pending input %q not found", askID))
 		return
 	}
 	if pi.RunID != runID {
 		writeUploadError(w, http.StatusNotFound, "input_not_pending",
-			fmt.Sprintf("input %q does not belong to run %q", inputID, runID))
+			fmt.Sprintf("input %q does not belong to run %q", askID, runID))
 		return
 	}
 
@@ -1009,7 +1009,7 @@ func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "task folder not assigned for input"})
 		return
 	}
-	inputDir := filepath.Join(taskFolder, "inputs", inputID)
+	inputDir := filepath.Join(taskFolder, "asks", askID)
 	if err := os.MkdirAll(inputDir, 0o755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "create input directory: " + err.Error()})
 		return
@@ -1130,7 +1130,7 @@ func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Requ
 	os.Remove(stagingDir)
 	cleanupStaging = false
 
-	if err := s.runManager.DeliverInput(runID, inputID, response, uploaded); err != nil {
+	if err := s.runManager.DeliverInput(runID, askID, response, uploaded); err != nil {
 		// A concurrent submission may have already claimed the input
 		// between Get and DeliverInput. The loser's already-renamed files
 		// stay in place as orphans alongside the winner's: the design's
@@ -1138,7 +1138,7 @@ func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Requ
 		// the agent and UI only surface the winner's recorded
 		// UploadedFiles. Concurrent renames make deletion racy, so we do
 		// not attempt cleanup here.
-		if errors.Is(err, ErrPendingInputNotFound) || errors.Is(err, ErrPendingInputMismatch) {
+		if errors.Is(err, ErrPendingAskNotFound) || errors.Is(err, ErrPendingAskMismatch) {
 			writeUploadError(w, http.StatusNotFound, "input_not_pending", err.Error())
 			return
 		}
@@ -1152,7 +1152,7 @@ func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Requ
 
 	writeJSON(w, http.StatusOK, deliverInputResponse{
 		RunID:   runID,
-		InputID: inputID,
+		AskID: askID,
 		Status:  "resumed",
 	})
 }

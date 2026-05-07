@@ -423,18 +423,18 @@ func (r *ConsoleReporter) onAgentPaused(e events.AgentPaused) {
 	fmt.Fprintf(r.w, "%s Agent paused (%s)\n", r.formatAgentID(e.AgentID), reason)
 }
 
-func (r *ConsoleReporter) onAgentAwaitStarted(e events.AgentAwaitStarted) {
+func (r *ConsoleReporter) onAgentAskStarted(e events.AgentAskStarted) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	prompt := firstLine(e.Prompt)
-	// Prefix: "  ├─ [agentID] awaiting human input: " = 30 + len(agentID)
+	// Prefix: "  ├─ [agentID] asking human input: " = 30 + len(agentID)
 	prefixLen := 30 + len(e.AgentID)
 	prompt = truncateMessage(prompt, r.availableWidth(prefixLen))
-	fmt.Fprintf(r.w, "  %s %s awaiting human input: %s\n",
+	fmt.Fprintf(r.w, "  %s %s asking human input: %s\n",
 		r.colorToken(e.AgentID, r.sym.progress), r.formatAgentID(e.AgentID), prompt)
 }
 
-func (r *ConsoleReporter) onAgentAwaitResumed(e events.AgentAwaitResumed) {
+func (r *ConsoleReporter) onAgentAskResumed(e events.AgentAskResumed) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	fmt.Fprintf(r.w, "  %s %s input received, resuming\n",
@@ -515,8 +515,8 @@ func NewWithWriter(b *bus.Bus, quiet bool, width int, w io.Writer, unicode, colo
 		bus.Subscribe(b, r.onAgentTerminated),
 		bus.Subscribe(b, r.onErrorOccurred),
 		bus.Subscribe(b, r.onAgentPaused),
-		bus.Subscribe(b, r.onAgentAwaitStarted),
-		bus.Subscribe(b, r.onAgentAwaitResumed),
+		bus.Subscribe(b, r.onAgentAskStarted),
+		bus.Subscribe(b, r.onAgentAskResumed),
 	}
 	return o
 }

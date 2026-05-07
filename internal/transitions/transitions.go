@@ -8,7 +8,7 @@
 //   - call:              context-branching sub-call; caller session forked
 //   - fork:              spawn independent worker agent while parent continues
 //   - result:            return from function/call, or terminate if stack is empty
-//   - await:             pause agent until external input arrives; session preserved
+//   - ask:             pause agent until external input arrives; session preserved
 //   - call-workflow:     blocking cross-workflow call; forks caller session
 //   - function-workflow: blocking cross-workflow call; fresh session, cd allowed
 //   - fork-workflow:     non-blocking cross-workflow spawn; fresh session, cd allowed
@@ -95,7 +95,7 @@ func ApplyTransition(
 	// Clear transient fields before the handler runs so handlers can set
 	// fresh values without accidentally inheriting stale ones.
 	copy.PendingResult = nil
-	copy.PendingInputID = ""
+	copy.PendingAskID = ""
 	copy.ForkSessionID = nil
 	copy.ForkAttributes = nil
 
@@ -110,8 +110,8 @@ func ApplyTransition(
 		return HandleCall(copy, transition)
 	case "fork":
 		return HandleFork(copy, transition, wfState)
-	case "await":
-		return HandleAwait(copy, transition, wfState)
+	case "ask":
+		return HandleAsk(copy, transition, wfState)
 	case "reset-workflow":
 		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
 		var res specifier.Resolution
@@ -841,48 +841,48 @@ func HandleResult(
 	return TransitionResult{Agent: &agent}
 }
 
-// HandleAwait handles the <await> transition tag.
+// HandleAsk handles the <ask> transition tag.
 //
 // Pauses the agent until external input arrives:
-//   - Sets status to "awaiting".
-//   - Preserves session ID (LLM context survives the await, like goto).
+//   - Sets status to "asking".
+//   - Preserves session ID (LLM context survives the ask, like goto).
 //   - Stores the human-facing prompt (tag content), the next state (from the
 //     "next" attribute, stored in transition.Target by the parser), and optional
 //     timeout/timeout_next attributes.
 //   - Generates a unique input ID for correlating the eventual response.
 //   - Does NOT change CurrentState — the agent remains at the state that
-//     emitted <await> until input arrives.
+//     emitted <ask> until input arrives.
 //   - Leaves the call stack intact.
 //
 // Returns an error when the target (next state) is empty.
-func HandleAwait(
+func HandleAsk(
 	agent wfstate.AgentState,
 	transition parsing.Transition,
 	wfState *wfstate.WorkflowState,
 ) (TransitionResult, error) {
 	if transition.Target == "" {
 		return TransitionResult{}, fmt.Errorf(
-			"<await> tag requires 'next' attribute. " +
-				"Example: <await next=\"NEXT.md\">Please provide input</await>",
+			"<ask> tag requires 'next' attribute. " +
+				"Example: <ask next=\"NEXT.md\">Please provide input</ask>",
 		)
 	}
 
-	agent.Status = wfstate.AgentStatusAwaiting
-	agent.AwaitPrompt = transition.Payload
-	agent.AwaitNextState = transition.Target
-	agent.AwaitTimeout = transition.Attributes["timeout"]
-	agent.AwaitTimeoutNext = transition.Attributes["timeout_next"]
-	agent.AwaitInputID = fmt.Sprintf("inp_%s_%d", agent.ID, time.Now().UnixNano())
+	agent.Status = wfstate.AgentStatusAsking
+	agent.AskPrompt = transition.Payload
+	agent.AskNextState = transition.Target
+	agent.AskTimeout = transition.Attributes["timeout"]
+	agent.AskTimeoutNext = transition.Attributes["timeout_next"]
+	agent.AskID = fmt.Sprintf("ask_%s_%d", agent.ID, time.Now().UnixNano())
 
-	// Clear file-affordance fields from any prior await on this agent so a
-	// text-only await never inherits a stale FileAffordance / staged-file
-	// list. The orchestrator re-populates these for the new await below.
-	agent.AwaitFileAffordance = nil
-	agent.AwaitStagedFiles = nil
+	// Clear file-affordance fields from any prior ask on this agent so a
+	// text-only ask never inherits a stale FileAffordance / staged-file
+	// list. The orchestrator re-populates these for the new ask below.
+	agent.AskFileAffordance = nil
+	agent.AskStagedFiles = nil
 
 	if transition.FileAffordance.Mode != parsing.ModeTextOnly {
 		fa := transition.FileAffordance
-		agent.AwaitFileAffordance = &fa
+		agent.AskFileAffordance = &fa
 	}
 
 	return TransitionResult{Agent: &agent, Worker: nil}, nil

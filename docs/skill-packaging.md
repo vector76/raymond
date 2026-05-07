@@ -34,7 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 case "${1:-run}" in
   run)
     exec raymond "$SCRIPT_DIR" \
-      --on-await=pause \
+      --on-ask=pause \
       --budget "${BUDGET:-5.00}" \
       ${INPUT:+--input "$INPUT"}
     ;;
@@ -54,8 +54,8 @@ esac
 
 - `exec` replaces the shell process with `raymond`, so the caller sees
   Raymond's exit code directly.
-- The `run` case passes `--on-await=pause` so the workflow exits cleanly at
-  await points instead of rejecting them.
+- The `run` case passes `--on-ask=pause` so the workflow exits cleanly at
+  ask points instead of rejecting them.
 - The `resume` case requires `RUN_ID` (from the previous exit's JSON output)
   and `INPUT` (the human's response).
 - Environment variables (`BUDGET`, `INPUT`, `RUN_ID`) are the recommended way
@@ -70,20 +70,20 @@ The entry point script (and Raymond itself) uses three exit codes:
 |-----------|---------|---------------|
 | **0** | Workflow completed successfully. | Done — read stdout for final output. |
 | **1** | Error (invalid arguments, workflow failure, etc.). | Report failure — do not resume. |
-| **2** | Workflow is paused, awaiting human input. | Parse the JSON on stdout, collect the requested input, and resume. |
+| **2** | Workflow is paused, asking human input. | Parse the JSON on stdout, collect the requested input, and resume. |
 
 ## Structured JSON Output (Exit Code 2)
 
 When Raymond exits with code 2, it writes a JSON object to stdout describing
-the active await point:
+the active ask point:
 
 ```json
 {
-  "status": "awaiting_input",
+  "status": "asking",
   "run_id": "vendor-approval-a1b2c3",
   "workflow": "vendor-approval",
-  "awaiting": {
-    "input_id": "inp_main_1713750000000000000",
+  "asking": {
+    "ask_id": "ask_main_1713750000000000000",
     "agent_id": "main",
     "prompt": "Please approve or reject vendor Acme Corp (budget: $50,000)"
   },
@@ -96,13 +96,13 @@ the active await point:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | Always `"awaiting_input"`. |
+| `status` | string | Always `"asking"`. |
 | `run_id` | string | Workflow run ID — pass this to `--resume`. |
 | `workflow` | string | Base name of the workflow scope directory. |
-| `awaiting.input_id` | string | Unique identifier for this specific await point. |
-| `awaiting.agent_id` | string | Which agent is waiting for input. |
-| `awaiting.prompt` | string | Human-facing prompt text from the `<await>` tag in the state file. |
-| `pending_count` | int | Number of *additional* agents also awaiting input (not counting the active one). If 2, there are 3 total awaiting agents that need input before the workflow can complete. |
+| `asking.ask_id` | string | Unique identifier for this specific ask point. |
+| `asking.agent_id` | string | Which agent is waiting for input. |
+| `asking.prompt` | string | Human-facing prompt text from the `<ask>` tag in the state file. |
+| `pending_count` | int | Number of *additional* agents also asking input (not counting the active one). If 2, there are 3 total asking agents that need input before the workflow can complete. |
 | `resume` | string | Pre-formatted command hint for resuming with input. |
 
 ## Resume Loop Protocol
@@ -150,7 +150,7 @@ exit_code=$?
 # Resume loop
 while [ "$exit_code" -eq 2 ]; do
   run_id=$(jq -r '.run_id' output.json)
-  prompt=$(jq -r '.awaiting.prompt' output.json)
+  prompt=$(jq -r '.asking.prompt' output.json)
 
   echo "Workflow needs input: $prompt"
   read -rp "> " response
@@ -167,9 +167,9 @@ else
 fi
 ```
 
-**Multi-agent awaits:** When `pending_count > 0`, additional agents are also
-waiting for input. After delivering input for the active await and receiving
-exit code 2 again, the JSON will describe the next awaiting agent. The caller
+**Multi-agent asks:** When `pending_count > 0`, additional agents are also
+waiting for input. After delivering input for the active ask and receiving
+exit code 2 again, the JSON will describe the next asking agent. The caller
 must loop until either exit code 0 (all inputs delivered, workflow complete) or
 exit code 1 (error).
 
@@ -189,9 +189,9 @@ A `SKILL.md` should include:
 3. **Outputs** — what the skill produces on success (files written, stdout
    content, etc.).
 4. **Human Input Expectations** — whether the skill will pause for human input,
-   what kind of input is requested, and how many await cycles to expect.
+   what kind of input is requested, and how many ask cycles to expect.
 5. **Invocation Instructions** — exact commands to run the skill, including
-   the resume loop pattern if the skill uses `<await>`.
+   the resume loop pattern if the skill uses `<ask>`.
 6. **Exit Codes** — reiterate the standard protocol (0/1/2) plus any
    skill-specific semantics.
 
@@ -226,11 +226,11 @@ requires_human_input: auto
 | `description` | Shown in tool/endpoint documentation. |
 | `input` | Describes the single optional input string passed to the first state as `{{input}}`. `mode` is `required`, `optional`, or `none`; `label` and `description` are UI/MCP hints. |
 | `default_budget` | Default USD budget when callers don't specify one. |
-| `requires_human_input` | `"auto"` (scan states for `<await>` tags), `"true"` (always), or `"false"` (never). Controls how the daemon handles the workflow. |
+| `requires_human_input` | `"auto"` (scan states for `<ask>` tags), `"true"` (always), or `"false"` (never). Controls how the daemon handles the workflow. |
 
 When `requires_human_input` is `"auto"`, Raymond scans the workflow's state
-files for `<await>` transitions in their frontmatter. If any state declares
-`{tag: await}` in its `allowed_transitions`, the workflow is marked as
+files for `<ask>` transitions in their frontmatter. If any state declares
+`{tag: ask}` in its `allowed_transitions`, the workflow is marked as
 requiring human input. This scan is transitive — it follows `<call-workflow>`
 and `<function-workflow>` references into child workflows.
 
@@ -245,7 +245,7 @@ vendor-approval/
   run.bat               # Entry point (Windows, optional)
   workflow.yaml         # Daemon manifest
   1_START.md            # State: research the vendor
-  2_REVIEW.md           # State: await human approval
+  2_REVIEW.md           # State: ask human approval
   3_REPORT.md           # State: generate final report
 ```
 
@@ -269,5 +269,5 @@ scope it is given, without searching subdirectories:
 
 ```bash
 exec raymond "$SCRIPT_DIR/states" \
-  --on-await=pause ...
+  --on-ask=pause ...
 ```

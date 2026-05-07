@@ -228,7 +228,7 @@ func newMCPTestSetupFull(t *testing.T, requiresHumanInput bool) (*mcpTestClient,
 
 	srv := NewMCPServer(reg, rm)
 	srv.SetPendingRegistry(pr)
-	rm.SetAwaitNotifier(srv.HandleAwaitNotification)
+	rm.SetAskNotifier(srv.HandleAskNotification)
 
 	client := newMCPTestClient(t, srv)
 	return client, fake, srv, pr
@@ -263,8 +263,8 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Contains(t, names, "raymond_status")
 	assert.Contains(t, names, "raymond_await")
 	assert.Contains(t, names, "raymond_cancel")
-	assert.Contains(t, names, "raymond_list_pending_inputs")
-	assert.Contains(t, names, "raymond_provide_input")
+	assert.Contains(t, names, "raymond_list_pending_asks")
+	assert.Contains(t, names, "raymond_answer_ask")
 }
 
 func TestMCPListWorkflows(t *testing.T) {
@@ -351,7 +351,7 @@ func TestMCPAwait(t *testing.T) {
 	runResult := toolResultJSON(t, runResp)
 	runID := runResult["run_id"].(string)
 
-	// Await completion.
+	// Ask completion.
 	resp := client.callTool(3, "raymond_await", map[string]any{
 		"run_id": runID,
 	})
@@ -469,16 +469,16 @@ func TestMCPListPendingInputs(t *testing.T) {
 	client, fake := newMCPTestSetup(t)
 	client.initialize(false)
 
-	awaitReady := make(chan struct{})
+	askReady := make(chan struct{})
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		b := bus.New()
 		if opts.ObserverSetup != nil {
 			opts.ObserverSetup(b)
 		}
-		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md", nil, nil)
+		if opts.AskCallback != nil {
+			opts.AskCallback("main", "test-input-1", "What next?", "NEXT.md", nil, nil)
 		}
-		close(awaitReady)
+		close(askReady)
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -491,21 +491,21 @@ func TestMCPListPendingInputs(t *testing.T) {
 	runResult := toolResultJSON(t, runResp)
 	runID := runResult["run_id"].(string)
 
-	// Wait for await callback.
+	// Wait for ask callback.
 	select {
-	case <-awaitReady:
+	case <-askReady:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for await callback")
+		t.Fatal("timed out waiting for ask callback")
 	}
 
 	// List pending inputs.
-	resp := client.callTool(3, "raymond_list_pending_inputs", nil)
+	resp := client.callTool(3, "raymond_list_pending_asks", nil)
 	assert.False(t, toolIsError(t, resp))
 
 	inputs := toolResultArray(t, resp)
 	require.Len(t, inputs, 1)
 	assert.Equal(t, runID, inputs[0]["run_id"])
-	assert.Equal(t, "test-input-1", inputs[0]["input_id"])
+	assert.Equal(t, "test-input-1", inputs[0]["ask_id"])
 	assert.Equal(t, "What next?", inputs[0]["prompt"])
 	assert.Equal(t, "test-workflow", inputs[0]["workflow_id"])
 }
@@ -515,21 +515,21 @@ func TestMCPProvideInput(t *testing.T) {
 	client.initialize(false)
 
 	inputDelivered := make(chan string, 1)
-	awaitReady := make(chan struct{})
+	askReady := make(chan struct{})
 
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		b := bus.New()
 		if opts.ObserverSetup != nil {
 			opts.ObserverSetup(b)
 		}
-		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What next?", "NEXT.md", nil, nil)
+		if opts.AskCallback != nil {
+			opts.AskCallback("main", "test-input-1", "What next?", "NEXT.md", nil, nil)
 		}
-		close(awaitReady)
+		close(askReady)
 
-		if opts.AwaitInputCh != nil {
+		if opts.AskInputCh != nil {
 			select {
-			case input := <-opts.AwaitInputCh:
+			case input := <-opts.AskInputCh:
 				inputDelivered <- input.Response
 			case <-ctx.Done():
 				return ctx.Err()
@@ -551,23 +551,23 @@ func TestMCPProvideInput(t *testing.T) {
 	runResult := toolResultJSON(t, runResp)
 	runID := runResult["run_id"].(string)
 
-	// Wait for await.
+	// Wait for ask.
 	select {
-	case <-awaitReady:
+	case <-askReady:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for await callback")
+		t.Fatal("timed out waiting for ask callback")
 	}
 
 	// Provide input.
-	resp := client.callTool(3, "raymond_provide_input", map[string]any{
-		"input_id": "test-input-1",
+	resp := client.callTool(3, "raymond_answer_ask", map[string]any{
+		"ask_id": "test-input-1",
 		"response": "Do the thing",
 	})
 	assert.False(t, toolIsError(t, resp))
 
 	result := toolResultJSON(t, resp)
 	assert.Equal(t, runID, result["run_id"])
-	assert.Equal(t, "test-input-1", result["input_id"])
+	assert.Equal(t, "test-input-1", result["ask_id"])
 	assert.Equal(t, "resumed", result["status"])
 
 	// Verify delivery.
@@ -583,10 +583,10 @@ func TestMCPElicitation(t *testing.T) {
 	client, fake := newMCPTestSetup(t)
 	client.initialize(true) // enable elicitation
 
-	// startAwait signals the orchestrator to hit <await>. This lets us
-	// send raymond_await first so the active-await is registered before
+	// startAsk signals the orchestrator to hit <ask>. This lets us
+	// send raymond_await first so the active-ask is registered before
 	// the callback fires.
-	startAwait := make(chan struct{})
+	startAsk := make(chan struct{})
 	inputDelivered := make(chan string, 1)
 
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
@@ -595,21 +595,21 @@ func TestMCPElicitation(t *testing.T) {
 			opts.ObserverSetup(b)
 		}
 
-		// Wait for signal before hitting <await>.
+		// Wait for signal before hitting <ask>.
 		select {
-		case <-startAwait:
+		case <-startAsk:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 
-		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "elicit-input-1", "What should I do?", "NEXT.md", nil, nil)
+		if opts.AskCallback != nil {
+			opts.AskCallback("main", "elicit-input-1", "What should I do?", "NEXT.md", nil, nil)
 		}
 
 		// Wait for input delivery.
-		if opts.AwaitInputCh != nil {
+		if opts.AskInputCh != nil {
 			select {
-			case input := <-opts.AwaitInputCh:
+			case input := <-opts.AskInputCh:
 				inputDelivered <- input.Response
 			case <-ctx.Done():
 				return ctx.Err()
@@ -638,7 +638,7 @@ func TestMCPElicitation(t *testing.T) {
 
 	// Send raymond_await asynchronously (dispatched in a goroutine because
 	// the client has elicitation). Give the goroutine a moment to register
-	// the active await before signalling the orchestrator.
+	// the active ask before signalling the orchestrator.
 	client.writeRequest(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      10,
@@ -652,8 +652,8 @@ func TestMCPElicitation(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	// Signal the orchestrator to hit <await>.
-	close(startAwait)
+	// Signal the orchestrator to hit <ask>.
+	close(startAsk)
 
 	// Read the elicitation/create request from the server.
 	elicitReq := client.readMessage()
@@ -700,13 +700,13 @@ func TestMCPElicitation(t *testing.T) {
 }
 
 // TestMCPElicitation_RequiredUpload_NotDelivered exercises Phase 9: an
-// <await> that declares an upload affordance must not be delivered via MCP
+// <ask> that declares an upload affordance must not be delivered via MCP
 // elicitation; the input stays pending so the user completes it via HTTP.
 func TestMCPElicitation_RequiredUpload_NotDelivered(t *testing.T) {
 	client, fake, _, pr := newMCPTestSetupFull(t, false)
 	client.initialize(true) // elicitation supported
 
-	startAwait := make(chan struct{})
+	startAsk := make(chan struct{})
 
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		b := bus.New()
@@ -714,16 +714,16 @@ func TestMCPElicitation_RequiredUpload_NotDelivered(t *testing.T) {
 			opts.ObserverSetup(b)
 		}
 		select {
-		case <-startAwait:
+		case <-startAsk:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if opts.AwaitCallback != nil {
+		if opts.AskCallback != nil {
 			fa := &parsing.FileAffordance{
 				Mode:  parsing.ModeSlot,
 				Slots: []parsing.SlotSpec{{Name: "resume.pdf"}},
 			}
-			opts.AwaitCallback("main", "upload-input-1", "Upload your resume.", "NEXT.md", fa, nil)
+			opts.AskCallback("main", "upload-input-1", "Upload your resume.", "NEXT.md", fa, nil)
 		}
 		<-ctx.Done()
 		return ctx.Err()
@@ -735,7 +735,7 @@ func TestMCPElicitation_RequiredUpload_NotDelivered(t *testing.T) {
 	runResult := toolResultJSON(t, runResp)
 	runID := runResult["run_id"].(string)
 
-	// Begin awaiting; the goroutine registers the active-await before we
+	// Begin asking; the goroutine registers the active-ask before we
 	// signal the orchestrator to fire its callback.
 	client.writeRequest(map[string]any{
 		"jsonrpc": "2.0",
@@ -748,9 +748,9 @@ func TestMCPElicitation_RequiredUpload_NotDelivered(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	close(startAwait)
+	close(startAsk)
 
-	// The await callback registered the pending input; HandleAwaitNotification
+	// The ask callback registered the pending input; HandleAskNotification
 	// must skip delivery because of the upload affordance. Allow time for the
 	// notifier to run.
 	require.Eventually(t, func() bool {
@@ -761,25 +761,25 @@ func TestMCPElicitation_RequiredUpload_NotDelivered(t *testing.T) {
 	// Read with a short timeout — receiving anything here means the gate
 	// failed.
 	gotMsg := readMessageWithTimeout(t, client, 200*time.Millisecond)
-	assert.Nil(t, gotMsg, "expected no elicitation/create for an upload-required await, got: %v", gotMsg)
+	assert.Nil(t, gotMsg, "expected no elicitation/create for an upload-required ask, got: %v", gotMsg)
 
 	// The pending input is still in the registry, ready for HTTP delivery.
 	pending := pr.ListByRun(runID)
 	require.Len(t, pending, 1)
-	assert.Equal(t, "upload-input-1", pending[0].InputID)
+	assert.Equal(t, "upload-input-1", pending[0].AskID)
 	require.NotNil(t, pending[0].FileAffordance)
 	assert.Equal(t, parsing.ModeSlot, pending[0].FileAffordance.Mode)
 }
 
 // TestMCPElicitation_DisplayOnly_IncludesURLs verifies that display-only
-// awaits are delivered via elicitation with absolute file URLs appended
+// asks are delivered via elicitation with absolute file URLs appended
 // to the prompt so an MCP client can fetch the staged files out of band.
 func TestMCPElicitation_DisplayOnly_IncludesURLs(t *testing.T) {
 	client, fake, srv, _ := newMCPTestSetupFull(t, false)
 	srv.SetBaseURL("http://localhost:8080/")
 	client.initialize(true)
 
-	startAwait := make(chan struct{})
+	startAsk := make(chan struct{})
 
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		b := bus.New()
@@ -787,11 +787,11 @@ func TestMCPElicitation_DisplayOnly_IncludesURLs(t *testing.T) {
 			opts.ObserverSetup(b)
 		}
 		select {
-		case <-startAwait:
+		case <-startAsk:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if opts.AwaitCallback != nil {
+		if opts.AskCallback != nil {
 			fa := &parsing.FileAffordance{
 				Mode: parsing.ModeDisplayOnly,
 				DisplayFiles: []parsing.DisplaySpec{
@@ -801,7 +801,7 @@ func TestMCPElicitation_DisplayOnly_IncludesURLs(t *testing.T) {
 			staged := []wfstate.FileRecord{
 				{Name: "report.pdf", Size: 42, ContentType: "application/pdf", Source: "display"},
 			}
-			opts.AwaitCallback("main", "display-input-1", "Please review the report.", "NEXT.md", fa, staged)
+			opts.AskCallback("main", "display-input-1", "Please review the report.", "NEXT.md", fa, staged)
 		}
 		<-ctx.Done()
 		return ctx.Err()
@@ -824,7 +824,7 @@ func TestMCPElicitation_DisplayOnly_IncludesURLs(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	close(startAwait)
+	close(startAsk)
 
 	elicitReq := client.readMessage()
 	assert.Equal(t, "elicitation/create", elicitReq["method"])
@@ -832,7 +832,7 @@ func TestMCPElicitation_DisplayOnly_IncludesURLs(t *testing.T) {
 	message := params["message"].(string)
 	assert.Contains(t, message, "Please review the report.")
 	assert.Contains(t, message, "report.pdf")
-	expectedURL := fmt.Sprintf("http://localhost:8080/runs/%s/inputs/display-input-1/files/report.pdf", runID)
+	expectedURL := fmt.Sprintf("http://localhost:8080/runs/%s/asks/display-input-1/files/report.pdf", runID)
 	assert.Contains(t, message, expectedURL)
 }
 

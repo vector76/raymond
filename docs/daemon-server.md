@@ -3,7 +3,7 @@
 The `raymond serve` command starts a long-running daemon that discovers
 workflows from configured directories and exposes them to clients via an HTTP
 API and/or MCP (Model Context Protocol) tool interface. The daemon manages
-workflow runs, handles human-in-the-loop `<await>` input delivery, and provides
+workflow runs, handles human-in-the-loop `<ask>` input delivery, and provides
 a minimal web UI for monitoring.
 
 ## Usage
@@ -106,7 +106,7 @@ See the `internal/manifest` package for the full schema and
 [skill-packaging.md](skill-packaging.md) for the packaging conventions.
 
 `requires_human_input: auto` resolves to `false` at discovery time across all
-three scope types. The daemon does not perform dynamic await-scanning during
+three scope types. The daemon does not perform dynamic ask-scanning during
 indexing; workflows that need `auto` promoted to `true` must set the field
 explicitly.
 
@@ -132,21 +132,21 @@ management, streaming output, and human-in-the-loop input delivery.
 | `GET` | `/runs/{id}/output` | Server-Sent Events stream of agent output, state transitions, and other run events. |
 | `POST` | `/runs/{id}/cancel` | Cancel a running workflow. Returns `{"run_id", "status": "cancelled"}`. |
 
-### Human-in-the-loop (requires `<await>`)
+### Human-in-the-loop (requires `<ask>`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/runs/{id}/pending-inputs` | List pending human input requests for a run. Each entry includes `run_id`, `input_id`, `prompt`, `created_at`, optional `timeout_at`, and (for file-bearing awaits) optional `file_affordance` and `staged_files` blocks. |
-| `POST` | `/runs/{id}/inputs/{input_id}` | Deliver a human response. Accepts either `application/json` (text only) or `multipart/form-data` (text plus files). Returns `{"run_id", "input_id", "status": "resumed"}`. |
-| `GET` | `/runs/{id}/inputs/{input_id}/files` | List files associated with an input — display files staged at await entry plus any uploaded files once the input has been delivered. |
-| `GET` | `/runs/{id}/inputs/{input_id}/files/{path}` | Serve the named file from the input's subdirectory. Optional `?disposition=inline` is honored only for vetted MIME types (see below). |
+| `GET` | `/runs/{id}/pending-asks` | List pending human input requests for a run. Each entry includes `run_id`, `ask_id`, `prompt`, `created_at`, optional `timeout_at`, and (for file-bearing asks) optional `file_affordance` and `staged_files` blocks. |
+| `POST` | `/runs/{id}/asks/{ask_id}` | Deliver a human response. Accepts either `application/json` (text only) or `multipart/form-data` (text plus files). Returns `{"run_id", "ask_id", "status": "resumed"}`. |
+| `GET` | `/runs/{id}/asks/{ask_id}/files` | List files associated with an input — display files staged at ask entry plus any uploaded files once the input has been delivered. |
+| `GET` | `/runs/{id}/asks/{ask_id}/files/{path}` | Serve the named file from the input's subdirectory. Optional `?disposition=inline` is honored only for vetted MIME types (see below). |
 
-#### File-bearing awaits
+#### File-bearing asks
 
-When an `<await>` declares file affordances (see
+When an `<ask>` declares file affordances (see
 [workflow-protocol.md](workflow-protocol.md) for the attribute syntax), the
 endpoints above carry the additional shape described here. The on-disk layout
-is `<task folder>/inputs/<input_id>/`, populated by the runtime at await entry
+is `<task folder>/asks/<ask_id>/`, populated by the runtime at ask entry
 (display files) and on submission (uploads).
 
 **Pending-inputs extension.** Each entry may include:
@@ -154,7 +154,7 @@ is `<task folder>/inputs/<input_id>/`, populated by the runtime at await entry
 ```json
 {
   "run_id": "...",
-  "input_id": "...",
+  "ask_id": "...",
   "prompt": "...",
   "created_at": "...",
   "timeout_at": "...",
@@ -170,9 +170,9 @@ is `<task folder>/inputs/<input_id>/`, populated by the runtime at await entry
 }
 ```
 
-`file_affordance` and `staged_files` are omitted for text-only awaits.
+`file_affordance` and `staged_files` are omitted for text-only asks.
 
-**Listing endpoint.** `GET /runs/{id}/inputs/{input_id}/files` returns an array
+**Listing endpoint.** `GET /runs/{id}/asks/{ask_id}/files` returns an array
 of file metadata for the input — staged display files plus uploaded files
 (after delivery). Pending inputs are sourced from the pending registry; once
 delivered, the catalog comes from the run state's resolved-input history.
@@ -187,7 +187,7 @@ delivered, the catalog comes from the run state's resolved-input history.
 `source` is either `"display"` (staged from the workflow's task folder) or
 `"upload"` (provided by the user).
 
-**Content endpoint.** `GET /runs/{id}/inputs/{input_id}/files/{path}` serves
+**Content endpoint.** `GET /runs/{id}/asks/{ask_id}/files/{path}` serves
 the named file. The `path` segment is resolved strictly within the input's
 subdirectory; traversal attempts (`..`, absolute paths, symlinks escaping the
 subdirectory) return 400.
@@ -224,7 +224,7 @@ query parameter, so script-bearing types such as `text/html` and
 Multipart requests use these field conventions:
 
 - `response` (text field) — the human-facing text response. Optional if the
-  await is upload-only.
+  ask is upload-only.
 - File parts:
   - **Slot mode**: each file part's form field name must match a declared slot
     name (e.g. `resume.pdf`). Every declared slot must appear exactly once;
@@ -240,7 +240,7 @@ with a structured 4xx (the server does not silently rewrite a name). Within a
 single submission, two parts saved under the same effective filename are a
 `409 Conflict`; an upload that would overwrite a staged display file is also a
 `409`. Submissions are atomic — files are buffered into a per-submission
-staging directory under `inputs/<input_id>/.staging-*/` and renamed into place
+staging directory under `asks/<ask_id>/.staging-*/` and renamed into place
 only after every part validates; partial failures leave the input still
 pending and the input subdirectory unmodified by the failed attempt.
 
@@ -261,7 +261,7 @@ Constraint values include `slot_missing`, `slot_extra`, `max_count`,
 The daemon applies size and count caps in this precedence order (mirroring
 `resolveBudget`'s ladder):
 
-1. Per-await override — only bucket-mode `<await>` may raise or lower its own
+1. Per-ask override — only bucket-mode `<ask>` may raise or lower its own
    caps via `upload_max_size`, `upload_max_total_size`, `upload_max_count`.
 2. Server-wide config — set by the `serve` command via
    `Server.SetDefaultUploadCaps(perFile, total, count)` after loading
@@ -277,18 +277,18 @@ accounting would have rejected the body later.
 #### MCP degradation rules
 
 The MCP transport has no native channel for binary file exchange in
-`elicitation/create`. The daemon degrades file-bearing awaits as follows:
+`elicitation/create`. The daemon degrades file-bearing asks as follows:
 
-- **Text-only awaits** — delivered via elicitation as before.
-- **Display-only awaits** — delivered via elicitation; the prompt is augmented
+- **Text-only asks** — delivered via elicitation as before.
+- **Display-only asks** — delivered via elicitation; the prompt is augmented
   with absolute URLs (under the configured `base_url`) for each staged file so
   an MCP client can fetch them out of band via the file content endpoint. If
   no base URL is configured, the URLs are omitted.
-- **Slot- or bucket-mode awaits** (any upload affordance) — **not delivered
-  via MCP**. The await stays pending and a warning is logged; the user must
+- **Slot- or bucket-mode asks** (any upload affordance) — **not delivered
+  via MCP**. The ask stays pending and a warning is logged; the user must
   complete it via the HTTP UI.
 
-Workflow authors targeting both transports should design awaits that are
+Workflow authors targeting both transports should design asks that are
 either text-only or text-plus-display, and avoid making upload affordances
 mandatory for progress.
 
@@ -296,7 +296,7 @@ mandatory for progress.
 
 The `GET /runs/{id}/output` endpoint returns a Server-Sent Events stream. Each
 event is a JSON envelope with a `type` field indicating the event kind (e.g.,
-`state_started`, `state_completed`, `agent_spawned`, `agent_await_started`,
+`state_started`, `state_completed`, `agent_spawned`, `agent_ask_started`,
 `claude_stream_output`, `workflow_completed`). The stream closes when the run
 reaches a terminal state.
 
@@ -343,7 +343,7 @@ cost_usd, elapsed_seconds}`.
 **`raymond_await`** — Block until a run completes.
 
 Parameters: `run_id`, `timeout_seconds` (optional). Returns `{run_id, status,
-result, cost_usd}`. If the MCP client supports elicitation, any `<await>`
+result, cost_usd}`. If the MCP client supports elicitation, any `<ask>`
 prompts encountered during the run are delivered to the client via
 `elicitation/create` requests and responses are injected automatically.
 
@@ -351,20 +351,20 @@ prompts encountered during the run are delivered to the client via
 
 Parameters: `run_id`. Returns `{run_id, status: "cancelled"}`.
 
-**`raymond_list_pending_inputs`** — List all pending human input requests.
+**`raymond_list_pending_asks`** — List all pending human input requests.
 
-Returns an array with `run_id`, `input_id`, `workflow_id`, `prompt`,
+Returns an array with `run_id`, `ask_id`, `workflow_id`, `prompt`,
 `created_at`, and `timeout_at`.
 
-**`raymond_provide_input`** — Deliver a response to a pending await.
+**`raymond_answer_ask`** — Deliver a response to a pending ask.
 
-Parameters: `input_id`, `response`. Returns `{run_id, input_id, status:
+Parameters: `ask_id`, `response`. Returns `{run_id, ask_id, status:
 "resumed"}`.
 
 ### MCP Elicitation
 
 When a connected MCP client declares elicitation capability (in the
-`initialize` handshake), the daemon can deliver `<await>` prompts directly to
+`initialize` handshake), the daemon can deliver `<ask>` prompts directly to
 the client via `elicitation/create` requests. This allows MCP callers to handle
 human-in-the-loop workflows transparently: the caller invokes `raymond_run`
 then `raymond_await`, and any human input requests are surfaced as elicitation
@@ -377,7 +377,7 @@ time with a specific error message.
 ## Pending Input Registry
 
 The daemon maintains a durable registry of pending human input requests. When
-an agent enters `<await>` in daemon mode, the orchestrator registers a pending
+an agent enters `<ask>` in daemon mode, the orchestrator registers a pending
 input record with the prompt text, timeout deadline, and target state.
 
 The registry is backed by a JSONL append-only log file (`pending_inputs.jsonl`)
@@ -397,13 +397,13 @@ expired inputs. When a timeout elapses:
   timeout state's prompt).
 - If `timeout_next` is not set: the agent fails with an error.
 
-CLI pause mode (`--on-await=pause`) does not have built-in timeout monitoring —
+CLI pause mode (`--on-ask=pause`) does not have built-in timeout monitoring —
 the process is not running between resume cycles.
 
 ## Run Recovery
 
 On startup, the daemon scans the state directory for persisted workflow state
 files. Previously running workflows are recovered in their last known state:
-agents in the `awaiting` status are surfaced as `awaiting_input` runs, and
+agents in the `asking` status are surfaced as `asking` runs, and
 other interrupted runs are marked as `failed`. Recovered runs are visible in
 the HTTP API and web UI immediately.

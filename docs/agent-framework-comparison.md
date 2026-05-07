@@ -74,7 +74,7 @@ deep-dive section below.
 | Primary unit of composition | State (markdown prompt or shell script) with declared transitions                                           | A single tool-calling turn          | A "task" the agent decomposes  | `Agent` + `Task` + `Crew` (sequential or hierarchical)  |
 | Control flow                | Author-declared; transitions are explicit tags in the prompt; `allowed_transitions` enforced                | Implicit, inside the model loop     | Implicit, planner inside agent | Author wires Tasks; Process determines order            |
 | Context management          | First-class: seven transition tags differ in what context they preserve, discard, branch, or pause          | None at framework level             | Opaque, agent-managed          | Per-agent memory; hand-off via task outputs             |
-| Human-in-the-loop           | Built in (`<await>` suspends; daemon delivers input via HTTP, web UI, or MCP)                               | Not provided                        | Yes, ad-hoc                    | `human_input=True` on a Task (blocking prompt)          |
+| Human-in-the-loop           | Built in (`<ask>` suspends; daemon delivers input via HTTP, web UI, or MCP)                               | Not provided                        | Yes, ad-hoc                    | `human_input=True` on a Task (blocking prompt)          |
 | Determinism / shell         | Shell-script states with **zero token cost** for polling, builds, data prep                                 | N/A                                 | Agent shells out, LLM-mediated | Tools are Python; orchestration still LLM-driven        |
 | Multi-agent                 | `<fork>` runs independent agents in parallel within one workflow                                            | Single agent                        | Single agent (opaque internals)| Native — multiple roles, sequential or hierarchical     |
 | Cross-workflow reuse        | `<call-workflow>`, `<function-workflow>`, `<fork-workflow>`, `<reset-workflow>`; skill packaging            | N/A                                 | Closed                         | Crews can be composed; no formal call-stack semantics   |
@@ -104,7 +104,7 @@ agent should remember on the way out:
 - `function` — push a stack frame, but run the callee in **fresh context** so
   the caller's history doesn't pollute it. Use this for stateless evaluations.
 - `fork` — branch the workflow into independent agents.
-- `await` — suspend until a human or external system delivers input.
+- `ask` — suspend until a human or external system delivers input.
 - `result` — terminate the current state.
 
 CrewAI's task hand-off is coarser (the next agent sees the previous task's
@@ -178,14 +178,14 @@ including `sequential-reviewer` and `parallel-planner-with-review`.
 |-------------------------------|-------------------------------------------------------------------------------|-------------------------------------------------------------------------|
 | First-class abstraction       | The state graph (what the agent does next)                                    | The sandbox (where the agent runs)                                      |
 | Authoring surface             | Markdown prompts + YAML; transitions declared inline                          | TypeScript; control flow is regular JS                                  |
-| Control flow                  | Declarative tags (`<goto>`, `<reset>`, `<call>`, `<function>`, `<fork>`, …)  | Imperative — `for`, `Promise.all`, `await`                              |
+| Control flow                  | Declarative tags (`<goto>`, `<reset>`, `<call>`, `<function>`, `<fork>`, …)  | Imperative — `for`, `Promise.all`, `ask`                              |
 | Iteration / completion        | `<goto SELF>` loop with `<result>` to terminate                               | `maxIterations` + `completionSignal` (default `<promise>COMPLETE</promise>`) |
 | Context discipline            | Per-tag (reset discards, goto keeps, function fresh, etc.)                    | Per-call: `prompt`, `resumeSession`, or share a long-lived `Sandbox`    |
 | Sandboxing                    | None at framework level; relies on Claude Code's permission model             | **Core feature.** Docker / Podman / Vercel / custom; bind-mount or isolated |
 | Git integration               | Doesn't manage git                                                            | Owns it — worktrees, branch strategies, automatic commits, merge-back   |
 | Agent providers               | Claude Code only                                                              | Claude Code, Codex, OpenCode, pi                                        |
 | Multi-agent / parallel        | `<fork>` spawns independent agents in one workflow                            | `Promise.all([run(...), run(...)])` — JS handles it                     |
-| Human-in-the-loop             | `<await>` pauses an unattended workflow; daemon delivers input async         | `interactive()` opens an attended TUI session; no async pause           |
+| Human-in-the-loop             | `<ask>` pauses an unattended workflow; daemon delivers input async         | `interactive()` opens an attended TUI session; no async pause           |
 | Static analysis               | `lint`, `diagram`, YAML form                                                  | None — behavior is whatever the JS does                                 |
 | Persistence / resume          | Disk-persisted workflow state; `--resume <run_id>` for crashes and HIL        | Session capture (Claude JSONL) + `resumeSession`; not workflow-level    |
 | Cost control                  | Per-workflow dollar budget that overrides transitions                         | `idleTimeoutSeconds` + `maxIterations` + `AbortSignal`                  |
@@ -230,7 +230,7 @@ The two systems are not the same product:
   multiple `run()` calls in JS. Raymond's state graph models that natively,
   including fan-out / fan-in across phases.
 - **Human-in-the-loop as async pause.** Sandcastle's `interactive()` is an
-  attended TUI; there is no equivalent of `<await>` where the agent suspends
+  attended TUI; there is no equivalent of `<ask>` where the agent suspends
   to disk and resumes when input arrives via API hours later.
 - **Static analysis, cross-workflow reuse, skill packaging.** None of this
   exists in Sandcastle — equivalent reuse would mean writing JS modules and

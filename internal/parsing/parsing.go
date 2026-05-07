@@ -12,7 +12,7 @@ import (
 // Go's RE2 does not support backreferences, so we cannot enforce matching
 // close tags in a single regex. Instead we find the opening tag here, then
 // locate the corresponding closing tag with a plain string search.
-var openTagRe = regexp.MustCompile(`<(call-workflow|function-workflow|fork-workflow|reset-workflow|goto|reset|function|call|fork|result|await)([^>]*)>`)
+var openTagRe = regexp.MustCompile(`<(call-workflow|function-workflow|fork-workflow|reset-workflow|goto|reset|function|call|fork|result|ask)([^>]*)>`)
 
 // attrRe matches key="value" or key='value' attribute pairs.
 // Two alternatives enforce matching quote characters so key="val' is rejected.
@@ -23,10 +23,10 @@ type Transition struct {
 	Tag        string
 	Target     string            // filename; empty for result tags
 	Attributes map[string]string // e.g. {"return": "NEXT.md"}
-	Payload    string            // content between tags; used by result and await tags
+	Payload    string            // content between tags; used by result and ask tags
 
-	// FileAffordance is the parsed file descriptor for <await> transitions.
-	// Zero value means text-only and is the result for non-<await> tags.
+	// FileAffordance is the parsed file descriptor for <ask> transitions.
+	// Zero value means text-only and is the result for non-<ask> tags.
 	FileAffordance FileAffordance
 }
 
@@ -56,11 +56,11 @@ func ParseTransitions(output string) ([]Transition, error) {
 		var fileAffordance FileAffordance
 		if tagName == "result" {
 			payload = content
-		} else if tagName == "await" {
+		} else if tagName == "ask" {
 			next, ok := attrs["next"]
 			if !ok || next == "" {
 				return nil, fmt.Errorf(
-					"tag <await> requires a non-empty \"next\" attribute",
+					"tag <ask> requires a non-empty \"next\" attribute",
 				)
 			}
 			if strings.ContainsAny(next, "/\\") {
@@ -73,7 +73,7 @@ func ParseTransitions(output string) ([]Transition, error) {
 			payload = content
 			fa, err := ParseFileAffordance(attrs)
 			if err != nil {
-				return nil, fmt.Errorf("tag <await>: %w", err)
+				return nil, fmt.Errorf("tag <ask>: %w", err)
 			}
 			fileAffordance = fa
 		} else {

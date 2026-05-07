@@ -29,19 +29,19 @@ prior conversation context.
 
 `bm`'s job, distilled, is: (a) durable feature lifecycle (`draft` →
 dialog → `fully_specified` → `generating` → `beads_created` → `done`),
-(b) human-input routing (which feature is awaiting whose response),
+(b) human-input routing (which feature is asking whose response),
 (c) multi-project web dashboard.
 
 ## Why the transition is sound now
 
-`bm` was built before raymond had `<await>`. With raymond's `<await>` tag
+`bm` was built before raymond had `<ask>`. With raymond's `<ask>` tag
 plus `raymond serve`'s pending-input registry, web UI, run recovery, and
 SSE streaming, raymond covers (a) and (b) natively. (c) is the deliberate
 trade — see "Accepted losses" below.
 
-A reference example for `<await>` is at `~/work/wf_new/story_input.yaml`
-(workflow uses `input: mode: required` to bootstrap, then `<await
-next="REVIEW">prompt</await>` to ask the human, with run recovery making
+A reference example for `<ask>` is at `~/work/wf_new/story_input.yaml`
+(workflow uses `input: mode: required` to bootstrap, then `<ask
+next="REVIEW">prompt</ask>` to ask the human, with run recovery making
 it durable across daemon restarts).
 
 Crucially: **`beads_server` is the load-bearing piece for multi-worker
@@ -54,7 +54,7 @@ agent side is what genuinely needs replacing.
 | Lost | Mitigation |
 |---|---|
 | Multi-project dashboard | Single project; if ever needed, one daemon per project on different ports |
-| Cross-run "feature is in `awaiting_human`" board | Raymond UI's pending-inputs list covers active features; idle features visible by listing `features/` |
+| Cross-run "feature is in `awaiting_human`" board | Raymond UI's pending-asks list covers active features; idle features visible by listing `features/` |
 | Bead → feature backreference | Bead descriptions cite `features/NNN_<slug>.md` (greppable). Optionally label/epic the bead in beads_server. |
 | Round-by-round dialog audit trail | Skip by default. If missed later, finalize step can dump transcript alongside feature doc. |
 
@@ -65,7 +65,7 @@ agent side is what genuinely needs replacing.
 - One `raymond serve` daemon, single project.
 - `beads_server` retained as-is.
 - Three workflows replace `bm` + `agent.yaml` + work loop:
-  1. **`feature_dialog.yaml`** — interactive spec refinement via `<await>`.
+  1. **`feature_dialog.yaml`** — interactive spec refinement via `<ask>`.
   2. **`feat_to_beads.yaml`** — turns finalized feature doc into beads.
   3. **`work.yaml`** — claim a bead, implement, commit, push, rebase on
      rejection. (The current work loop with `bm` → `bs` substitution.)
@@ -107,12 +107,12 @@ flag] → fully_specified` transition.
 
 - `input.mode: required` to capture the seed description from the human
   on workflow launch.
-- One long-lived run, multiple `<await>` rounds inside it. Run recovery
+- One long-lived run, multiple `<ask>` rounds inside it. Run recovery
   brings it back across daemon restarts.
 - Roughly:
   - **ANALYZE**: read the working draft from run state, identify gaps and
     ambiguities, update the draft, emit
-    `<await next="ANALYZE">questions/assumptions</await>`. Finalization
+    `<ask next="ANALYZE">questions/assumptions</ask>`. Finalization
     conventions (mirroring `feat_dev_tg`'s `PROMPT.sh`; matching is
     case-insensitive and trims whitespace):
     - Last non-blank line is `done`, with other content above it →
@@ -136,8 +136,8 @@ flag] → fully_specified` transition.
   - Run terminates. The user separately launches `feat_to_beads.yaml`
     against the new file.
 
-**Default to one long-lived run with multiple `<await>` rounds** rather
-than one-run-per-round. Matches `<await>`'s intent and is simpler.
+**Default to one long-lived run with multiple `<ask>` rounds** rather
+than one-run-per-round. Matches `<ask>`'s intent and is simpler.
 Reconsider only if run recovery proves flaky in practice.
 
 ### `feat_to_beads.yaml`
@@ -290,7 +290,7 @@ PUSH_ATTEMPT → REBASE → RETEST → REWORK chain. No new design.
 
 ## Suggested implementation order
 
-1. **Build `feature_dialog.yaml`** with `<await>`. Reference:
+1. **Build `feature_dialog.yaml`** with `<ask>`. Reference:
    `wf_new/story_input.yaml`. Test end-to-end on one made-up feature.
    This is the riskiest piece because `bm`'s dialog behavior is least
    mechanical to translate.
@@ -339,9 +339,9 @@ PUSH_ATTEMPT → REBASE → RETEST → REWORK chain. No new design.
 
 - `~/work/raymond/docs/daemon-server.md` — `raymond serve` API and UI
   surface, including pending inputs and run recovery.
-- `~/work/raymond/docs/workflow-protocol.md` — `<await>` and other
+- `~/work/raymond/docs/workflow-protocol.md` — `<ask>` and other
   transition tags.
-- `~/work/wf_new/story_input.yaml` — minimal `<await>` example.
+- `~/work/wf_new/story_input.yaml` — minimal `<ask>` example.
 - `~/work/workflow_samples/work_and_agent.yaml` — current production
   workflow (the thing being replaced).
 - `~/work/workflow_samples/agent.yaml` — current dialog + generate

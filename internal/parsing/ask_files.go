@@ -1,6 +1,6 @@
 package parsing
 
-// File affordance descriptor for <await> transitions.
+// File affordance descriptor for <ask> transitions.
 //
 // The existing parser (parsing.go) is regex-based and only recognizes
 // attribute pairs on the opening tag, so the file-affordance surface rides on
@@ -9,26 +9,26 @@ package parsing
 // Surface syntax (one example per mode):
 //
 //   Slot mode (named upload slots, optional per-slot MIME allowlist):
-//     <await next="NEXT.md"
+//     <ask next="NEXT.md"
 //            upload_slots="resume.pdf:application/pdf,cover.pdf:application/pdf|text/plain">
 //        Please upload your documents.
-//     </await>
+//     </ask>
 //
 //   Bucket mode (open-ended uploads with constraints):
-//     <await next="NEXT.md"
+//     <ask next="NEXT.md"
 //            upload_bucket="true"
 //            upload_max_count="5"
 //            upload_max_size="10485760"
 //            upload_max_total_size="52428800"
 //            upload_mime="image/png,image/jpeg">
 //        Attach any supporting images.
-//     </await>
+//     </ask>
 //
 //   Display-only (workflow exposes files for the user to view):
-//     <await next="NEXT.md"
+//     <ask next="NEXT.md"
 //            display_files="out/report.pdf:Final Report,chart.png">
 //        Please review the artifacts.
-//     </await>
+//     </ask>
 //
 // Display files may also be combined with slot or bucket mode.
 //
@@ -49,22 +49,22 @@ import (
 	"strings"
 )
 
-// Mode classifies the file affordance an <await> declares.
+// Mode classifies the file affordance an <ask> declares.
 //
 // Display files are independent of the upload mode: a slot- or bucket-mode
-// await may also carry display files. ModeDisplayOnly is reserved for awaits
+// ask may also carry display files. ModeDisplayOnly is reserved for asks
 // that declare display files but no upload affordance.
 type Mode int
 
 const (
-	// ModeTextOnly is the zero value: the await accepts only a text response.
+	// ModeTextOnly is the zero value: the ask accepts only a text response.
 	ModeTextOnly Mode = iota
-	// ModeSlot indicates the await declares one or more named upload slots.
+	// ModeSlot indicates the ask declares one or more named upload slots.
 	ModeSlot
-	// ModeBucket indicates the await declares an open-ended upload bucket
+	// ModeBucket indicates the ask declares an open-ended upload bucket
 	// with constraints.
 	ModeBucket
-	// ModeDisplayOnly indicates the await exposes display files but does not
+	// ModeDisplayOnly indicates the ask exposes display files but does not
 	// accept uploads.
 	ModeDisplayOnly
 )
@@ -95,8 +95,8 @@ type DisplaySpec struct {
 	DisplayName string
 }
 
-// FileAffordance is the parsed file-related descriptor for an <await> tag.
-// The zero value represents a text-only await.
+// FileAffordance is the parsed file-related descriptor for an <ask> tag.
+// The zero value represents a text-only ask.
 type FileAffordance struct {
 	Mode         Mode
 	Slots        []SlotSpec
@@ -104,11 +104,11 @@ type FileAffordance struct {
 	DisplayFiles []DisplaySpec
 }
 
-// ParseFileAffordance extracts the file affordance from <await> attributes.
+// ParseFileAffordance extracts the file affordance from <ask> attributes.
 // Unrelated attributes (e.g. next, timeout) are ignored. The returned
 // affordance is normalized: MIME types are trimmed and lowercased, leading
 // and trailing whitespace is removed from names. An empty / zero-value
-// FileAffordance is returned for awaits that declare no file attributes.
+// FileAffordance is returned for asks that declare no file attributes.
 func ParseFileAffordance(attrs map[string]string) (FileAffordance, error) {
 	var fa FileAffordance
 

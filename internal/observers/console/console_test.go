@@ -718,18 +718,18 @@ func TestConsoleAgentPausedTimeoutReason(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// AgentAwaitStarted / AgentAwaitResumed
+// AgentAskStarted / AgentAskResumed
 // ----------------------------------------------------------------------------
 
-func TestConsoleAgentAwaitStartedShowsPrompt(t *testing.T) {
+func TestConsoleAgentAskStartedShowsPrompt(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
 	obs := newObs(b, &buf, false)
 	defer obs.Close()
 
-	b.Emit(events.AgentAwaitStarted{
+	b.Emit(events.AgentAskStarted{
 		AgentID:   "main",
-		InputID:   "input-1",
+		AskID:   "input-1",
 		Prompt:    "Please provide the API key",
 		NextState: "NEXT.md",
 		Timestamp: time.Now(),
@@ -737,19 +737,19 @@ func TestConsoleAgentAwaitStartedShowsPrompt(t *testing.T) {
 
 	out := buf.String()
 	assert.Contains(t, out, "[main]")
-	assert.Contains(t, out, "awaiting human input")
+	assert.Contains(t, out, "asking human input")
 	assert.Contains(t, out, "Please provide the API key")
 }
 
-func TestConsoleAgentAwaitResumedShowsResume(t *testing.T) {
+func TestConsoleAgentAskResumedShowsResume(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
 	obs := newObs(b, &buf, false)
 	defer obs.Close()
 
-	b.Emit(events.AgentAwaitResumed{
+	b.Emit(events.AgentAskResumed{
 		AgentID:   "main",
-		InputID:   "input-1",
+		AskID:   "input-1",
 		Timestamp: time.Now(),
 	})
 
@@ -758,16 +758,16 @@ func TestConsoleAgentAwaitResumedShowsResume(t *testing.T) {
 	assert.Contains(t, out, "input received, resuming")
 }
 
-func TestConsoleAgentAwaitStartedLongPromptTruncated(t *testing.T) {
+func TestConsoleAgentAskStartedLongPromptTruncated(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
 	obs := newObsWithWidth(b, &buf, 80)
 	defer obs.Close()
 
 	longPrompt := strings.Repeat("q", 200)
-	b.Emit(events.AgentAwaitStarted{
+	b.Emit(events.AgentAskStarted{
 		AgentID:   "main",
-		InputID:   "input-2",
+		AskID:   "input-2",
 		Prompt:    longPrompt,
 		NextState: "NEXT.md",
 		Timestamp: time.Now(),
@@ -775,21 +775,21 @@ func TestConsoleAgentAwaitStartedLongPromptTruncated(t *testing.T) {
 
 	out := buf.String()
 	assert.Contains(t, out, "...")
-	assert.Contains(t, out, "awaiting human input")
+	assert.Contains(t, out, "asking human input")
 	// Line must fit within terminal width.
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	assert.LessOrEqual(t, len(lines[0]), 80)
 }
 
-func TestConsoleAgentAwaitStartedEmptyPrompt(t *testing.T) {
+func TestConsoleAgentAskStartedEmptyPrompt(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
 	obs := newObs(b, &buf, false)
 	defer obs.Close()
 
-	b.Emit(events.AgentAwaitStarted{
+	b.Emit(events.AgentAskStarted{
 		AgentID:   "main",
-		InputID:   "input-e",
+		AskID:   "input-e",
 		Prompt:    "",
 		NextState: "NEXT.md",
 		Timestamp: time.Now(),
@@ -797,18 +797,18 @@ func TestConsoleAgentAwaitStartedEmptyPrompt(t *testing.T) {
 
 	out := buf.String()
 	assert.Contains(t, out, "[main]")
-	assert.Contains(t, out, "awaiting human input")
+	assert.Contains(t, out, "asking human input")
 }
 
-func TestConsoleAgentAwaitStartedMultilinePromptUsesFirstLine(t *testing.T) {
+func TestConsoleAgentAskStartedMultilinePromptUsesFirstLine(t *testing.T) {
 	b := bus.New()
 	var buf bytes.Buffer
 	obs := newObs(b, &buf, false)
 	defer obs.Close()
 
-	b.Emit(events.AgentAwaitStarted{
+	b.Emit(events.AgentAskStarted{
 		AgentID:   "main",
-		InputID:   "input-3",
+		AskID:   "input-3",
 		Prompt:    "First line of prompt\nSecond line of prompt\nThird line",
 		NextState: "NEXT.md",
 		Timestamp: time.Now(),

@@ -158,7 +158,7 @@ func TestCancelRun_CancelsRunningWorkflow(t *testing.T) {
 	assert.Equal(t, RunStatusCancelled, info.Status)
 }
 
-func TestCancelRun_AwaitingRun(t *testing.T) {
+func TestCancelRun_AskingRun(t *testing.T) {
 	stateDir := ensureStateDir(t)
 	scopeDir := t.TempDir()
 
@@ -166,9 +166,9 @@ func TestCancelRun_AwaitingRun(t *testing.T) {
 		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 			b := bus.New()
 			opts.ObserverSetup(b)
-			b.Emit(events.AgentAwaitStarted{
+			b.Emit(events.AgentAskStarted{
 				AgentID:   "main",
-				InputID:   "input-1",
+				AskID:   "input-1",
 				Prompt:    "What next?",
 				NextState: "NEXT.md",
 				Timestamp: time.Now(),
@@ -188,15 +188,15 @@ func TestCancelRun_AwaitingRun(t *testing.T) {
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
 	require.NoError(t, err)
 
-	// Wait until the run reaches awaiting_input.
+	// Wait until the run reaches asking.
 	_, err = rm.WaitForCompletion(runID, 5*time.Second)
 	require.NoError(t, err)
 
 	info, ok := rm.GetRun(runID)
 	require.True(t, ok)
-	assert.Equal(t, RunStatusAwaitingInput, info.Status)
+	assert.Equal(t, RunStatusAsking, info.Status)
 
-	// Cancelling an awaiting run should succeed and change status.
+	// Cancelling an asking run should succeed and change status.
 	err = rm.CancelRun(runID)
 	require.NoError(t, err)
 
@@ -357,10 +357,10 @@ func TestDeleteRun_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrRunNotFound)
 }
 
-func TestAgentAwaitStarted_FlipsRunToAwaitingInput(t *testing.T) {
-	// In daemon mode the orchestrator emits AgentAwaitStarted but NOT
+func TestAgentAskStarted_FlipsRunToAsking(t *testing.T) {
+	// In daemon mode the orchestrator emits AgentAskStarted but NOT
 	// WorkflowPaused (siblings keep running). The run-level Status must
-	// still flip to "awaiting_input" so the UI knows to poll for pending
+	// still flip to "asking" so the UI knows to poll for pending
 	// inputs and surface an input card.
 	stateDir := ensureStateDir(t)
 	scopeDir := t.TempDir()
@@ -371,9 +371,9 @@ func TestAgentAwaitStarted_FlipsRunToAwaitingInput(t *testing.T) {
 		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 			b := bus.New()
 			opts.ObserverSetup(b)
-			b.Emit(events.AgentAwaitStarted{
+			b.Emit(events.AgentAskStarted{
 				AgentID:   "main",
-				InputID:   "input-1",
+				AskID:   "input-1",
 				Prompt:    "Please review",
 				NextState: "NEXT.md",
 				Timestamp: time.Now(),
@@ -392,17 +392,17 @@ func TestAgentAwaitStarted_FlipsRunToAwaitingInput(t *testing.T) {
 
 	<-started
 	// Event delivery is synchronous on the bus, so by the time
-	// AgentAwaitStarted returns the subscriber has already applied its
+	// AgentAskStarted returns the subscriber has already applied its
 	// update. Small sleep only as a safety margin against future async
 	// changes in bus delivery.
 	time.Sleep(20 * time.Millisecond)
 
 	info, ok := rm.GetRun(runID)
 	require.True(t, ok)
-	assert.Equal(t, RunStatusAwaitingInput, info.Status,
-		"run status should flip to awaiting_input when an agent enters <await> in daemon mode")
+	assert.Equal(t, RunStatusAsking, info.Status,
+		"run status should flip to asking when an agent enters <ask> in daemon mode")
 	require.Len(t, info.Agents, 1)
-	assert.Equal(t, wfstate.AgentStatusAwaiting, info.Agents[0].Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, info.Agents[0].Status)
 
 	close(cont)
 	_, err = rm.WaitForCompletion(runID, 5*time.Second)
@@ -410,25 +410,25 @@ func TestAgentAwaitStarted_FlipsRunToAwaitingInput(t *testing.T) {
 }
 
 func TestStateStarted_FlipsRunBackToRunning(t *testing.T) {
-	// After an awaiting agent receives input and enters its next state,
-	// the run should stop reading as awaiting_input.
+	// After an asking agent receives input and enters its next state,
+	// the run should stop reading as asking.
 	stateDir := ensureStateDir(t)
 	scopeDir := t.TempDir()
 
-	awaited := make(chan struct{})
+	asked := make(chan struct{})
 	resumed := make(chan struct{})
 	done := make(chan struct{})
 	fake := &fakeOrchestrator{
 		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 			b := bus.New()
 			opts.ObserverSetup(b)
-			b.Emit(events.AgentAwaitStarted{
+			b.Emit(events.AgentAskStarted{
 				AgentID:   "main",
-				InputID:   "input-1",
+				AskID:   "input-1",
 				NextState: "REVIEW.md",
 				Timestamp: time.Now(),
 			})
-			close(awaited)
+			close(asked)
 			<-resumed
 			b.Emit(events.StateStarted{
 				AgentID:   "main",
@@ -447,16 +447,16 @@ func TestStateStarted_FlipsRunBackToRunning(t *testing.T) {
 	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
 	require.NoError(t, err)
 
-	<-awaited
+	<-asked
 	time.Sleep(20 * time.Millisecond)
 	info, _ := rm.GetRun(runID)
-	require.Equal(t, RunStatusAwaitingInput, info.Status)
+	require.Equal(t, RunStatusAsking, info.Status)
 
 	close(resumed)
 	time.Sleep(20 * time.Millisecond)
 	info, _ = rm.GetRun(runID)
 	assert.Equal(t, RunStatusRunning, info.Status,
-		"run should go back to running once the awaiting agent enters its next state")
+		"run should go back to running once the asking agent enters its next state")
 
 	close(done)
 	_, err = rm.WaitForCompletion(runID, 5*time.Second)
@@ -680,7 +680,7 @@ func TestRestartRecovery_DiscoversInProgressWorkflows(t *testing.T) {
 
 	info, ok := rm.GetRun("recovered-run-1")
 	require.True(t, ok)
-	assert.Equal(t, RunStatusFailed, info.Status, "paused agents without await should be classified as failed")
+	assert.Equal(t, RunStatusFailed, info.Status, "paused agents without ask should be classified as failed")
 	assert.Equal(t, 2.5, info.CostUSD)
 	require.Len(t, info.Agents, 1)
 	assert.Equal(t, "main", info.Agents[0].ID)
@@ -688,11 +688,11 @@ func TestRestartRecovery_DiscoversInProgressWorkflows(t *testing.T) {
 	assert.Equal(t, wfstate.AgentStatusPaused, info.Agents[0].Status)
 }
 
-func TestRestartRecovery_AwaitingWorkflow(t *testing.T) {
+func TestRestartRecovery_AskingWorkflow(t *testing.T) {
 	stateDir := ensureStateDir(t)
 
 	ws := &wfstate.WorkflowState{
-		WorkflowID:   "awaiting-run",
+		WorkflowID:   "asking-run",
 		ScopeDir:     "/some/scope",
 		TotalCostUSD: 1.0,
 		BudgetUSD:    10.0,
@@ -700,7 +700,7 @@ func TestRestartRecovery_AwaitingWorkflow(t *testing.T) {
 			{
 				ID:           "main",
 				CurrentState: "WAIT.md",
-				Status:       wfstate.AgentStatusAwaiting,
+				Status:       wfstate.AgentStatusAsking,
 				Stack:        []wfstate.StackFrame{},
 			},
 		},
@@ -708,16 +708,16 @@ func TestRestartRecovery_AwaitingWorkflow(t *testing.T) {
 	data, err := json.Marshal(ws)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(
-		filepath.Join(stateDir, "awaiting-run.json"),
+		filepath.Join(stateDir, "asking-run.json"),
 		data, 0o644,
 	))
 
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
 	require.NoError(t, err)
 
-	info, ok := rm.GetRun("awaiting-run")
+	info, ok := rm.GetRun("asking-run")
 	require.True(t, ok)
-	assert.Equal(t, RunStatusAwaitingInput, info.Status)
+	assert.Equal(t, RunStatusAsking, info.Status)
 }
 
 func TestRestartRecovery_EmptyStateDir(t *testing.T) {
@@ -775,7 +775,7 @@ func TestLaunchRun_FailedOrchestrator(t *testing.T) {
 	assert.Contains(t, info.Result, "assert.AnError")
 }
 
-func TestLaunchRun_AwaitingInputStatus(t *testing.T) {
+func TestLaunchRun_AskingStatus(t *testing.T) {
 	stateDir := ensureStateDir(t)
 	scopeDir := t.TempDir()
 
@@ -784,9 +784,9 @@ func TestLaunchRun_AwaitingInputStatus(t *testing.T) {
 			b := bus.New()
 			opts.ObserverSetup(b)
 
-			b.Emit(events.AgentAwaitStarted{
+			b.Emit(events.AgentAskStarted{
 				AgentID:   "main",
-				InputID:   "input-1",
+				AskID:   "input-1",
 				Prompt:    "What next?",
 				NextState: "NEXT.md",
 				Timestamp: time.Now(),
@@ -809,12 +809,12 @@ func TestLaunchRun_AwaitingInputStatus(t *testing.T) {
 
 	info, err := rm.WaitForCompletion(runID, 5*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, RunStatusAwaitingInput, info.Status)
+	assert.Equal(t, RunStatusAsking, info.Status)
 	assert.Equal(t, 0.3, info.CostUSD)
 
 	// Verify agent-level status.
 	require.Len(t, info.Agents, 1)
-	assert.Equal(t, wfstate.AgentStatusAwaiting, info.Agents[0].Status)
+	assert.Equal(t, wfstate.AgentStatusAsking, info.Agents[0].Status)
 }
 
 func TestLaunchRun_EventsUpdateAgentInfo(t *testing.T) {

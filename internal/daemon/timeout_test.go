@@ -16,10 +16,10 @@ func TestTimeoutMonitor_ExpiresWithTimeoutNext(t *testing.T) {
 
 	// Register a pending input that has already expired.
 	expired := time.Now().Add(-1 * time.Second)
-	require.NoError(t, reg.Register(PendingInput{
+	require.NoError(t, reg.Register(PendingAsk{
 		RunID:       "run-1",
 		AgentID:     "main",
-		InputID:     "inp-001",
+		AskID:     "inp-001",
 		Prompt:      "Enter value",
 		NextState:   "NEXT.md",
 		CreatedAt:   time.Now().Add(-1 * time.Hour),
@@ -42,7 +42,7 @@ func TestTimeoutMonitor_ExpiresWithTimeoutNext(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, deliveries, 1)
 	assert.Equal(t, "run-1", deliveries[0].RunID)
-	assert.Equal(t, "inp-001", deliveries[0].InputID)
+	assert.Equal(t, "inp-001", deliveries[0].AskID)
 	assert.Equal(t, "", deliveries[0].Response, "TimeoutNext present → empty response")
 	assert.Equal(t, "TIMEOUT.md", deliveries[0].TimeoutNext)
 	assert.NoError(t, deliveries[0].Err)
@@ -59,10 +59,10 @@ func TestTimeoutMonitor_ExpiresWithoutTimeoutNext(t *testing.T) {
 
 	// Register a pending input with no TimeoutNext — should produce an error.
 	expired := time.Now().Add(-1 * time.Second)
-	require.NoError(t, reg.Register(PendingInput{
+	require.NoError(t, reg.Register(PendingAsk{
 		RunID:       "run-1",
 		AgentID:     "main",
-		InputID:     "inp-001",
+		AskID:     "inp-001",
 		Prompt:      "Enter value",
 		NextState:   "NEXT.md",
 		CreatedAt:   time.Now().Add(-1 * time.Hour),
@@ -84,7 +84,7 @@ func TestTimeoutMonitor_ExpiresWithoutTimeoutNext(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Len(t, deliveries, 1)
-	assert.Equal(t, "inp-001", deliveries[0].InputID)
+	assert.Equal(t, "inp-001", deliveries[0].AskID)
 	assert.Equal(t, "", deliveries[0].TimeoutNext)
 	assert.Error(t, deliveries[0].Err, "no TimeoutNext → error delivery")
 
@@ -100,10 +100,10 @@ func TestTimeoutMonitor_NonExpiredNotAffected(t *testing.T) {
 
 	// Register a pending input with a future timeout.
 	future := time.Now().Add(1 * time.Hour)
-	require.NoError(t, reg.Register(PendingInput{
+	require.NoError(t, reg.Register(PendingAsk{
 		RunID:       "run-1",
 		AgentID:     "main",
-		InputID:     "inp-001",
+		AskID:     "inp-001",
 		Prompt:      "Enter value",
 		NextState:   "NEXT.md",
 		TimeoutAt:   &future,
@@ -136,10 +136,10 @@ func TestTimeoutMonitor_NilTimeoutNotAffected(t *testing.T) {
 	require.NoError(t, err)
 
 	// Register a pending input with no timeout.
-	require.NoError(t, reg.Register(PendingInput{
+	require.NoError(t, reg.Register(PendingAsk{
 		RunID:   "run-1",
 		AgentID: "main",
-		InputID: "inp-001",
+		AskID: "inp-001",
 	}))
 
 	var mu sync.Mutex
@@ -168,10 +168,10 @@ func TestTimeoutMonitor_BackgroundLoop(t *testing.T) {
 
 	// Register an input that will expire soon.
 	expired := time.Now().Add(-1 * time.Millisecond)
-	require.NoError(t, reg.Register(PendingInput{
+	require.NoError(t, reg.Register(PendingAsk{
 		RunID:       "run-1",
 		AgentID:     "main",
-		InputID:     "inp-001",
+		AskID:     "inp-001",
 		TimeoutAt:   &expired,
 		TimeoutNext: "TIMEOUT.md",
 	}))
@@ -191,7 +191,7 @@ func TestTimeoutMonitor_BackgroundLoop(t *testing.T) {
 
 	select {
 	case d := <-deliveryCh:
-		assert.Equal(t, "inp-001", d.InputID)
+		assert.Equal(t, "inp-001", d.AskID)
 		assert.NoError(t, d.Err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for background monitor to trigger")
@@ -204,12 +204,12 @@ func TestTimeoutMonitor_MultipleExpired(t *testing.T) {
 	require.NoError(t, err)
 
 	expired := time.Now().Add(-1 * time.Second)
-	require.NoError(t, reg.Register(PendingInput{
-		RunID: "run-1", AgentID: "main", InputID: "inp-001",
+	require.NoError(t, reg.Register(PendingAsk{
+		RunID: "run-1", AgentID: "main", AskID: "inp-001",
 		TimeoutAt: &expired, TimeoutNext: "T1.md",
 	}))
-	require.NoError(t, reg.Register(PendingInput{
-		RunID: "run-2", AgentID: "main", InputID: "inp-002",
+	require.NoError(t, reg.Register(PendingAsk{
+		RunID: "run-2", AgentID: "main", AskID: "inp-002",
 		TimeoutAt: &expired, TimeoutNext: "",
 	}))
 

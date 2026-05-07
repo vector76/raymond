@@ -25,7 +25,7 @@ func makeManifest(t *testing.T, dir, content string) {
 
 func TestResolveRequiresHumanInput_TrueRegardlessOfStateFiles(t *testing.T) {
 	dir := t.TempDir()
-	// State file has no await — but manifest says "true".
+	// State file has no ask — but manifest says "true".
 	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: goto, target: DONE.md}\n---\nHello\n")
 	makeStateFile(t, dir, "DONE.md", "done")
 
@@ -35,10 +35,10 @@ func TestResolveRequiresHumanInput_TrueRegardlessOfStateFiles(t *testing.T) {
 	assert.True(t, result)
 }
 
-func TestResolveRequiresHumanInput_FalseEvenWithAwaitInStates(t *testing.T) {
+func TestResolveRequiresHumanInput_FalseEvenWithAskInStates(t *testing.T) {
 	dir := t.TempDir()
-	// State file declares await — but manifest says "false".
-	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nWaiting\n")
+	// State file declares ask — but manifest says "false".
+	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nWaiting\n")
 
 	m := &Manifest{ID: "test", RequiresHumanInput: "false"}
 	result, err := ResolveRequiresHumanInput(m, dir, nil)
@@ -48,10 +48,10 @@ func TestResolveRequiresHumanInput_FalseEvenWithAwaitInStates(t *testing.T) {
 
 // --- ResolveRequiresHumanInput: auto mode ---
 
-func TestResolveRequiresHumanInput_AutoWithAwaitInStates(t *testing.T) {
+func TestResolveRequiresHumanInput_AutoWithAskInStates(t *testing.T) {
 	dir := t.TempDir()
 	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: goto, target: WAIT.md}\n---\nStart\n")
-	makeStateFile(t, dir, "WAIT.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nWaiting for input\n")
+	makeStateFile(t, dir, "WAIT.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nWaiting for input\n")
 
 	m := &Manifest{ID: "test", RequiresHumanInput: "auto"}
 	result, err := ResolveRequiresHumanInput(m, dir, nil)
@@ -59,7 +59,7 @@ func TestResolveRequiresHumanInput_AutoWithAwaitInStates(t *testing.T) {
 	assert.True(t, result)
 }
 
-func TestResolveRequiresHumanInput_AutoWithoutAwait(t *testing.T) {
+func TestResolveRequiresHumanInput_AutoWithoutAsk(t *testing.T) {
 	dir := t.TempDir()
 	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: goto, target: DONE.md}\n---\nStart\n")
 	makeStateFile(t, dir, "DONE.md", "---\nallowed_transitions:\n  - {tag: result}\n---\nDone\n")
@@ -73,13 +73,13 @@ func TestResolveRequiresHumanInput_AutoWithoutAwait(t *testing.T) {
 // --- Transitive propagation ---
 
 func TestResolveRequiresHumanInput_TransitiveCallWorkflow(t *testing.T) {
-	// Parent workflow calls child workflow which has await.
+	// Parent workflow calls child workflow which has ask.
 	parent := t.TempDir()
 	child := filepath.Join(parent, "child")
 	require.NoError(t, os.Mkdir(child, 0o755))
 
-	// Child workflow has await in its state.
-	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nChild awaits\n")
+	// Child workflow has ask in its state.
+	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nChild asks\n")
 
 	// Parent state references child via call-workflow.
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: call-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")
@@ -88,7 +88,7 @@ func TestResolveRequiresHumanInput_TransitiveCallWorkflow(t *testing.T) {
 	m := &Manifest{ID: "test", RequiresHumanInput: "auto"}
 	result, err := ResolveRequiresHumanInput(m, parent, nil)
 	require.NoError(t, err)
-	assert.True(t, result, "should detect await in child workflow via call-workflow")
+	assert.True(t, result, "should detect ask in child workflow via call-workflow")
 }
 
 func TestResolveRequiresHumanInput_TransitiveFunctionWorkflow(t *testing.T) {
@@ -96,7 +96,7 @@ func TestResolveRequiresHumanInput_TransitiveFunctionWorkflow(t *testing.T) {
 	child := filepath.Join(parent, "child")
 	require.NoError(t, os.Mkdir(child, 0o755))
 
-	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nChild awaits\n")
+	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nChild asks\n")
 
 	// Parent uses function-workflow.
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: function-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")
@@ -105,7 +105,7 @@ func TestResolveRequiresHumanInput_TransitiveFunctionWorkflow(t *testing.T) {
 	m := &Manifest{ID: "test", RequiresHumanInput: "auto"}
 	result, err := ResolveRequiresHumanInput(m, parent, nil)
 	require.NoError(t, err)
-	assert.True(t, result, "should detect await in child workflow via function-workflow")
+	assert.True(t, result, "should detect ask in child workflow via function-workflow")
 }
 
 func TestResolveRequiresHumanInput_TransitiveChildHasManifestTrue(t *testing.T) {
@@ -113,9 +113,9 @@ func TestResolveRequiresHumanInput_TransitiveChildHasManifestTrue(t *testing.T) 
 	child := filepath.Join(parent, "child")
 	require.NoError(t, os.Mkdir(child, 0o755))
 
-	// Child has manifest with requires_human_input: true (no await in states needed).
+	// Child has manifest with requires_human_input: true (no ask in states needed).
 	makeManifest(t, child, "id: child-wf\nrequires_human_input: \"true\"\n")
-	makeStateFile(t, child, "1_START.md", "No await here\n")
+	makeStateFile(t, child, "1_START.md", "No ask here\n")
 
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: call-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")
 	makeStateFile(t, parent, "DONE.md", "Done\n")
@@ -132,9 +132,9 @@ func TestResolveRequiresHumanInput_TransitiveChildHasManifestFalse(t *testing.T)
 	require.NoError(t, os.Mkdir(child, 0o755))
 
 	// Child has manifest with requires_human_input: false — even though its
-	// state declares await, the manifest takes precedence.
+	// state declares ask, the manifest takes precedence.
 	makeManifest(t, child, "id: child-wf\nrequires_human_input: \"false\"\n")
-	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nWaiting\n")
+	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nWaiting\n")
 
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: call-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")
 	makeStateFile(t, parent, "DONE.md", "Done\n")
@@ -142,16 +142,16 @@ func TestResolveRequiresHumanInput_TransitiveChildHasManifestFalse(t *testing.T)
 	m := &Manifest{ID: "test", RequiresHumanInput: "auto"}
 	result, err := ResolveRequiresHumanInput(m, parent, nil)
 	require.NoError(t, err)
-	assert.False(t, result, "child manifest requires_human_input=false overrides await in child states")
+	assert.False(t, result, "child manifest requires_human_input=false overrides ask in child states")
 }
 
 func TestResolveRequiresHumanInput_TransitiveNoChildManifest(t *testing.T) {
-	// Child has no manifest, but has await in states — scan detects it.
+	// Child has no manifest, but has ask in states — scan detects it.
 	parent := t.TempDir()
 	child := filepath.Join(parent, "child")
 	require.NoError(t, os.Mkdir(child, 0o755))
 
-	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nWaiting\n")
+	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nWaiting\n")
 
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: call-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")
 	makeStateFile(t, parent, "DONE.md", "Done\n")
@@ -162,7 +162,7 @@ func TestResolveRequiresHumanInput_TransitiveNoChildManifest(t *testing.T) {
 	assert.True(t, result, "should fall back to scanning child states when no manifest exists")
 }
 
-func TestResolveRequiresHumanInput_TransitiveNoAwaitAnywhere(t *testing.T) {
+func TestResolveRequiresHumanInput_TransitiveNoAskAnywhere(t *testing.T) {
 	parent := t.TempDir()
 	child := filepath.Join(parent, "child")
 	require.NoError(t, os.Mkdir(child, 0o755))
@@ -175,7 +175,7 @@ func TestResolveRequiresHumanInput_TransitiveNoAwaitAnywhere(t *testing.T) {
 	m := &Manifest{ID: "test", RequiresHumanInput: "auto"}
 	result, err := ResolveRequiresHumanInput(m, parent, nil)
 	require.NoError(t, err)
-	assert.False(t, result, "no await anywhere should return false")
+	assert.False(t, result, "no ask anywhere should return false")
 }
 
 // --- Cycle detection ---
@@ -199,14 +199,14 @@ func TestResolveRequiresHumanInput_CycleDetection(t *testing.T) {
 	m := &Manifest{ID: "test", RequiresHumanInput: "auto"}
 	result, err := ResolveRequiresHumanInput(m, wfA, nil)
 	require.NoError(t, err)
-	assert.False(t, result, "cycle should terminate and return false when no await found")
+	assert.False(t, result, "cycle should terminate and return false when no ask found")
 }
 
 // --- No manifest fallback (direct scan) ---
 
-func TestScanScopeForHumanInput_DirectScanWithAwait(t *testing.T) {
+func TestScanScopeForHumanInput_DirectScanWithAsk(t *testing.T) {
 	dir := t.TempDir()
-	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nWaiting\n")
+	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nWaiting\n")
 
 	visited := make(map[string]bool)
 	result, err := scanScopeForHumanInput(dir, nil, visited)
@@ -214,7 +214,7 @@ func TestScanScopeForHumanInput_DirectScanWithAwait(t *testing.T) {
 	assert.True(t, result)
 }
 
-func TestScanScopeForHumanInput_DirectScanWithoutAwait(t *testing.T) {
+func TestScanScopeForHumanInput_DirectScanWithoutAsk(t *testing.T) {
 	dir := t.TempDir()
 	makeStateFile(t, dir, "1_START.md", "---\nallowed_transitions:\n  - {tag: goto, target: DONE.md}\n---\nHello\n")
 	makeStateFile(t, dir, "DONE.md", "Done\n")
@@ -237,10 +237,10 @@ func TestResolveRequiresHumanInput_NoStateFiles(t *testing.T) {
 
 func TestResolveRequiresHumanInput_NonMDFilesIgnored(t *testing.T) {
 	dir := t.TempDir()
-	// Only a .sh file with await-like text — should not be detected.
+	// Only a .sh file with ask-like text — should not be detected.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "1_START.sh"),
-		[]byte("echo '<await>prompt</await>'\n"),
+		[]byte("echo '<ask>prompt</ask>'\n"),
 		0o644,
 	))
 
@@ -269,10 +269,10 @@ states:
   WAIT:
     prompt: waiting
     allowed_transitions:
-      - { tag: await }
+      - { tag: ask }
 `), 0o644))
-	// Also have a .md state file with await (since we scan .md files, not YAML).
-	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: await}\n---\nWaiting\n")
+	// Also have a .md state file with ask (since we scan .md files, not YAML).
+	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nWaiting\n")
 
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: call-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")
 	makeStateFile(t, parent, "DONE.md", "Done\n")

@@ -1638,34 +1638,34 @@ func TestResumeYamlInvalid(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// --on-await flag
+// --on-ask flag
 // --------------------------------------------------------------------------
 
-func TestOnAwaitPauseAcceptedAndPassedToRunOptions(t *testing.T) {
+func TestOnAskPauseAcceptedAndPassedToRunOptions(t *testing.T) {
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()
 	startFile := filepath.Join(dir, "START.md")
 	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
 
-	captured, err := runCapturing(t, startFile, "--on-await", "pause", "--state-dir", stateDir)
+	captured, err := runCapturing(t, startFile, "--on-ask", "pause", "--state-dir", stateDir)
 	require.NoError(t, err)
 	require.Len(t, captured, 1)
-	assert.Equal(t, "pause", captured[0].OnAwait)
+	assert.Equal(t, "pause", captured[0].OnAsk)
 }
 
-func TestOnAwaitRejectAccepted(t *testing.T) {
+func TestOnAskRejectAccepted(t *testing.T) {
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()
 	startFile := filepath.Join(dir, "START.md")
 	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
 
-	captured, err := runCapturing(t, startFile, "--on-await", "reject", "--state-dir", stateDir)
+	captured, err := runCapturing(t, startFile, "--on-ask", "reject", "--state-dir", stateDir)
 	require.NoError(t, err)
 	require.Len(t, captured, 1)
-	assert.Equal(t, "reject", captured[0].OnAwait)
+	assert.Equal(t, "reject", captured[0].OnAsk)
 }
 
-func TestOnAwaitDefaultIsReject(t *testing.T) {
+func TestOnAskDefaultIsReject(t *testing.T) {
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()
 	startFile := filepath.Join(dir, "START.md")
@@ -1674,54 +1674,54 @@ func TestOnAwaitDefaultIsReject(t *testing.T) {
 	captured, err := runCapturing(t, startFile, "--state-dir", stateDir)
 	require.NoError(t, err)
 	require.Len(t, captured, 1)
-	assert.Equal(t, "reject", captured[0].OnAwait)
+	assert.Equal(t, "reject", captured[0].OnAsk)
 }
 
-func TestOnAwaitInvalidValueProducesError(t *testing.T) {
+func TestOnAskInvalidValueProducesError(t *testing.T) {
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()
 	startFile := filepath.Join(dir, "START.md")
 	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
 
-	_, _, err := run(t, startFile, "--on-await", "foo", "--state-dir", stateDir)
+	_, _, err := run(t, startFile, "--on-ask", "foo", "--state-dir", stateDir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid --on-await value")
+	assert.Contains(t, err.Error(), "invalid --on-ask value")
 	assert.Contains(t, err.Error(), "foo")
 }
 
-func TestResumeRestoresOnAwaitFromLaunchParams(t *testing.T) {
+func TestResumeRestoresOnAskFromLaunchParams(t *testing.T) {
 	stateDir := makeStateDir(t)
-	lp := &wfstate.LaunchParams{OnAwait: "pause"}
-	ws := wfstate.CreateInitialState("wf-await-restore", "scope", "START.md", 10.0, nil, "", lp)
-	require.NoError(t, wfstate.WriteState("wf-await-restore", ws, stateDir))
+	lp := &wfstate.LaunchParams{OnAsk: "pause"}
+	ws := wfstate.CreateInitialState("wf-ask-restore", "scope", "START.md", 10.0, nil, "", lp)
+	require.NoError(t, wfstate.WriteState("wf-ask-restore", ws, stateDir))
 
-	captured, err := runCapturing(t, "--resume", "wf-await-restore", "--state-dir", stateDir)
+	captured, err := runCapturing(t, "--resume", "wf-ask-restore", "--state-dir", stateDir)
 	require.NoError(t, err)
 	require.Len(t, captured, 1)
-	assert.Equal(t, "pause", captured[0].OnAwait,
-		"resume should restore on-await from launch_params when --on-await not specified on CLI")
+	assert.Equal(t, "pause", captured[0].OnAsk,
+		"resume should restore on-ask from launch_params when --on-ask not specified on CLI")
 }
 
-func TestResumeExplicitOnAwaitOverridesLaunchParams(t *testing.T) {
+func TestResumeExplicitOnAskOverridesLaunchParams(t *testing.T) {
 	stateDir := makeStateDir(t)
-	lp := &wfstate.LaunchParams{OnAwait: "pause"}
-	ws := wfstate.CreateInitialState("wf-await-override", "scope", "START.md", 10.0, nil, "", lp)
-	require.NoError(t, wfstate.WriteState("wf-await-override", ws, stateDir))
+	lp := &wfstate.LaunchParams{OnAsk: "pause"}
+	ws := wfstate.CreateInitialState("wf-ask-override", "scope", "START.md", 10.0, nil, "", lp)
+	require.NoError(t, wfstate.WriteState("wf-ask-override", ws, stateDir))
 
-	captured, err := runCapturing(t, "--resume", "wf-await-override", "--on-await", "reject", "--state-dir", stateDir)
+	captured, err := runCapturing(t, "--resume", "wf-ask-override", "--on-ask", "reject", "--state-dir", stateDir)
 	require.NoError(t, err)
 	require.Len(t, captured, 1)
-	assert.Equal(t, "reject", captured[0].OnAwait,
-		"CLI --on-await should override saved value on resume")
+	assert.Equal(t, "reject", captured[0].OnAsk,
+		"CLI --on-ask should override saved value on resume")
 }
 
-func TestStartSavesOnAwaitToLaunchParams(t *testing.T) {
+func TestStartSavesOnAskToLaunchParams(t *testing.T) {
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()
 	startFile := filepath.Join(dir, "START.md")
 	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
 
-	_, _, err := run(t, startFile, "--on-await", "pause", "--state-dir", stateDir)
+	_, _, err := run(t, startFile, "--on-ask", "pause", "--state-dir", stateDir)
 	require.NoError(t, err)
 
 	ids, err := wfstate.ListWorkflows(stateDir)
@@ -1731,34 +1731,34 @@ func TestStartSavesOnAwaitToLaunchParams(t *testing.T) {
 	ws, err := wfstate.ReadState(ids[0], stateDir)
 	require.NoError(t, err)
 	require.NotNil(t, ws.LaunchParams)
-	assert.Equal(t, "pause", ws.LaunchParams.OnAwait)
+	assert.Equal(t, "pause", ws.LaunchParams.OnAsk)
 }
 
 // --------------------------------------------------------------------------
-// AwaitingInputError → JSON output and exit code 2
+// PendingAskError → JSON output and exit code 2
 // --------------------------------------------------------------------------
 
-// newAwaitingCLI creates a CLI whose runner returns the given AwaitingInputError.
-func newAwaitingCLI(stdout, stderr *bytes.Buffer, awaitErr *orchestrator.AwaitingInputError) *cli.CLI {
+// newAskingCLI creates a CLI whose runner returns the given PendingAskError.
+func newAskingCLI(stdout, stderr *bytes.Buffer, askErr *orchestrator.PendingAskError) *cli.CLI {
 	return cli.NewTestCLIWithRunner(stdout, stderr, func(_ context.Context, _ string, _ orchestrator.RunOptions) error {
-		return awaitErr
+		return askErr
 	})
 }
 
-func TestAwaitingInputErrorPropagatesThroughCLI(t *testing.T) {
-	// Verify that *AwaitingInputError from the runner propagates back through
+func TestPendingAskErrorPropagatesThroughCLI(t *testing.T) {
+	// Verify that *PendingAskError from the runner propagates back through
 	// cobra's RunE → Execute() return value, so Run() can detect it.
 	stateDir := makeStateDir(t)
 	dir := t.TempDir()
 	startFile := filepath.Join(dir, "START.md")
 	require.NoError(t, os.WriteFile(startFile, []byte("# Start"), 0o644))
 
-	awaitErr := &orchestrator.AwaitingInputError{
-		Status:   "awaiting_input",
+	askErr := &orchestrator.PendingAskError{
+		Status:   "asking",
 		RunID:    "test-wf-123",
 		Workflow: "myworkflow",
-		Awaiting: orchestrator.AwaitingInputDetail{
-			InputID: "input-abc",
+		Asking: orchestrator.PendingAskDetail{
+			AskID: "input-abc",
 			AgentID: "main",
 			Prompt:  "Please provide data",
 		},
@@ -1767,35 +1767,35 @@ func TestAwaitingInputErrorPropagatesThroughCLI(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	c := newAwaitingCLI(&out, &errOut, awaitErr)
+	c := newAskingCLI(&out, &errOut, askErr)
 	cmd := c.NewRootCmd()
 	cmd.SetArgs([]string{startFile, "--state-dir", stateDir})
 	err := cmd.Execute()
 
-	// The error should be an AwaitingInputError detectable via errors.As.
+	// The error should be an PendingAskError detectable via errors.As.
 	require.Error(t, err)
-	var gotAwait *orchestrator.AwaitingInputError
-	require.True(t, errors.As(err, &gotAwait), "expected *AwaitingInputError, got %T", err)
+	var gotAsk *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &gotAsk), "expected *PendingAskError, got %T", err)
 
-	assert.Equal(t, "awaiting_input", gotAwait.Status)
-	assert.Equal(t, "test-wf-123", gotAwait.RunID)
-	assert.Equal(t, "myworkflow", gotAwait.Workflow)
-	assert.Equal(t, "input-abc", gotAwait.Awaiting.InputID)
-	assert.Equal(t, "main", gotAwait.Awaiting.AgentID)
-	assert.Equal(t, "Please provide data", gotAwait.Awaiting.Prompt)
-	assert.Equal(t, 0, gotAwait.PendingCount)
+	assert.Equal(t, "asking", gotAsk.Status)
+	assert.Equal(t, "test-wf-123", gotAsk.RunID)
+	assert.Equal(t, "myworkflow", gotAsk.Workflow)
+	assert.Equal(t, "input-abc", gotAsk.Asking.AskID)
+	assert.Equal(t, "main", gotAsk.Asking.AgentID)
+	assert.Equal(t, "Please provide data", gotAsk.Asking.Prompt)
+	assert.Equal(t, 0, gotAsk.PendingCount)
 }
 
-func TestAwaitingInputErrorJSONIsParseable(t *testing.T) {
-	// Verify that the JSON encoding of AwaitingInputError (using the same
+func TestPendingAskErrorJSONIsParseable(t *testing.T) {
+	// Verify that the JSON encoding of PendingAskError (using the same
 	// indented NewEncoder path as Run()) is valid and contains all expected
 	// fields with correct JSON keys.
-	awaitErr := &orchestrator.AwaitingInputError{
-		Status:   "awaiting_input",
+	askErr := &orchestrator.PendingAskError{
+		Status:   "asking",
 		RunID:    "wf-42",
 		Workflow: "demo",
-		Awaiting: orchestrator.AwaitingInputDetail{
-			InputID: "id-1",
+		Asking: orchestrator.PendingAskDetail{
+			AskID: "id-1",
 			AgentID: "main",
 			Prompt:  "Enter value",
 		},
@@ -1807,31 +1807,31 @@ func TestAwaitingInputErrorJSONIsParseable(t *testing.T) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
-	require.NoError(t, enc.Encode(awaitErr))
+	require.NoError(t, enc.Encode(askErr))
 
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
 
-	assert.Equal(t, "awaiting_input", parsed["status"])
+	assert.Equal(t, "asking", parsed["status"])
 	assert.Equal(t, "wf-42", parsed["run_id"])
 	assert.Equal(t, "demo", parsed["workflow"])
 	assert.Equal(t, float64(2), parsed["pending_count"])
 	assert.Equal(t, `raymond --resume wf-42 --input "[your response]"`, parsed["resume"])
 
-	awaiting, ok := parsed["awaiting"].(map[string]interface{})
+	asking, ok := parsed["asking"].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "id-1", awaiting["input_id"])
-	assert.Equal(t, "main", awaiting["agent_id"])
-	assert.Equal(t, "Enter value", awaiting["prompt"])
+	assert.Equal(t, "id-1", asking["ask_id"])
+	assert.Equal(t, "main", asking["agent_id"])
+	assert.Equal(t, "Enter value", asking["prompt"])
 }
 
-func TestAwaitingInputErrorPendingCountReflectsQueueLength(t *testing.T) {
-	awaitErr := &orchestrator.AwaitingInputError{
-		Status:   "awaiting_input",
+func TestPendingAskErrorPendingCountReflectsQueueLength(t *testing.T) {
+	askErr := &orchestrator.PendingAskError{
+		Status:   "asking",
 		RunID:    "wf-multi",
 		Workflow: "multi",
-		Awaiting: orchestrator.AwaitingInputDetail{
-			InputID: "id-active",
+		Asking: orchestrator.PendingAskDetail{
+			AskID: "id-active",
 			AgentID: "alpha",
 			Prompt:  "Primary",
 		},
@@ -1839,7 +1839,7 @@ func TestAwaitingInputErrorPendingCountReflectsQueueLength(t *testing.T) {
 		Resume:       `raymond --resume wf-multi --input "[your response]"`,
 	}
 
-	data, err := json.Marshal(awaitErr)
+	data, err := json.Marshal(askErr)
 	require.NoError(t, err)
 
 	var parsed map[string]interface{}

@@ -663,20 +663,20 @@ func TestLegacyJSONMissingNewFieldsDeserializesToZeroValues(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Await fields serialization
+// Ask fields serialization
 // ----------------------------------------------------------------------------
 
-func TestAgentStateAwaitFieldsRoundTrip(t *testing.T) {
+func TestAgentStateAskFieldsRoundTrip(t *testing.T) {
 	agent := state.AgentState{
 		ID:               "main",
 		CurrentState:     "REVIEW.md",
 		Stack:            []state.StackFrame{},
-		Status:           state.AgentStatusAwaiting,
-		AwaitPrompt:      "Please approve the deployment",
-		AwaitNextState:   "DEPLOY.md",
-		AwaitTimeout:     "24h",
-		AwaitTimeoutNext: "TIMEOUT.md",
-		AwaitInputID:     "inp_main_1234567890",
+		Status:           state.AgentStatusAsking,
+		AskPrompt:      "Please approve the deployment",
+		AskNextState:   "DEPLOY.md",
+		AskTimeout:     "24h",
+		AskTimeoutNext: "TIMEOUT.md",
+		AskID:     "ask_main_1234567890",
 	}
 
 	data, err := json.Marshal(agent)
@@ -685,30 +685,30 @@ func TestAgentStateAwaitFieldsRoundTrip(t *testing.T) {
 	var got state.AgentState
 	require.NoError(t, json.Unmarshal(data, &got))
 
-	assert.Equal(t, state.AgentStatusAwaiting, got.Status)
-	assert.Equal(t, "Please approve the deployment", got.AwaitPrompt)
-	assert.Equal(t, "DEPLOY.md", got.AwaitNextState)
-	assert.Equal(t, "24h", got.AwaitTimeout)
-	assert.Equal(t, "TIMEOUT.md", got.AwaitTimeoutNext)
-	assert.Equal(t, "inp_main_1234567890", got.AwaitInputID)
+	assert.Equal(t, state.AgentStatusAsking, got.Status)
+	assert.Equal(t, "Please approve the deployment", got.AskPrompt)
+	assert.Equal(t, "DEPLOY.md", got.AskNextState)
+	assert.Equal(t, "24h", got.AskTimeout)
+	assert.Equal(t, "TIMEOUT.md", got.AskTimeoutNext)
+	assert.Equal(t, "ask_main_1234567890", got.AskID)
 }
 
-func TestAgentStateAwaitFieldsBackwardCompatibility(t *testing.T) {
-	// JSON without any await fields — should deserialize to zero values with no errors.
+func TestAgentStateAskFieldsBackwardCompatibility(t *testing.T) {
+	// JSON without any ask fields — should deserialize to zero values with no errors.
 	raw := `{"id":"main","current_state":"START.md","session_id":null,"stack":[]}`
 
 	var agent state.AgentState
 	require.NoError(t, json.Unmarshal([]byte(raw), &agent))
 
-	assert.Equal(t, "", agent.AwaitPrompt)
-	assert.Equal(t, "", agent.AwaitNextState)
-	assert.Equal(t, "", agent.AwaitTimeout)
-	assert.Equal(t, "", agent.AwaitTimeoutNext)
-	assert.Equal(t, "", agent.AwaitInputID)
+	assert.Equal(t, "", agent.AskPrompt)
+	assert.Equal(t, "", agent.AskNextState)
+	assert.Equal(t, "", agent.AskTimeout)
+	assert.Equal(t, "", agent.AskTimeoutNext)
+	assert.Equal(t, "", agent.AskID)
 	assert.Equal(t, "", agent.Status)
 }
 
-func TestAgentStateAwaitFieldsOmittedWhenEmpty(t *testing.T) {
+func TestAgentStateAskFieldsOmittedWhenEmpty(t *testing.T) {
 	agent := state.AgentState{
 		ID:           "main",
 		CurrentState: "START.md",
@@ -721,24 +721,24 @@ func TestAgentStateAwaitFieldsOmittedWhenEmpty(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 
-	_, hasAwaitPrompt := raw["await_prompt"]
-	assert.False(t, hasAwaitPrompt, "await_prompt should be absent from JSON when empty")
-	_, hasAwaitNextState := raw["await_next_state"]
-	assert.False(t, hasAwaitNextState, "await_next_state should be absent from JSON when empty")
-	_, hasAwaitTimeout := raw["await_timeout"]
-	assert.False(t, hasAwaitTimeout, "await_timeout should be absent from JSON when empty")
-	_, hasAwaitTimeoutNext := raw["await_timeout_next"]
-	assert.False(t, hasAwaitTimeoutNext, "await_timeout_next should be absent from JSON when empty")
-	_, hasAwaitInputID := raw["await_input_id"]
-	assert.False(t, hasAwaitInputID, "await_input_id should be absent from JSON when empty")
+	_, hasAskPrompt := raw["ask_prompt"]
+	assert.False(t, hasAskPrompt, "ask_prompt should be absent from JSON when empty")
+	_, hasAskNextState := raw["ask_next_state"]
+	assert.False(t, hasAskNextState, "ask_next_state should be absent from JSON when empty")
+	_, hasAskTimeout := raw["ask_timeout"]
+	assert.False(t, hasAskTimeout, "ask_timeout should be absent from JSON when empty")
+	_, hasAskTimeoutNext := raw["ask_timeout_next"]
+	assert.False(t, hasAskTimeoutNext, "ask_timeout_next should be absent from JSON when empty")
+	_, hasAskID := raw["ask_id"]
+	assert.False(t, hasAskID, "ask_id should be absent from JSON when empty")
 }
 
-func TestAgentStatePendingInputIDRoundTrip(t *testing.T) {
+func TestAgentStatePendingAskIDRoundTrip(t *testing.T) {
 	agent := state.AgentState{
 		ID:             "main",
-		CurrentState:   "POST_AWAIT.md",
+		CurrentState:   "POST_ASK.md",
 		Stack:          []state.StackFrame{},
-		PendingInputID: "inp_main_1234567890",
+		PendingAskID: "ask_main_1234567890",
 	}
 
 	data, err := json.Marshal(agent)
@@ -747,10 +747,10 @@ func TestAgentStatePendingInputIDRoundTrip(t *testing.T) {
 	var got state.AgentState
 	require.NoError(t, json.Unmarshal(data, &got))
 
-	assert.Equal(t, "inp_main_1234567890", got.PendingInputID)
+	assert.Equal(t, "ask_main_1234567890", got.PendingAskID)
 }
 
-func TestAgentStatePendingInputIDOmittedWhenEmpty(t *testing.T) {
+func TestAgentStatePendingAskIDOmittedWhenEmpty(t *testing.T) {
 	agent := state.AgentState{
 		ID:           "main",
 		CurrentState: "START.md",
@@ -763,18 +763,18 @@ func TestAgentStatePendingInputIDOmittedWhenEmpty(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 
-	_, has := raw["pending_input_id"]
-	assert.False(t, has, "pending_input_id should be absent from JSON when empty")
+	_, has := raw["pending_ask_id"]
+	assert.False(t, has, "pending_ask_id should be absent from JSON when empty")
 }
 
 // ----------------------------------------------------------------------------
-// LaunchParams OnAwait field
+// LaunchParams OnAsk field
 // ----------------------------------------------------------------------------
 
-func TestLaunchParamsOnAwaitRoundTrip(t *testing.T) {
+func TestLaunchParamsOnAskRoundTrip(t *testing.T) {
 	lp := state.LaunchParams{
-		Model:   "opus",
-		OnAwait: "pause",
+		Model: "opus",
+		OnAsk: "pause",
 	}
 
 	data, err := json.Marshal(lp)
@@ -782,10 +782,10 @@ func TestLaunchParamsOnAwaitRoundTrip(t *testing.T) {
 
 	var got state.LaunchParams
 	require.NoError(t, json.Unmarshal(data, &got))
-	assert.Equal(t, "pause", got.OnAwait)
+	assert.Equal(t, "pause", got.OnAsk)
 }
 
-func TestLaunchParamsOnAwaitOmittedWhenEmpty(t *testing.T) {
+func TestLaunchParamsOnAskOmittedWhenEmpty(t *testing.T) {
 	lp := state.LaunchParams{Model: "opus"}
 
 	data, err := json.Marshal(lp)
@@ -793,15 +793,15 @@ func TestLaunchParamsOnAwaitOmittedWhenEmpty(t *testing.T) {
 
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
-	_, hasOnAwait := raw["on_await"]
-	assert.False(t, hasOnAwait, "on_await should be absent from JSON when empty")
+	_, hasOnAsk := raw["on_ask"]
+	assert.False(t, hasOnAsk, "on_ask should be absent from JSON when empty")
 }
 
-func TestLaunchParamsOnAwaitBackwardCompatibility(t *testing.T) {
-	// Old JSON without on_await field.
+func TestLaunchParamsOnAskBackwardCompatibility(t *testing.T) {
+	// Old JSON without on_ask field.
 	raw := `{"dangerously_skip_permissions":false,"model":"haiku"}`
 
 	var lp state.LaunchParams
 	require.NoError(t, json.Unmarshal([]byte(raw), &lp))
-	assert.Equal(t, "", lp.OnAwait, "OnAwait should be empty for old state files without the field")
+	assert.Equal(t, "", lp.OnAsk, "OnAsk should be empty for old state files without the field")
 }

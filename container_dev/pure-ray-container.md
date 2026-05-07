@@ -364,7 +364,7 @@ Raymond's persisted state is unaffected; relaunch via `start-ray.sh`.
 ### Container shutdown (`docker stop`)
 
 Volume state preserved. Active LLM-step runs at shutdown are marked
-failed per raymond's recovery semantics; `<await>`-suspended runs come
+failed per raymond's recovery semantics; `<ask>`-suspended runs come
 back via run recovery on next `start-ray.sh`. Autostart skips runs
 that recovery already brought back (see autostart section).
 
@@ -406,8 +406,8 @@ section), each with a unique `input` like `worker-1`, `worker-2`,
 
 Whichever pattern is used, INIT must handle resumption:
 
-- **Resume after `<await>`**: not really applicable — `work.yaml` doesn't
-  await. Daemon restart while a worker is mid-LLM-step marks the run
+- **Resume after `<ask>`**: not really applicable — `work.yaml` doesn't
+  ask. Daemon restart while a worker is mid-LLM-step marks the run
   failed per raymond's recovery semantics. The worktree on disk persists
   with potentially dirty state and a still-claimed bead.
 - **On next launch of the same worker name**, INIT finds the worktree
@@ -716,7 +716,7 @@ What you genuinely give up:
    `worker-1`..`worker-N` inputs. Run a backlog of trivial beads,
    confirm no double-claim and that rebase resolves push collisions.
 10. **Restart resilience** — kill container mid-dialog (suspended on
-    `<await>`) and mid-bead (LLM step in flight). Restart. Verify the
+    `<ask>`) and mid-bead (LLM step in flight). Restart. Verify the
     dialog resumes via run recovery; verify the mid-bead worker, on
     autostart relaunch, either resumes cleanly via `bs mine` or
     BAIL_OUTs cleanly.

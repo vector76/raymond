@@ -605,11 +605,11 @@ func TestTaskInvalidValueOnFork(t *testing.T) {
 	assert.True(t, hasTaskDiag(diags, "invalid-task-value"), "expected invalid-task-value, got: %v", diags)
 }
 
-// --- Await lint tests ---
+// --- Ask lint tests ---
 
-func TestAwaitValidNext(t *testing.T) {
+func TestAskValidNext(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="WAIT.md">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<ask next="WAIT.md">Please review</ask>`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "WAIT.md"), []byte("<goto>DONE.md</goto>"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
 
@@ -617,14 +617,14 @@ func TestAwaitValidNext(t *testing.T) {
 	require.NoError(t, err)
 	for _, d := range diags {
 		if d.Check == "missing-target" && d.Severity == lint.Error {
-			assert.Fail(t, "unexpected missing-target error for valid await next", d)
+			assert.Fail(t, "unexpected missing-target error for valid ask next", d)
 		}
 	}
 }
 
-func TestAwaitMissingNextTarget(t *testing.T) {
+func TestAskMissingNextTarget(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="NONEXISTENT.md">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<ask next="NONEXISTENT.md">Please review</ask>`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
 
 	diags, err := lint.Lint(dir, lint.Options{})
@@ -636,12 +636,12 @@ func TestAwaitMissingNextTarget(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, found, "expected missing-target error for await with nonexistent next, got: %v", diags)
+	assert.True(t, found, "expected missing-target error for ask with nonexistent next, got: %v", diags)
 }
 
-func TestAwaitMissingTimeoutNextTarget(t *testing.T) {
+func TestAskMissingTimeoutNextTarget(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="WAIT.md" timeout="24h" timeout_next="NONEXISTENT.md">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<ask next="WAIT.md" timeout="24h" timeout_next="NONEXISTENT.md">Please review</ask>`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "WAIT.md"), []byte("<goto>DONE.md</goto>"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
 
@@ -654,22 +654,22 @@ func TestAwaitMissingTimeoutNextTarget(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, found, "expected missing-target error for await with nonexistent timeout_next, got: %v", diags)
+	assert.True(t, found, "expected missing-target error for ask with nonexistent timeout_next, got: %v", diags)
 }
 
-func TestAwaitUnsupportedTask(t *testing.T) {
+func TestAskUnsupportedTask(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="DONE.md" task="new">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<ask next="DONE.md" task="new">Please review</ask>`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
 
 	diags, err := lint.Lint(dir, lint.Options{})
 	require.NoError(t, err)
-	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute for await with task, got: %v", diags)
+	assert.True(t, hasTaskDiag(diags, "unsupported-task-attribute"), "expected unsupported-task-attribute for ask with task, got: %v", diags)
 }
 
-func TestAwaitUnsupportedCd(t *testing.T) {
+func TestAskUnsupportedCd(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<await next="DONE.md" cd="/some/path">Please review</await>`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(`<ask next="DONE.md" cd="/some/path">Please review</ask>`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
 
 	diags, err := lint.Lint(dir, lint.Options{})
@@ -681,12 +681,12 @@ func TestAwaitUnsupportedCd(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, found, "expected unsupported-cd-attribute error for await with cd, got: %v", diags)
+	assert.True(t, found, "expected unsupported-cd-attribute error for ask with cd, got: %v", diags)
 }
 
-func TestAwaitMissingNextAttribute(t *testing.T) {
+func TestAskMissingNextAttribute(t *testing.T) {
 	dir := t.TempDir()
-	content := "---\nallowed_transitions:\n  - { tag: await }\n---\nPlease await review.\n"
+	content := "---\nallowed_transitions:\n  - { tag: ask }\n---\nPlease ask review.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(content), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
 
@@ -694,17 +694,17 @@ func TestAwaitMissingNextAttribute(t *testing.T) {
 	require.NoError(t, err)
 	found := false
 	for _, d := range diags {
-		if d.Check == "missing-await-next" && d.Severity == lint.Error {
+		if d.Check == "missing-ask-next" && d.Severity == lint.Error {
 			found = true
 			break
 		}
 	}
-	assert.True(t, found, "expected missing-await-next error for await without next attribute, got: %v", diags)
+	assert.True(t, found, "expected missing-ask-next error for ask without next attribute, got: %v", diags)
 }
 
-func TestAwaitNoUnusedAllowedTransitionWarning(t *testing.T) {
+func TestAskNoUnusedAllowedTransitionWarning(t *testing.T) {
 	dir := t.TempDir()
-	content := "---\nallowed_transitions:\n  - { tag: await, next: WAIT.md }\n  - { tag: goto, target: DONE.md }\n---\nPlease proceed to DONE.md when ready.\n"
+	content := "---\nallowed_transitions:\n  - { tag: ask, next: WAIT.md }\n  - { tag: goto, target: DONE.md }\n---\nPlease proceed to DONE.md when ready.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "1_START.md"), []byte(content), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "WAIT.md"), []byte("<goto>DONE.md</goto>"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "DONE.md"), []byte("<result>ok</result>"), 0o644))
@@ -713,19 +713,19 @@ func TestAwaitNoUnusedAllowedTransitionWarning(t *testing.T) {
 	require.NoError(t, err)
 	for _, d := range diags {
 		if d.Check == "unused-allowed-transition" {
-			assert.Fail(t, "await next target should not trigger unused-allowed-transition warning", d)
+			assert.Fail(t, "ask next target should not trigger unused-allowed-transition warning", d)
 		}
 	}
 }
 
-func TestYamlScopeAwaitValid(t *testing.T) {
+func TestYamlScopeAskValid(t *testing.T) {
 	dir := t.TempDir()
 	yamlPath := writeTestYaml(t, dir, `states:
   1_START:
     prompt: |
       Start the work.
     allowed_transitions:
-      - { tag: await, next: WAIT.md }
+      - { tag: ask, next: WAIT.md }
   WAIT:
     prompt: |
       Continue after input.
@@ -742,15 +742,15 @@ func TestYamlScopeAwaitValid(t *testing.T) {
 	require.NoError(t, err)
 	for _, d := range diags {
 		if d.Severity == lint.Error {
-			assert.Fail(t, "expected no error-severity diagnostics for valid YAML workflow with await", d)
+			assert.Fail(t, "expected no error-severity diagnostics for valid YAML workflow with ask", d)
 		}
 	}
 }
 
-func TestZipScopeAwaitValid(t *testing.T) {
+func TestZipScopeAskValid(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := writeTestZip(t, dir, map[string]string{
-		"1_START.md": `<await next="WAIT.md">Please review</await>`,
+		"1_START.md": `<ask next="WAIT.md">Please review</ask>`,
 		"WAIT.md":    "<goto>DONE.md</goto>",
 		"DONE.md":    "<result>ok</result>",
 	})
@@ -759,7 +759,7 @@ func TestZipScopeAwaitValid(t *testing.T) {
 	require.NoError(t, err)
 	for _, d := range diags {
 		if d.Check == "missing-target" && d.Severity == lint.Error {
-			assert.Fail(t, "unexpected missing-target error for valid zip await workflow", d)
+			assert.Fail(t, "unexpected missing-target error for valid zip ask workflow", d)
 		}
 	}
 }

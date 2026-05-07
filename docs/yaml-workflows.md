@@ -268,7 +268,7 @@ states:
 
       STOP after writing your analysis. Do not make a recommendation yet.
     allowed_transitions:
-      - tag: await
+      - tag: ask
         next: DECISION.md
         timeout: "48h"
         timeout_next: ESCALATE.md

@@ -383,19 +383,19 @@ func TestFileAffordance_Display_RejectLeadingDotInLabel(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// ParseTransitions integration — descriptor attached to <await>
+// ParseTransitions integration — descriptor attached to <ask>
 // ----------------------------------------------------------------------------
 
-func TestParseAwaitAttachesFileAffordance_TextOnly(t *testing.T) {
-	out := `<await next="NEXT.md">prompt</await>`
+func TestParseAskAttachesFileAffordance_TextOnly(t *testing.T) {
+	out := `<ask next="NEXT.md">prompt</ask>`
 	transitions, err := parsing.ParseTransitions(out)
 	require.NoError(t, err)
 	require.Len(t, transitions, 1)
 	assert.Equal(t, parsing.ModeTextOnly, transitions[0].FileAffordance.Mode)
 }
 
-func TestParseAwaitAttachesFileAffordance_SlotMode(t *testing.T) {
-	out := `<await next="NEXT.md" upload_slots="resume.pdf,cover.pdf">Upload your docs</await>`
+func TestParseAskAttachesFileAffordance_SlotMode(t *testing.T) {
+	out := `<ask next="NEXT.md" upload_slots="resume.pdf,cover.pdf">Upload your docs</ask>`
 	transitions, err := parsing.ParseTransitions(out)
 	require.NoError(t, err)
 	require.Len(t, transitions, 1)
@@ -406,8 +406,8 @@ func TestParseAwaitAttachesFileAffordance_SlotMode(t *testing.T) {
 	assert.Equal(t, "cover.pdf", fa.Slots[1].Name)
 }
 
-func TestParseAwaitAttachesFileAffordance_BucketMode(t *testing.T) {
-	out := `<await next="NEXT.md" upload_bucket="true" upload_max_count="3" upload_mime="image/png">Send images</await>`
+func TestParseAskAttachesFileAffordance_BucketMode(t *testing.T) {
+	out := `<ask next="NEXT.md" upload_bucket="true" upload_max_count="3" upload_mime="image/png">Send images</ask>`
 	transitions, err := parsing.ParseTransitions(out)
 	require.NoError(t, err)
 	require.Len(t, transitions, 1)
@@ -417,8 +417,8 @@ func TestParseAwaitAttachesFileAffordance_BucketMode(t *testing.T) {
 	assert.Equal(t, []string{"image/png"}, fa.Bucket.MIME)
 }
 
-func TestParseAwaitAttachesFileAffordance_DisplayOnly(t *testing.T) {
-	out := `<await next="NEXT.md" display_files="out/report.pdf:Final Report">Review</await>`
+func TestParseAskAttachesFileAffordance_DisplayOnly(t *testing.T) {
+	out := `<ask next="NEXT.md" display_files="out/report.pdf:Final Report">Review</ask>`
 	transitions, err := parsing.ParseTransitions(out)
 	require.NoError(t, err)
 	require.Len(t, transitions, 1)
@@ -429,8 +429,8 @@ func TestParseAwaitAttachesFileAffordance_DisplayOnly(t *testing.T) {
 	assert.Equal(t, "Final Report", fa.DisplayFiles[0].DisplayName)
 }
 
-func TestParseAwaitInvalidFileAffordanceReturnsError(t *testing.T) {
-	out := `<await next="NEXT.md" upload_slots="resume.pdf,resume.pdf">prompt</await>`
+func TestParseAskInvalidFileAffordanceReturnsError(t *testing.T) {
+	out := `<ask next="NEXT.md" upload_slots="resume.pdf,resume.pdf">prompt</ask>`
 	_, err := parsing.ParseTransitions(out)
 	require.Error(t, err)
 	assert.True(t,
@@ -439,9 +439,9 @@ func TestParseAwaitInvalidFileAffordanceReturnsError(t *testing.T) {
 		"error %q should mention the offending attribute", err.Error())
 }
 
-func TestParseAwaitFileAffordanceErrorIncludesMode(t *testing.T) {
+func TestParseAskFileAffordanceErrorIncludesMode(t *testing.T) {
 	// A parse-time obvious-bad display source path surfaces an error.
-	out := `<await next="NEXT.md" display_files="/etc/passwd">x</await>`
+	out := `<ask next="NEXT.md" display_files="/etc/passwd">x</ask>`
 	_, err := parsing.ParseTransitions(out)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "absolute")

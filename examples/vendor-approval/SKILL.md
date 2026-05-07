@@ -28,12 +28,12 @@ On success (exit code 0), the workflow writes:
 ## Human Input Expectations
 
 This skill **pauses once** for human approval. After the research phase
-completes, the workflow emits an `<await>` with a prompt summarizing the
+completes, the workflow emits an `<ask>` with a prompt summarizing the
 vendor evaluation and asking for approval or rejection.
 
-**Expected await cycle:**
+**Expected ask cycle:**
 
-1. **First run** exits with code 2. The JSON `awaiting.prompt` will contain the
+1. **First run** exits with code 2. The JSON `asking.prompt` will contain the
    vendor summary and ask: "Approve or reject this vendor?"
 2. **Resume** with the human's decision (e.g., `"approved"` or
    `"rejected: insufficient security documentation"`).
@@ -44,7 +44,7 @@ stated reason. No further input is needed either way.
 
 ## Invocation
 
-### Single run (no await)
+### Single run (no ask)
 
 If you want to skip human approval and let the agent decide autonomously, do
 not use this skill — it is designed for human-in-the-loop workflows.
@@ -59,7 +59,7 @@ exit_code=$?
 
 # Resume loop for human input
 while [ "$exit_code" -eq 2 ]; do
-  prompt=$(jq -r '.awaiting.prompt' output.json)
+  prompt=$(jq -r '.asking.prompt' output.json)
   run_id=$(jq -r '.run_id' output.json)
 
   echo "Approval needed: $prompt"
@@ -83,4 +83,4 @@ fi
 |------|---------|
 | 0 | Workflow completed — report written. |
 | 1 | Error (invalid input, LLM failure, etc.). |
-| 2 | Awaiting human approval — parse JSON from stdout and resume. |
+| 2 | Pending human approval — parse JSON from stdout and resume. |

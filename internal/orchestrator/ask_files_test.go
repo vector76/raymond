@@ -28,7 +28,7 @@ func TestStageInputFiles_HappyPath(t *testing.T) {
 		},
 	}
 
-	records, err := orchestrator.StageInputFiles(task, "inp_main_42", fa)
+	records, err := orchestrator.StageInputFiles(task, "ask_main_42", fa)
 	require.NoError(t, err)
 	require.Len(t, records, 2)
 
@@ -42,7 +42,7 @@ func TestStageInputFiles_HappyPath(t *testing.T) {
 	assert.Equal(t, "image/png", records[1].ContentType)
 	assert.Equal(t, "display", records[1].Source)
 
-	inputDir := filepath.Join(task, "inputs", "inp_main_42")
+	inputDir := filepath.Join(task, "asks", "ask_main_42")
 	for _, name := range []string{"Final Report.pdf", "chart.png"} {
 		_, err := os.Stat(filepath.Join(inputDir, name))
 		require.NoError(t, err, "%s should be staged", name)
@@ -51,11 +51,11 @@ func TestStageInputFiles_HappyPath(t *testing.T) {
 
 func TestStageInputFiles_CreatesDirectoryWhenNoDisplayFiles(t *testing.T) {
 	task := t.TempDir()
-	records, err := orchestrator.StageInputFiles(task, "inp_solo", parsing.FileAffordance{})
+	records, err := orchestrator.StageInputFiles(task, "ask_solo", parsing.FileAffordance{})
 	require.NoError(t, err)
 	assert.Nil(t, records)
 
-	info, err := os.Stat(filepath.Join(task, "inputs", "inp_solo"))
+	info, err := os.Stat(filepath.Join(task, "asks", "ask_solo"))
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 }
@@ -66,7 +66,7 @@ func TestStageInputFiles_MissingSource(t *testing.T) {
 		DisplayFiles: []parsing.DisplaySpec{{SourcePath: "missing.pdf"}},
 	}
 
-	_, err := orchestrator.StageInputFiles(task, "inp_x", fa)
+	_, err := orchestrator.StageInputFiles(task, "ask_x", fa)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing.pdf")
 }
@@ -89,7 +89,7 @@ func TestStageInputFiles_RejectsTraversal(t *testing.T) {
 			fa := parsing.FileAffordance{
 				DisplayFiles: []parsing.DisplaySpec{{SourcePath: tc.src}},
 			}
-			_, err := orchestrator.StageInputFiles(task, "inp_t", fa)
+			_, err := orchestrator.StageInputFiles(task, "ask_t", fa)
 			require.Error(t, err)
 		})
 	}
@@ -109,7 +109,7 @@ func TestStageInputFiles_RejectsSymlinkEscape(t *testing.T) {
 	fa := parsing.FileAffordance{
 		DisplayFiles: []parsing.DisplaySpec{{SourcePath: "linked.txt"}},
 	}
-	_, err := orchestrator.StageInputFiles(task, "inp_sym", fa)
+	_, err := orchestrator.StageInputFiles(task, "ask_sym", fa)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes task folder")
 }
@@ -123,23 +123,23 @@ func TestStageInputFiles_IdempotentReentry(t *testing.T) {
 		DisplayFiles: []parsing.DisplaySpec{{SourcePath: "art.png", DisplayName: "art.png"}},
 	}
 
-	first, err := orchestrator.StageInputFiles(task, "inp_y", fa)
+	first, err := orchestrator.StageInputFiles(task, "ask_y", fa)
 	require.NoError(t, err)
 	require.Len(t, first, 1)
 
-	stagedPath := filepath.Join(task, "inputs", "inp_y", "art.png")
+	stagedPath := filepath.Join(task, "asks", "ask_y", "art.png")
 	stagedInfoBefore, err := os.Stat(stagedPath)
 	require.NoError(t, err)
 	mtimeBefore := stagedInfoBefore.ModTime()
 
-	second, err := orchestrator.StageInputFiles(task, "inp_y", fa)
+	second, err := orchestrator.StageInputFiles(task, "ask_y", fa)
 	require.NoError(t, err, "re-entry on a same-sized staged file should not error")
 	require.Len(t, second, 1)
 	assert.Equal(t, first[0].Name, second[0].Name)
 	assert.Equal(t, first[0].Size, second[0].Size)
 	assert.Equal(t, first[0].ContentType, second[0].ContentType)
 
-	entries, err := os.ReadDir(filepath.Join(task, "inputs", "inp_y"))
+	entries, err := os.ReadDir(filepath.Join(task, "asks", "ask_y"))
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "no duplicate file should be created")
 

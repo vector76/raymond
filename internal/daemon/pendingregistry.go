@@ -16,11 +16,11 @@ import (
 // pendingLogFile is the JSONL file that stores the append-only operation log.
 const pendingLogFile = "pending_inputs.jsonl"
 
-// PendingInput represents a pending await input request from a running workflow.
-type PendingInput struct {
+// PendingAsk represents a pending ask input request from a running workflow.
+type PendingAsk struct {
 	RunID          string                  `json:"run_id"`
 	AgentID        string                  `json:"agent_id"`
-	InputID        string                  `json:"input_id"`
+	AskID        string                  `json:"ask_id"`
 	WorkflowID     string                  `json:"workflow_id,omitempty"`
 	Prompt         string                  `json:"prompt,omitempty"`
 	NextState      string                  `json:"next_state,omitempty"`
@@ -34,17 +34,17 @@ type PendingInput struct {
 // logEntry is the on-disk JSONL record format.
 type logEntry struct {
 	Op    string       `json:"op"`
-	Input PendingInput `json:"input,omitempty"`
+	Input PendingAsk `json:"input,omitempty"`
 	// ID is used for "remove" operations where we only need the input ID.
 	ID string `json:"id,omitempty"`
 }
 
-// PendingRegistry tracks pending await inputs with durable JSONL-based storage.
+// PendingRegistry tracks pending ask inputs with durable JSONL-based storage.
 // On startup it replays the log to reconstruct in-memory state and compacts
 // the log to remove stale entries.
 type PendingRegistry struct {
 	mu      sync.RWMutex
-	inputs  map[string]PendingInput // keyed by InputID
+	inputs  map[string]PendingAsk // keyed by AskID
 	logPath string
 }
 
@@ -53,7 +53,7 @@ type PendingRegistry struct {
 func NewPendingRegistry(dir string) (*PendingRegistry, error) {
 	logPath := filepath.Join(dir, pendingLogFile)
 	pr := &PendingRegistry{
-		inputs:  make(map[string]PendingInput),
+		inputs:  make(map[string]PendingAsk),
 		logPath: logPath,
 	}
 
@@ -68,12 +68,12 @@ func NewPendingRegistry(dir string) (*PendingRegistry, error) {
 }
 
 // Register adds a pending input to the registry and persists it.
-func (pr *PendingRegistry) Register(pi PendingInput) error {
+func (pr *PendingRegistry) Register(pi PendingAsk) error {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
-	if _, exists := pr.inputs[pi.InputID]; exists {
-		return fmt.Errorf("pending input %q already registered", pi.InputID)
+	if _, exists := pr.inputs[pi.AskID]; exists {
+		return fmt.Errorf("pending input %q already registered", pi.AskID)
 	}
 
 	entry := logEntry{Op: "register", Input: pi}
@@ -81,34 +81,34 @@ func (pr *PendingRegistry) Register(pi PendingInput) error {
 		return err
 	}
 
-	pr.inputs[pi.InputID] = pi
+	pr.inputs[pi.AskID] = pi
 	return nil
 }
 
 // Remove removes a pending input from the registry and persists the removal.
-func (pr *PendingRegistry) Remove(inputID string) error {
+func (pr *PendingRegistry) Remove(askID string) error {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
-	if _, exists := pr.inputs[inputID]; !exists {
-		return fmt.Errorf("pending input %q not found", inputID)
+	if _, exists := pr.inputs[askID]; !exists {
+		return fmt.Errorf("pending input %q not found", askID)
 	}
 
-	entry := logEntry{Op: "remove", ID: inputID}
+	entry := logEntry{Op: "remove", ID: askID}
 	if err := pr.appendLog(entry); err != nil {
 		return err
 	}
 
-	delete(pr.inputs, inputID)
+	delete(pr.inputs, askID)
 	return nil
 }
 
-// Get returns a pending input by InputID.
-func (pr *PendingRegistry) Get(inputID string) (*PendingInput, bool) {
+// Get returns a pending input by AskID.
+func (pr *PendingRegistry) Get(askID string) (*PendingAsk, bool) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 
-	pi, ok := pr.inputs[inputID]
+	pi, ok := pr.inputs[askID]
 	if !ok {
 		return nil, false
 	}
@@ -118,30 +118,30 @@ func (pr *PendingRegistry) Get(inputID string) (*PendingInput, bool) {
 // GetAndRemove atomically retrieves and removes a pending input. It returns
 // the input and true if it existed, or nil and false otherwise. This prevents
 // duplicate delivery when multiple callers race to claim the same input.
-func (pr *PendingRegistry) GetAndRemove(inputID string) (*PendingInput, bool) {
+func (pr *PendingRegistry) GetAndRemove(askID string) (*PendingAsk, bool) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
-	pi, exists := pr.inputs[inputID]
+	pi, exists := pr.inputs[askID]
 	if !exists {
 		return nil, false
 	}
 
-	entry := logEntry{Op: "remove", ID: inputID}
+	entry := logEntry{Op: "remove", ID: askID}
 	if err := pr.appendLog(entry); err != nil {
 		return nil, false
 	}
 
-	delete(pr.inputs, inputID)
+	delete(pr.inputs, askID)
 	return &pi, true
 }
 
 // ListAll returns all pending inputs across all runs.
-func (pr *PendingRegistry) ListAll() []PendingInput {
+func (pr *PendingRegistry) ListAll() []PendingAsk {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 
-	result := make([]PendingInput, 0, len(pr.inputs))
+	result := make([]PendingAsk, 0, len(pr.inputs))
 	for _, pi := range pr.inputs {
 		result = append(result, pi)
 	}
@@ -149,11 +149,11 @@ func (pr *PendingRegistry) ListAll() []PendingInput {
 }
 
 // ListByRun returns pending inputs filtered by run ID.
-func (pr *PendingRegistry) ListByRun(runID string) []PendingInput {
+func (pr *PendingRegistry) ListByRun(runID string) []PendingAsk {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 
-	result := []PendingInput{}
+	result := []PendingAsk{}
 	for _, pi := range pr.inputs {
 		if pi.RunID == runID {
 			result = append(result, pi)
@@ -207,7 +207,7 @@ func (pr *PendingRegistry) replay() error {
 
 		switch entry.Op {
 		case "register":
-			pr.inputs[entry.Input.InputID] = entry.Input
+			pr.inputs[entry.Input.AskID] = entry.Input
 		case "remove":
 			delete(pr.inputs, entry.ID)
 		}

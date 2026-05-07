@@ -24,6 +24,7 @@ Thumbs.db
 
 # Test outputs
 workflows/test_cases/test_outputs/
+tests/integration/workflows/test_cases/test_outputs/
 test-logs/
 
 # Environment

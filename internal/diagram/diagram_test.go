@@ -816,11 +816,11 @@ echo "<result>done</result>"`
 	assert.False(t, exists)
 }
 
-func TestAwaitEdge(t *testing.T) {
+func TestAskEdge(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "1_START.md", `---
 allowed_transitions:
-  - { tag: await, next: REVIEW.md }
+  - { tag: ask, next: REVIEW.md }
   - { tag: result }
 ---
 Wait for review.`)
@@ -830,17 +830,17 @@ Wait for review.`)
 	require.NoError(t, err)
 
 	m := result.Mermaid
-	// Solid edge labeled "await" from START to REVIEW.
-	assert.Contains(t, m, "1_START -->|await| REVIEW")
+	// Solid edge labeled "ask" from START to REVIEW.
+	assert.Contains(t, m, "1_START -->|ask| REVIEW")
 	// REVIEW node should be present.
 	assert.Contains(t, m, `REVIEW["REVIEW"]`)
 }
 
-func TestAwaitWithTimeoutNext(t *testing.T) {
+func TestAskWithTimeoutNext(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "1_START.md", `---
 allowed_transitions:
-  - { tag: await, next: APPROVED.md, timeout_next: ESCALATE.md }
+  - { tag: ask, next: APPROVED.md, timeout_next: ESCALATE.md }
   - { tag: result }
 ---
 Wait for approval.`)
@@ -851,19 +851,19 @@ Wait for approval.`)
 	require.NoError(t, err)
 
 	m := result.Mermaid
-	// Solid edge for the normal await path.
-	assert.Contains(t, m, "1_START -->|await| APPROVED")
+	// Solid edge for the normal ask path.
+	assert.Contains(t, m, "1_START -->|ask| APPROVED")
 	// Dotted edge for the timeout fallback path.
-	assert.Contains(t, m, "1_START -.->|await timeout| ESCALATE")
+	assert.Contains(t, m, "1_START -.->|ask timeout| ESCALATE")
 	// Both target nodes should be present.
 	assert.Contains(t, m, `APPROVED["APPROVED"]`)
 	assert.Contains(t, m, `ESCALATE["ESCALATE"]`)
 }
 
-func TestAwaitBodyParsed(t *testing.T) {
+func TestAskBodyParsed(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "1_START.md", `Do something.
-<await next="REVIEW.md" timeout_next="TIMEOUT.md">Please review this.</await>`)
+<ask next="REVIEW.md" timeout_next="TIMEOUT.md">Please review this.</ask>`)
 	writeFile(t, dir, "REVIEW.md", `<result>approved</result>`)
 	writeFile(t, dir, "TIMEOUT.md", `<result>timed out</result>`)
 
@@ -871,18 +871,18 @@ func TestAwaitBodyParsed(t *testing.T) {
 	require.NoError(t, err)
 
 	m := result.Mermaid
-	// Body-parsed await should produce the same edges as frontmatter.
-	assert.Contains(t, m, "1_START -->|await| REVIEW")
-	assert.Contains(t, m, "1_START -.->|await timeout| TIMEOUT")
+	// Body-parsed ask should produce the same edges as frontmatter.
+	assert.Contains(t, m, "1_START -->|ask| REVIEW")
+	assert.Contains(t, m, "1_START -.->|ask timeout| TIMEOUT")
 }
 
-func TestAwaitAlongsideOtherTransitions(t *testing.T) {
+func TestAskAlongsideOtherTransitions(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "1_START.md", `Do work.
 <goto>WAIT.md</goto>`)
 	writeFile(t, dir, "WAIT.md", `---
 allowed_transitions:
-  - { tag: await, next: DONE.md, timeout_next: RETRY.md }
+  - { tag: ask, next: DONE.md, timeout_next: RETRY.md }
   - { tag: goto, target: RETRY.md }
 ---
 Waiting for input.`)
@@ -895,22 +895,22 @@ Waiting for input.`)
 	m := result.Mermaid
 	// Goto edge from START to WAIT.
 	assert.Contains(t, m, "1_START -->|goto| WAIT")
-	// Await edge from WAIT to DONE (solid).
-	assert.Contains(t, m, "WAIT -->|await| DONE")
-	// Await timeout edge from WAIT to RETRY (dotted).
-	assert.Contains(t, m, "WAIT -.->|await timeout| RETRY")
+	// Ask edge from WAIT to DONE (solid).
+	assert.Contains(t, m, "WAIT -->|ask| DONE")
+	// Ask timeout edge from WAIT to RETRY (dotted).
+	assert.Contains(t, m, "WAIT -.->|ask timeout| RETRY")
 	// Goto edge from WAIT to RETRY (solid).
 	assert.Contains(t, m, "WAIT -->|goto| RETRY")
 	// Goto edge from RETRY back to WAIT.
 	assert.Contains(t, m, "RETRY -->|goto| WAIT")
 }
 
-func TestAwaitResultTracing(t *testing.T) {
-	// call → AWAITER → (await) → FINISH → result
+func TestAskResultTracing(t *testing.T) {
+	// call → ASKER → (ask) → FINISH → result
 	// The result from FINISH should trace back through the call.
 	dir := t.TempDir()
-	writeFile(t, dir, "1_START.md", `<call return="AFTER.md">AWAITER.md</call>`)
-	writeFile(t, dir, "AWAITER.md", `<await next="FINISH.md">Wait for input.</await>`)
+	writeFile(t, dir, "1_START.md", `<call return="AFTER.md">ASKER.md</call>`)
+	writeFile(t, dir, "ASKER.md", `<ask next="FINISH.md">Wait for input.</ask>`)
 	writeFile(t, dir, "FINISH.md", `<result>done</result>`)
 	writeFile(t, dir, "AFTER.md", `<result>complete</result>`)
 

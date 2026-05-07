@@ -154,8 +154,8 @@ func TestValidateInputMode(t *testing.T) {
 	require.Error(t, ValidateInputMode(manifest.InputModeNone, "hello"))
 }
 
-func TestResolveUploadCaps_PerAwaitOverridesAll(t *testing.T) {
-	// Bucket-mode awaits with their own caps win over server config and
+func TestResolveUploadCaps_PerAskOverridesAll(t *testing.T) {
+	// Bucket-mode asks with their own caps win over server config and
 	// the hardcoded fallback. Per-slot MIME isn't a size cap, so slot mode
 	// is exercised separately below.
 	fa := &parsing.FileAffordance{
@@ -172,8 +172,8 @@ func TestResolveUploadCaps_PerAwaitOverridesAll(t *testing.T) {
 	assert.Equal(t, 3, count)
 }
 
-func TestResolveUploadCaps_ServerConfigUsedWhenAwaitUnset(t *testing.T) {
-	// Bucket await with all caps unset (zero) inherits the server config.
+func TestResolveUploadCaps_ServerConfigUsedWhenAskUnset(t *testing.T) {
+	// Bucket ask with all caps unset (zero) inherits the server config.
 	fa := &parsing.FileAffordance{Mode: parsing.ModeBucket}
 	perFile, total, count := resolveUploadCaps(fa, 42, 420, 9)
 	assert.Equal(t, int64(42), perFile)
@@ -182,7 +182,7 @@ func TestResolveUploadCaps_ServerConfigUsedWhenAwaitUnset(t *testing.T) {
 }
 
 func TestResolveUploadCaps_HardcodedFallbackWhenServerUnset(t *testing.T) {
-	// Both per-await and server are zero (or negative) — fall through to
+	// Both per-ask and server are zero (or negative) — fall through to
 	// the daemonDefaultMax* constants.
 	perFile, total, count := resolveUploadCaps(nil, 0, 0, 0)
 	assert.Equal(t, daemonDefaultMaxFileSize, perFile)
@@ -196,11 +196,11 @@ func TestResolveUploadCaps_HardcodedFallbackWhenServerUnset(t *testing.T) {
 	assert.Equal(t, daemonDefaultMaxFileCount, count)
 }
 
-func TestResolveUploadCaps_PartialAwaitOverridesPerCap(t *testing.T) {
-	// An await may override only some of the three caps; the rest fall
+func TestResolveUploadCaps_PartialAskOverridesPerCap(t *testing.T) {
+	// An ask may override only some of the three caps; the rest fall
 	// through to the server config (or hardcoded fallback for any cap the
 	// server also leaves unset). This is the "mix and match" precedence
-	// case the design calls out for bucket-mode awaits.
+	// case the design calls out for bucket-mode asks.
 	fa := &parsing.FileAffordance{
 		Mode: parsing.ModeBucket,
 		Bucket: parsing.BucketSpec{
@@ -209,13 +209,13 @@ func TestResolveUploadCaps_PartialAwaitOverridesPerCap(t *testing.T) {
 		},
 	}
 	perFile, total, count := resolveUploadCaps(fa, 99, 999, 5)
-	assert.Equal(t, int64(11), perFile) // per-await override
+	assert.Equal(t, int64(11), perFile) // per-ask override
 	assert.Equal(t, int64(999), total)  // server config
 	assert.Equal(t, 5, count)           // server config
 }
 
 func TestResolveUploadCaps_SlotModeInheritsServerDefaults(t *testing.T) {
-	// Slot-mode awaits don't carry size/count caps of their own; they must
+	// Slot-mode asks don't carry size/count caps of their own; they must
 	// inherit the server-wide defaults so an upload to a slot is bounded
 	// by the same ceiling as a bucket upload that also leaves caps unset.
 	fa := &parsing.FileAffordance{
@@ -231,7 +231,7 @@ func TestResolveUploadCaps_SlotModeInheritsServerDefaults(t *testing.T) {
 }
 
 func TestResolveUploadCaps_NilAffordanceUsesServerThenFallback(t *testing.T) {
-	// A nil FileAffordance (e.g. text-only await misrouted through the
+	// A nil FileAffordance (e.g. text-only ask misrouted through the
 	// upload path) is bounded by the server config, then the hardcoded
 	// defaults — never unbounded.
 	perFile, total, count := resolveUploadCaps(nil, 33, 333, 6)
@@ -302,7 +302,7 @@ func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
 	// must fall back to daemonDefaultBudgetUSD. Before the fix this landed at
 	// $0.00, which caused the markdown executor's budget-exceeded guard to
 	// synthesize a terminating <result> on the first Claude call, bypassing
-	// the state's await policy and ending the run immediately.
+	// the state's ask policy and ending the run immediately.
 	scopeDir := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "START.md"),
@@ -799,28 +799,28 @@ func TestCORS_Headers(t *testing.T) {
 func TestListPendingInputs(t *testing.T) {
 	_, ts, fake := newTestServer(t)
 
-	// Set up a fake orchestrator that emits an await event.
-	awaitReady := make(chan struct{})
+	// Set up a fake orchestrator that emits an ask event.
+	askReady := make(chan struct{})
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		b := bus.New()
 		if opts.ObserverSetup != nil {
 			opts.ObserverSetup(b)
 		}
 
-		b.Emit(events.AgentAwaitStarted{
+		b.Emit(events.AgentAskStarted{
 			AgentID:   "main",
-			InputID:   "test-input-1",
+			AskID:   "test-input-1",
 			Prompt:    "What should I do?",
 			NextState: "NEXT.md",
 			Timestamp: time.Now(),
 		})
 
 		// In daemon mode the callback registers the pending input.
-		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md", nil, nil)
+		if opts.AskCallback != nil {
+			opts.AskCallback("main", "test-input-1", "What should I do?", "NEXT.md", nil, nil)
 		}
 
-		close(awaitReady)
+		close(askReady)
 
 		// Block until cancelled.
 		<-ctx.Done()
@@ -837,15 +837,15 @@ func TestListPendingInputs(t *testing.T) {
 	var cr createRunResponse
 	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
 
-	// Wait for await to be registered.
+	// Wait for ask to be registered.
 	select {
-	case <-awaitReady:
+	case <-askReady:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for await")
+		t.Fatal("timed out waiting for ask")
 	}
 
 	// List pending inputs.
-	resp, err := http.Get(ts.URL + "/runs/" + cr.RunID + "/pending-inputs")
+	resp, err := http.Get(ts.URL + "/runs/" + cr.RunID + "/pending-asks")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -855,7 +855,7 @@ func TestListPendingInputs(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&inputs))
 	require.Len(t, inputs, 1)
 	assert.Equal(t, cr.RunID, inputs[0].RunID)
-	assert.Equal(t, "test-input-1", inputs[0].InputID)
+	assert.Equal(t, "test-input-1", inputs[0].AskID)
 	assert.Equal(t, "What should I do?", inputs[0].Prompt)
 }
 
@@ -863,7 +863,7 @@ func TestDeliverInput(t *testing.T) {
 	_, ts, fake := newTestServer(t)
 
 	inputDelivered := make(chan string, 1)
-	awaitReady := make(chan struct{})
+	askReady := make(chan struct{})
 
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		b := bus.New()
@@ -871,24 +871,24 @@ func TestDeliverInput(t *testing.T) {
 			opts.ObserverSetup(b)
 		}
 
-		b.Emit(events.AgentAwaitStarted{
+		b.Emit(events.AgentAskStarted{
 			AgentID:   "main",
-			InputID:   "test-input-1",
+			AskID:   "test-input-1",
 			Prompt:    "What should I do?",
 			NextState: "NEXT.md",
 			Timestamp: time.Now(),
 		})
 
-		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "What should I do?", "NEXT.md", nil, nil)
+		if opts.AskCallback != nil {
+			opts.AskCallback("main", "test-input-1", "What should I do?", "NEXT.md", nil, nil)
 		}
 
-		close(awaitReady)
+		close(askReady)
 
-		// In daemon mode, wait for input on the AwaitInputCh.
-		if opts.AwaitInputCh != nil {
+		// In daemon mode, wait for input on the AskInputCh.
+		if opts.AskInputCh != nil {
 			select {
-			case input := <-opts.AwaitInputCh:
+			case input := <-opts.AskInputCh:
 				inputDelivered <- input.Response
 			case <-ctx.Done():
 				return ctx.Err()
@@ -912,17 +912,17 @@ func TestDeliverInput(t *testing.T) {
 	var cr createRunResponse
 	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&cr))
 
-	// Wait for await.
+	// Wait for ask.
 	select {
-	case <-awaitReady:
+	case <-askReady:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for await")
+		t.Fatal("timed out waiting for ask")
 	}
 
 	// Deliver input.
 	inputBody := `{"response": "Do the thing"}`
 	resp, err := http.Post(
-		ts.URL+"/runs/"+cr.RunID+"/inputs/test-input-1",
+		ts.URL+"/runs/"+cr.RunID+"/asks/test-input-1",
 		"application/json",
 		strings.NewReader(inputBody),
 	)
@@ -934,7 +934,7 @@ func TestDeliverInput(t *testing.T) {
 	var dr deliverInputResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&dr))
 	assert.Equal(t, cr.RunID, dr.RunID)
-	assert.Equal(t, "test-input-1", dr.InputID)
+	assert.Equal(t, "test-input-1", dr.AskID)
 	assert.Equal(t, "resumed", dr.Status)
 
 	// Verify the input was actually delivered.
@@ -946,7 +946,7 @@ func TestDeliverInput(t *testing.T) {
 	}
 }
 
-func TestDeliverInput_InvalidInputID(t *testing.T) {
+func TestDeliverInput_InvalidAskID(t *testing.T) {
 	_, ts, _ := newTestServer(t)
 
 	// Create a run.
@@ -961,7 +961,7 @@ func TestDeliverInput_InvalidInputID(t *testing.T) {
 	// Try to deliver to non-existent input.
 	inputBody := `{"response": "hello"}`
 	resp, err := http.Post(
-		ts.URL+"/runs/"+cr.RunID+"/inputs/nonexistent",
+		ts.URL+"/runs/"+cr.RunID+"/asks/nonexistent",
 		"application/json",
 		strings.NewReader(inputBody),
 	)
@@ -974,16 +974,16 @@ func TestDeliverInput_InvalidInputID(t *testing.T) {
 func TestDeliverInput_WrongRun(t *testing.T) {
 	_, ts, fake := newTestServer(t)
 
-	awaitReady := make(chan struct{})
+	askReady := make(chan struct{})
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		b := bus.New()
 		if opts.ObserverSetup != nil {
 			opts.ObserverSetup(b)
 		}
-		if opts.AwaitCallback != nil {
-			opts.AwaitCallback("main", "test-input-1", "prompt", "NEXT.md", nil, nil)
+		if opts.AskCallback != nil {
+			opts.AskCallback("main", "test-input-1", "prompt", "NEXT.md", nil, nil)
 		}
-		close(awaitReady)
+		close(askReady)
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -996,15 +996,15 @@ func TestDeliverInput_WrongRun(t *testing.T) {
 	require.Equal(t, http.StatusCreated, createResp.StatusCode)
 
 	select {
-	case <-awaitReady:
+	case <-askReady:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for await")
+		t.Fatal("timed out waiting for ask")
 	}
 
 	// Try to deliver input using wrong run ID.
 	inputBody := `{"response": "hello"}`
 	resp, err := http.Post(
-		ts.URL+"/runs/wrong-run-id/inputs/test-input-1",
+		ts.URL+"/runs/wrong-run-id/asks/test-input-1",
 		"application/json",
 		strings.NewReader(inputBody),
 	)
@@ -1042,16 +1042,16 @@ func TestListInputFiles_PendingReturnsStaged(t *testing.T) {
 		{Name: "report.pdf", Size: 2048, ContentType: "application/pdf", Source: "display"},
 		{Name: "chart.png", Size: 512, ContentType: "image/png", Source: "display"},
 	}
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:       runID,
 		AgentID:     "main",
-		InputID:     "inp-1",
+		AskID:     "inp-1",
 		Prompt:      "review",
 		CreatedAt:   time.Now(),
 		StagedFiles: staged,
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-1/files")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-1/files")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1078,7 +1078,7 @@ func TestListInputFiles_ResolvedReturnsStagedPlusUploaded(t *testing.T) {
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		InputID:      "inp-resolved",
+		AskID:      "inp-resolved",
 		AgentID:      "main",
 		Prompt:       "upload",
 		ResponseText: "done",
@@ -1096,7 +1096,7 @@ func TestListInputFiles_ResolvedReturnsStagedPlusUploaded(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(statePath, out, 0o644))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-resolved/files")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-resolved/files")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1122,10 +1122,10 @@ func TestListInputFiles_ResolvedAfterPendingCleared(t *testing.T) {
 	staged := []wfstate.FileRecord{
 		{Name: "spec.pdf", Size: 1024, ContentType: "application/pdf", Source: "display"},
 	}
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:       runID,
 		AgentID:     "main",
-		InputID:     "inp-cleared",
+		AskID:     "inp-cleared",
 		Prompt:      "review and reply",
 		CreatedAt:   time.Now(),
 		StagedFiles: staged,
@@ -1139,7 +1139,7 @@ func TestListInputFiles_ResolvedAfterPendingCleared(t *testing.T) {
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		InputID:      "inp-cleared",
+		AskID:      "inp-cleared",
 		AgentID:      "main",
 		Prompt:       "review and reply",
 		ResponseText: "ok",
@@ -1153,7 +1153,7 @@ func TestListInputFiles_ResolvedAfterPendingCleared(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(statePath, out, 0o644))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-cleared/files")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-cleared/files")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1173,15 +1173,15 @@ func TestListInputFiles_EmptyReturnsArrayNotNull(t *testing.T) {
 	srv, ts, fake := newTestServer(t)
 	runID := createPendingRunForFiles(t, ts, fake)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-empty",
+		AskID:   "inp-empty",
 		Prompt:    "no files yet",
 		CreatedAt: time.Now(),
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-empty/files")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-empty/files")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1228,7 +1228,7 @@ func TestListResolvedInputs_ReturnsPromptResponseAndFiles(t *testing.T) {
 	resolved := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
 	ws.ResolvedInputs = append(ws.ResolvedInputs,
 		wfstate.ResolvedInput{
-			InputID:      "inp-1",
+			AskID:      "inp-1",
 			AgentID:      "main",
 			Prompt:       "review the chart",
 			NextState:    "step-2.md",
@@ -1240,7 +1240,7 @@ func TestListResolvedInputs_ReturnsPromptResponseAndFiles(t *testing.T) {
 			ResolvedAt: resolved,
 		},
 		wfstate.ResolvedInput{
-			InputID:      "inp-2",
+			AskID:      "inp-2",
 			AgentID:      "main",
 			Prompt:       "upload corrections",
 			ResponseText: "see attached",
@@ -1264,7 +1264,7 @@ func TestListResolvedInputs_ReturnsPromptResponseAndFiles(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Len(t, got, 2)
 
-	assert.Equal(t, "inp-1", got[0].InputID)
+	assert.Equal(t, "inp-1", got[0].AskID)
 	assert.Equal(t, "main", got[0].AgentID)
 	assert.Equal(t, "review the chart", got[0].Prompt)
 	assert.Equal(t, "step-2.md", got[0].NextState)
@@ -1280,7 +1280,7 @@ func TestListResolvedInputs_ReturnsPromptResponseAndFiles(t *testing.T) {
 	require.NotNil(t, got[0].ResolvedAt)
 	assert.Equal(t, resolved.Format(time.RFC3339), *got[0].ResolvedAt)
 
-	assert.Equal(t, "inp-2", got[1].InputID)
+	assert.Equal(t, "inp-2", got[1].AskID)
 	assert.Empty(t, got[1].StagedFiles)
 	require.Len(t, got[1].UploadedFiles, 2)
 	assert.Equal(t, "fixed.csv", got[1].UploadedFiles[0].Name)
@@ -1301,7 +1301,7 @@ func TestListResolvedInputs_OmitsZeroTimestampsAndEmptyFileFields(t *testing.T) 
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		InputID:      "inp-text",
+		AskID:      "inp-text",
 		AgentID:      "main",
 		Prompt:       "yes or no?",
 		ResponseText: "yes",
@@ -1326,7 +1326,7 @@ func TestListResolvedInputs_OmitsZeroTimestampsAndEmptyFileFields(t *testing.T) 
 	assert.False(t, hasUploaded, "text-only resolved input should omit uploaded_files")
 	assert.False(t, hasEntered, "missing EnteredAt should omit entered_at")
 	assert.False(t, hasResolved, "missing ResolvedAt should omit resolved_at")
-	assert.Equal(t, "inp-text", rawArr[0]["input_id"])
+	assert.Equal(t, "inp-text", rawArr[0]["ask_id"])
 	assert.Equal(t, "yes", rawArr[0]["response_text"])
 }
 
@@ -1345,16 +1345,16 @@ func TestListPendingInputs_BucketModeReturnsBucketObject(t *testing.T) {
 			MIME:           []string{"image/png"},
 		},
 	}
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:          runID,
 		AgentID:        "main",
-		InputID:        "inp-bucket",
+		AskID:        "inp-bucket",
 		Prompt:         "attach images",
 		CreatedAt:      time.Now(),
 		FileAffordance: affordance,
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-inputs")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-asks")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1373,7 +1373,7 @@ func TestListPendingInputs_BucketModeReturnsBucketObject(t *testing.T) {
 
 func TestListInputFiles_UnknownRun(t *testing.T) {
 	_, ts, _ := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/runs/no-such-run/inputs/inp-1/files")
+	resp, err := http.Get(ts.URL + "/runs/no-such-run/asks/inp-1/files")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1383,7 +1383,7 @@ func TestListInputFiles_UnknownInput(t *testing.T) {
 	_, ts, fake := newTestServer(t)
 	runID := createPendingRunForFiles(t, ts, fake)
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/no-such-input/files")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/no-such-input/files")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1393,15 +1393,15 @@ func TestListPendingInputs_TextOnlyHasNoFileFields(t *testing.T) {
 	srv, ts, fake := newTestServer(t)
 	runID := createPendingRunForFiles(t, ts, fake)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-text",
+		AskID:   "inp-text",
 		Prompt:    "yes or no?",
 		CreatedAt: time.Now(),
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-inputs")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-asks")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1413,7 +1413,7 @@ func TestListPendingInputs_TextOnlyHasNoFileFields(t *testing.T) {
 	assert.Empty(t, inputs[0].StagedFiles)
 
 	// Verify the JSON omits the file fields entirely (omitempty round-trip).
-	resp2, err := http.Get(ts.URL + "/runs/" + runID + "/pending-inputs")
+	resp2, err := http.Get(ts.URL + "/runs/" + runID + "/pending-asks")
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	var raw []map[string]any
@@ -1436,16 +1436,16 @@ func TestListPendingInputs_SlotModeReturnsSlots(t *testing.T) {
 			{Name: "cover.pdf", MIME: []string{"application/pdf", "text/plain"}},
 		},
 	}
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:          runID,
 		AgentID:        "main",
-		InputID:        "inp-slot",
+		AskID:        "inp-slot",
 		Prompt:         "upload your application",
 		CreatedAt:      time.Now(),
 		FileAffordance: affordance,
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-inputs")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-asks")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1477,17 +1477,17 @@ func TestListPendingInputs_DisplayOnlyReturnsStagedFiles(t *testing.T) {
 	staged := []wfstate.FileRecord{
 		{Name: "Final Report", Size: 4096, ContentType: "application/pdf", Source: "display"},
 	}
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:          runID,
 		AgentID:        "main",
-		InputID:        "inp-display",
+		AskID:        "inp-display",
 		Prompt:         "review the report",
 		CreatedAt:      time.Now(),
 		FileAffordance: affordance,
 		StagedFiles:    staged,
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-inputs")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/pending-asks")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1536,16 +1536,16 @@ func setupAgentTaskFolder(t *testing.T, srv *Server, runID, agentID, taskFolder 
 // writeInputFile writes a file into the on-disk inputs subdirectory for an
 // input step, mirroring what the staging code (bead 4) and the upload code
 // (later beads) do at runtime.
-func writeInputFile(t *testing.T, taskFolder, inputID, name string, content []byte) string {
+func writeInputFile(t *testing.T, taskFolder, askID, name string, content []byte) string {
 	t.Helper()
-	dir := filepath.Join(taskFolder, "inputs", inputID)
+	dir := filepath.Join(taskFolder, "asks", askID)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	path := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 	return path
 }
 
-func TestGetInputFile_ServesStagedDisplayFileForPendingInput(t *testing.T) {
+func TestGetInputFile_ServesStagedDisplayFileForPendingAsk(t *testing.T) {
 	srv, ts, fake := newTestServer(t)
 	runID := createPendingRunForFiles(t, ts, fake)
 
@@ -1554,10 +1554,10 @@ func TestGetInputFile_ServesStagedDisplayFileForPendingInput(t *testing.T) {
 	content := []byte("\x89PNG\r\n\x1a\nfake-png-bytes")
 	writeInputFile(t, taskFolder, "inp-pending", "chart.png", content)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-pending",
+		AskID:   "inp-pending",
 		Prompt:    "review",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
@@ -1565,7 +1565,7 @@ func TestGetInputFile_ServesStagedDisplayFileForPendingInput(t *testing.T) {
 		},
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-pending/files/chart.png")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-pending/files/chart.png")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1591,7 +1591,7 @@ func TestGetInputFile_ServesUploadedFileForResolvedInput(t *testing.T) {
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		InputID: "inp-resolved",
+		AskID: "inp-resolved",
 		AgentID: "main",
 		UploadedFiles: []wfstate.FileRecord{
 			{Name: "data.csv", Size: int64(len(content)), ContentType: "text/csv", Source: "upload"},
@@ -1602,7 +1602,7 @@ func TestGetInputFile_ServesUploadedFileForResolvedInput(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(statePath, out, 0o644))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-resolved/files/data.csv")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-resolved/files/data.csv")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1619,10 +1619,10 @@ func TestGetInputFile_RejectsPathTraversal(t *testing.T) {
 
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-trav",
+		AskID:   "inp-trav",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "ok.txt", Size: 0, ContentType: "text/plain", Source: "display"},
@@ -1630,7 +1630,7 @@ func TestGetInputFile_RejectsPathTraversal(t *testing.T) {
 	}))
 	// Write a sibling file outside the input subdirectory; the handler must
 	// not surface it via a "../" traversal.
-	siblingDir := filepath.Join(taskFolder, "inputs", "other")
+	siblingDir := filepath.Join(taskFolder, "asks", "other")
 	require.NoError(t, os.MkdirAll(siblingDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(siblingDir, "secret.txt"), []byte("nope"), 0o644))
 
@@ -1643,7 +1643,7 @@ func TestGetInputFile_RejectsPathTraversal(t *testing.T) {
 		"%2e%2e%2fother%2fsecret.txt", // ../other/secret.txt (encoded slashes)
 		"%2e%2e/other/secret.txt",     // .. via encoded dots, plain slashes
 	} {
-		resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-trav/files/" + encoded)
+		resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-trav/files/" + encoded)
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, encoded)
 		resp.Body.Close()
@@ -1658,17 +1658,17 @@ func TestGetInputFile_DefaultDispositionIsAttachment(t *testing.T) {
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 	writeInputFile(t, taskFolder, "inp-disp", "report.pdf", []byte("%PDF-1.4 fake"))
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-disp",
+		AskID:   "inp-disp",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "report.pdf", Size: 13, ContentType: "application/pdf", Source: "display"},
 		},
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-disp/files/report.pdf")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-disp/files/report.pdf")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1685,17 +1685,17 @@ func TestGetInputFile_InlineHonoredForAllowlistedMime(t *testing.T) {
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 	writeInputFile(t, taskFolder, "inp-inline", "preview.png", []byte("png-bytes"))
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-inline",
+		AskID:   "inp-inline",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "preview.png", Size: 9, ContentType: "image/png", Source: "display"},
 		},
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-inline/files/preview.png?disposition=inline")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-inline/files/preview.png?disposition=inline")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1721,19 +1721,19 @@ func TestGetInputFile_InlineDeniedForNonAllowlistedMime(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			inputID := fmt.Sprintf("inp-deny-%d", i)
-			writeInputFile(t, taskFolder, inputID, tc.recordName, []byte("x"))
-			require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+			askID := fmt.Sprintf("inp-deny-%d", i)
+			writeInputFile(t, taskFolder, askID, tc.recordName, []byte("x"))
+			require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 				RunID:     runID,
 				AgentID:   "main",
-				InputID:   inputID,
+				AskID:   askID,
 				CreatedAt: time.Now(),
 				StagedFiles: []wfstate.FileRecord{
 					{Name: tc.recordName, Size: 1, ContentType: tc.contentType, Source: "display"},
 				},
 			}))
 
-			resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/" + inputID + "/files/" + tc.recordName + "?disposition=inline")
+			resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/" + askID + "/files/" + tc.recordName + "?disposition=inline")
 			require.NoError(t, err)
 			defer resp.Body.Close()
 			require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1753,10 +1753,10 @@ func TestGetInputFile_DefenseHeadersAlwaysPresent(t *testing.T) {
 	writeInputFile(t, taskFolder, "inp-headers", "img.png", []byte("png"))
 	writeInputFile(t, taskFolder, "inp-headers", "page.html", []byte("<html></html>"))
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-headers",
+		AskID:   "inp-headers",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "img.png", Size: 3, ContentType: "image/png", Source: "display"},
@@ -1765,10 +1765,10 @@ func TestGetInputFile_DefenseHeadersAlwaysPresent(t *testing.T) {
 	}))
 
 	for _, urlPath := range []string{
-		"/runs/" + runID + "/inputs/inp-headers/files/img.png",
-		"/runs/" + runID + "/inputs/inp-headers/files/img.png?disposition=inline",
-		"/runs/" + runID + "/inputs/inp-headers/files/page.html",
-		"/runs/" + runID + "/inputs/inp-headers/files/page.html?disposition=inline",
+		"/runs/" + runID + "/asks/inp-headers/files/img.png",
+		"/runs/" + runID + "/asks/inp-headers/files/img.png?disposition=inline",
+		"/runs/" + runID + "/asks/inp-headers/files/page.html",
+		"/runs/" + runID + "/asks/inp-headers/files/page.html?disposition=inline",
 	} {
 		resp, err := http.Get(ts.URL + urlPath)
 		require.NoError(t, err)
@@ -1781,7 +1781,7 @@ func TestGetInputFile_DefenseHeadersAlwaysPresent(t *testing.T) {
 
 func TestGetInputFile_UnknownRun(t *testing.T) {
 	_, ts, _ := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/runs/no-such-run/inputs/inp/files/foo.txt")
+	resp, err := http.Get(ts.URL + "/runs/no-such-run/asks/inp/files/foo.txt")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1790,7 +1790,7 @@ func TestGetInputFile_UnknownRun(t *testing.T) {
 func TestGetInputFile_UnknownInput(t *testing.T) {
 	_, ts, fake := newTestServer(t)
 	runID := createPendingRunForFiles(t, ts, fake)
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/no-such-input/files/foo.txt")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/no-such-input/files/foo.txt")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1804,14 +1804,14 @@ func TestGetInputFile_UnknownFileInCatalog(t *testing.T) {
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 	// File on disk but not in the catalog — must 404 (catalog is authoritative).
 	writeInputFile(t, taskFolder, "inp-cat", "ghost.txt", []byte("hi"))
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-cat",
+		AskID:   "inp-cat",
 		CreatedAt: time.Now(),
 	}))
 
-	resp, err := http.Get(ts.URL + "/runs/" + runID + "/inputs/inp-cat/files/ghost.txt")
+	resp, err := http.Get(ts.URL + "/runs/" + runID + "/asks/inp-cat/files/ghost.txt")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1845,10 +1845,10 @@ func buildMultipartBody(t *testing.T, response string, files []multipartFile) (*
 }
 
 // postMultipart posts a multipart submission to the deliver endpoint.
-func postMultipart(t *testing.T, ts *httptest.Server, runID, inputID, response string, files []multipartFile) *http.Response {
+func postMultipart(t *testing.T, ts *httptest.Server, runID, askID, response string, files []multipartFile) *http.Response {
 	t.Helper()
 	body, ct := buildMultipartBody(t, response, files)
-	resp, err := http.Post(ts.URL+"/runs/"+runID+"/inputs/"+inputID, ct, body)
+	resp, err := http.Post(ts.URL+"/runs/"+runID+"/asks/"+askID, ct, body)
 	require.NoError(t, err)
 	return resp
 }
@@ -1868,10 +1868,10 @@ func TestDeliverInput_Multipart_SlotMode_Success(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-slot",
+		AskID:   "inp-slot",
 		Prompt:    "upload your application",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
@@ -1891,7 +1891,7 @@ func TestDeliverInput_Multipart_SlotMode_Success(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Files renamed into the input subdirectory.
-	inputDir := filepath.Join(taskFolder, "inputs", "inp-slot")
+	inputDir := filepath.Join(taskFolder, "asks", "inp-slot")
 	resume, err := os.ReadFile(filepath.Join(inputDir, "resume.pdf"))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("%PDF-1.4 fake-pdf"), resume)
@@ -1918,10 +1918,10 @@ func TestDeliverInput_Multipart_SlotMode_MissingSlot(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-miss",
+		AskID:   "inp-miss",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeSlot,
@@ -1948,10 +1948,10 @@ func TestDeliverInput_Multipart_SlotMode_ExtraSlot(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-extra",
+		AskID:   "inp-extra",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeSlot,
@@ -1981,10 +1981,10 @@ func TestDeliverInput_Multipart_SlotMode_DuplicatePartForSameSlot(t *testing.T) 
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-dup-slot",
+		AskID:   "inp-dup-slot",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeSlot,
@@ -2011,10 +2011,10 @@ func TestDeliverInput_Multipart_BucketMode_Success(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-bucket",
+		AskID:   "inp-bucket",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2033,10 +2033,10 @@ func TestDeliverInput_Multipart_BucketMode_Success(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	first, err := os.ReadFile(filepath.Join(taskFolder, "inputs", "inp-bucket", "first.txt"))
+	first, err := os.ReadFile(filepath.Join(taskFolder, "asks", "inp-bucket", "first.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("alpha alpha alpha"), first)
-	second, err := os.ReadFile(filepath.Join(taskFolder, "inputs", "inp-bucket", "second.txt"))
+	second, err := os.ReadFile(filepath.Join(taskFolder, "asks", "inp-bucket", "second.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("beta beta"), second)
 }
@@ -2047,10 +2047,10 @@ func TestDeliverInput_Multipart_BucketMode_PerFileSizeExceeded(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-pf",
+		AskID:   "inp-pf",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2077,10 +2077,10 @@ func TestDeliverInput_Multipart_BucketMode_TotalSizeExceeded(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-total",
+		AskID:   "inp-total",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2114,10 +2114,10 @@ func TestDeliverInput_Multipart_BucketMode_CountExceeded(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-count",
+		AskID:   "inp-count",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2143,10 +2143,10 @@ func TestDeliverInput_Multipart_BucketMode_MIMEAllowlist(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-mime",
+		AskID:   "inp-mime",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2171,10 +2171,10 @@ func TestDeliverInput_Multipart_FilenameNormalizationRejection(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-name",
+		AskID:   "inp-name",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2200,10 +2200,10 @@ func TestDeliverInput_Multipart_DuplicateFilenameInSubmission(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-dup",
+		AskID:   "inp-dup",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode:   parsing.ModeBucket,
@@ -2227,10 +2227,10 @@ func TestDeliverInput_Multipart_CollisionWithStagedFile(t *testing.T) {
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-coll",
+		AskID:   "inp-coll",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode:   parsing.ModeBucket,
@@ -2253,18 +2253,18 @@ func TestDeliverInput_Multipart_CollisionWithStagedFile(t *testing.T) {
 func TestDeliverInput_Multipart_FailedValidationLeavesInputClaimable(t *testing.T) {
 	srv, ts, fake := newTestServer(t)
 
-	// Use a fake that consumes the AwaitInputCh so we can verify the
+	// Use a fake that consumes the AskInputCh so we can verify the
 	// follow-up JSON delivery actually reaches the orchestrator after a
 	// failed multipart validation. The pending entry must remain in the
 	// registry across the failed multipart attempt, with no files left in
 	// the input subdirectory.
-	delivered := make(chan orchestrator.AwaitInput, 1)
+	delivered := make(chan orchestrator.AskInput, 1)
 	fake.behaviour = func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
 		if opts.ObserverSetup != nil {
 			opts.ObserverSetup(bus.New())
 		}
 		select {
-		case in := <-opts.AwaitInputCh:
+		case in := <-opts.AskInputCh:
 			delivered <- in
 		case <-ctx.Done():
 			return ctx.Err()
@@ -2284,10 +2284,10 @@ func TestDeliverInput_Multipart_FailedValidationLeavesInputClaimable(t *testing.
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-recover",
+		AskID:   "inp-recover",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2308,7 +2308,7 @@ func TestDeliverInput_Multipart_FailedValidationLeavesInputClaimable(t *testing.
 	// Input subdirectory must be untouched. Either it was never created
 	// (handler short-circuits before mkdir) or it exists but is empty —
 	// no files, no leftover staging directory.
-	inputDir := filepath.Join(taskFolder, "inputs", "inp-recover")
+	inputDir := filepath.Join(taskFolder, "asks", "inp-recover")
 	if entries, statErr := os.ReadDir(inputDir); statErr == nil {
 		assert.Empty(t, entries, "input subdirectory must be empty after failed validation")
 	}
@@ -2316,10 +2316,10 @@ func TestDeliverInput_Multipart_FailedValidationLeavesInputClaimable(t *testing.
 	// Pending entry still claimable: a follow-up JSON delivery succeeds.
 	pi, ok := srv.pendingRegistry.Get("inp-recover")
 	require.True(t, ok, "pending input must remain after failed multipart")
-	assert.Equal(t, "inp-recover", pi.InputID)
+	assert.Equal(t, "inp-recover", pi.AskID)
 
 	resp2, err := http.Post(
-		ts.URL+"/runs/"+runID+"/inputs/inp-recover",
+		ts.URL+"/runs/"+runID+"/asks/inp-recover",
 		"application/json",
 		strings.NewReader(`{"response": "fallback text"}`),
 	)
@@ -2342,10 +2342,10 @@ func TestDeliverInput_Multipart_ConcurrentSecondSubmissionInputNotPending(t *tes
 	taskFolder := t.TempDir()
 	setupAgentTaskFolder(t, srv, runID, "main", taskFolder)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-race",
+		AskID:   "inp-race",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode:   parsing.ModeBucket,
@@ -2369,23 +2369,23 @@ func TestDeliverInput_Multipart_ConcurrentSecondSubmissionInputNotPending(t *tes
 	assert.Equal(t, "input_not_pending", er.Constraint)
 }
 
-func TestDeliverInput_JSON_TextOnlyAwaitStillWorks(t *testing.T) {
+func TestDeliverInput_JSON_TextOnlyAskStillWorks(t *testing.T) {
 	// Sanity-check that introducing the multipart branch did not regress
-	// the JSON path for text-only awaits. This is a focused complement to
+	// the JSON path for text-only asks. This is a focused complement to
 	// TestDeliverInput, which exercises the full orchestrator round-trip.
 	srv, ts, fake := newTestServer(t)
 	runID := createPendingRunForFiles(t, ts, fake)
 
-	require.NoError(t, srv.pendingRegistry.Register(PendingInput{
+	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		InputID:   "inp-json",
+		AskID:   "inp-json",
 		Prompt:    "yes or no",
 		CreatedAt: time.Now(),
 	}))
 
 	resp, err := http.Post(
-		ts.URL+"/runs/"+runID+"/inputs/inp-json",
+		ts.URL+"/runs/"+runID+"/asks/inp-json",
 		"application/json",
 		strings.NewReader(`{"response": "yes"}`),
 	)
@@ -2403,7 +2403,7 @@ func TestCamelToSnake(t *testing.T) {
 	}{
 		{"StateStarted", "state_started"},
 		{"WorkflowCompleted", "workflow_completed"},
-		{"AgentAwaitStarted", "agent_await_started"},
+		{"AgentAskStarted", "agent_ask_started"},
 		{"ErrorOccurred", "error_occurred"},
 	}
 	for _, tt := range tests {

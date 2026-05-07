@@ -18,10 +18,10 @@ func TestPendingRegistry_RegisterAndGet(t *testing.T) {
 	reg, err := NewPendingRegistry(dir)
 	require.NoError(t, err)
 
-	pi := PendingInput{
+	pi := PendingAsk{
 		RunID:       "run-1",
 		AgentID:     "main",
-		InputID:     "inp-001",
+		AskID:     "inp-001",
 		Prompt:      "Enter value",
 		NextState:   "NEXT.md",
 		CreatedAt:   time.Now().Truncate(time.Millisecond),
@@ -34,7 +34,7 @@ func TestPendingRegistry_RegisterAndGet(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "run-1", got.RunID)
 	assert.Equal(t, "main", got.AgentID)
-	assert.Equal(t, "inp-001", got.InputID)
+	assert.Equal(t, "inp-001", got.AskID)
 	assert.Equal(t, "Enter value", got.Prompt)
 	assert.Equal(t, "NEXT.md", got.NextState)
 }
@@ -53,10 +53,10 @@ func TestPendingRegistry_Remove(t *testing.T) {
 	reg, err := NewPendingRegistry(dir)
 	require.NoError(t, err)
 
-	pi := PendingInput{
+	pi := PendingAsk{
 		RunID:   "run-1",
 		AgentID: "main",
-		InputID: "inp-001",
+		AskID: "inp-001",
 		Prompt:  "Enter value",
 	}
 	require.NoError(t, reg.Register(pi))
@@ -81,11 +81,11 @@ func TestPendingRegistry_ListAll(t *testing.T) {
 	reg, err := NewPendingRegistry(dir)
 	require.NoError(t, err)
 
-	require.NoError(t, reg.Register(PendingInput{
-		RunID: "run-1", AgentID: "main", InputID: "inp-001",
+	require.NoError(t, reg.Register(PendingAsk{
+		RunID: "run-1", AgentID: "main", AskID: "inp-001",
 	}))
-	require.NoError(t, reg.Register(PendingInput{
-		RunID: "run-2", AgentID: "worker", InputID: "inp-002",
+	require.NoError(t, reg.Register(PendingAsk{
+		RunID: "run-2", AgentID: "worker", AskID: "inp-002",
 	}))
 
 	all := reg.ListAll()
@@ -93,7 +93,7 @@ func TestPendingRegistry_ListAll(t *testing.T) {
 
 	ids := map[string]bool{}
 	for _, pi := range all {
-		ids[pi.InputID] = true
+		ids[pi.AskID] = true
 	}
 	assert.True(t, ids["inp-001"])
 	assert.True(t, ids["inp-002"])
@@ -104,14 +104,14 @@ func TestPendingRegistry_ListByRun(t *testing.T) {
 	reg, err := NewPendingRegistry(dir)
 	require.NoError(t, err)
 
-	require.NoError(t, reg.Register(PendingInput{
-		RunID: "run-1", AgentID: "main", InputID: "inp-001",
+	require.NoError(t, reg.Register(PendingAsk{
+		RunID: "run-1", AgentID: "main", AskID: "inp-001",
 	}))
-	require.NoError(t, reg.Register(PendingInput{
-		RunID: "run-1", AgentID: "worker", InputID: "inp-002",
+	require.NoError(t, reg.Register(PendingAsk{
+		RunID: "run-1", AgentID: "worker", AskID: "inp-002",
 	}))
-	require.NoError(t, reg.Register(PendingInput{
-		RunID: "run-2", AgentID: "main", InputID: "inp-003",
+	require.NoError(t, reg.Register(PendingAsk{
+		RunID: "run-2", AgentID: "main", AskID: "inp-003",
 	}))
 
 	run1 := reg.ListByRun("run-1")
@@ -119,7 +119,7 @@ func TestPendingRegistry_ListByRun(t *testing.T) {
 
 	run2 := reg.ListByRun("run-2")
 	assert.Len(t, run2, 1)
-	assert.Equal(t, "inp-003", run2[0].InputID)
+	assert.Equal(t, "inp-003", run2[0].AskID)
 
 	run3 := reg.ListByRun("run-3")
 	assert.Len(t, run3, 0)
@@ -134,20 +134,20 @@ func TestPendingRegistry_Persistence(t *testing.T) {
 		reg, err := NewPendingRegistry(dir)
 		require.NoError(t, err)
 
-		require.NoError(t, reg.Register(PendingInput{
+		require.NoError(t, reg.Register(PendingAsk{
 			RunID:       "run-1",
 			AgentID:     "main",
-			InputID:     "inp-001",
+			AskID:     "inp-001",
 			Prompt:      "Enter value",
 			NextState:   "NEXT.md",
 			CreatedAt:   time.Now().Truncate(time.Millisecond),
 			TimeoutAt:   &timeout,
 			TimeoutNext: "TIMEOUT.md",
 		}))
-		require.NoError(t, reg.Register(PendingInput{
+		require.NoError(t, reg.Register(PendingAsk{
 			RunID:   "run-1",
 			AgentID: "worker",
-			InputID: "inp-002",
+			AskID: "inp-002",
 		}))
 	}
 
@@ -181,11 +181,11 @@ func TestPendingRegistry_PersistenceWithRemove(t *testing.T) {
 		reg, err := NewPendingRegistry(dir)
 		require.NoError(t, err)
 
-		require.NoError(t, reg.Register(PendingInput{
-			RunID: "run-1", AgentID: "main", InputID: "inp-001",
+		require.NoError(t, reg.Register(PendingAsk{
+			RunID: "run-1", AgentID: "main", AskID: "inp-001",
 		}))
-		require.NoError(t, reg.Register(PendingInput{
-			RunID: "run-1", AgentID: "worker", InputID: "inp-002",
+		require.NoError(t, reg.Register(PendingAsk{
+			RunID: "run-1", AgentID: "worker", AskID: "inp-002",
 		}))
 		require.NoError(t, reg.Remove("inp-001"))
 	}
@@ -197,7 +197,7 @@ func TestPendingRegistry_PersistenceWithRemove(t *testing.T) {
 
 		all := reg.ListAll()
 		assert.Len(t, all, 1)
-		assert.Equal(t, "inp-002", all[0].InputID)
+		assert.Equal(t, "inp-002", all[0].AskID)
 	}
 }
 
@@ -208,11 +208,11 @@ func TestPendingRegistry_CompactOnStartup(t *testing.T) {
 	{
 		reg, err := NewPendingRegistry(dir)
 		require.NoError(t, err)
-		require.NoError(t, reg.Register(PendingInput{
-			RunID: "run-1", AgentID: "main", InputID: "inp-001",
+		require.NoError(t, reg.Register(PendingAsk{
+			RunID: "run-1", AgentID: "main", AskID: "inp-001",
 		}))
-		require.NoError(t, reg.Register(PendingInput{
-			RunID: "run-1", AgentID: "worker", InputID: "inp-002",
+		require.NoError(t, reg.Register(PendingAsk{
+			RunID: "run-1", AgentID: "worker", AskID: "inp-002",
 		}))
 		require.NoError(t, reg.Remove("inp-001"))
 	}
@@ -229,7 +229,7 @@ func TestPendingRegistry_CompactOnStartup(t *testing.T) {
 		require.NoError(t, err)
 		all := reg.ListAll()
 		assert.Len(t, all, 1)
-		assert.Equal(t, "inp-002", all[0].InputID)
+		assert.Equal(t, "inp-002", all[0].AskID)
 	}
 
 	// The compacted log should be smaller (or same if only one record).
@@ -243,8 +243,8 @@ func TestPendingRegistry_DuplicateRegister(t *testing.T) {
 	reg, err := NewPendingRegistry(dir)
 	require.NoError(t, err)
 
-	pi := PendingInput{
-		RunID: "run-1", AgentID: "main", InputID: "inp-001",
+	pi := PendingAsk{
+		RunID: "run-1", AgentID: "main", AskID: "inp-001",
 	}
 	require.NoError(t, reg.Register(pi))
 
@@ -276,10 +276,10 @@ func TestPendingRegistry_WithFileAffordanceAndStagedFiles(t *testing.T) {
 		reg, err := NewPendingRegistry(dir)
 		require.NoError(t, err)
 
-		require.NoError(t, reg.Register(PendingInput{
+		require.NoError(t, reg.Register(PendingAsk{
 			RunID:          "run-1",
 			AgentID:        "main",
-			InputID:        "inp-001",
+			AskID:        "inp-001",
 			Prompt:         "Attach images",
 			NextState:      "NEXT.md",
 			CreatedAt:      time.Now().Truncate(time.Millisecond),
@@ -337,7 +337,7 @@ func TestPendingRegistry_OldFormatEntryWithoutFileFields(t *testing.T) {
 	logPath := filepath.Join(dir, pendingLogFile)
 
 	// Write a hand-crafted JSONL line that omits the new fields entirely.
-	legacy := `{"op":"register","input":{"run_id":"run-1","agent_id":"main","input_id":"inp-legacy","prompt":"old","next_state":"N.md","created_at":"2025-01-01T00:00:00Z"}}` + "\n"
+	legacy := `{"op":"register","input":{"run_id":"run-1","agent_id":"main","ask_id":"inp-legacy","prompt":"old","next_state":"N.md","created_at":"2025-01-01T00:00:00Z"}}` + "\n"
 	require.NoError(t, os.WriteFile(logPath, []byte(legacy), 0o600))
 
 	reg, err := NewPendingRegistry(dir)
@@ -357,10 +357,10 @@ func TestPendingRegistry_WithTimeout(t *testing.T) {
 	require.NoError(t, err)
 
 	timeout := time.Now().Add(1 * time.Hour).Truncate(time.Millisecond)
-	pi := PendingInput{
+	pi := PendingAsk{
 		RunID:       "run-1",
 		AgentID:     "main",
-		InputID:     "inp-001",
+		AskID:     "inp-001",
 		Prompt:      "Enter value",
 		NextState:   "NEXT.md",
 		TimeoutAt:   &timeout,

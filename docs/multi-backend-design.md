@@ -143,7 +143,7 @@ backend interface should not require invasive changes:
   `Policy` with `AllowedTransitions`, `Model`, `Effort`. Per-workflow
   launch defaults live in `internal/state/state.go:122-129` as
   `LaunchParams` (`DangerouslySkipPermissions`, `Model`, `Effort`,
-  `Timeout`, `ContinueAndFork`, `OnAwait`).
+  `Timeout`, `ContinueAndFork`, `OnAsk`).
 
 - **Executor abstraction:** `internal/executors/executors.go:84-91` already
   defines a `StateExecutor` interface with two implementations
@@ -260,7 +260,7 @@ don't. Two strategies:
 Claude / codex / gemini / cursor / copilot all support MCP, each with its
 own config file. Pi uses its own skill system. If a workflow assumes an
 MCP server is wired up (e.g. the mechanism described in
-[input-file-attachments-design.md](input-file-attachments-design.md)), do
+[ask-file-attachments-design.md](ask-file-attachments-design.md)), do
 we:
 
 - Declare the requirement workflow-side and let the operator configure

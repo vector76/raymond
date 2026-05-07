@@ -120,22 +120,22 @@ type AgentPaused struct {
 	Timestamp time.Time
 }
 
-// AgentAwaitStarted is emitted when an agent enters an await state, waiting
+// AgentAskStarted is emitted when an agent enters an ask state, waiting
 // for human input.
-type AgentAwaitStarted struct {
+type AgentAskStarted struct {
 	AgentID   string
-	InputID   string
+	AskID   string
 	Prompt    string
 	NextState string
 	Timeout   string // empty if no timeout
 	Timestamp time.Time
 }
 
-// AgentAwaitResumed is emitted when an awaiting agent receives input and
+// AgentAskResumed is emitted when an asking agent receives input and
 // resumes execution.
-type AgentAwaitResumed struct {
+type AgentAskResumed struct {
 	AgentID   string
-	InputID   string
+	AskID   string
 	Timestamp time.Time
 }
 

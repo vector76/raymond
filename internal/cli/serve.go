@@ -136,11 +136,11 @@ API or web UI.`,
 				return fmt.Errorf("initializing run manager: %w", err)
 			}
 
-			// Wire up the pending-input registry so that <await> transitions
+			// Wire up the pending-input registry so that <ask> transitions
 			// run in daemon mode: the orchestrator registers each pending
-			// input via AwaitCallback and the HTTP layer exposes it for the
-			// UI to surface and answer. Without this, awaits fall back to
-			// the CLI pause path (return AwaitingInputError, wait for
+			// input via AskCallback and the HTTP layer exposes it for the
+			// UI to surface and answer. Without this, asks fall back to
+			// the CLI pause path (return PendingAskError, wait for
 			// --resume on the next process), which never triggers in a
 			// long-running daemon.
 			raymondDir, err := config.FindRaymondDir(cwd, true)
@@ -225,9 +225,9 @@ API or web UI.`,
 	f.BoolVar(&mcp, "mcp", false, "enable MCP transport")
 	f.BoolVar(&noHTTP, "no-http", false, "disable HTTP server (requires --mcp)")
 	f.StringVar(&workdir, "workdir", "", "default working directory for workflow runs")
-	f.Int64Var(&maxFileSize, "max-file-size", 0, "default maximum bytes per uploaded file when an <await> declares no per-file cap (0 means use [raymond.serve].max_file_size or daemon default)")
-	f.Int64Var(&maxTotalSize, "max-total-size", 0, "default maximum total bytes per upload submission when an <await> declares no total cap (0 means use [raymond.serve].max_total_size or daemon default)")
-	f.IntVar(&maxFileCount, "max-file-count", 0, "default maximum file count per upload submission when an <await> declares no count cap (0 means use [raymond.serve].max_file_count or daemon default)")
+	f.Int64Var(&maxFileSize, "max-file-size", 0, "default maximum bytes per uploaded file when an <ask> declares no per-file cap (0 means use [raymond.serve].max_file_size or daemon default)")
+	f.Int64Var(&maxTotalSize, "max-total-size", 0, "default maximum total bytes per upload submission when an <ask> declares no total cap (0 means use [raymond.serve].max_total_size or daemon default)")
+	f.IntVar(&maxFileCount, "max-file-count", 0, "default maximum file count per upload submission when an <ask> declares no count cap (0 means use [raymond.serve].max_file_count or daemon default)")
 
 	return cmd
 }

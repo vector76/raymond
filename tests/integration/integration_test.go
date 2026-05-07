@@ -409,7 +409,7 @@ func TestFunctionWorkflowExplicitEntry(t *testing.T) {
 // markdown executor codepath inside a zip scope.
 //
 // The caller side is fully script-driven for determinism: 1_START.sh emits
-// the `<call-workflow>` tag, and 2_DONE.sh re-emits RAYMOND_RESULT as its own
+// the `<call-workflow>` tag, and 2_DONE.sh re-emits RAYMOND_INPUT as its own
 // <result>. The workflow's terminal payload therefore equals whatever the
 // sub-workflow returned, which lets us assert the explicit entry (OTHER_ENTRY)
 // ran rather than the default (1_START).
@@ -426,7 +426,7 @@ func TestCallWorkflowZipExplicitEntry(t *testing.T) {
 
 	// Build a caller dir with script states wrapping a markdown sub-workflow:
 	// 1_START.sh emits a <call-workflow> tag pointing into the zip at
-	// OTHER_ENTRY; 2_DONE.sh re-emits the returned RAYMOND_RESULT so we can
+	// OTHER_ENTRY; 2_DONE.sh re-emits the returned RAYMOND_INPUT so we can
 	// observe which sub-workflow entry actually ran.
 	callerDir := t.TempDir()
 	startScript := fmt.Sprintf(
@@ -434,7 +434,7 @@ func TestCallWorkflowZipExplicitEntry(t *testing.T) {
 		tmpZipPath,
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(callerDir, "1_START.sh"), []byte(startScript), 0o755))
-	doneScript := "#!/bin/bash\necho \"<result>$RAYMOND_RESULT</result>\"\n"
+	doneScript := "#!/bin/bash\necho \"<result>$RAYMOND_INPUT</result>\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(callerDir, "2_DONE.sh"), []byte(doneScript), 0o755))
 
 	completed, result, err := runWorkflowCapture(t, callerDir, "1_START.sh", 10.0, nil)
@@ -526,7 +526,7 @@ func TestResetWorkflowBasic(t *testing.T) {
 }
 
 // TestResetWorkflowInputForwarded verifies that the input attribute on
-// <reset-workflow> is forwarded as RAYMOND_RESULT to the target workflow's
+// <reset-workflow> is forwarded as RAYMOND_INPUT to the target workflow's
 // first state.
 func TestResetWorkflowInputForwarded(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -537,7 +537,7 @@ func TestResetWorkflowInputForwarded(t *testing.T) {
 	completed, result, err := runWorkflowCapture(t, scopeDir, "1_START.sh", 10.0, nil)
 	require.NoError(t, err)
 	assert.True(t, completed, "input-forwarding reset-workflow should complete cleanly")
-	assert.Equal(t, "hello_from_caller", result, "input attribute should be forwarded as RAYMOND_RESULT")
+	assert.Equal(t, "hello_from_caller", result, "input attribute should be forwarded as RAYMOND_INPUT")
 }
 
 // TestResetWorkflowCdApplied verifies that the cd attribute on <reset-workflow>

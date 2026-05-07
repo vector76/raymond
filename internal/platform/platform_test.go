@@ -105,33 +105,33 @@ func TestBuildScriptEnvRequiredVarsPresent(t *testing.T) {
 	assert.Contains(t, env, "RAYMOND_AGENT_ID")
 }
 
-func TestBuildScriptEnvNoResultByDefault(t *testing.T) {
+func TestBuildScriptEnvNoInputByDefault(t *testing.T) {
 	env := platform.BuildScriptEnv("wf-1", "main", "", nil, nil)
-	assert.NotContains(t, env, "RAYMOND_RESULT")
+	assert.NotContains(t, env, "RAYMOND_INPUT")
 }
 
-func TestBuildScriptEnvResultSetWhenNonNil(t *testing.T) {
+func TestBuildScriptEnvInputSetWhenNonNil(t *testing.T) {
 	result := "Task completed"
 	env := platform.BuildScriptEnv("wf-1", "main", "", &result, nil)
-	assert.Equal(t, "Task completed", env["RAYMOND_RESULT"])
+	assert.Equal(t, "Task completed", env["RAYMOND_INPUT"])
 }
 
-func TestBuildScriptEnvResultEmptyStringIncluded(t *testing.T) {
+func TestBuildScriptEnvInputEmptyStringIncluded(t *testing.T) {
 	result := ""
 	env := platform.BuildScriptEnv("wf-1", "main", "", &result, nil)
-	assert.Contains(t, env, "RAYMOND_RESULT")
-	assert.Equal(t, "", env["RAYMOND_RESULT"])
+	assert.Contains(t, env, "RAYMOND_INPUT")
+	assert.Equal(t, "", env["RAYMOND_INPUT"])
 }
 
-func TestBuildScriptEnvNoResultWhenNil(t *testing.T) {
+func TestBuildScriptEnvNoInputWhenNil(t *testing.T) {
 	env := platform.BuildScriptEnv("wf-1", "main", "", nil, nil)
-	assert.NotContains(t, env, "RAYMOND_RESULT")
+	assert.NotContains(t, env, "RAYMOND_INPUT")
 }
 
-func TestBuildScriptEnvResultJSONPayload(t *testing.T) {
+func TestBuildScriptEnvInputJSONPayload(t *testing.T) {
 	payload := `{"status":"ok","count":42}`
 	env := platform.BuildScriptEnv("wf-1", "main", "", &payload, nil)
-	assert.Equal(t, payload, env["RAYMOND_RESULT"])
+	assert.Equal(t, payload, env["RAYMOND_INPUT"])
 }
 
 func TestBuildScriptEnvSingleForkAttribute(t *testing.T) {
@@ -183,11 +183,11 @@ func TestBuildScriptEnvForkAttributesCoexistWithCoreVars(t *testing.T) {
 	assert.Equal(t, "val", env["item"])
 }
 
-func TestBuildScriptEnvResultAndForkAttributesTogether(t *testing.T) {
+func TestBuildScriptEnvInputAndForkAttributesTogether(t *testing.T) {
 	res := "some result"
 	env := platform.BuildScriptEnv("wf-1", "w1", "", &res, map[string]string{"item": "t1", "priority": "low"})
 	assert.Equal(t, "wf-1", env["RAYMOND_WORKFLOW_ID"])
-	assert.Equal(t, "some result", env["RAYMOND_RESULT"])
+	assert.Equal(t, "some result", env["RAYMOND_INPUT"])
 	assert.Equal(t, "t1", env["item"])
 	assert.Equal(t, "low", env["priority"])
 }
@@ -353,17 +353,17 @@ echo "AGENT_ID=$RAYMOND_AGENT_ID"
 	assert.Contains(t, result.Stdout, "AGENT_ID=worker_7")
 }
 
-func TestRunScriptShReceivesRaymondResult(t *testing.T) {
+func TestRunScriptShReceivesRaymondInput(t *testing.T) {
 	skipUnix(t)
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", `#!/bin/bash
-echo "RESULT=$RAYMOND_RESULT"
+echo "INPUT=$RAYMOND_INPUT"
 `)
 	res := "child task completed"
 	env := platform.BuildScriptEnv("wf-1", "main", "", &res, nil)
 	result, err := platform.RunScript(context.Background(), script, 0, env, "")
 	require.NoError(t, err)
-	assert.Contains(t, result.Stdout, "RESULT=child task completed")
+	assert.Contains(t, result.Stdout, "INPUT=child task completed")
 }
 
 func TestRunScriptShReceivesForkAttributes(t *testing.T) {

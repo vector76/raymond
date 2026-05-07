@@ -142,8 +142,8 @@ func TestScriptExecutor_YamlScope_EnvVars(t *testing.T) {
 	if capturedEnv["RAYMOND_AGENT_ID"] != "agent-A" {
 		t.Errorf("RAYMOND_AGENT_ID = %q, want agent-A", capturedEnv["RAYMOND_AGENT_ID"])
 	}
-	if capturedEnv["RAYMOND_RESULT"] != "prev-result" {
-		t.Errorf("RAYMOND_RESULT = %q, want prev-result", capturedEnv["RAYMOND_RESULT"])
+	if capturedEnv["RAYMOND_INPUT"] != "prev-result" {
+		t.Errorf("RAYMOND_INPUT = %q, want prev-result", capturedEnv["RAYMOND_INPUT"])
 	}
 }
 

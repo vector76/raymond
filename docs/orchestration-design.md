@@ -163,7 +163,7 @@ When a called child task completes:
    summary of what was accomplished
 2. The orchestrator extracts this result from the child's final output
 3. Resumes the parent context with `--resume`
-4. Injects the result into the return state's prompt via `{{result}}` template
+4. Injects the result into the return state's prompt via `{{input}}` template
 
 The parent context never sees the messy iterations - just like a caller never
 sees a function's internal variables, only the return value.

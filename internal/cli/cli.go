@@ -322,7 +322,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	f.BoolVar(&noDebug, "no-debug", false, "disable debug observer")
 	f.BoolVar(&noWait, "no-wait", false, "don't wait for usage limit reset; pause and exit immediately")
-	f.StringVar(&input, "input", "", "initial {{result}} value passed to the first state")
+	f.StringVar(&input, "input", "", "initial {{input}} value passed to the first state")
 	f.StringVar(&resume, "resume", "", "resume workflow by ID")
 	f.BoolVar(&list, "list", false, "list all workflow state files")
 	f.StringVar(&statusID, "status", "", "show status of workflow by ID")

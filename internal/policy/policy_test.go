@@ -940,7 +940,7 @@ func TestMultiForkWorkflowAllAllowed(t *testing.T) {
 func TestGetImplicitTransitionWithInputAttribute(t *testing.T) {
 	p := &policy.Policy{
 		AllowedTransitions: []map[string]string{
-			{"tag": "goto", "target": "NEXT.md", "input": "{{result}}"},
+			{"tag": "goto", "target": "NEXT.md", "input": "{{input}}"},
 		},
 	}
 	assert.True(t, policy.CanUseImplicitTransition(p))
@@ -949,7 +949,7 @@ func TestGetImplicitTransitionWithInputAttribute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "goto", tr.Tag)
 	assert.Equal(t, "NEXT.md", tr.Target)
-	assert.Equal(t, map[string]string{"input": "{{result}}"}, tr.Attributes)
+	assert.Equal(t, map[string]string{"input": "{{input}}"}, tr.Attributes)
 }
 
 // TestGetImplicitTransitionWithStaticInputAttribute verifies that a static

@@ -232,10 +232,10 @@ func TestMarkdownExecutor_WorkflowIDSubstitutedInImplicitInput(t *testing.T) {
 }
 
 // TestMarkdownExecutor_WorkflowIDAndResultBothSubstituted verifies that
-// {{result}} and {{workflow_id}} are both substituted in the same prompt.
+// {{input}} and {{workflow_id}} are both substituted in the same prompt.
 func TestMarkdownExecutor_WorkflowIDAndResultBothSubstituted(t *testing.T) {
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "START.md"), "{{result}} in {{workflow_id}}")
+	write(t, filepath.Join(dir, "START.md"), "{{input}} in {{workflow_id}}")
 	write(t, filepath.Join(dir, "NEXT.md"), "next")
 
 	pending := "the-result"
@@ -274,7 +274,7 @@ func TestMarkdownExecutor_WorkflowIDAndResultBothSubstituted(t *testing.T) {
 }
 
 // TestMarkdownExecutor_WorkflowIDAlwaysSubstituted verifies that {{workflow_id}}
-// is replaced even when no {{result}} placeholder is present.
+// is replaced even when no {{input}} placeholder is present.
 func TestMarkdownExecutor_WorkflowIDAlwaysSubstituted(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "START.md"), "Run workflow {{workflow_id}} now.")

@@ -1,4 +1,4 @@
-The sub-workflow returned: {{result}}
+The sub-workflow returned: {{input}}
 
 Respond with exactly this (nothing else):
 <result>done</result>

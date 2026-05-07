@@ -51,20 +51,20 @@ type based on platform and what exists. See `docs/bash-states.md` for details.
 ## Initial Input (`--input`)
 
 When starting a workflow, you can pass an initial input value that will be
-available to the first state's prompt via the `{{result}}` template variable:
+available to the first state's prompt via the `{{input}}` template variable:
 
 ```bash
 raymond workflow.md --input "hello, there"
 ```
 
 This works exactly like the payload from a `<call>` transition returning a
-`<result>` tag. The first state's prompt can reference `{{result}}` to
+`<result>` tag. The first state's prompt can reference `{{input}}` to
 incorporate this input:
 
 ```markdown
 Process the following input:
 
-{{result}}
+{{input}}
 
 When done, emit <result>done</result>
 ```
@@ -75,7 +75,7 @@ When done, emit <result>done</result>
 - Testing workflows with specific inputs
 
 **Behavior:**
-- If `--input` is not provided, `{{result}}` remains unsubstituted in the first
+- If `--input` is not provided, `{{input}}` remains unsubstituted in the first
   state's prompt (same as any unset template variable)
 - The input value is stored as `pending_result` in the initial agent state
 - After the first state runs, `pending_result` is cleared (same as normal
@@ -164,7 +164,7 @@ Conceptually, a frame contains:
 - **return state**: which prompt file to load next (within the same workflow scope)
 
 At return time, the `<result>...</result>` payload is injected into the return
-state prompt (e.g. via `{{result}}`), but those values are not modeled as part
+state prompt (e.g. via `{{input}}`), but those values are not modeled as part
 of the frame itself.
 
 ### Stack Operations
@@ -227,7 +227,7 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Return stack**: Preserved unchanged.
 - **Session behavior**: Resume the current session (same context), then load
   `FILE.md` from the scope directory.
-- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+- **Optional attribute**: `input="..."` — injects the value as `{{input}}`
   into the target state's prompt. See [The `input` Attribute](#the-input-attribute)
   below.
 
@@ -239,7 +239,7 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Optional attribute**: `cd="/path/to/dir"` — changes the agent's working
   directory for all subsequent state executions. See
   [Working Directory](#working-directory-cd-attribute) below.
-- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+- **Optional attribute**: `input="..."` — injects the value as `{{input}}`
   into the target state's prompt. See [The `input` Attribute](#the-input-attribute)
   below.
 
@@ -248,7 +248,7 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Meaning**: Enter a subroutine-like workflow that will eventually return a
   `<result>...</result>` to the caller.
 - **Required attribute**: `return="NEXT.md"` (the state to continue at after return)
-- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+- **Optional attribute**: `input="..."` — injects the value as `{{input}}`
   into the child state's prompt. See [The `input` Attribute](#the-input-attribute)
   below.
 - **Return stack**: Push a frame for the caller (resume session + `NEXT.md`).
@@ -259,7 +259,7 @@ S5 --result--> (pop) resume caller session and continue at S3
 
 - **Meaning**: Run a stateless/pure evaluation task that returns to the caller.
 - **Required attribute**: `return="NEXT.md"`
-- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+- **Optional attribute**: `input="..."` — injects the value as `{{input}}`
   into the child state's prompt. See [The `input` Attribute](#the-input-attribute)
   below.
 - **Return stack**: Push a frame for the caller (resume session + `NEXT.md`).
@@ -272,7 +272,7 @@ S5 --result--> (pop) resume caller session and continue at S3
 - **Required attribute**: `next="NEXT.md"` (the state the parent continues at)
 - **Optional attribute**: `cd="/path/to/dir"` — sets the worker's working
   directory. See [Working Directory](#working-directory-cd-attribute) below.
-- **Optional attribute**: `input="..."` — injects the value as `{{result}}`
+- **Optional attribute**: `input="..."` — injects the value as `{{input}}`
   into the worker's prompt. See [The `input` Attribute](#the-input-attribute)
   below.
 - **Return stack**:
@@ -293,14 +293,14 @@ available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
   terminate if no caller exists.
 - **Return stack**: Pop one frame if present, otherwise terminate.
 - **Payload**: The raw text between the tags is passed as-is (no summarization by
-  the orchestrator). The return state's prompt receives it via `{{result}}`.
+  the orchestrator). The return state's prompt receives it via `{{input}}`.
 
 ### `<await next="NEXT.md" ...>prompt</await>`
 
 - **Meaning**: Suspend the agent and request human input. The tag content is the
   human-facing prompt — presented to the human via the CLI, HTTP API, or MCP
   elicitation. When input arrives, the agent transitions to `next` with the
-  response available as `{{result}}`.
+  response available as `{{input}}`.
 - **Required attribute**: `next="NEXT.md"` (the state to transition to when
   input arrives)
 - **Optional attribute**: `timeout="24h"` — duration string. If no input arrives
@@ -498,7 +498,7 @@ passed as a template variable or fork attribute.
 ## The `input` Attribute
 
 All transition tags except `<result>` and `<await>` support an optional `input` attribute
-that injects a string as `{{result}}` into the target state's prompt:
+that injects a string as `{{input}}` into the target state's prompt:
 
 ```xml
 <goto input="some data">NEXT.md</goto>
@@ -513,8 +513,8 @@ executes, then cleared after the state runs — the same mechanism used by
 `raymond --input "..."` and by `<result>` return payloads.
 
 **Behavior:**
-- The `input` value is available as `{{result}}` in the target state's prompt
-- If `input` is absent or empty, `{{result}}` remains unsubstituted (same as
+- The `input` value is available as `{{input}}` in the target state's prompt
+- If `input` is absent or empty, `{{input}}` remains unsubstituted (same as
   any unset template variable)
 - The `input` attribute is consumed by the orchestrator and is NOT passed as a
   template variable or fork attribute

@@ -192,14 +192,14 @@ func TestRenderPrompt_MissingKeyLeavesPlaceholder(t *testing.T) {
 	}
 }
 
-func TestRenderPrompt_ResultPlaceholder(t *testing.T) {
-	result := RenderPrompt("Previous result: {{result}}\n\nContinue.", map[string]any{
-		"result": "Task completed successfully",
+func TestRenderPrompt_InputPlaceholder(t *testing.T) {
+	result := RenderPrompt("Previous result: {{input}}\n\nContinue.", map[string]any{
+		"input": "Task completed successfully",
 	})
 	if !strings.Contains(result, "Task completed successfully") {
-		t.Error("should contain result value")
+		t.Error("should contain input value")
 	}
-	if strings.Contains(result, "{{result}}") {
+	if strings.Contains(result, "{{input}}") {
 		t.Error("placeholder should be replaced")
 	}
 }
@@ -1229,7 +1229,7 @@ func TestResolveState_YamlExtensionStrippingDoesNotAffectDirectory(t *testing.T)
 func TestRenderPrompt_YamlScopeRoundTrip(t *testing.T) {
 	yp := makeYaml(t, `states:
   TASK:
-    prompt: "Result: {{result}}\nWorkflow: {{workflow_id}}\nAgent: {{agent_id}}"
+    prompt: "Result: {{input}}\nWorkflow: {{workflow_id}}\nAgent: {{agent_id}}"
 `)
 	body, _, err := LoadPrompt(yp, "TASK.md")
 	if err != nil {
@@ -1237,13 +1237,13 @@ func TestRenderPrompt_YamlScopeRoundTrip(t *testing.T) {
 	}
 
 	rendered := RenderPrompt(body, map[string]any{
-		"result":      "success",
+		"input":       "success",
 		"workflow_id": "wf-123",
 		"agent_id":    "agent-A",
 	})
 
 	if !strings.Contains(rendered, "success") {
-		t.Error("should contain result value")
+		t.Error("should contain input value")
 	}
 	if !strings.Contains(rendered, "wf-123") {
 		t.Error("should contain workflow_id value")
@@ -1251,8 +1251,8 @@ func TestRenderPrompt_YamlScopeRoundTrip(t *testing.T) {
 	if !strings.Contains(rendered, "agent-A") {
 		t.Error("should contain agent_id value")
 	}
-	if strings.Contains(rendered, "{{result}}") {
-		t.Error("{{result}} placeholder should be replaced")
+	if strings.Contains(rendered, "{{input}}") {
+		t.Error("{{input}} placeholder should be replaced")
 	}
 	if strings.Contains(rendered, "{{workflow_id}}") {
 		t.Error("{{workflow_id}} placeholder should be replaced")

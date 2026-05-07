@@ -277,7 +277,7 @@ func TestStoryWorkflow(t *testing.T) {
 
 // TestCallReturnWorkflow verifies the call/return pattern: MAIN calls RESEARCH
 // (which returns a result payload), then SUMMARIZE receives the payload via
-// {{result}} substitution and terminates.
+// {{input}} substitution and terminates.
 func TestCallReturnWorkflow(t *testing.T) {
 	skipIfNoClaude(t)
 
@@ -325,7 +325,7 @@ func TestZIPScopeLLMWorkflow(t *testing.T) {
 
 // TestCallWorkflowRoundTrip verifies the call-workflow round trip: the caller
 // emits <call-workflow> to invoke a sub-workflow, which returns a result, and
-// the caller resumes at the return state with {{result}} populated.
+// the caller resumes at the return state with {{input}} populated.
 func TestCallWorkflowRoundTrip(t *testing.T) {
 	skipIfNoClaude(t)
 
@@ -407,7 +407,7 @@ func TestCallWorkflowZipExplicitEntry(t *testing.T) {
 	startContent := fmt.Sprintf("<call-workflow return=\"2_DONE.md\">%s/OTHER_ENTRY</call-workflow>", tmpZipPath)
 	err = os.WriteFile(filepath.Join(callerDir, "1_START.md"), []byte(startContent), 0644)
 	require.NoError(t, err)
-	err = os.WriteFile(filepath.Join(callerDir, "2_DONE.md"), []byte("Result received: {{result}}"), 0644)
+	err = os.WriteFile(filepath.Join(callerDir, "2_DONE.md"), []byte("Result received: {{input}}"), 0644)
 	require.NoError(t, err)
 
 	completed, err := runWorkflow(t, callerDir, "1_START.md", 10.0)

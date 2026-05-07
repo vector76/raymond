@@ -315,7 +315,7 @@ commit message after implementing code).
 
 **Context:** Preserved. All prior conversation history is visible.
 
-**Optional `input`:** Pass data to the target state via `{{result}}`:
+**Optional `input`:** Pass data to the target state via `{{input}}`:
 
 ```
 <goto input="3 issues found">REVIEW.md</goto>
@@ -341,7 +341,7 @@ agent's working directory:
 <reset cd="/repo/worktree-feature">IMPLEMENT.md</reset>
 ```
 
-**Optional `input`:** Pass data to the target state via `{{result}}`:
+**Optional `input`:** Pass data to the target state via `{{input}}`:
 
 ```
 <reset input="phase 2">IMPLEMENT.md</reset>
@@ -367,7 +367,7 @@ parent's context.
 **Context:** Child branches from caller. Caller's context is preserved and
 resumed when the child returns.
 
-**Optional `input`:** Pass initial data to the child state via `{{result}}`:
+**Optional `input`:** Pass initial data to the child state via `{{input}}`:
 
 ```
 <call return="SUMMARIZE.md" input="focus on security">RESEARCH.md</call>
@@ -387,7 +387,7 @@ context beyond what's in its own prompt.
 
 **Context:** Child starts fresh. Caller's context is preserved and resumed.
 
-**Optional `input`:** Pass data to the child state via `{{result}}`:
+**Optional `input`:** Pass data to the child state via `{{input}}`:
 
 ```
 <function return="NEXT.md" input="test output: 3 failures">EVALUATE.md</function>
@@ -411,7 +411,7 @@ are consumed by the orchestrator and are not passed as template variables.
 <fork next="CONTINUE.md" cd="/repo/worktree-a" task="refactor">WORKER.md</fork>
 ```
 
-**Optional `input`:** Pass initial data to the worker via `{{result}}`:
+**Optional `input`:** Pass initial data to the worker via `{{input}}`:
 
 ```
 <fork next="CONTINUE.md" item="issue-123" input="high priority">WORKER.md</fork>
@@ -429,13 +429,13 @@ or terminates the agent if there's no caller.
 <result>Analysis complete: found 3 issues</result>
 ```
 
-The payload text is passed as-is to the return state via `{{result}}`.
+The payload text is passed as-is to the return state via `{{input}}`.
 
 ### `<await next="NEXT" ...>prompt</await>` — Request Human Input
 
 Suspends the agent and requests human input. The text inside the tag is the
 human-facing prompt — what the human sees and responds to. When input arrives,
-the agent transitions to `NEXT` with the response available as `{{result}}`.
+the agent transitions to `NEXT` with the response available as `{{input}}`.
 
 ```markdown
 <await next="HANDLE_DECISION.md" timeout="48h" timeout_next="ESCALATE.md">
@@ -467,7 +467,7 @@ context the human needs to make their decision. Text before the tag is internal
 reasoning visible in logs but not shown to the human.
 
 **Timeout handling:** When a timeout elapses, the agent transitions to
-`timeout_next` with `{{result}}` empty. Use this for escalation, fallback, or
+`timeout_next` with `{{input}}` empty. Use this for escalation, fallback, or
 cleanup:
 
 ```markdown
@@ -540,24 +540,24 @@ message needs to see what was implemented.
 Prompts support `{{variable}}` placeholders that the orchestrator substitutes
 before sending to Claude Code.
 
-### `{{result}}` — Return Values and Input
+### `{{input}}` — Return Values and Input
 
-`{{result}}` is set when a state receives data from any of these sources:
+`{{input}}` is set when a state receives data from any of these sources:
 
 - A `<call>` or `<function>` child returning via `<result>`
 - The `input` attribute on any transition tag (`<goto>`, `<reset>`, `<call>`,
   `<function>`, `<fork>`)
-- The `--input` CLI flag (sets `{{result}}` for the first state)
+- The `--input` CLI flag (sets `{{input}}` for the first state)
 
 ```markdown
 The research findings:
 
-{{result}}
+{{input}}
 
 Write a summary based on these findings.
 ```
 
-The `--input` CLI flag sets `{{result}}` for the first state:
+The `--input` CLI flag sets `{{input}}` for the first state:
 
 ```bash
 raymond workflow.md --input "hello, there"
@@ -774,7 +774,7 @@ allowed_transitions:
 ---
 Given the following test output, is the task complete?
 
-{{result}}
+{{input}}
 
 Respond with <result>YES</result> or <result>NO</result>
 ```
@@ -883,7 +883,7 @@ reading the raw documents.
 allowed_transitions:
   - { tag: result }
 ---
-The reviewer's decision: {{result}}
+The reviewer's decision: {{input}}
 
 Execute the decision and produce a final report.
 ```
@@ -926,7 +926,7 @@ allowed_transitions:
 ---
 The user uploaded a résumé. Their notes:
 
-{{result}}
+{{input}}
 
 Read the file at `{{task_folder}}/inputs/{{input_id}}/resume.pdf`,
 summarize the candidate's experience in 3 bullet points, and emit:

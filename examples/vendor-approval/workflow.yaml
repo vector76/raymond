@@ -6,6 +6,6 @@ description: >
 input:
   mode: required
   label: Vendor name
-  description: The vendor to evaluate (the first state receives this as {{result}}).
+  description: The vendor to evaluate (the first state receives this as {{input}}).
 default_budget: 5.0
 requires_human_input: auto

@@ -77,7 +77,7 @@ func (e *MarkdownExecutor) Execute(
 	// Build template variables.
 	variables := make(map[string]any)
 	if agent.PendingResult != nil {
-		variables["result"] = *agent.PendingResult
+		variables["input"] = *agent.PendingResult
 	}
 	if agent.PendingInputID != "" {
 		variables["input_id"] = agent.PendingInputID
@@ -359,7 +359,7 @@ func (e *MarkdownExecutor) parseAndValidate(
 		if implicitErr != nil {
 			return nil, nil, false, implicitErr
 		}
-		// Render the "input" attribute as a template so that {{result}} and
+		// Render the "input" attribute as a template so that {{input}} and
 		// fork attributes are substituted before the transition is dispatched.
 		if input, ok := implicit.Attributes["input"]; ok && input != "" {
 			rendered := prompts.RenderPrompt(input, variables)

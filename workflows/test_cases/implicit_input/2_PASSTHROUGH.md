@@ -1,9 +1,9 @@
 ---
 allowed_transitions:
-  - { tag: goto, target: 3_DONE.md, input: "{{result}}" }
+  - { tag: goto, target: 3_DONE.md, input: "{{input}}" }
 ---
 Your task is to repeat exactly the following text without any modification:
 
-{{result}}
+{{input}}
 
 Do not add any commentary. Output the text above and nothing else.

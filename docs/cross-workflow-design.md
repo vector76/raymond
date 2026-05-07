@@ -224,13 +224,13 @@ Blocking invocation of a sub-workflow. The current agent transitions its scope
 into the sub-workflow — it runs the sub-workflow's states directly, within the
 same agent thread. When `<result>` is emitted from within the sub-workflow, the
 agent's scope is restored to the caller via the stack frame, and the result
-payload is injected as `{{result}}` into `NEXT.md`. No new agent entry is
+payload is injected as `{{input}}` into `NEXT.md`. No new agent entry is
 created.
 
 **Attributes:**
 - `return` (required): State in the **caller's** scope to resume after the
   sub-workflow completes.
-- `input` (optional): String injected as `{{result}}` into the sub-workflow's
+- `input` (optional): String injected as `{{input}}` into the sub-workflow's
   entry state, equivalent to `raymond --input "..."`.
 - `cd` attribute: **Not permitted — a dispatch-time error.** See
   [Session Constraints on `call-workflow`](#session-constraints-on-call-workflow).
@@ -253,7 +253,7 @@ emitted. No new agent entry is created.
 
 **Attributes:**
 - `return` (required): State in the caller's scope to resume after completion.
-- `input` (optional): String injected as `{{result}}` into the sub-workflow's
+- `input` (optional): String injected as `{{input}}` into the sub-workflow's
   entry state.
 - `cd` (optional): Working directory for the sub-workflow's agents. If
   omitted, inherits the caller's `cwd`.
@@ -278,7 +278,7 @@ calling agent to observe or receive it.
 **Attributes:**
 - `next` (optional when `<goto>` is present in the same output; see
   [Multi-tag Outputs](#multi-tag-outputs)).
-- `input` (optional): String injected as `{{result}}` into the spawned
+- `input` (optional): String injected as `{{input}}` into the spawned
   workflow's entry state.
 - `cd` (optional): Working directory for the spawned workflow. If omitted,
   inherits the caller's `cwd`.
@@ -306,7 +306,7 @@ the transition fires, the caller's context is gone. The agent simply continues
 as if it had been launched directly in the target workflow.
 
 **Attributes:**
-- `input` (optional): String injected as `{{result}}` into the target
+- `input` (optional): String injected as `{{input}}` into the target
   workflow's entry state, equivalent to `raymond --input "..."`. Same
   semantics as the `input` attribute on the other cross-workflow tags.
 - `cd` (optional): Changes the agent's working directory (`cwd`) to this
@@ -377,7 +377,7 @@ own directory.
 
 ## The `input` Attribute
 
-The `input` attribute on all four tags injects a string as `{{result}}` into
+The `input` attribute on all four tags injects a string as `{{input}}` into
 the sub-workflow's entry state. This is semantically identical to running:
 
 ```bash
@@ -392,7 +392,7 @@ exactly as `--input` and the normal `<result>` return mechanism work.
 - Pass a file path the sub-workflow should process.
 - Pass a task ID or configuration string.
 - Pass data from the calling agent's prior result: an LLM state that received
-  `{{result}}` in its prompt can include that content directly as the `input`
+  `{{input}}` in its prompt can include that content directly as the `input`
   attribute value. A script state can similarly construct the tag dynamically
   with shell variable expansion.
 
@@ -663,7 +663,7 @@ The beads have been created. Now invoke the implementation workflow:
 allowed_transitions:
   - { tag: result }
 ---
-Implementation complete. Result: {{result}}
+Implementation complete. Result: {{input}}
 
 <result>pipeline complete</result>
 ```

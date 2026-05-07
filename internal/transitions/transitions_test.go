@@ -1550,7 +1550,7 @@ func TestApplyTransitionCallWorkflowInputTemplateRendered(t *testing.T) {
 		Target: childDir,
 		Attributes: map[string]string{
 			"return": "NEXT.md",
-			"input":  "Process: {{result}}",
+			"input":  "Process: {{input}}",
 		},
 	}
 	wfState := &wfstate.WorkflowState{}
@@ -2273,7 +2273,7 @@ func TestWithRenderedInputSubstitutesWorkflowIDAndResult(t *testing.T) {
 		Target: childDir,
 		Attributes: map[string]string{
 			"return": "NEXT.md",
-			"input":  "{{result}}/{{workflow_id}}",
+			"input":  "{{input}}/{{workflow_id}}",
 		},
 	}
 	wfState := &wfstate.WorkflowState{WorkflowID: "wf-99"}

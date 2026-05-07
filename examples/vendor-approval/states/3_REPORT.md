@@ -2,7 +2,7 @@
 allowed_transitions:
   - { tag: result }
 ---
-The human reviewer has provided their decision: {{result}}
+The human reviewer has provided their decision: {{input}}
 
 Read `vendor_research.md` for the full research context.
 

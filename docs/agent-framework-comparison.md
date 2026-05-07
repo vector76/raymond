@@ -248,7 +248,7 @@ which is why the "flavor" feels similar:
 | `<promise>COMPLETE</promise>`        | `<result>`                             |
 | `maxIterations` loop                 | `<goto SELF>` self-loop                |
 | `completionSignal`                   | `<result>` terminating a self-loop     |
-| `{{KEY}}` placeholder substitution   | `{{result}}` and prompt-arg injection  |
+| `{{KEY}}` placeholder substitution   | `{{input}}` and prompt-arg injection  |
 | `resumeSession` (Claude JSONL)       | `--resume <run_id>` (workflow state)   |
 | `interactive()` TUI                  | (no equivalent — Raymond is unattended)|
 | `<fork>`-shaped parallelism          | `Promise.all([run(...), run(...)])`    |

@@ -3446,13 +3446,13 @@ func runResolvedInputTest(t *testing.T, deliver orchestrator.AwaitInput) (string
 
 func TestDaemonModeAwaitResolvedInputRecorded_EmptyUploads(t *testing.T) {
 	// Delivering with empty uploads writes a ResolvedInput with empty
-	// UploadedFiles. The {{result}} ({{PendingResult}}) plumbing is
+	// UploadedFiles. The {{input}} ({{PendingResult}}) plumbing is
 	// unchanged.
 	pendingResult, ws := runResolvedInputTest(t, orchestrator.AwaitInput{
 		Response: "user-typed-value",
 	})
 
-	// PendingResult ({{result}}) plumbing unchanged.
+	// PendingResult ({{input}}) plumbing unchanged.
 	assert.Equal(t, "user-typed-value", pendingResult)
 
 	require.Len(t, ws.ResolvedInputs, 1, "expected exactly one ResolvedInput emitted on the daemon-mode resume")
@@ -3605,7 +3605,7 @@ func setupAwaitingState(t *testing.T, agents []wfstate.AgentState) (stateDir, wo
 
 func TestResumeWithInputDeliversToAwaitAgent(t *testing.T) {
 	// Resume with --input delivers input to the active awaiting agent,
-	// agent transitions to next state with PendingResult ({{result}}) set,
+	// agent transitions to next state with PendingResult ({{input}}) set,
 	// and AgentAwaitResumed event is emitted.
 	dir, wfID := setupAwaitingState(t, []wfstate.AgentState{
 		{
@@ -3650,7 +3650,7 @@ func TestResumeWithInputDeliversToAwaitAgent(t *testing.T) {
 	assert.Equal(t, "main", resumeEvents[0].AgentID)
 	assert.Equal(t, "inp_main_123", resumeEvents[0].InputID)
 
-	// PendingResult was delivered as {{result}}.
+	// PendingResult was delivered as {{input}}.
 	assert.Equal(t, "user-response", capturedPendingResult)
 }
 

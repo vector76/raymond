@@ -64,7 +64,7 @@ states:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `prompt` | string | yes | The prompt text sent to the model (supports `{{result}}` and other template variables — see [authoring-guide.md](authoring-guide.md)) |
+| `prompt` | string | yes | The prompt text sent to the model (supports `{{input}}` and other template variables — see [authoring-guide.md](authoring-guide.md)) |
 | `allowed_transitions` | list | no | Constrains which transitions the model may use |
 | `model` | string | no | Model override (`opus`, `sonnet`, `haiku`) |
 | `effort` | string | no | Extended thinking level (`low`, `medium`, `high`) |
@@ -221,7 +221,7 @@ still usable via direct CLI invocation.
 | `id` | string | (none) | Unique identifier. Required for daemon discovery; used as the workflow ID in the HTTP API and MCP tools. |
 | `name` | string | `""` | Human-readable display name. |
 | `description` | string | `""` | Description shown in tool/endpoint documentation. |
-| `input` | object | `{mode: optional}` | Describes the single optional string passed to the first state as `{{result}}`. See [Input block](#input-block). |
+| `input` | object | `{mode: optional}` | Describes the single optional string passed to the first state as `{{input}}`. See [Input block](#input-block). |
 | `default_budget` | float64 | `0` | Default USD budget when callers don't specify one. |
 | `working_directory` | string | `""` | Default working directory for runs. |
 | `environment` | map[string]string | `nil` | Environment variables for runs. Supports `${VAR}` interpolation. |
@@ -230,7 +230,7 @@ still usable via direct CLI invocation.
 ### Input block
 
 A workflow receives at most one string of input at launch time, substituted
-into the first state as `{{result}}`. The `input` block describes that string
+into the first state as `{{input}}`. The `input` block describes that string
 for UI and MCP surfaces, and lets the daemon enforce whether input is
 permitted or required.
 
@@ -257,13 +257,13 @@ default_budget: 5.0
 input:
   mode: required
   label: Vendor name
-  description: The vendor to evaluate (passed to the first state as {{result}}).
+  description: The vendor to evaluate (passed to the first state as {{input}}).
 requires_human_input: auto
 
 states:
   1_START:
     prompt: |
-      Research the vendor "{{result}}" and prepare an analysis covering
+      Research the vendor "{{input}}" and prepare an analysis covering
       price, support SLA, and references.
 
       STOP after writing your analysis. Do not make a recommendation yet.
@@ -275,7 +275,7 @@ states:
 
   DECISION:
     prompt: |
-      The reviewer's decision: {{result}}
+      The reviewer's decision: {{input}}
 
       Execute the decision and produce a final report in vendor_report.md.
     allowed_transitions:
@@ -311,7 +311,7 @@ A workflow that reviews code, optionally fixes issues, then reports results:
 states:
   1_START:
     prompt: |
-      You are a code reviewer. Analyze the code provided in {{result}}.
+      You are a code reviewer. Analyze the code provided in {{input}}.
       If you find issues, transition to FIX. Otherwise, transition to REPORT.
     allowed_transitions:
       - tag: goto

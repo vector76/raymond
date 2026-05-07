@@ -182,7 +182,7 @@ Do not include any other protocol tags.
 ```markdown
 You received research results from your assistant:
 
-{{result}}
+{{input}}
 
 Write a one-paragraph summary of the research to workflows/test_cases/test_outputs/research-summary.md.
 
@@ -192,7 +192,7 @@ Then respond with:
 <result>Summary written to workflows/test_cases/test_outputs/research-summary.md</result>
 ```
 
-Note: The `{{result}}` placeholder is replaced with the content from the
+Note: The `{{input}}` placeholder is replaced with the content from the
 child's `<result>` tag. This is how the parent receives the child's return value.
 
 **Test procedure:**
@@ -200,7 +200,7 @@ child's `<result>` tag. This is how the parent receives the child's return value
 2. Start workflow: `raymond workflows/test_cases/MAIN.md`
 3. Verify it calls RESEARCH.md as a child workflow
 4. Verify RESEARCH.md returns facts about purple elephants via `<result>` tag
-5. Verify parent resumes at SUMMARIZE.md with `{{result}}` populated
+5. Verify parent resumes at SUMMARIZE.md with `{{input}}` populated
 6. Verify research-summary.md contains a summary referencing the fictional facts
 
 **Success criteria:** Child context is isolated, only result returns to parent.

@@ -43,7 +43,7 @@ func makeWorkflow(t *testing.T) (scopeDir string, wfState *wfstate.WorkflowState
 	dir := t.TempDir()
 
 	// Create prompt file
-	write(t, filepath.Join(dir, "START.md"), "Test prompt for {{result}}")
+	write(t, filepath.Join(dir, "START.md"), "Test prompt for {{input}}")
 	// Create a target state file
 	write(t, filepath.Join(dir, "NEXT.md"), "Next prompt")
 
@@ -1826,15 +1826,15 @@ func TestMarkdownExecutor_BudgetExceededTerminatesWorkflow(t *testing.T) {
 // --------------------------------------------------------------------------
 
 // TestMarkdownExecutor_ImplicitTransitionInputRenderedFromResult verifies that
-// when an implicit transition declares input: "{{result}}", the executor
-// renders {{result}} to the agent's current PendingResult value before the
+// when an implicit transition declares input: "{{input}}", the executor
+// renders {{input}} to the agent's current PendingResult value before the
 // transition is dispatched. The LLM emits no tag — the transition fires
 // implicitly because there is only one allowed transition.
 func TestMarkdownExecutor_ImplicitTransitionInputRenderedFromResult(t *testing.T) {
 	dir := t.TempDir()
 
-	// START.md has a single allowed transition with input: "{{result}}".
-	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"{{result}}\" }\n---\n"
+	// START.md has a single allowed transition with input: "{{input}}".
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"{{input}}\" }\n---\n"
 	write(t, filepath.Join(dir, "START.md"), frontmatter+"Process the result.")
 	write(t, filepath.Join(dir, "NEXT.md"), "next prompt")
 

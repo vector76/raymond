@@ -139,7 +139,7 @@ Raymond does not have a general state-to-state context propagation
 mechanism for arbitrary values. If a workflow needs `input_id` in a state
 deeper than one transition past the await, the author plumbs it forward
 explicitly through the transition `input` attribute, in the same manner
-that `{{result}}` is carried today (for example, by passing a structured
+that `{{input}}` is carried today (for example, by passing a structured
 payload that bundles the response value with the input id, or by writing
 the input id to a file in the task folder during the immediately-following
 state and reading it back later). Most workflows will not need this — the

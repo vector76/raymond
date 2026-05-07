@@ -251,7 +251,7 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 
 // withRenderedInput returns transition unchanged when the "input" attribute is
 // absent or empty. Otherwise it renders the input value through
-// prompts.RenderPrompt with variables built from pendingResult (as "result")
+// prompts.RenderPrompt with variables built from pendingResult (as "input")
 // and all forkAttributes entries — the same pattern used in
 // MarkdownExecutor.Execute. A shallow copy of the attributes map is made only
 // when rendering actually changes the value.
@@ -270,7 +270,7 @@ func withRenderedInput(
 
 	variables := make(map[string]any)
 	if pendingResult != nil {
-		variables["result"] = *pendingResult
+		variables["input"] = *pendingResult
 	}
 	for k, v := range forkAttributes {
 		variables[k] = v

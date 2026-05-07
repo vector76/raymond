@@ -1,6 +1,6 @@
 You received research results from your assistant:
 
-{{result}}
+{{input}}
 
 Write a one-paragraph summary of the research to workflows/test_cases/test_outputs/research-summary.md.
 

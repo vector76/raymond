@@ -4,4 +4,4 @@ allowed_transitions:
 ---
 Emit the following result tag with the text below as its payload:
 
-<result>{{result}}</result>
+<result>{{input}}</result>

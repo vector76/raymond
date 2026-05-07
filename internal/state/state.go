@@ -284,7 +284,7 @@ func ListWorkflows(stateDir string) ([]string, error) {
 // single "main" agent positioned at initialState.
 //
 // If initialInput is non-nil, the agent's PendingResult is set to its value
-// (even if the value is an empty string), making it available as {{result}}
+// (even if the value is an empty string), making it available as {{input}}
 // when the first state's prompt is rendered.
 func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD float64, initialInput *string, scopeURL string, launchParams ...*LaunchParams) *WorkflowState {
 	agent := AgentState{

@@ -83,7 +83,7 @@ func (tm *TimeoutMonitor) CheckNow() {
 		if pi.TimeoutNext != "" {
 			// Timeout with a next state: deliver an empty response so the
 			// orchestrator transitions the agent to TimeoutNext with
-			// {{result}} empty.
+			// {{input}} empty.
 			delivery = TimeoutDelivery{
 				RunID:       pi.RunID,
 				AgentID:     pi.AgentID,

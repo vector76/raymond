@@ -5,7 +5,7 @@ allowed_transitions:
 You are a vendor evaluation analyst. Research the following vendor and produce
 a structured summary.
 
-Vendor details: {{result}}
+Vendor details: {{input}}
 
 Your research summary must include:
 1. **Company overview** — what the vendor does, size, and market position.

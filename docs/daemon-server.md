@@ -393,7 +393,7 @@ A background goroutine periodically checks the pending input registry for
 expired inputs. When a timeout elapses:
 
 - If `timeout_next` is set: the agent receives an empty response and
-  transitions to the timeout state (the `{{result}}` variable is empty in the
+  transitions to the timeout state (the `{{input}}` variable is empty in the
   timeout state's prompt).
 - If `timeout_next` is not set: the agent fails with an error.
 

@@ -67,7 +67,19 @@ else
     done
     echo " ready."
 
-    # Launch workers — skip any already alive via run recovery
+    # ----------------------------------------------------------------------
+    # TODO (Stage 11): remove this autostart loop.
+    #
+    # The v1 design (workflows/approach.md "Manual launch and self-bootstrapping")
+    # launches workers manually from the raymond UI — one work.yaml run per
+    # worker, with the worker's name as input. Workers self-bootstrap their own
+    # folder, .env, and clone in their START state. No autostart, no curl POST.
+    #
+    # The loop below predates that decision. As long as work.yaml does not yet
+    # exist in $WORKFLOWS_DIR, this code is harmless (hits the else branch).
+    # Once Stage 6 produces work.yaml, this loop will conflict with manual
+    # launch — strip it then (Stage 11 in PLAN.md).
+    # ----------------------------------------------------------------------
     if [ -f "$WORKFLOWS_DIR/work.yaml" ]; then
         echo "Checking for active worker runs ..."
         EXISTING=$(curl -s "http://localhost:$RAYMOND_PORT/runs" 2>/dev/null || echo "[]")

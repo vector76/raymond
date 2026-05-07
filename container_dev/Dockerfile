@@ -87,8 +87,8 @@ RUN chmod +x /entrypoint.sh \
 
 # Development workflows — live in container_dev/workflows/, baked into image so
 # an image rebuild refreshes them without touching the persistent volume.
-# This directory is empty until Stage 6; the COPY is added then.
-RUN mkdir -p /opt/raymond/workflows && chown -R 2000:2000 /opt/raymond
+COPY workflows/ /opt/raymond/workflows/
+RUN chown -R 2000:2000 /opt/raymond
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["tail", "-f", "/dev/null"]

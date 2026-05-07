@@ -1,4 +1,5 @@
-This is the explicit zip entry point.
-
-Respond with exactly this (nothing else):
-<result>explicit_zip_entry_used</result>
+---
+allowed_transitions:
+  - { tag: result, payload: explicit_zip_entry_used }
+---
+What is the capital of France? Answer in one word.

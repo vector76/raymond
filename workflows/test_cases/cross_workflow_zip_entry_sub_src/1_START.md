@@ -1,4 +1,5 @@
-This is the default entry point.
-
-Respond with exactly this (nothing else):
-<result>default_entry_used</result>
+---
+allowed_transitions:
+  - { tag: result, payload: default_entry_used }
+---
+What is 2 + 2? Answer in one word.

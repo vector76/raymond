@@ -169,9 +169,10 @@ func TestZIPScopeScriptWorkflow(t *testing.T) {
 		t.Skip("ZIP scope script test uses .sh files; skipping on Windows")
 	}
 
-	tc := testCasesDir()
-	zipPath := filepath.Join(t.TempDir(), "test_cases.zip")
-	require.NoError(t, buildZipFromDir(tc, zipPath))
+	zipPath := filepath.Join(t.TempDir(), "script_zip.zip")
+	require.NoError(t, buildZipFromFiles(testCasesDir(), zipPath, []string{
+		"SCRIPT_RESULT.sh",
+	}))
 
 	completed, err := runWorkflow(t, zipPath, "SCRIPT_RESULT.sh", 10.0)
 	require.NoError(t, err)
@@ -311,8 +312,12 @@ func TestZIPScopeLLMWorkflow(t *testing.T) {
 	tc := testCasesDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(tc, "test_outputs"), 0o755))
 
-	zipPath := filepath.Join(t.TempDir(), "test_cases.zip")
-	require.NoError(t, buildZipFromDir(tc, zipPath))
+	zipPath := filepath.Join(t.TempDir(), "story_zip.zip")
+	require.NoError(t, buildZipFromFiles(tc, zipPath, []string{
+		"1_START.md",
+		"CONFLICT.md",
+		"RESOLUTION.md",
+	}))
 
 	completed, err := runWorkflow(t, zipPath, "1_START.md", 10.0)
 	require.NoError(t, err)
@@ -394,7 +399,24 @@ func TestFunctionWorkflowExplicitEntry(t *testing.T) {
 
 // TestCallWorkflowZipExplicitEntry verifies that call-workflow can target a
 // non-default entry state inside a ZIP-scoped sub-workflow.
+//
+// The sub-workflow's two entry-point fixtures (1_START.md, OTHER_ENTRY.md) use
+// the implicit-transition mechanism: their frontmatter declares a single
+// allowed `result` tag with a fixed, distinct payload. The LLM is asked an
+// unrelated trivial question and emits no transition tag; the markdown
+// executor synthesizes the result from frontmatter. This makes the test
+// deterministic with respect to LLM phrasing while still exercising the
+// markdown executor codepath inside a zip scope.
+//
+// The caller side is fully script-driven for determinism: 1_START.sh emits
+// the `<call-workflow>` tag, and 2_DONE.sh re-emits RAYMOND_RESULT as its own
+// <result>. The workflow's terminal payload therefore equals whatever the
+// sub-workflow returned, which lets us assert the explicit entry (OTHER_ENTRY)
+// ran rather than the default (1_START).
 func TestCallWorkflowZipExplicitEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses .sh caller/return states; skipping on Windows")
+	}
 	skipIfNoClaude(t)
 
 	// Build zip from the source fixture directory.
@@ -402,17 +424,24 @@ func TestCallWorkflowZipExplicitEntry(t *testing.T) {
 	err := buildZipFromDir(filepath.Join(testCasesDir(), "cross_workflow_zip_entry_sub_src"), tmpZipPath)
 	require.NoError(t, err)
 
-	// Build a caller dir with a 1_START.md that calls into the zip at OTHER_ENTRY.
+	// Build a caller dir with script states wrapping a markdown sub-workflow:
+	// 1_START.sh emits a <call-workflow> tag pointing into the zip at
+	// OTHER_ENTRY; 2_DONE.sh re-emits the returned RAYMOND_RESULT so we can
+	// observe which sub-workflow entry actually ran.
 	callerDir := t.TempDir()
-	startContent := fmt.Sprintf("<call-workflow return=\"2_DONE.md\">%s/OTHER_ENTRY</call-workflow>", tmpZipPath)
-	err = os.WriteFile(filepath.Join(callerDir, "1_START.md"), []byte(startContent), 0644)
-	require.NoError(t, err)
-	err = os.WriteFile(filepath.Join(callerDir, "2_DONE.md"), []byte("Result received: {{input}}"), 0644)
-	require.NoError(t, err)
+	startScript := fmt.Sprintf(
+		"#!/bin/bash\necho '<call-workflow return=\"2_DONE.sh\">%s/OTHER_ENTRY</call-workflow>'\n",
+		tmpZipPath,
+	)
+	require.NoError(t, os.WriteFile(filepath.Join(callerDir, "1_START.sh"), []byte(startScript), 0o755))
+	doneScript := "#!/bin/bash\necho \"<result>$RAYMOND_RESULT</result>\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(callerDir, "2_DONE.sh"), []byte(doneScript), 0o755))
 
-	completed, err := runWorkflow(t, callerDir, "1_START.md", 10.0)
+	completed, result, err := runWorkflowCapture(t, callerDir, "1_START.sh", 10.0, nil)
 	require.NoError(t, err)
 	assert.True(t, completed, "call-workflow zip explicit entry should complete cleanly")
+	assert.Equal(t, "explicit_zip_entry_used", result,
+		"explicit entry OTHER_ENTRY should have run (not default 1_START)")
 }
 
 // --------------------------------------------------------------------------
@@ -603,4 +632,36 @@ func buildZipFromDir(src, dst string) error {
 		_, err = w.Write(data)
 		return err
 	})
+}
+
+// buildZipFromFiles creates a flat ZIP archive at dst containing exactly the
+// listed top-level files from src. This is used by ZIP-scope tests that need
+// to zip a curated subset of workflows/test_cases/ — the directory contains a
+// mix of top-level state files and subdirectories that the zipscope layout
+// validator (correctly) rejects, so tests that conceptually want only a few
+// flat states must spell them out.
+func buildZipFromFiles(src, dst string, files []string) error {
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	for _, name := range files {
+		data, err := os.ReadFile(filepath.Join(src, name))
+		if err != nil {
+			return err
+		}
+		w, err := zw.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+	}
+	return nil
 }

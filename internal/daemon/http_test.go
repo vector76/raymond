@@ -131,10 +131,12 @@ func TestCreateRun(t *testing.T) {
 }
 
 func TestResolveBudget(t *testing.T) {
-	// Precedence: request > manifest > server > hardcoded constant.
+	// Precedence: request > manifest > server > hardcoded constant
+	// (daemonDefaultBudgetUSD, currently 0 = unlimited).
 	assert.Equal(t, 3.0, ResolveBudget(3.0, 2.0, 1.0))
 	assert.Equal(t, 2.0, ResolveBudget(0, 2.0, 1.0))
 	assert.Equal(t, 1.0, ResolveBudget(0, 0, 1.0))
+	// All levels unset → fall through to the unlimited default.
 	assert.Equal(t, daemonDefaultBudgetUSD, ResolveBudget(0, 0, 0))
 	// Negative values are treated as unset at every level.
 	assert.Equal(t, 2.0, ResolveBudget(-5, 2.0, 1.0))
@@ -299,10 +301,10 @@ func TestCreateRun_AppliesServerDefaultBudgetWhenUnspecified(t *testing.T) {
 
 func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
 	// Workflow has no default_budget and the request omits budget; the daemon
-	// must fall back to daemonDefaultBudgetUSD. Before the fix this landed at
-	// $0.00, which caused the markdown executor's budget-exceeded guard to
-	// synthesize a terminating <result> on the first Claude call, bypassing
-	// the state's ask policy and ending the run immediately.
+	// must fall back to daemonDefaultBudgetUSD (0 = unlimited). The markdown
+	// executor's budget-exceeded guard is gated on BudgetUSD > 0, so a
+	// fall-through default of zero correctly produces an unbounded run rather
+	// than terminating on the first Claude call.
 	scopeDir := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "START.md"),
@@ -345,6 +347,44 @@ func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	assert.Equal(t, daemonDefaultBudgetUSD, ws.BudgetUSD)
+}
+
+func TestCreateRun_PropagatesServerDangerouslySkipPermissions(t *testing.T) {
+	// SetDefaultDangerouslySkipPermissions must reach the run's RunOptions
+	// and be persisted into LaunchParams. Run with both true and false to
+	// confirm the daemon honours the value end-to-end and does not silently
+	// hardcode either direction.
+	for _, dsp := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dsp=%v", dsp), func(t *testing.T) {
+			srv, ts, fake := newTestServer(t)
+			srv.SetDefaultDangerouslySkipPermissions(dsp)
+
+			body := `{"workflow_id": "test-workflow"}`
+			resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+			var cr createRunResponse
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&cr))
+
+			require.Eventually(t, func() bool {
+				return fake.callCount() == 1
+			}, time.Second, 10*time.Millisecond)
+
+			fake.mu.Lock()
+			gotOpts := fake.calls[0].Opts
+			fake.mu.Unlock()
+			assert.Equal(t, dsp, gotOpts.DangerouslySkipPermissions,
+				"server-wide skip-perms must propagate into RunOptions")
+
+			ws, err := wfstate.ReadState(cr.RunID, srv.runManager.stateDir)
+			require.NoError(t, err)
+			require.NotNil(t, ws.LaunchParams)
+			assert.Equal(t, dsp, ws.LaunchParams.DangerouslySkipPermissions,
+				"LaunchParams must record the server-wide skip-perms used at launch")
+		})
+	}
 }
 
 func TestCreateRun_InvalidJSON(t *testing.T) {

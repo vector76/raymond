@@ -192,17 +192,19 @@ func TestValidateConfigBudgetWrongType(t *testing.T) {
 	assert.Contains(t, err.Error(), "expected number")
 }
 
-func TestValidateConfigBudgetNotPositive(t *testing.T) {
+func TestValidateConfigBudgetNegativeNotAllowed(t *testing.T) {
 	_, err := config.ValidateConfig(map[string]any{"budget": float64(-10)}, "config.toml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "budget")
-	assert.Contains(t, err.Error(), "must be positive")
+	assert.Contains(t, err.Error(), "must be non-negative")
 }
 
-func TestValidateConfigBudgetZeroNotAllowed(t *testing.T) {
-	_, err := config.ValidateConfig(map[string]any{"budget": float64(0)}, "config.toml")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "budget")
+func TestValidateConfigBudgetZeroMeansUnlimited(t *testing.T) {
+	// Zero is accepted as the "unlimited" sentinel. The runtime budget
+	// check is skipped entirely when BudgetUSD == 0.
+	result, err := config.ValidateConfig(map[string]any{"budget": float64(0)}, "config.toml")
+	require.NoError(t, err)
+	assert.Equal(t, float64(0), result["budget"])
 }
 
 func TestValidateConfigBudgetIntegerAccepted(t *testing.T) {
@@ -541,14 +543,15 @@ func TestMergeConfigFillsMissingTimeoutFromConfig(t *testing.T) {
 }
 
 func TestMergeConfigBooleanFlagsTrueStaysTrueFromCLI(t *testing.T) {
-	// CLI sets flags to true — config cannot override/disable
+	// CLI explicitly sets flags to true — config cannot override/disable.
+	cliTrue := true
 	args := config.CLIArgs{
-		DangerouslySkipPermissions: true,
+		DangerouslySkipPermissions: &cliTrue,
 		NoDebug:                    true,
 		NoWait:                     true,
 		Verbose:                    true,
 	}
-	// Config also sets them (but that doesn't matter — CLI wins)
+	// Config also sets them (but that doesn't matter — CLI wins).
 	fileConfig := map[string]any{
 		"dangerously_skip_permissions": true,
 		"no_debug":                     true,
@@ -556,14 +559,15 @@ func TestMergeConfigBooleanFlagsTrueStaysTrueFromCLI(t *testing.T) {
 		"verbose":                      true,
 	}
 	result := config.MergeConfig(fileConfig, args)
-	assert.True(t, result.DangerouslySkipPermissions)
+	require.NotNil(t, result.DangerouslySkipPermissions)
+	assert.True(t, *result.DangerouslySkipPermissions)
 	assert.True(t, result.NoDebug)
 	assert.True(t, result.NoWait)
 	assert.True(t, result.Verbose)
 }
 
-func TestMergeConfigBooleanFlagsSetFromConfigWhenCLIIsFalse(t *testing.T) {
-	args := config.CLIArgs{} // all booleans default to false
+func TestMergeConfigBooleanFlagsSetFromConfigWhenCLIUnset(t *testing.T) {
+	args := config.CLIArgs{} // all booleans unset (DSP nil, others false)
 	fileConfig := map[string]any{
 		"dangerously_skip_permissions": true,
 		"no_debug":                     true,
@@ -571,26 +575,55 @@ func TestMergeConfigBooleanFlagsSetFromConfigWhenCLIIsFalse(t *testing.T) {
 		"verbose":                      true,
 	}
 	result := config.MergeConfig(fileConfig, args)
-	assert.True(t, result.DangerouslySkipPermissions)
+	require.NotNil(t, result.DangerouslySkipPermissions)
+	assert.True(t, *result.DangerouslySkipPermissions)
 	assert.True(t, result.NoDebug)
 	assert.True(t, result.NoWait)
 	assert.True(t, result.Verbose)
 }
 
-func TestMergeConfigBooleanFlagsNotDisabledByConfig(t *testing.T) {
-	// Config sets flags to false, CLI is false — stays false
+func TestMergeConfigPlainBooleanFlagsNotDisabledByConfig(t *testing.T) {
+	// For the plain-bool flags (default: false), config-false is a no-op.
+	// Skip-perms is *bool and behaves differently — covered separately.
 	args := config.CLIArgs{}
 	fileConfig := map[string]any{
-		"dangerously_skip_permissions": false,
-		"no_debug":                     false,
-		"no_wait":                      false,
-		"verbose":                      false,
+		"no_debug": false,
+		"no_wait":  false,
+		"verbose":  false,
 	}
 	result := config.MergeConfig(fileConfig, args)
-	assert.False(t, result.DangerouslySkipPermissions)
 	assert.False(t, result.NoDebug)
 	assert.False(t, result.NoWait)
 	assert.False(t, result.Verbose)
+}
+
+func TestMergeConfigDangerouslySkipPermissionsConfigFalseDisables(t *testing.T) {
+	// dangerously_skip_permissions is *bool; config can disable as well as
+	// enable since the global default is true. CLI unset (nil) → config wins.
+	args := config.CLIArgs{}
+	fileConfig := map[string]any{"dangerously_skip_permissions": false}
+	result := config.MergeConfig(fileConfig, args)
+	require.NotNil(t, result.DangerouslySkipPermissions)
+	assert.False(t, *result.DangerouslySkipPermissions)
+}
+
+func TestMergeConfigDangerouslySkipPermissionsCLIFalseOverridesConfigTrue(t *testing.T) {
+	// CLI explicitly false beats config-true.
+	cliFalse := false
+	args := config.CLIArgs{DangerouslySkipPermissions: &cliFalse}
+	fileConfig := map[string]any{"dangerously_skip_permissions": true}
+	result := config.MergeConfig(fileConfig, args)
+	require.NotNil(t, result.DangerouslySkipPermissions)
+	assert.False(t, *result.DangerouslySkipPermissions)
+}
+
+func TestMergeConfigDangerouslySkipPermissionsUnsetEverywhere(t *testing.T) {
+	// CLI nil and config silent → result remains nil so the caller can
+	// apply the global default.
+	args := config.CLIArgs{}
+	fileConfig := map[string]any{}
+	result := config.MergeConfig(fileConfig, args)
+	assert.Nil(t, result.DangerouslySkipPermissions)
 }
 
 func TestMergeConfigCLINameOverridesConfig(t *testing.T) {
@@ -677,8 +710,8 @@ func TestInitConfigCreatesConfigFile(t *testing.T) {
 	require.NoError(t, readErr)
 	s := string(content)
 	assert.Contains(t, s, "[raymond]")
-	assert.Contains(t, s, "# budget = 10.0")
-	assert.Contains(t, s, "# dangerously_skip_permissions = false")
+	assert.Contains(t, s, "# budget = 0")
+	assert.Contains(t, s, "# dangerously_skip_permissions = true")
 	assert.Contains(t, s, `# model = "sonnet"`)
 	assert.Contains(t, s, "# timeout = 600.0")
 	assert.Contains(t, s, "# no_debug = false")
@@ -744,107 +777,6 @@ func TestInitConfigErrorMentionsExistingPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(cf, []byte("[raymond]\n"), 0o644))
 
 	err := config.InitConfig(root)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "config.toml")
-}
-
-// ----------------------------------------------------------------------------
-// InitUnsafeDefaults
-// ----------------------------------------------------------------------------
-
-func TestInitUnsafeDefaultsCreatesConfigFile(t *testing.T) {
-	root := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
-
-	sub := filepath.Join(root, "subdir")
-	require.NoError(t, os.Mkdir(sub, 0o755))
-
-	err := config.InitUnsafeDefaults(sub)
-	require.NoError(t, err)
-
-	cf := filepath.Join(root, ".raymond", "config.toml")
-	_, statErr := os.Stat(cf)
-	require.NoError(t, statErr)
-
-	content, readErr := os.ReadFile(cf)
-	require.NoError(t, readErr)
-	s := string(content)
-	assert.Contains(t, s, "[raymond]")
-	assert.Contains(t, s, "budget = 1000.0")
-	assert.Contains(t, s, "dangerously_skip_permissions = true")
-	assert.Contains(t, s, "# Skip permission prompts (WARNING:")
-}
-
-func TestInitUnsafeDefaultsOtherFieldsRemainCommented(t *testing.T) {
-	root := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
-
-	err := config.InitUnsafeDefaults(root)
-	require.NoError(t, err)
-
-	cf := filepath.Join(root, ".raymond", "config.toml")
-	content, readErr := os.ReadFile(cf)
-	require.NoError(t, readErr)
-	s := string(content)
-	assert.Contains(t, s, `# model = "sonnet"`)
-	assert.Contains(t, s, "# timeout = 600.0")
-	assert.Contains(t, s, "# no_debug = false")
-	assert.Contains(t, s, "# no_wait = false")
-	assert.Contains(t, s, "# verbose = false")
-}
-
-func TestInitUnsafeDefaultsCreatesRaymondDirIfMissing(t *testing.T) {
-	root := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
-
-	err := config.InitUnsafeDefaults(root)
-	require.NoError(t, err)
-
-	rdir := filepath.Join(root, ".raymond")
-	info, statErr := os.Stat(rdir)
-	require.NoError(t, statErr)
-	assert.True(t, info.IsDir())
-}
-
-func TestInitUnsafeDefaultsCreatesAtProjectRoot(t *testing.T) {
-	root := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
-
-	nested := filepath.Join(root, "subdir", "nested")
-	require.NoError(t, os.MkdirAll(nested, 0o755))
-
-	err := config.InitUnsafeDefaults(nested)
-	require.NoError(t, err)
-
-	cf := filepath.Join(root, ".raymond", "config.toml")
-	_, statErr := os.Stat(cf)
-	require.NoError(t, statErr)
-}
-
-func TestInitUnsafeDefaultsRefusesIfConfigExists(t *testing.T) {
-	root := t.TempDir()
-	rdir := filepath.Join(root, ".raymond")
-	require.NoError(t, os.Mkdir(rdir, 0o755))
-	cf := filepath.Join(rdir, "config.toml")
-	require.NoError(t, os.WriteFile(cf, []byte("[raymond]\nbudget = 50.0\n"), 0o644))
-
-	err := config.InitUnsafeDefaults(root)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
-
-	// Original file should be unchanged
-	content, _ := os.ReadFile(cf)
-	assert.Contains(t, string(content), "budget = 50.0")
-}
-
-func TestInitUnsafeDefaultsErrorMentionsExistingPath(t *testing.T) {
-	root := t.TempDir()
-	rdir := filepath.Join(root, ".raymond")
-	require.NoError(t, os.Mkdir(rdir, 0o755))
-	cf := filepath.Join(rdir, "config.toml")
-	require.NoError(t, os.WriteFile(cf, []byte("[raymond]\n"), 0o644))
-
-	err := config.InitUnsafeDefaults(root)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config.toml")
 }

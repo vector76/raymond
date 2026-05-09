@@ -152,6 +152,7 @@ func (rm *RunManager) LaunchRun(
 	input string,
 	budget float64,
 	model string,
+	dangerouslySkipPermissions bool,
 	workDir string,
 	env map[string]string,
 ) (string, error) {
@@ -175,8 +176,9 @@ func (rm *RunManager) LaunchRun(
 	}
 
 	lp := &wfstate.LaunchParams{
-		Model:   model,
-		OnAsk: "pause", // daemon always allows ask
+		DangerouslySkipPermissions: dangerouslySkipPermissions,
+		Model:                      model,
+		OnAsk:                    "pause", // daemon always allows ask
 	}
 
 	ws := wfstate.CreateInitialState(runID, entry.ScopeDir, initialState, budget, inputPtr, "", lp)
@@ -211,10 +213,11 @@ func (rm *RunManager) LaunchRun(
 	rm.mu.Unlock()
 
 	opts := orchestrator.RunOptions{
-		StateDir:     stateDir,
-		DefaultModel: model,
-		Quiet:        true,
-		OnAsk:      "pause",
+		StateDir:                   stateDir,
+		DefaultModel:               model,
+		DangerouslySkipPermissions: dangerouslySkipPermissions,
+		Quiet:                      true,
+		OnAsk:                    "pause",
 		// Match the CLI's default behavior so raw Claude stream output
 		// lands on disk (.raymond/debug/<run_id>/*.jsonl). Without this,
 		// daemon-launched runs produce no artifact for diagnosing what

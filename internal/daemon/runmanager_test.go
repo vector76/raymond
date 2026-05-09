@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -92,7 +93,7 @@ func TestLaunchRun_CreatesRunAndReturnsID(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "hello", 5.0, "sonnet", "", nil)
+	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "hello", 5.0, "sonnet", false, "", nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, runID)
 
@@ -100,6 +101,46 @@ func TestLaunchRun_CreatesRunAndReturnsID(t *testing.T) {
 	// Give the goroutine a moment to start.
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, 1, fake.callCount())
+}
+
+func TestLaunchRun_PropagatesDangerouslySkipPermissions(t *testing.T) {
+	// LaunchRun must thread its dangerouslySkipPermissions argument into
+	// both the orchestrator's RunOptions and the persisted LaunchParams,
+	// so daemon-launched runs honour the same configuration as CLI-launched
+	// ones and a subsequent --resume restores the same value.
+	for _, dsp := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dsp=%v", dsp), func(t *testing.T) {
+			stateDir := ensureStateDir(t)
+			scopeDir := t.TempDir()
+
+			fake := &fakeOrchestrator{}
+			rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", dsp, "", nil)
+			require.NoError(t, err)
+
+			// Wait for the orchestrator to be invoked so RunOptions is captured.
+			require.Eventually(t, func() bool {
+				return fake.callCount() == 1
+			}, time.Second, 10*time.Millisecond)
+
+			fake.mu.Lock()
+			gotOpts := fake.calls[0].Opts
+			fake.mu.Unlock()
+			assert.Equal(t, dsp, gotOpts.DangerouslySkipPermissions,
+				"RunOptions.DangerouslySkipPermissions must mirror the LaunchRun arg")
+
+			ws, err := wfstate.ReadState(runID, stateDir)
+			require.NoError(t, err)
+			require.NotNil(t, ws.LaunchParams)
+			assert.Equal(t, dsp, ws.LaunchParams.DangerouslySkipPermissions,
+				"persisted LaunchParams must record the launch-time skip-perms value")
+		})
+	}
 }
 
 func TestGetRun_ReturnsCorrectStatusAfterLaunch(t *testing.T) {
@@ -113,7 +154,7 @@ func TestGetRun_ReturnsCorrectStatusAfterLaunch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "input", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "input", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	info, ok := rm.GetRun(runID)
@@ -144,7 +185,7 @@ func TestCancelRun_CancelsRunningWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	// Let the goroutine start.
@@ -185,7 +226,7 @@ func TestCancelRun_AskingRun(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	// Wait until the run reaches asking.
@@ -236,7 +277,7 @@ func TestCancelRun_AlreadyTerminal(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	// Wait for the run to reach terminal state.
@@ -269,7 +310,7 @@ func TestDeleteRun_RemovesTerminalRun(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	_, err = rm.WaitForCompletion(runID, 5*time.Second)
@@ -334,7 +375,7 @@ func TestDeleteRun_RejectsActiveRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	time.Sleep(50 * time.Millisecond)
@@ -387,7 +428,7 @@ func TestAgentAskStarted_FlipsRunToAsking(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	<-started
@@ -444,7 +485,7 @@ func TestStateStarted_FlipsRunBackToRunning(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	<-asked
@@ -503,7 +544,7 @@ func TestWaitForCompletion_BlocksUntilDone(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "go", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "go", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	info, err := rm.WaitForCompletion(runID, 5*time.Second)
@@ -524,7 +565,7 @@ func TestWaitForCompletion_Timeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	_, err = rm.WaitForCompletion(runID, 100*time.Millisecond)
@@ -583,9 +624,9 @@ func TestConcurrentRuns_DoNotInterfere(t *testing.T) {
 	entry := testWorkflowEntry(t, scopeDir)
 	ctx := context.Background()
 
-	id1, err := rm.LaunchRun(ctx, entry, "run1", 5.0, "", "", nil)
+	id1, err := rm.LaunchRun(ctx, entry, "run1", 5.0, "", false, "", nil)
 	require.NoError(t, err)
-	id2, err := rm.LaunchRun(ctx, entry, "run2", 5.0, "", "", nil)
+	id2, err := rm.LaunchRun(ctx, entry, "run2", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, id1, id2, "run IDs must be unique")
@@ -626,9 +667,9 @@ func TestListRuns_ReturnsAllRuns(t *testing.T) {
 	entry := testWorkflowEntry(t, scopeDir)
 	ctx := context.Background()
 
-	id1, err := rm.LaunchRun(ctx, entry, "", 5.0, "", "", nil)
+	id1, err := rm.LaunchRun(ctx, entry, "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
-	id2, err := rm.LaunchRun(ctx, entry, "", 5.0, "", "", nil)
+	id2, err := rm.LaunchRun(ctx, entry, "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	// Wait for both to finish.
@@ -766,7 +807,7 @@ func TestLaunchRun_FailedOrchestrator(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	info, err := rm.WaitForCompletion(runID, 5*time.Second)
@@ -804,7 +845,7 @@ func TestLaunchRun_AskingStatus(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	info, err := rm.WaitForCompletion(runID, 5*time.Second)
@@ -868,7 +909,7 @@ func TestLaunchRun_EventsUpdateAgentInfo(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	info, err := rm.WaitForCompletion(runID, 5*time.Second)
@@ -932,7 +973,7 @@ states:
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runID, err := rm.LaunchRun(ctx, *entry, "hello", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(ctx, *entry, "hello", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, runID)
 }
@@ -1092,7 +1133,7 @@ func TestSubscribeRunEvents_DeliversLiveEventsAfterReplay(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	// Wait for the bus to be wired up before subscribing. SubscribeRunEvents
@@ -1174,7 +1215,7 @@ func TestSubscribeRunEvents_ReplaysPastEventsAfterCompletion(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	_, err = rm.WaitForCompletion(runID, 5*time.Second)
@@ -1222,7 +1263,7 @@ func TestSubscribeRunEvents_RingBufferEvictsOldestEvents(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	_, err = rm.WaitForCompletion(runID, 5*time.Second)
@@ -1268,7 +1309,7 @@ func TestSubscribeRunEvents_MultipleSubscribersIndependent(t *testing.T) {
 	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
 
-	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", "", nil)
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
 	require.NoError(t, err)
 
 	_, err = rm.WaitForCompletion(runID, 5*time.Second)

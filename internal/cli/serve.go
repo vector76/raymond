@@ -30,15 +30,16 @@ func (a *cliOrch) RunAllAgents(ctx context.Context, workflowID string, opts orch
 // newServeCmd builds the "serve" subcommand that starts the Raymond daemon.
 func (c *CLI) newServeCmd() *cobra.Command {
 	var (
-		roots        []string
-		launches     []string
-		port         int
-		mcp          bool
-		noHTTP       bool
-		workdir      string
-		maxFileSize  int64
-		maxTotalSize int64
-		maxFileCount int
+		roots                      []string
+		launches                   []string
+		port                       int
+		mcp                        bool
+		noHTTP                     bool
+		workdir                    string
+		maxFileSize                int64
+		maxTotalSize               int64
+		maxFileCount               int
+		dangerouslySkipPermissions bool
 	)
 
 	cmd := &cobra.Command{
@@ -153,11 +154,13 @@ API or web UI.`,
 			}
 			rm.SetPendingRegistry(pr)
 
-			// Extract the configured budget. Validated values are always
-			// positive floats (see config.ValidateConfig); any other shape
-			// or absence means "unset" and we leave the server default at
-			// 0, which lets the resolver fall back to the hardcoded
-			// constant.
+			// Extract the configured budget. config.ValidateConfig accepts
+			// non-negative floats (with 0 meaning unlimited). We forward only
+			// strictly positive caps as the server default; absent, malformed,
+			// or zero values leave configBudget at 0, which the daemon's
+			// ResolveBudget ladder treats as "unset → fall through" and which
+			// terminates at daemonDefaultBudgetUSD (also 0 = unlimited). So
+			// "unspecified anywhere" naturally yields an unlimited run.
 			var configBudget float64
 			if v, ok := raymondCfg["budget"]; ok {
 				if f, ok := v.(float64); ok && f > 0 {
@@ -165,10 +168,23 @@ API or web UI.`,
 				}
 			}
 
+			// Resolve the effective dangerously_skip_permissions for the
+			// server: CLI flag wins; else config file value if present;
+			// else the global default (true). Mirrors the CLI launcher's
+			// resolution so daemon-launched runs honour the same config.
+			effectiveServerDSP := defaultDangerouslySkipPermissions
+			if v, ok := raymondCfg["dangerously_skip_permissions"].(bool); ok {
+				effectiveServerDSP = v
+			}
+			if cmd.Flags().Changed("dangerously-skip-permissions") {
+				effectiveServerDSP = dangerouslySkipPermissions
+			}
+
 			if !merged.NoHTTP {
 				srv := daemon.NewServer(reg, rm, merged.Port)
 				srv.SetPendingRegistry(pr)
 				srv.SetDefaultBudget(configBudget)
+				srv.SetDefaultDangerouslySkipPermissions(effectiveServerDSP)
 				srv.SetDefaultUploadCaps(merged.MaxFileSize, merged.MaxTotalSize, merged.MaxFileCount)
 				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
 				go func() {
@@ -188,6 +204,7 @@ API or web UI.`,
 				mcpSrv := daemon.NewMCPServer(reg, rm)
 				mcpSrv.SetPendingRegistry(pr)
 				mcpSrv.SetDefaultBudget(configBudget)
+				mcpSrv.SetDefaultDangerouslySkipPermissions(effectiveServerDSP)
 				if !merged.NoHTTP {
 					mcpSrv.SetBaseURL(fmt.Sprintf("http://localhost:%d", merged.Port))
 				}
@@ -200,7 +217,7 @@ API or web UI.`,
 				fmt.Fprintf(logOut, "MCP transport enabled on stdio\n")
 			}
 
-			if err := launchStartupRuns(cmd.Context(), reg, rm, configBudget, launches, logOut); err != nil {
+			if err := launchStartupRuns(cmd.Context(), reg, rm, configBudget, effectiveServerDSP, launches, logOut); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "startup launches aborted: %v\n", err)
 			}
 
@@ -228,6 +245,8 @@ API or web UI.`,
 	f.Int64Var(&maxFileSize, "max-file-size", 0, "default maximum bytes per uploaded file when an <ask> declares no per-file cap (0 means use [raymond.serve].max_file_size or daemon default)")
 	f.Int64Var(&maxTotalSize, "max-total-size", 0, "default maximum total bytes per upload submission when an <ask> declares no total cap (0 means use [raymond.serve].max_total_size or daemon default)")
 	f.IntVar(&maxFileCount, "max-file-count", 0, "default maximum file count per upload submission when an <ask> declares no count cap (0 means use [raymond.serve].max_file_count or daemon default)")
+	f.BoolVar(&dangerouslySkipPermissions, "dangerously-skip-permissions", defaultDangerouslySkipPermissions,
+		"skip Claude permission prompts for daemon-launched runs; pass --dangerously-skip-permissions=false to require permissions")
 
 	return cmd
 }

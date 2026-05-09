@@ -205,8 +205,10 @@ invocations.
 **Assumption:** Cost budget limits are specified in the state file when the
 workflow is started, e.g., `{"budget_usd": 10.00}`. The orchestrator tracks
 `total_cost_usd` in the state file (accumulated from all Claude Code invocations)
-and overrides transitions when the budget is exceeded. Default budget is $10.00
-if not specified.
+and overrides transitions when the budget is exceeded. The default is `0.00`,
+which means unlimited (the executor's budget check is skipped entirely when
+`budget_usd == 0`). To impose a cap, pass `--budget N` on the CLI or set
+`budget = N` in `.raymond/config.toml`.
 
 **Rationale:** Keeps limits external to the prompt files (which don't change
 between runs). Allows the same prompt to be used with different budgets.

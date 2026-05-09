@@ -245,7 +245,9 @@ func (e *MarkdownExecutor) Execute(
 		// reliably possible. The chosen approach keeps the logic simple and
 		// predictable: every invocation runs to completion, then the budget is
 		// evaluated.
-		if wfState.TotalCostUSD > wfState.BudgetUSD {
+		//
+		// BudgetUSD == 0 means unlimited and skips this check entirely.
+		if wfState.BudgetUSD > 0 && wfState.TotalCostUSD > wfState.BudgetUSD {
 			budgetExceeded := parsing.Transition{
 				Tag:     "result",
 				Payload: fmt.Sprintf("Workflow terminated: budget exceeded ($%.4f > $%.4f)", wfState.TotalCostUSD, wfState.BudgetUSD),

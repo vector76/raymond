@@ -22,6 +22,7 @@ raymond serve --root <dir> [--root <dir2> ...] [flags]
 | `--no-http` | bool | false | Disable the HTTP server entirely. Requires `--mcp` — at least one transport must be active. |
 | `--workdir` | string | (none) | Default working directory for workflow runs. |
 | `--launch` | string slice | (none) | Workflow id to dispatch automatically once transports are up. May be repeated. The id must be discoverable via `--root`. |
+| `--dangerously-skip-permissions` | bool | true | Server-wide skip-permissions value applied to every run launched via the HTTP API, MCP, or `--launch`. Pass `--dangerously-skip-permissions=false` to require permissions instead. Mirrors the `[raymond].dangerously_skip_permissions` config key with the same precedence (CLI > config > default). |
 
 ### Examples
 

@@ -27,10 +27,10 @@ var staticFiles embed.FS
 
 // daemonDefaultBudgetUSD is the ultimate fallback budget when no other
 // source (request, workflow manifest, or server-wide config) supplies one.
-// Matches the CLI default (internal/cli/cli.go defaultBudgetUSD) so
-// daemon-launched runs don't halt immediately on the zero-budget guard
-// in the markdown executor.
-const daemonDefaultBudgetUSD = 10.0
+// Matches the CLI default (internal/cli/cli.go defaultBudgetUSD): zero
+// means unlimited, so an unconfigured daemon launches runs without a cap.
+// The markdown executor's zero-budget guard is gated on BudgetUSD > 0.
+const daemonDefaultBudgetUSD = 0.0
 
 // Upload-cap fallbacks applied when neither the ask nor the server
 // configuration supplies a value. These are intentionally conservative; an
@@ -62,7 +62,9 @@ func ValidateInputMode(mode, input string) error {
 // ResolveBudget picks the effective budget for a run, walking the
 // precedence ladder: explicit request budget > workflow manifest
 // default_budget > server-wide config budget > hardcoded constant. Zero
-// and negative values are treated as "unset" at every level.
+// and negative values are treated as "unset" at every level. When every
+// level falls through, the result is daemonDefaultBudgetUSD (0 = unlimited),
+// matching the CLI's behaviour when no budget is specified.
 func ResolveBudget(reqBudget, manifestBudget, serverBudget float64) float64 {
 	if reqBudget > 0 {
 		return reqBudget
@@ -135,6 +137,13 @@ type Server struct {
 	// default_budget. Configured by SetDefaultBudget; defaults to 0
 	// (meaning the handler falls through to daemonDefaultBudgetUSD).
 	defaultBudget float64
+	// defaultDangerouslySkipPermissions is the server-wide skip-permissions
+	// value applied to every run launched through this server. Configured
+	// by SetDefaultDangerouslySkipPermissions; defaults to false (Go zero)
+	// when unset. The `ray serve` command resolves the effective value
+	// (CLI flag > config file > global default-true) and pushes it via the
+	// setter, so production daemons honour the same configuration as the CLI.
+	defaultDangerouslySkipPermissions bool
 	// Server-wide upload caps applied when an <ask> does not declare its
 	// own. Configured by SetDefaultUploadCaps; zero values mean "unset" and
 	// let resolveUploadCaps fall through to the daemonDefaultMax* constants.
@@ -190,6 +199,14 @@ func (s *Server) SetPendingRegistry(pr *PendingRegistry) {
 // after loading .raymond/config.toml.
 func (s *Server) SetDefaultBudget(budget float64) {
 	s.defaultBudget = budget
+}
+
+// SetDefaultDangerouslySkipPermissions configures the server-wide skip-perms
+// value applied to every run this server launches. Typically called by the
+// serve command after resolving the effective value from CLI flag and
+// config file (CLI > config > global default).
+func (s *Server) SetDefaultDangerouslySkipPermissions(v bool) {
+	s.defaultDangerouslySkipPermissions = v
 }
 
 // SetDefaultUploadCaps configures the server-wide fallback upload caps used
@@ -405,6 +422,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		req.Input,
 		budget,
 		req.Model,
+		s.defaultDangerouslySkipPermissions,
 		req.WorkingDirectory,
 		req.Environment,
 	)

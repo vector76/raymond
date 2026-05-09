@@ -107,26 +107,30 @@ detects we've exceeded the cost budget, it can override and terminate the workfl
 instead.
 
 **Cost Budget Limits:** The orchestrator tracks the cumulative cost of all Claude Code
-invocations across a workflow. By default, workflows have a $10.00 budget limit (configurable
-via the `--budget` CLI flag when starting a workflow). When the total cost exceeds the budget,
-the orchestrator overrides any transition the AI requests and terminates the workflow cleanly.
-This provides a safety mechanism to prevent runaway costs from infinite loops or unexpectedly
+invocations across a workflow. By default, workflows have **no budget limit** (matching the
+`--timeout 0` convention for "no cap"). To impose one, pass `--budget 10` on the CLI or set
+`budget = 10` in `.raymond/config.toml`. When the total cost exceeds a positive budget, the
+orchestrator overrides any transition the AI requests and terminates the workflow cleanly,
+providing a safety mechanism against runaway costs from infinite loops or unexpectedly
 expensive operations. The cost is extracted from Claude Code's JSON response (`total_cost_usd`
-field) and accumulated in the workflow state file.
+field) and accumulated in the workflow state file. When `BudgetUSD == 0` the budget check is
+skipped entirely.
 
-**Permission Mode:** By default, Raymond invokes Claude with `--permission-mode acceptEdits`,
-which allows Claude to edit files without prompting but still requires permission for certain
-dangerous operations. For fully autonomous workflows that need to run without any permission
-prompts, you can use the `--dangerously-skip-permissions` flag:
+**Permission Mode:** By default, Raymond invokes Claude with `--dangerously-skip-permissions`,
+letting it execute any tool call without prompting. This is the right default for batch
+workflows and CI/CD where human interaction is not possible, and it is also the right default
+for typical interactive use because raymond workflows orchestrate Claude on tasks the user
+already authorised by launching the workflow. To require permissions instead — Claude's
+`--permission-mode acceptEdits` mode, where edits are auto-accepted but other dangerous
+operations still prompt — pass `--dangerously-skip-permissions=false` on the CLI or set
+`dangerously_skip_permissions = false` in `.raymond/config.toml`. Both the `raymond`
+launcher and `raymond serve` (HTTP API + MCP) honour the same flag and config key with the
+same precedence (CLI > config > default-true), so daemon-launched runs match the CLI's
+behaviour.
 
-```bash
-raymond workflow.md --dangerously-skip-permissions
-```
-
-⚠️ **WARNING:** This flag passes `--dangerously-skip-permissions` to Claude, which allows it
-to execute any action without prompting for permission. Only use this for trusted workflows
-in controlled environments. This flag is intended for batch processing and CI/CD scenarios
-where human interaction is not possible.
+⚠️ **WARNING:** With the default behaviour, Claude can execute any action — including running
+arbitrary shell commands and modifying files — without prompting. Only run raymond workflows
+you trust, in environments where unbounded tool calls are acceptable.
 
 ## Context Management: The Call Stack Parallel
 

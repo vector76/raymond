@@ -73,9 +73,14 @@ type MCPServer struct {
 	pendingRegistry *PendingRegistry
 	hasElicitation  bool
 	// defaultBudget mirrors Server.defaultBudget: a server-wide budget
-	// fallback applied when the raymond_launch tool call and the workflow
+	// fallback applied when the raymond_run tool call and the workflow
 	// manifest both leave it unset.
 	defaultBudget float64
+
+	// defaultDangerouslySkipPermissions mirrors
+	// Server.defaultDangerouslySkipPermissions: the server-wide skip-perms
+	// value applied to every run launched via the MCP raymond_run tool.
+	defaultDangerouslySkipPermissions bool
 
 	// baseURL is the absolute prefix used to construct file-content URLs
 	// embedded in display-only elicitation prompts. Empty means "no URL
@@ -112,6 +117,13 @@ func (s *MCPServer) SetPendingRegistry(pr *PendingRegistry) {
 // tool calls. See Server.SetDefaultBudget for semantics.
 func (s *MCPServer) SetDefaultBudget(budget float64) {
 	s.defaultBudget = budget
+}
+
+// SetDefaultDangerouslySkipPermissions configures the server-wide skip-perms
+// value applied to runs launched via raymond_run. See
+// Server.SetDefaultDangerouslySkipPermissions for semantics.
+func (s *MCPServer) SetDefaultDangerouslySkipPermissions(v bool) {
+	s.defaultDangerouslySkipPermissions = v
 }
 
 // SetBaseURL configures the absolute URL prefix used when embedding
@@ -623,6 +635,7 @@ func (s *MCPServer) toolRun(ctx context.Context, args json.RawMessage) mcpToolRe
 		params.Input,
 		budget,
 		params.Model,
+		s.defaultDangerouslySkipPermissions,
 		params.WorkingDirectory,
 		params.Environment,
 	)

@@ -59,9 +59,10 @@ backend:
 Auto-approve is not a workflow-author option. Whether Copilot runs in
 auto-approve mode is controlled at the raymond-invocation level by the
 existing `--dangerously-skip-permissions` flag (and the corresponding
-config-file setting), exactly as on the Claude backend. When that flag
-is set, raymond passes `--yolo` to Copilot; otherwise it does not.
-Workflows do not opt themselves into or out of `--yolo`.
+config-file setting), exactly as on the Claude backend. The flag
+defaults to true, so raymond passes `--yolo` to Copilot by default;
+pass `--dangerously-skip-permissions=false` to opt out. Workflows do
+not opt themselves into or out of `--yolo`.
 
 ### 2.2 Defaults
 
@@ -77,12 +78,11 @@ The exact failure mode (silently abort vs. fail-the-state) is
 implementation-defined by the CLI and has historically shifted between
 versions. Running without `--yolo` is therefore likely to produce poor
 or surprising outcomes for any workflow whose tools would normally
-request approval, but it is fully legal: raymond does not refuse to
-launch in that configuration, mirroring the Claude backend's stance
-where `--dangerously-skip-permissions` is also optional. Workflow
-authors and operators who want reliable execution under `-p` should
-pass `--dangerously-skip-permissions` (or set it in the raymond config
-file).
+request approval. Because raymond defaults to passing
+`--dangerously-skip-permissions` (and therefore `--yolo` on Copilot),
+this is the right default for most users; opting out with
+`--dangerously-skip-permissions=false` is a deliberate choice that
+trades reliability under `-p` for stricter permission gating.
 
 ### 2.3 Model field
 

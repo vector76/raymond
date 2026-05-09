@@ -14,7 +14,7 @@
 //	  "workflow_id": "workflow_2024-01-15_12-30-45-123456",
 //	  "scope_dir":   "workflows/myapp",
 //	  "total_cost_usd": 0.0,
-//	  "budget_usd":     10.0,
+//	  "budget_usd":     0.0,
 //	  "agents": [
 //	    {
 //	      "id":            "main",
@@ -130,9 +130,12 @@ type LaunchParams struct {
 
 // WorkflowState is the top-level structure persisted for each workflow.
 type WorkflowState struct {
-	WorkflowID     string          `json:"workflow_id"`
-	ScopeDir       string          `json:"scope_dir"`
-	TotalCostUSD   float64         `json:"total_cost_usd"`
+	WorkflowID   string  `json:"workflow_id"`
+	ScopeDir     string  `json:"scope_dir"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	// BudgetUSD is the cost cap in USD enforced by the markdown executor.
+	// Zero means unlimited: the budget check is skipped entirely when
+	// BudgetUSD == 0. Set at workflow creation time and never mutated.
 	BudgetUSD      float64         `json:"budget_usd"`
 	StartedAt      time.Time       `json:"started_at"` // wall-clock launch time, recovered after restarts
 	Agents         []AgentState    `json:"agents"`

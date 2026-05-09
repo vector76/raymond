@@ -12,10 +12,13 @@ import (
 // launchStartupRuns fans out auto-launches for `ray serve --launch <id>`.
 // It mirrors the `POST /runs` handler with a body of {"workflow_id": id} and
 // no other fields: lookup, input-mode validation, budget resolution, launch.
+// serverDSP is the server-wide DangerouslySkipPermissions value (already
+// resolved by the serve command), passed through to LaunchRun so startup
+// runs honour the same configuration as HTTP- or MCP-launched runs.
 //
 // Errors per id are logged to logOut and swallowed; the helper itself only
 // returns an error for impossible internal conditions (nil reg or nil rm).
-func launchStartupRuns(ctx context.Context, reg *daemon.Registry, rm *daemon.RunManager, serverBudget float64, ids []string, logOut io.Writer) error {
+func launchStartupRuns(ctx context.Context, reg *daemon.Registry, rm *daemon.RunManager, serverBudget float64, serverDSP bool, ids []string, logOut io.Writer) error {
 	if reg == nil {
 		return fmt.Errorf("launchStartupRuns: nil registry")
 	}
@@ -55,7 +58,7 @@ func launchStartupRuns(ctx context.Context, reg *daemon.Registry, rm *daemon.Run
 
 			budget := daemon.ResolveBudget(0, entry.DefaultBudget, serverBudget)
 
-			runID, err := rm.LaunchRun(ctx, *entry, "", budget, "", "", nil)
+			runID, err := rm.LaunchRun(ctx, *entry, "", budget, "", serverDSP, "", nil)
 			if err != nil {
 				logf("Failed to launch %s: %v\n", id, err)
 				return

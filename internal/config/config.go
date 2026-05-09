@@ -8,12 +8,12 @@
 //
 // Known config keys:
 //
-//	budget                      float64  positive
-//	dangerously_skip_permissions bool
+//	budget                      float64  non-negative (0 = unlimited)
+//	dangerously_skip_permissions bool    (default: true)
 //	effort                      string   "low"|"medium"|"high"
 //	model                       string   "opus"|"sonnet"|"haiku"
 //	name                        string   any value
-//	timeout                     float64  non-negative
+//	timeout                     float64  non-negative (0 = no timeout)
 //	no_debug                    bool
 //	no_wait                     bool
 //	verbose                     bool
@@ -41,7 +41,7 @@ func (e *ConfigError) Error() string { return e.msg }
 // Pointer fields are nil when the flag was not provided on the command line.
 type CLIArgs struct {
 	Budget                     *float64 // nil if not specified
-	DangerouslySkipPermissions bool
+	DangerouslySkipPermissions *bool    // nil if not explicitly specified on CLI
 	Effort                     string   // "" if not specified
 	Model                      string   // "" if not specified
 	Name                       string   // "" if not specified
@@ -176,7 +176,8 @@ func ValidateConfig(config map[string]any, configFile string) (map[string]any, e
 		}
 	}
 
-	// budget: must be a number and positive.
+	// budget: must be a number and non-negative. Zero means unlimited
+	// (the runtime budget check is skipped entirely when BudgetUSD == 0).
 	if v, ok := validated["budget"]; ok {
 		f, err := toFloat64(v)
 		if err != nil {
@@ -184,9 +185,9 @@ func ValidateConfig(config map[string]any, configFile string) (map[string]any, e
 				"Invalid value for 'budget' in %s: expected number, got %T", configFile, v,
 			)}
 		}
-		if f <= 0 {
+		if f < 0 {
 			return nil, &ConfigError{msg: fmt.Sprintf(
-				"Invalid value for 'budget' in %s: must be positive, got %v", configFile, f,
+				"Invalid value for 'budget' in %s: must be non-negative (0 = unlimited), got %v", configFile, f,
 			)}
 		}
 		validated["budget"] = f
@@ -202,7 +203,7 @@ func ValidateConfig(config map[string]any, configFile string) (map[string]any, e
 		}
 		if f < 0 {
 			return nil, &ConfigError{msg: fmt.Sprintf(
-				"Invalid value for 'timeout' in %s: must be non-negative, got %v", configFile, f,
+				"Invalid value for 'timeout' in %s: must be non-negative (0 = no timeout), got %v", configFile, f,
 			)}
 		}
 		validated["timeout"] = f
@@ -341,10 +342,13 @@ func LoadConfig(cwd string) (map[string]any, error) {
 // precedence. Returns the merged CLIArgs.
 //
 // Rules:
-//   - Pointer fields (Budget, Timeout): config fills in only when nil.
+//   - Pointer fields (Budget, Timeout, DangerouslySkipPermissions): config
+//     fills in only when nil. The caller resolves nil to a hardcoded default.
 //   - String fields (Model, Effort): config fills in only when "".
-//   - Boolean flags: config can only enable (set to true), not disable.
-//     If the CLI flag is already true, the config value is ignored.
+//   - Plain boolean flags (NoDebug, NoWait, Verbose): config can only enable
+//     (set to true), not disable. If the CLI flag is already true, the config
+//     value is ignored. These flags default to false; "config-false" is
+//     therefore meaningless and we don't honor it.
 func MergeConfig(fileConfig map[string]any, args CLIArgs) CLIArgs {
 	result := args
 
@@ -389,12 +393,17 @@ func MergeConfig(fileConfig map[string]any, args CLIArgs) CLIArgs {
 	}
 	result.Name = strings.TrimSpace(name)
 
-	// Boolean flags: config can only enable, not disable.
-	if !result.DangerouslySkipPermissions {
-		if v, _ := fileConfig["dangerously_skip_permissions"].(bool); v {
-			result.DangerouslySkipPermissions = true
+	// DangerouslySkipPermissions: CLI > config > default. The CLI layer
+	// passes a non-nil pointer when the user explicitly set the flag (in
+	// either direction); only fill from config when the CLI was silent.
+	// Config can disable as well as enable, since the global default is true.
+	if result.DangerouslySkipPermissions == nil {
+		if v, ok := fileConfig["dangerously_skip_permissions"].(bool); ok {
+			result.DangerouslySkipPermissions = &v
 		}
 	}
+
+	// Plain boolean flags: config can only enable, not disable.
 	if !result.NoDebug {
 		if v, _ := fileConfig["no_debug"].(bool); v {
 			result.NoDebug = true
@@ -765,81 +774,14 @@ const configTemplate = `# Raymond configuration file
 # Uncomment and modify values as needed
 
 [raymond]
-# Cost budget limit in USD (default: 10.0)
-# budget = 10.0
+# Cost budget limit in USD (default: 0, 0=unlimited)
+# budget = 0
 
-# Skip permission prompts (WARNING: allows any action without prompting) (default: false)
-# dangerously_skip_permissions = false
-
-# Default model: "opus", "sonnet", or "haiku" (default: None)
-# model = "sonnet"
-
-# Default effort level: "low", "medium", or "high" (default: None)
-# effort = "medium"
-
-# Workflow name (default: None)
-# name = ""
-
-# Timeout per Claude Code invocation in seconds (default: 600, 0=none)
-# timeout = 600.0
-
-# Disable debug mode (default: false, meaning debug mode is enabled by default)
-# no_debug = false
-
-# Don't wait for usage limit reset; pause and exit immediately (default: false)
-# no_wait = false
-
-# Enable verbose logging (default: false)
-# verbose = false
-
-# Task folder location pattern; supports {{workflow_id}} and {{agent_id}} (default: .raymond/tasks/{{workflow_id}}/{{agent_id}})
-# task_folder_pattern = ".raymond/tasks/{{workflow_id}}/{{agent_id}}"
-
-[raymond.serve]
-# Defaults for the 'ray serve' subcommand.
-# CLI flags override these values, except --root which is APPENDED to the
-# value here. Relative paths resolve against this config file's directory.
-
-# Workflow root directory scanned for workflow.yaml manifests (default: none)
-# root = "workflows"
-
-# HTTP server port (default: 8080)
-# port = 8080
-
-# Enable MCP transport over stdio (default: false)
-# mcp = false
-
-# Disable HTTP server; requires mcp = true (default: false)
-# no_http = false
-
-# Default working directory for workflow runs (default: process cwd)
-# workdir = ""
-
-# Maximum bytes per uploaded file when an <ask> does not declare its own
-# limit (default: 10485760, i.e. 10 MiB)
-# max_file_size = 10485760
-
-# Maximum total bytes per upload submission when an <ask> does not declare
-# its own limit (default: 104857600, i.e. 100 MiB)
-# max_total_size = 104857600
-
-# Maximum number of files per upload submission when an <ask> does not
-# declare its own limit (default: 10)
-# max_file_count = 10
-`
-
-// configUnsafeDefaultsTemplate is structurally identical to configTemplate but
-// with budget and dangerously_skip_permissions uncommented and set to unsafe defaults.
-const configUnsafeDefaultsTemplate = `# Raymond configuration file
-# Command-line arguments override values in this file
-# Uncomment and modify values as needed
-
-[raymond]
-# Cost budget limit in USD (default: 10.0)
-budget = 1000.0
-
-# Skip permission prompts (WARNING: allows any action without prompting) (default: false)
-dangerously_skip_permissions = true
+# Skip permission prompts (default: true). Set to false to use
+# --permission-mode=acceptEdits instead. With true, raymond passes
+# --dangerously-skip-permissions to Claude, which lets it run any tool
+# call without prompting — only safe in trusted/sandboxed environments.
+# dangerously_skip_permissions = true
 
 # Default model: "opus", "sonnet", or "haiku" (default: None)
 # model = "sonnet"
@@ -939,43 +881,3 @@ func InitConfig(cwd string) error {
 	return nil
 }
 
-// InitUnsafeDefaults creates .raymond/config.toml at the project root with
-// budget set to 1000.0 and dangerously_skip_permissions set to true.
-// Returns a ConfigError if the file already exists or cannot be created.
-//
-// If cwd is empty, the process working directory is used.
-func InitUnsafeDefaults(cwd string) error {
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return &ConfigError{msg: fmt.Sprintf("failed to get working directory: %v", err)}
-		}
-	}
-
-	// Refuse if config already exists.
-	existing := FindConfigFile(cwd)
-	if existing != "" {
-		return &ConfigError{msg: fmt.Sprintf(
-			"configuration file already exists at %s\n"+
-				"Refusing to generate a new config file. Delete or rename the existing file first.",
-			existing,
-		)}
-	}
-
-	// Locate (or create) the .raymond directory at the project root.
-	projectRoot := FindProjectRoot(cwd)
-	raymondDir, err := FindRaymondDir(projectRoot, true)
-	if err != nil {
-		return err
-	}
-	if raymondDir == "" {
-		return &ConfigError{msg: "failed to create .raymond directory"}
-	}
-
-	configFile := filepath.Join(raymondDir, "config.toml")
-	if err := os.WriteFile(configFile, []byte(configUnsafeDefaultsTemplate), 0o644); err != nil {
-		return &ConfigError{msg: fmt.Sprintf("failed to write configuration file: %v", err)}
-	}
-	return nil
-}

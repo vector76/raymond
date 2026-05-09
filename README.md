@@ -76,11 +76,14 @@ raymond convert ./my-workflow --output my-workflow.yaml
 
 # Generate a config file
 raymond --init-config
-
-# Or generate one with permissive defaults (budget=1000,
-# dangerously-skip-permissions=true) — use only in trusted/sandboxed envs
-raymond --init-unsafe-defaults
 ```
+
+By default raymond runs Claude with `--dangerously-skip-permissions` and an
+unlimited budget. Both can be tightened either on the command line
+(`--dangerously-skip-permissions=false`, `--budget=5`) or in
+`.raymond/config.toml` (`dangerously_skip_permissions = false`,
+`budget = 5`). Only run raymond in environments you trust to skip
+permission prompts.
 
 ## Example workflow
 

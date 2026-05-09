@@ -37,8 +37,20 @@ import (
 )
 
 const (
-	defaultBudgetUSD  = 10.0
+	// defaultBudgetUSD is the budget applied when neither the CLI nor the
+	// config file specifies one. Zero means unlimited (matching the
+	// 0=no-limit convention used by --timeout). The runtime budget check
+	// is skipped entirely when BudgetUSD == 0.
+	defaultBudgetUSD = 0.0
+
+	// defaultTimeoutSec is the per-invocation idle timeout when unspecified.
 	defaultTimeoutSec = 600.0
+
+	// defaultDangerouslySkipPermissions is the value applied when neither the
+	// CLI nor the config file specifies one. When true, raymond passes
+	// --dangerously-skip-permissions to Claude; when false, raymond uses
+	// --permission-mode=acceptEdits instead.
+	defaultDangerouslySkipPermissions = true
 )
 
 // workflowIDPattern matches valid workflow IDs: alphanumeric, hyphens, underscores only.
@@ -156,7 +168,6 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		statusID                   string
 		recover                    bool
 		initCfg                    bool
-		initUnsafeDefaults         bool
 		stateDir                   string // hidden; for testing
 		workflowID                 string
 		continueSession            bool
@@ -175,9 +186,6 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			if initCfg {
 				return c.cmdInitConfig(cmd)
 			}
-			if initUnsafeDefaults {
-				return c.cmdInitUnsafeDefaults(cmd)
-			}
 			if list {
 				return c.cmdList(cmd, stateDir)
 			}
@@ -188,6 +196,12 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				return c.cmdStatus(cmd, statusID, stateDir)
 			}
 
+			// dspExplicit is true when the effective DangerouslySkipPermissions
+			// value has been explicitly chosen by the user — either via CLI
+			// flag or restored from saved LaunchParams. When true, the
+			// config-file value should not override it.
+			dspExplicit := cmd.Flags().Changed("dangerously-skip-permissions")
+
 			// ---- For resume: apply saved launch params for flags not set on CLI ----
 			// Load the saved LaunchParams before config merging so that any
 			// restored values are treated identically to CLI-specified values.
@@ -195,8 +209,11 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				resolvedDir := wfstate.GetStateDir(stateDir)
 				if ws, err := wfstate.ReadState(resume, resolvedDir); err == nil && ws.LaunchParams != nil {
 					lp := ws.LaunchParams
-					if !cmd.Flags().Changed("dangerously-skip-permissions") && lp.DangerouslySkipPermissions {
+					if !cmd.Flags().Changed("dangerously-skip-permissions") {
+						// Restore unconditionally — we want both true and
+						// false to round-trip across resume.
 						dangerouslySkipPermissions = lp.DangerouslySkipPermissions
+						dspExplicit = true
 					}
 					if !cmd.Flags().Changed("model") && lp.Model != "" {
 						model = lp.Model
@@ -224,13 +241,15 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			}
 
 			cliArgs := config.CLIArgs{
-				DangerouslySkipPermissions: dangerouslySkipPermissions,
-				Model:                      model,
-				Effort:                     effort,
-				Name:                       name,
-				NoDebug:                    noDebug,
-				NoWait:                     noWait,
-				Verbose:                    verbose,
+				Model:   model,
+				Effort:  effort,
+				Name:    name,
+				NoDebug: noDebug,
+				NoWait:  noWait,
+				Verbose: verbose,
+			}
+			if dspExplicit {
+				cliArgs.DangerouslySkipPermissions = &dangerouslySkipPermissions
 			}
 			if cmd.Flags().Changed("budget") {
 				cliArgs.Budget = &budget
@@ -250,6 +269,16 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			if onAsk != "reject" && onAsk != "pause" {
 				return fmt.Errorf("invalid --on-ask value %q: must be one of 'reject', 'pause'", onAsk)
 			}
+			// Reject negative budget/timeout from the CLI: config.ValidateConfig
+			// already rejects negatives in TOML, and the executor's budget check
+			// is gated on BudgetUSD > 0, so a negative slipping through would
+			// silently disable the cap rather than enforcing it.
+			if merged.Budget != nil && *merged.Budget < 0 {
+				return fmt.Errorf("invalid --budget value %v: must be non-negative (0 = unlimited)", *merged.Budget)
+			}
+			if merged.Timeout != nil && *merged.Timeout < 0 {
+				return fmt.Errorf("invalid --timeout value %v: must be non-negative (0 = no timeout)", *merged.Timeout)
+			}
 
 			effectiveBudget := defaultBudgetUSD
 			if merged.Budget != nil {
@@ -259,13 +288,17 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			if merged.Timeout != nil {
 				effectiveTimeout = *merged.Timeout
 			}
+			effectiveSkipPerms := defaultDangerouslySkipPermissions
+			if merged.DangerouslySkipPermissions != nil {
+				effectiveSkipPerms = *merged.DangerouslySkipPermissions
+			}
 
 			opts := orchestrator.RunOptions{
 				StateDir:                   stateDir,
 				DefaultModel:               merged.Model,
 				DefaultEffort:              merged.Effort,
 				Timeout:                    effectiveTimeout,
-				DangerouslySkipPermissions: merged.DangerouslySkipPermissions,
+				DangerouslySkipPermissions: effectiveSkipPerms,
 				Quiet:                      quiet,
 				Debug:                      !merged.NoDebug,
 				NoWait:                     merged.NoWait,
@@ -301,7 +334,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 
 			// Build launch params to persist so they can be restored on --resume.
 			lp := &wfstate.LaunchParams{
-				DangerouslySkipPermissions: merged.DangerouslySkipPermissions,
+				DangerouslySkipPermissions: effectiveSkipPerms,
 				Model:                      merged.Model,
 				Effort:                     merged.Effort,
 				Timeout:                    effectiveTimeout,
@@ -313,11 +346,12 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	}
 
 	f := root.Flags()
-	f.Float64Var(&budget, "budget", defaultBudgetUSD, "cost budget limit in USD")
+	f.Float64Var(&budget, "budget", defaultBudgetUSD, "cost budget limit in USD (0=unlimited)")
 	f.StringVar(&model, "model", "", "Claude model override (opus|sonnet|haiku)")
 	f.StringVar(&effort, "effort", "", "effort level (low|medium|high)")
 	f.Float64Var(&timeout, "timeout", defaultTimeoutSec, "idle timeout per invocation in seconds (0=none)")
-	f.BoolVar(&dangerouslySkipPermissions, "dangerously-skip-permissions", false, "skip Claude permission prompts")
+	f.BoolVar(&dangerouslySkipPermissions, "dangerously-skip-permissions", defaultDangerouslySkipPermissions,
+		"skip Claude permission prompts; pass --dangerously-skip-permissions=false to require permissions")
 	f.BoolVar(&quiet, "quiet", false, "suppress progress messages")
 	f.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	f.BoolVar(&noDebug, "no-debug", false, "disable debug observer")
@@ -328,7 +362,6 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.StringVar(&statusID, "status", "", "show status of workflow by ID")
 	f.BoolVar(&recover, "recover", false, "list in-progress (non-completed) workflows")
 	f.BoolVar(&initCfg, "init-config", false, "create a template .raymond/config.toml")
-	f.BoolVar(&initUnsafeDefaults, "init-unsafe-defaults", false, "create .raymond/config.toml with budget=1000 and dangerously-skip-permissions=true")
 
 	f.StringVar(&name, "name", "", "prefix label for the terminal title bar")
 	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
@@ -552,7 +585,11 @@ func (c *CLI) cmdStatus(cmd *cobra.Command, workflowID, stateDir string) error {
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "Workflow: %s\n", ws.WorkflowID)
 	fmt.Fprintf(w, "Scope:    %s\n", ws.ScopeDir)
-	fmt.Fprintf(w, "Budget:   $%.2f (used: $%.4f)\n", ws.BudgetUSD, ws.TotalCostUSD)
+	if ws.BudgetUSD == 0 {
+		fmt.Fprintf(w, "Budget:   unlimited (used: $%.4f)\n", ws.TotalCostUSD)
+	} else {
+		fmt.Fprintf(w, "Budget:   $%.2f (used: $%.4f)\n", ws.BudgetUSD, ws.TotalCostUSD)
+	}
 
 	if len(ws.Agents) == 0 {
 		fmt.Fprintln(w, "Agents:   (none)")
@@ -579,18 +616,6 @@ func (c *CLI) cmdStatus(cmd *cobra.Command, workflowID, stateDir string) error {
 // cmdInitConfig creates a template .raymond/config.toml at the project root.
 func (c *CLI) cmdInitConfig(cmd *cobra.Command) error {
 	if err := config.InitConfig(""); err != nil {
-		return err
-	}
-	cwd, _ := os.Getwd()
-	projectRoot := config.FindProjectRoot(cwd)
-	configPath := filepath.Join(projectRoot, ".raymond", "config.toml")
-	fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", configPath)
-	return nil
-}
-
-// cmdInitUnsafeDefaults creates a .raymond/config.toml with budget=1000 and dangerously-skip-permissions=true.
-func (c *CLI) cmdInitUnsafeDefaults(cmd *cobra.Command) error {
-	if err := config.InitUnsafeDefaults(""); err != nil {
 		return err
 	}
 	cwd, _ := os.Getwd()

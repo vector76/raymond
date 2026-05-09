@@ -469,44 +469,6 @@ func TestInitConfigAlreadyExists(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// --init-unsafe-defaults
-// --------------------------------------------------------------------------
-
-func TestInitUnsafeDefaults(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
-
-	origWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	require.NoError(t, os.Chdir(dir))
-
-	out, _, err := run(t, "--init-unsafe-defaults")
-	require.NoError(t, err)
-	assert.Contains(t, out, "Created")
-
-	configPath := filepath.Join(dir, ".raymond", "config.toml")
-	_, statErr := os.Stat(configPath)
-	assert.NoError(t, statErr, "config.toml should have been created")
-}
-
-func TestInitUnsafeDefaultsAlreadyExists(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".raymond"), 0o755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, ".raymond", "config.toml"), []byte("[raymond]\n"), 0o644,
-	))
-
-	origWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	require.NoError(t, os.Chdir(dir))
-
-	_, _, err := run(t, "--init-unsafe-defaults")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
-}
-
-// --------------------------------------------------------------------------
 // Flag defaults and parsing
 // --------------------------------------------------------------------------
 
@@ -576,6 +538,17 @@ func TestDangerouslySkipPermissionsFlag(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestDangerouslySkipPermissionsExplicitFalse(t *testing.T) {
+	// The flag accepts --dangerously-skip-permissions=false to opt out of
+	// the new default-true behaviour and use --permission-mode=acceptEdits.
+	stateDir := makeStateDir(t)
+	writeWorkflow(t, "wf-dsp-false", "workflows/test", "START.md", stateDir)
+
+	_, _, err := run(t, "--resume", "wf-dsp-false",
+		"--dangerously-skip-permissions=false", "--state-dir", stateDir)
+	require.NoError(t, err)
+}
+
 func TestInvalidModelFlagReturnsError(t *testing.T) {
 	stateDir := makeStateDir(t)
 	writeWorkflow(t, "wf-m", "workflows/test", "START.md", stateDir)
@@ -584,6 +557,38 @@ func TestInvalidModelFlagReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "gpt5")
 	assert.Contains(t, err.Error(), "model")
+}
+
+func TestNegativeBudgetFlagReturnsError(t *testing.T) {
+	// --budget rejects negative values. Without this, a negative budget would
+	// silently disable the cap (the executor's check is gated on BudgetUSD > 0),
+	// which is more dangerous than the historic "kill on first cost" behaviour.
+	stateDir := makeStateDir(t)
+	writeWorkflow(t, "wf-negbudget", "workflows/test", "START.md", stateDir)
+
+	_, _, err := run(t, "--resume", "wf-negbudget", "--budget", "-5", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "budget")
+	assert.Contains(t, err.Error(), "non-negative")
+}
+
+func TestNegativeTimeoutFlagReturnsError(t *testing.T) {
+	stateDir := makeStateDir(t)
+	writeWorkflow(t, "wf-negtimeout", "workflows/test", "START.md", stateDir)
+
+	_, _, err := run(t, "--resume", "wf-negtimeout", "--timeout", "-1", "--state-dir", stateDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timeout")
+	assert.Contains(t, err.Error(), "non-negative")
+}
+
+func TestZeroBudgetFlagAccepted(t *testing.T) {
+	// --budget 0 is the unlimited sentinel — must not error.
+	stateDir := makeStateDir(t)
+	writeWorkflow(t, "wf-zerobudget", "workflows/test", "START.md", stateDir)
+
+	_, _, err := run(t, "--resume", "wf-zerobudget", "--budget", "0", "--state-dir", stateDir)
+	require.NoError(t, err)
 }
 
 func TestInvalidEffortFlagReturnsError(t *testing.T) {
@@ -649,6 +654,31 @@ func TestStartSavesLaunchParamsToStateFile(t *testing.T) {
 	assert.True(t, ws.LaunchParams.DangerouslySkipPermissions)
 }
 
+func TestStartSavesDangerouslySkipPermissionsFalseToLaunchParams(t *testing.T) {
+	// An explicit --dangerously-skip-permissions=false at start time must
+	// be persisted to launch_params so a later resume preserves the opt-out
+	// even if the global default has shifted.
+	stateDir := makeStateDir(t)
+	scope := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
+
+	_, _, err := run(t, filepath.Join(scope, "START.md"),
+		"--dangerously-skip-permissions=false",
+		"--state-dir", stateDir,
+	)
+	require.NoError(t, err)
+
+	ids, err := wfstate.ListWorkflows(stateDir)
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	ws, err := wfstate.ReadState(ids[0], stateDir)
+	require.NoError(t, err)
+	require.NotNil(t, ws.LaunchParams)
+	assert.False(t, ws.LaunchParams.DangerouslySkipPermissions,
+		"explicit --dangerously-skip-permissions=false must round-trip to launch_params")
+}
+
 func TestStartSavesDefaultLaunchParamsWhenFlagsUnspecified(t *testing.T) {
 	stateDir := makeStateDir(t)
 	scope := t.TempDir()
@@ -712,6 +742,39 @@ func TestResumeDangerouslySkipPermissionsRestored(t *testing.T) {
 	require.Len(t, captured, 1)
 	assert.True(t, captured[0].DangerouslySkipPermissions,
 		"resume should restore dangerously-skip-permissions=true from launch_params")
+}
+
+func TestResumeDangerouslySkipPermissionsFalseRestored(t *testing.T) {
+	// A workflow started with --dangerously-skip-permissions=false must
+	// resume with that opt-out preserved, not silently inherit the new
+	// default of true.
+	stateDir := makeStateDir(t)
+	lp := &wfstate.LaunchParams{DangerouslySkipPermissions: false}
+	ws := wfstate.CreateInitialState("wf-dsp-restore-false", "scope", "START.md", 10.0, nil, "", lp)
+	require.NoError(t, wfstate.WriteState("wf-dsp-restore-false", ws, stateDir))
+
+	captured, err := runCapturing(t, "--resume", "wf-dsp-restore-false", "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.False(t, captured[0].DangerouslySkipPermissions,
+		"resume should restore dangerously-skip-permissions=false from launch_params")
+}
+
+func TestResumeCLIExplicitFalseOverridesSavedTrue(t *testing.T) {
+	// CLI --dangerously-skip-permissions=false must beat a saved true.
+	stateDir := makeStateDir(t)
+	lp := &wfstate.LaunchParams{DangerouslySkipPermissions: true}
+	ws := wfstate.CreateInitialState("wf-dsp-cli-override", "scope", "START.md", 10.0, nil, "", lp)
+	require.NoError(t, wfstate.WriteState("wf-dsp-cli-override", ws, stateDir))
+
+	captured, err := runCapturing(t,
+		"--resume", "wf-dsp-cli-override",
+		"--dangerously-skip-permissions=false",
+		"--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.False(t, captured[0].DangerouslySkipPermissions,
+		"explicit --dangerously-skip-permissions=false on CLI should override saved true")
 }
 
 func TestResumeNoLaunchParamsUsesDefaults(t *testing.T) {

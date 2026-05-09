@@ -16,8 +16,8 @@ This document explores design alternatives for a per-project configuration file 
 
 Based on `internal/config/config.go`, the following options are supported in config files:
 
-- `budget` (float, default: 10.0)
-- `dangerously_skip_permissions` (bool, default: false)
+- `budget` (float, default: 0.0 = unlimited; must be non-negative)
+- `dangerously_skip_permissions` (bool, default: true)
 - `effort` (str: "low"|"medium"|"high", default: none)
 - `model` (str: "opus"|"sonnet"|"haiku", default: none)
 - `timeout` (float, default: 600, 0=none)
@@ -46,11 +46,12 @@ Based on `internal/config/config.go`, the following options are supported in con
 # Uncomment and modify values as needed
 
 [raymond]
-# Cost budget limit in USD (default: 10.0)
-# budget = 10.0
+# Cost budget limit in USD; 0 means unlimited (default: 0)
+# budget = 0
 
-# Skip permission prompts (WARNING: allows any action without prompting) (default: false)
-# dangerously_skip_permissions = false
+# Skip permission prompts (default: true). Set to false to use
+# --permission-mode=acceptEdits instead.
+# dangerously_skip_permissions = true
 
 # Default effort level: "low", "medium", or "high" (default: None)
 # effort = "medium"
@@ -182,7 +183,12 @@ Locates `.raymond/config.toml` via `FindConfigFile`, then parses the `[raymond]`
 
 **Implementation:** `internal/config/config.go` — `MergeConfig`
 
-CLI-supplied values take precedence over config-file values. For boolean flags (`dangerously_skip_permissions`, `no_debug`, `no_wait`, `verbose`), the config value is only applied when the CLI flag was not explicitly set. For string values (`model`, `effort`) and numeric values (`budget`, `timeout`), the config value is used only when the CLI left the field at its zero value. `state_dir` is never read from the config file — it is a test-only flag.
+CLI-supplied values take precedence over config-file values.
+
+- `dangerously_skip_permissions`, `budget`, and `timeout` are tri-state pointers in `CLIArgs`. The CLI sets the pointer when the user explicitly passes the flag (in either direction); only when the pointer is nil does the config value apply. This allows a config file to *disable* `dangerously_skip_permissions` (its global default is `true`).
+- The plain-bool flags `no_debug`, `no_wait`, `verbose` default to `false` and the merge rule is "config can only enable, not disable" — CLI-true wins, otherwise config-true sets it.
+- For string values (`model`, `effort`), the config value is used only when the CLI left the field at `""`.
+- `state_dir` is never read from the config file — it is a test-only flag.
 
 ### Validation
 
@@ -191,7 +197,7 @@ CLI-supplied values take precedence over config-file values. For boolean flags (
   - `dangerously_skip_permissions`, `no_debug`, `verbose` must be booleans
   - `effort` and `model` must be strings
   - Provide clear error messages like: "Error: Invalid value for 'budget' in .raymond/config.toml: expected number, got string '50.0'"
-- **Range validation**: Validate that numeric values are within expected ranges (e.g., budget > 0, timeout >= 0)
+- **Range validation**: Validate that numeric values are within expected ranges (e.g., `budget >= 0` with `0` meaning unlimited; `timeout >= 0` with `0` meaning no idle timeout)
 - **Choice validation**: Validate that effort values are one of the allowed choices ("low", "medium", "high") and model values are one of the allowed choices ("opus", "sonnet", "haiku")
 - Handle missing keys gracefully (use defaults)
 - **Unknown keys**: Ignore unknown keys in the `[raymond]` section silently (allows forward compatibility)

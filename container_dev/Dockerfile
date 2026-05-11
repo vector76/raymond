@@ -80,10 +80,12 @@ COPY entrypoint.sh  /entrypoint.sh
 COPY setup.sh       /usr/local/bin/setup.sh
 COPY build-ray.sh   /usr/local/bin/build-ray.sh
 COPY start-ray.sh   /usr/local/bin/start-ray.sh
+COPY stop-ray.sh    /usr/local/bin/stop-ray.sh
 RUN chmod +x /entrypoint.sh \
              /usr/local/bin/setup.sh \
              /usr/local/bin/build-ray.sh \
-             /usr/local/bin/start-ray.sh
+             /usr/local/bin/start-ray.sh \
+             /usr/local/bin/stop-ray.sh
 
 # Development workflows — live in container_dev/workflows/, baked into image so
 # an image rebuild refreshes them without touching the persistent volume.
@@ -91,4 +93,10 @@ COPY workflows/ /opt/raymond/workflows/
 RUN chown -R 2000:2000 /opt/raymond
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["tail", "-f", "/dev/null"]
+# start-ray.sh is the container's foreground process so `docker stop` delivers
+# SIGTERM (via tini, since rebuild.bat passes `--init`) to it and its TERM
+# trap can run stop-ray.sh — POST /shutdown → graceful tier shutdown of
+# `ray serve`. The `--foreground` flag tells the script to install the trap
+# and block on the children; the script is idempotent, so `docker exec
+# start-ray.sh` (no flag, e.g. from serve.bat) remains safe alongside the CMD.
+CMD ["start-ray.sh", "--foreground"]

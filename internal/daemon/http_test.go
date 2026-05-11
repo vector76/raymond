@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2530,3 +2531,457 @@ func TestMarshalSSEEvent_ShutdownComplete(t *testing.T) {
 	assert.Equal(t, "quiesced", outcomes["run-2"])
 	assert.Equal(t, "killed", outcomes["run-3"])
 }
+
+// fakeShutdownDriver is the test double for ShutdownCoordinator that records
+// every Run invocation's timeout arguments and lets the test drive the phase
+// stream by hand. It mirrors the production coordinator's subscribe-or-start
+// contract: the first Run call counts as the sequence start (started=1); any
+// later concurrent calls block on done and return the same recorded result.
+type fakeShutdownDriver struct {
+	mu sync.Mutex
+
+	calls   []shutdownDriverCall
+	started int32 // number of Run calls that actually started the sequence
+
+	// done closes when the test calls Finish(); Run unblocks then.
+	done   chan struct{}
+	result ShutdownResult
+
+	// Progress fan-out state — mirrors ShutdownCoordinator's design so a
+	// late subscriber sees the replay.
+	phases       []TierPhase
+	subscribers  []chan TierPhase
+	phasesClosed bool
+}
+
+type shutdownDriverCall struct {
+	t1, t2 time.Duration
+}
+
+func newFakeShutdownDriver() *fakeShutdownDriver {
+	return &fakeShutdownDriver{done: make(chan struct{})}
+}
+
+func (f *fakeShutdownDriver) Run(_ context.Context, t1, t2 time.Duration) ShutdownResult {
+	f.mu.Lock()
+	f.calls = append(f.calls, shutdownDriverCall{t1: t1, t2: t2})
+	if f.started == 0 {
+		// Subscribe-or-start: only the first caller counts as starting
+		// the sequence; subsequent calls block on done and return the
+		// same result.
+		f.started = 1
+	}
+	f.mu.Unlock()
+	<-f.done
+	f.mu.Lock()
+	r := f.result
+	f.mu.Unlock()
+	return r
+}
+
+func (f *fakeShutdownDriver) Progress() <-chan TierPhase {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := make(chan TierPhase, 16)
+	for _, p := range f.phases {
+		ch <- p
+	}
+	if f.phasesClosed {
+		close(ch)
+		return ch
+	}
+	f.subscribers = append(f.subscribers, ch)
+	return ch
+}
+
+// EmitPhase appends p to the replay history and fans it out to every
+// current subscriber. Buffer size on each subscriber is large so sends
+// never block in tests.
+func (f *fakeShutdownDriver) EmitPhase(p TierPhase) {
+	f.mu.Lock()
+	f.phases = append(f.phases, p)
+	subs := append([]chan TierPhase(nil), f.subscribers...)
+	f.mu.Unlock()
+	for _, s := range subs {
+		s <- p
+	}
+}
+
+// Finish completes the in-flight sequence: every blocked Run returns result
+// and every Progress subscriber's channel closes. Idempotent.
+func (f *fakeShutdownDriver) Finish(result ShutdownResult) {
+	f.mu.Lock()
+	if f.phasesClosed {
+		f.mu.Unlock()
+		return
+	}
+	f.result = result
+	f.phasesClosed = true
+	subs := f.subscribers
+	f.subscribers = nil
+	f.mu.Unlock()
+	close(f.done)
+	for _, s := range subs {
+		close(s)
+	}
+}
+
+func (f *fakeShutdownDriver) CallArgs() []shutdownDriverCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]shutdownDriverCall(nil), f.calls...)
+}
+
+func (f *fakeShutdownDriver) Started() int32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.started
+}
+
+// installFakeShutdownDriver wires the fake driver onto the server along with
+// the supplied fallback timeouts. Tests use this instead of
+// SetShutdownCoordinator (which takes *ShutdownCoordinator) so the fake's
+// recorded arguments can be inspected.
+func installFakeShutdownDriver(srv *Server, fake *fakeShutdownDriver, defaultT1, defaultT2 time.Duration) {
+	srv.shutdownDriver = fake
+	srv.defaultShutdownT1 = defaultT1
+	srv.defaultShutdownT2 = defaultT2
+}
+
+// readShutdownStream reads the full POST /shutdown response body and splits
+// it into trimmed non-empty lines. Used by happy-path / summary assertions.
+func readShutdownStream(t *testing.T, body io.Reader) []string {
+	t.Helper()
+	raw, err := io.ReadAll(body)
+	require.NoError(t, err)
+	var lines []string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if s := strings.TrimSpace(l); s != "" {
+			lines = append(lines, s)
+		}
+	}
+	return lines
+}
+
+// TestHandleShutdown_HappyPath drives a full POST /shutdown through a real
+// *ShutdownCoordinator backed by an empty fake fleet. With no active runs
+// the coordinator emits Tier1Wait then Complete; the handler streams both
+// markers and there are no per-run summary lines.
+func TestHandleShutdown_HappyPath(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fleet := newFakeFleet()
+	sig := makeTempSignal(t)
+	coord := NewShutdownCoordinator(fleet, sig, nil)
+	srv.SetShutdownCoordinator(coord, 30*time.Millisecond, 30*time.Millisecond)
+
+	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain"))
+
+	lines := readShutdownStream(t, resp.Body)
+	require.GreaterOrEqual(t, len(lines), 2)
+	assert.Equal(t, string(PhaseTier1Wait), lines[0])
+	assert.Equal(t, string(PhaseComplete), lines[1])
+	// No active runs → no per-run summary lines after PhaseComplete.
+	assert.Len(t, lines, 2, "no active runs should yield no summary lines")
+}
+
+// TestHandleShutdown_HappyPath_RunOutcomeSummary covers the summary trailer
+// for an active run: it drains during Tier 1, so the trailer reads
+// `<id>: clean`.
+func TestHandleShutdown_HappyPath_RunOutcomeSummary(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fleet := newFakeFleet()
+	fleet.addRun("alpha", false, false)
+	sig := makeTempSignal(t)
+	coord := NewShutdownCoordinator(fleet, sig, nil)
+	srv.SetShutdownCoordinator(coord, 200*time.Millisecond, 200*time.Millisecond)
+
+	// Drain shortly after the handler starts the sequence, well within T1.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		fleet.drain("alpha")
+	}()
+
+	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	lines := readShutdownStream(t, resp.Body)
+	require.Len(t, lines, 3, "expected tier_1_wait, complete, and one summary line; got %v", lines)
+	assert.Equal(t, string(PhaseTier1Wait), lines[0])
+	assert.Equal(t, string(PhaseComplete), lines[1])
+	assert.Equal(t, "alpha: clean", lines[2])
+}
+
+// TestHandleShutdown_QueryOverridesDefaults: ?t1=&?t2= override the values
+// installed via SetShutdownCoordinator. Verifies via a fake driver that
+// records timeout arguments.
+func TestHandleShutdown_QueryOverridesDefaults(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fake := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, fake, 99*time.Second, 88*time.Second) // bypass the *ShutdownCoordinator setter signature
+
+	go func() {
+		// Brief delay so the handler subscribes before Finish closes.
+		time.Sleep(10 * time.Millisecond)
+		fake.EmitPhase(PhaseTier1Wait)
+		fake.EmitPhase(PhaseComplete)
+		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{}})
+	}()
+
+	resp, err := http.Post(ts.URL+"/shutdown?t1=5&t2=3", "", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	args := fake.CallArgs()
+	require.Len(t, args, 1)
+	assert.Equal(t, 5*time.Second, args[0].t1)
+	assert.Equal(t, 3*time.Second, args[0].t2)
+}
+
+// TestHandleShutdown_DefaultFallback: a POST with no query uses the
+// durations installed via SetShutdownCoordinator.
+func TestHandleShutdown_DefaultFallback(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fake := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, fake, 42*time.Second, 17*time.Second)
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		fake.EmitPhase(PhaseTier1Wait)
+		fake.EmitPhase(PhaseComplete)
+		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{}})
+	}()
+
+	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	args := fake.CallArgs()
+	require.Len(t, args, 1)
+	assert.Equal(t, 42*time.Second, args[0].t1)
+	assert.Equal(t, 17*time.Second, args[0].t2)
+}
+
+// TestHandleShutdown_QueryPrecedenceOverConfig: even when both the query
+// and the SetShutdownCoordinator defaults supply values, the query wins. The
+// task's spec models the "config" layer as whatever the serve command
+// installs via SetShutdownCoordinator (bead-15), so checking the setter
+// values plus the query is sufficient.
+func TestHandleShutdown_QueryPrecedenceOverConfig(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fake := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, fake, 99*time.Second, 88*time.Second)
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		fake.EmitPhase(PhaseTier1Wait)
+		fake.EmitPhase(PhaseComplete)
+		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{}})
+	}()
+
+	resp, err := http.Post(ts.URL+"/shutdown?t1=7&t2=2", "", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	args := fake.CallArgs()
+	require.Len(t, args, 1)
+	assert.Equal(t, 7*time.Second, args[0].t1)
+	assert.Equal(t, 2*time.Second, args[0].t2)
+}
+
+// TestHandleShutdown_InvalidQueryRejected: a non-numeric or negative query
+// value yields a 400 and never touches the driver.
+func TestHandleShutdown_InvalidQueryRejected(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fake := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, fake, 10*time.Second, 10*time.Second)
+
+	cases := []string{
+		"?t1=abc", "?t2=abc",
+		"?t1=-1", "?t2=-2",
+		"?t1=NaN", "?t2=NaN",
+		"?t1=Inf", "?t2=+Inf",
+	}
+	for _, q := range cases {
+		resp, err := http.Post(ts.URL+"/shutdown"+q, "", nil)
+		require.NoError(t, err, q)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, q)
+	}
+	assert.Empty(t, fake.CallArgs(), "rejected requests must not reach the driver")
+}
+
+// TestSetShutdownCoordinator_NilStaysNil: a typed-nil *ShutdownCoordinator
+// passed to the setter must store an untyped-nil interface, so the handler's
+// nil-guard fires (503) instead of dispatching into a nil pointer and
+// panicking on Progress() / Run().
+func TestSetShutdownCoordinator_NilStaysNil(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+	var c *ShutdownCoordinator // typed nil
+	srv.SetShutdownCoordinator(c, 1*time.Second, 1*time.Second)
+
+	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+// TestHandleShutdown_ConcurrentCallersShareSequence: two concurrent POSTs
+// both observe the full tier sequence ending in Complete, and the
+// underlying driver started exactly one sequence (subscribe-or-start, per
+// bead-10).
+func TestHandleShutdown_ConcurrentCallersShareSequence(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fake := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, fake, 30*time.Second, 30*time.Second)
+
+	// Drive the sequence on a delayed timer so both handlers have time to
+	// subscribe to Progress() before phases are emitted.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		fake.EmitPhase(PhaseTier1Wait)
+		fake.EmitPhase(PhaseTier2Quiesce)
+		fake.EmitPhase(PhaseComplete)
+		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{
+			"a": OutcomeQuiesced,
+		}})
+	}()
+
+	type result struct {
+		status int
+		lines  []string
+	}
+	results := make(chan result, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			resp, err := http.Post(ts.URL+"/shutdown", "", nil)
+			if err != nil {
+				results <- result{status: 0}
+				return
+			}
+			defer resp.Body.Close()
+			results <- result{status: resp.StatusCode, lines: readShutdownStream(t, resp.Body)}
+		}()
+	}
+
+	got1 := <-results
+	got2 := <-results
+	assert.Equal(t, http.StatusOK, got1.status)
+	assert.Equal(t, http.StatusOK, got2.status)
+	for _, g := range []result{got1, got2} {
+		require.GreaterOrEqual(t, len(g.lines), 3)
+		assert.Equal(t, string(PhaseTier1Wait), g.lines[0])
+		assert.Equal(t, string(PhaseTier2Quiesce), g.lines[1])
+		assert.Equal(t, string(PhaseComplete), g.lines[2])
+		assert.Contains(t, g.lines, "a: quiesced")
+	}
+
+	// Subscribe-or-start: the driver counts the first Run as starting the
+	// sequence; the second Run attaches without re-starting.
+	assert.Equal(t, int32(1), fake.Started(),
+		"the underlying tier sequence must execute exactly once")
+}
+
+// TestHandleShutdown_ClientDisconnectDoesNotCancel: closing the connection
+// mid-stream must not abort the coordinator. After disconnect we verify the
+// driver still completes by observing Progress() close and Finish having
+// run.
+func TestHandleShutdown_ClientDisconnectDoesNotCancel(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fake := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, fake, 30*time.Second, 30*time.Second)
+
+	// We control phase emission deliberately so we can disconnect between
+	// the first marker and the rest of the sequence.
+	phaseOneEmitted := make(chan struct{})
+	go func() {
+		fake.EmitPhase(PhaseTier1Wait)
+		close(phaseOneEmitted)
+	}()
+
+	// Open a request with a cancellable context. The handler must keep
+	// driving the coordinator after our cancel.
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/shutdown", nil)
+	require.NoError(t, err)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+
+	reader := bufio.NewReader(resp.Body)
+	line, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, string(PhaseTier1Wait)+"\n", line)
+	<-phaseOneEmitted
+
+	// Hang up. The coordinator must run to completion regardless.
+	cancel()
+	_ = resp.Body.Close()
+
+	// Now finish the sequence; observe via a fresh Progress() subscriber
+	// that the channel actually closed — i.e. the Run goroutine inside the
+	// handler continued past the disconnect to drive the sequence forward.
+	go func() {
+		// Brief settle so the handler goroutine has time to be the lone
+		// blocker on fake.done.
+		time.Sleep(10 * time.Millisecond)
+		fake.EmitPhase(PhaseTier2Quiesce)
+		fake.EmitPhase(PhaseComplete)
+		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{
+			"survivor": OutcomeQuiesced,
+		}})
+	}()
+
+	late := fake.Progress()
+	deadline := time.After(2 * time.Second)
+	var seen []TierPhase
+loop:
+	for {
+		select {
+		case p, ok := <-late:
+			if !ok {
+				break loop
+			}
+			seen = append(seen, p)
+		case <-deadline:
+			t.Fatalf("Progress channel did not close; coordinator was apparently cancelled by the client disconnect (seen=%v)", seen)
+		}
+	}
+	assert.Contains(t, seen, PhaseComplete,
+		"the coordinator must have run to completion after the client disconnected")
+
+	// Driver was started exactly once.
+	assert.Equal(t, int32(1), fake.Started())
+}
+
+// TestHandleShutdown_NotConfigured returns 503 when SetShutdownCoordinator
+// has never been called.
+func TestHandleShutdown_NotConfigured(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+	// Intentionally do not call SetShutdownCoordinator.
+	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+

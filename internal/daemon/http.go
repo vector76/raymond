@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +163,24 @@ type Server struct {
 	// concurrent cancel cannot close a channel mid-send.
 	globalMu          sync.Mutex
 	globalSubscribers []chan any
+
+	// shutdownDriver runs the three-tier shutdown sequence. It is the
+	// surface of *ShutdownCoordinator that POST /shutdown depends on; an
+	// interface (not a concrete pointer) so tests can install a fake.
+	// SetShutdownCoordinator wires the production coordinator; nil means
+	// the endpoint is not configured.
+	shutdownDriver    shutdownDriver
+	defaultShutdownT1 time.Duration
+	defaultShutdownT2 time.Duration
+}
+
+// shutdownDriver is the slice of *ShutdownCoordinator that handleShutdown
+// depends on. Defined here (rather than the handler taking *ShutdownCoordinator
+// directly) so tests can inject a fake that records timeout arguments and
+// counts sequence starts.
+type shutdownDriver interface {
+	Run(ctx context.Context, t1, t2 time.Duration) ShutdownResult
+	Progress() <-chan TierPhase
 }
 
 // NewServer creates a Server wired to the given registry and run manager.
@@ -185,6 +206,7 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("GET /runs/{id}/asks/{ask_id}/files/{path...}", s.handleGetInputFile)
 	mux.HandleFunc("POST /runs/{id}/asks/{ask_id}", s.handleDeliverInput)
 	mux.HandleFunc("GET /events", s.handleGlobalEvents)
+	mux.HandleFunc("POST /shutdown", s.handleShutdown)
 
 	// Serve embedded static UI files at root; API routes above take precedence.
 	staticSub, _ := fs.Sub(staticFiles, "static")
@@ -229,6 +251,26 @@ func (s *Server) SetDefaultUploadCaps(perFile, total int64, count int) {
 	s.defaultMaxFileSize = perFile
 	s.defaultMaxTotalSize = total
 	s.defaultMaxFileCount = count
+}
+
+// SetShutdownCoordinator installs the shutdown coordinator that POST /shutdown
+// drives and the server-wide fallback T1/T2 timeouts applied when the request
+// omits them. The actual call site lives in the serve command (bead-15);
+// passing zero durations is allowed — the handler then falls back to whatever
+// hardcoded default the coordinator itself enforces (currently the caller's
+// responsibility to supply sensible values via this setter).
+//
+// A nil *ShutdownCoordinator stores an untyped-nil interface so the handler's
+// `s.shutdownDriver == nil` guard fires and returns 503; without this, a typed
+// nil would slip past the guard and panic on the first method dispatch.
+func (s *Server) SetShutdownCoordinator(c *ShutdownCoordinator, defaultT1, defaultT2 time.Duration) {
+	if c == nil {
+		s.shutdownDriver = nil
+	} else {
+		s.shutdownDriver = c
+	}
+	s.defaultShutdownT1 = defaultT1
+	s.defaultShutdownT2 = defaultT2
 }
 
 // Handler returns the HTTP handler (for testing with httptest).
@@ -349,6 +391,130 @@ func (s *Server) handleGlobalEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// handleShutdown serves POST /shutdown. It drives the shutdown coordinator
+// and streams a line-per-phase progress report to the client, followed by a
+// per-run outcome summary once the sequence completes.
+//
+// Per-tier timeout precedence (highest first):
+//
+//	query (?t1=, ?t2= as a non-negative number of seconds; fractional ok)
+//	> config (the defaults installed via SetShutdownCoordinator, which the
+//	  serve command resolves from .raymond/config.toml)
+//	> built-in default (zero — relies on the coordinator's own defaults if
+//	  no setter was called; in practice serve always installs values)
+//
+// The coordinator runs under a background context so the operator
+// disconnecting mid-stream — for example because `docker stop` did not stay
+// attached — does NOT cancel the sequence. Only the streaming loop stops on
+// disconnect.
+//
+// Concurrent invocations are safe: ShutdownCoordinator.Run is subscribe-or-
+// start (see bead-10), so two simultaneous POSTs both attach to the same
+// in-flight sequence and both observe the same phase stream and outcomes.
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if s.shutdownDriver == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "shutdown coordinator not configured"})
+		return
+	}
+
+	t1, err := parseShutdownTimeoutQuery(r.URL.Query().Get("t1"), s.defaultShutdownT1)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid t1: " + err.Error()})
+		return
+	}
+	t2, err := parseShutdownTimeoutQuery(r.URL.Query().Get("t2"), s.defaultShutdownT2)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid t2: " + err.Error()})
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "streaming not supported"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Subscribe to phases *before* starting the sequence so the producer
+	// (Run, below) fans the first phase into our buffer even if the
+	// goroutine wins the scheduler race. Progress() also replays any phases
+	// already emitted by a concurrent in-flight sequence, so a second
+	// caller arriving mid-shutdown still sees the full sequence.
+	progress := s.shutdownDriver.Progress()
+
+	// Use a background context so an HTTP-level disconnect (operator closes
+	// the connection, proxy idle-timeouts the request, etc.) cannot abort
+	// the sequence: the daemon's docker-stop semantics depend on the
+	// coordinator running to completion regardless.
+	bgCtx := context.Background()
+
+	resultCh := make(chan ShutdownResult, 1)
+	go func() {
+		resultCh <- s.shutdownDriver.Run(bgCtx, t1, t2)
+	}()
+
+streamLoop:
+	for {
+		select {
+		case phase, ok := <-progress:
+			if !ok {
+				break streamLoop
+			}
+			fmt.Fprintln(w, string(phase))
+			flusher.Flush()
+		case <-r.Context().Done():
+			// Client hung up. The Run goroutine keeps the coordinator
+			// going on bgCtx — but there's no one to write to anymore,
+			// so we return immediately rather than blocking up to
+			// T1+T2+kill-patience on resultCh. The goroutine drains
+			// into resultCh's size-1 buffer and is collected on its own.
+			return
+		}
+	}
+
+	result := <-resultCh
+
+	// Per-run outcome summary, ordered by run ID so the trailer is
+	// deterministic across runs (Go map iteration is randomised).
+	ids := make([]string, 0, len(result.Outcomes))
+	for id := range result.Outcomes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		fmt.Fprintf(w, "%s: %s\n", id, result.Outcomes[id])
+		flusher.Flush()
+	}
+}
+
+// parseShutdownTimeoutQuery interprets a query-string seconds value, falling
+// back to fallback if the value is empty. Non-negative finite number only;
+// bare integers and fractional seconds are accepted (matching the bead-2
+// config-key idiom of plain numeric seconds on the [raymond.serve] section).
+// NaN and ±Inf are rejected so they can't slip past the >= 0 check
+// (`NaN >= 0` is false; `+Inf * time.Second` overflows int64 to a wild
+// Duration value).
+func parseShutdownTimeoutQuery(raw string, fallback time.Duration) (time.Duration, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	secs, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("not a number: %q", raw)
+	}
+	if math.IsNaN(secs) || math.IsInf(secs, 0) {
+		return 0, fmt.Errorf("must be a finite number: %q", raw)
+	}
+	if secs < 0 {
+		return 0, fmt.Errorf("must be non-negative: %v", secs)
+	}
+	return time.Duration(secs * float64(time.Second)), nil
 }
 
 // --- JSON response/request types ---

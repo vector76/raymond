@@ -979,6 +979,194 @@ states:
 }
 
 // ----------------------------------------------------------------------------
+// QuiesceAll — per-run stop signal fan-out
+// ----------------------------------------------------------------------------
+
+// quiesceObservingOrchestrator captures the StopSignalCh it receives so the
+// test can assert that the close propagates from QuiesceAll to the
+// orchestrator goroutine. The behaviour blocks until either the stop signal
+// channel closes or the context is cancelled, mirroring what the real
+// orchestrator does on a graceful quiesce.
+func quiesceObservingOrchestrator() (*fakeOrchestrator, func() <-chan struct{}) {
+	var (
+		mu     sync.Mutex
+		stopCh <-chan struct{}
+		ready  = make(chan struct{})
+	)
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			mu.Lock()
+			stopCh = opts.StopSignalCh
+			mu.Unlock()
+			close(ready)
+			select {
+			case <-opts.StopSignalCh:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+
+	getStop := func() <-chan struct{} {
+		<-ready
+		mu.Lock()
+		defer mu.Unlock()
+		return stopCh
+	}
+	return fake, getStop
+}
+
+// (a) QuiesceAll closes the stop channel that the orchestrator received.
+func TestQuiesceAll_ClosesPerRunStopChannel(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	fake, getStop := quiesceObservingOrchestrator()
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	stopCh := getStop()
+	require.NotNil(t, stopCh, "orchestrator must receive a non-nil StopSignalCh")
+
+	rm.QuiesceAll()
+
+	select {
+	case <-stopCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for StopSignalCh to close after QuiesceAll")
+	}
+
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+}
+
+// (b) A single QuiesceAll call fans out across every active run tracked by
+// a manager. One orchestrator instance, channels keyed by the run_id passed
+// to RunAllAgents.
+func TestQuiesceAll_ClosesEveryActiveRun(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	var (
+		mu      sync.Mutex
+		byRunID = make(map[string]<-chan struct{})
+		waitFor = make(chan string, 4)
+	)
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			mu.Lock()
+			byRunID[workflowID] = opts.StopSignalCh
+			mu.Unlock()
+			waitFor <- workflowID
+			select {
+			case <-opts.StopSignalCh:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	id1, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+	id2, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	// Wait until both orchestrator goroutines have captured their channels.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-waitFor:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for both orchestrators to start")
+		}
+	}
+
+	rm.QuiesceAll()
+
+	for _, id := range []string{id1, id2} {
+		mu.Lock()
+		ch := byRunID[id]
+		mu.Unlock()
+		require.NotNil(t, ch, "run %s did not receive a StopSignalCh", id)
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("run %s: StopSignalCh did not close after QuiesceAll", id)
+		}
+	}
+
+	_, err = rm.WaitForCompletion(id1, 5*time.Second)
+	require.NoError(t, err)
+	_, err = rm.WaitForCompletion(id2, 5*time.Second)
+	require.NoError(t, err)
+}
+
+// (c) QuiesceAll skips recovered entries (cancel == nil) and does not panic.
+func TestQuiesceAll_SkipsRecoveredEntries(t *testing.T) {
+	stateDir := ensureStateDir(t)
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "recovered-quiesce",
+		ScopeDir:   "/some/scope",
+		Agents: []wfstate.AgentState{
+			{ID: "main", CurrentState: "S.md", Status: wfstate.AgentStatusPaused, Stack: []wfstate.StackFrame{}},
+		},
+	}
+	data, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, ws.WorkflowID+".json"), data, 0o644))
+
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	// Confirm the entry was recovered with no live orchestrator.
+	_, ok := rm.GetRun(ws.WorkflowID)
+	require.True(t, ok)
+
+	// Should be a no-op; in particular, must not panic on the nil stopSignalCh.
+	require.NotPanics(t, func() { rm.QuiesceAll() })
+}
+
+// (d) Calling QuiesceAll twice is a no-op the second time — sync.Once on each
+// entry prevents a double-close panic.
+func TestQuiesceAll_DoubleInvokeIsNoOp(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	fake, getStop := quiesceObservingOrchestrator()
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	stopCh := getStop()
+	require.NotNil(t, stopCh)
+
+	require.NotPanics(t, func() {
+		rm.QuiesceAll()
+		rm.QuiesceAll()
+	})
+
+	select {
+	case <-stopCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for StopSignalCh to close after QuiesceAll")
+	}
+
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+}
+
+// ----------------------------------------------------------------------------
 // parseRunIDTimestamp
 // ----------------------------------------------------------------------------
 

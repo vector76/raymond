@@ -78,6 +78,13 @@ type runEntry struct {
 	busReady     chan struct{}                      // closed when eventBus is set
 	askInputCh chan orchestrator.AskInput // delivers responses to pending asks
 
+	// stopSignalCh is closed by QuiesceAll to ask the orchestrator to
+	// gracefully drain in-flight executors. nil for recovered entries that
+	// have no live orchestrator goroutine. stopSignalOnce guards the close
+	// so repeated QuiesceAll calls are safe.
+	stopSignalCh   chan struct{}
+	stopSignalOnce sync.Once
+
 	// logMu protects eventLog and subscribers. Held briefly when recording a
 	// new event (append to eventLog + fan-out to subscribers) and when adding
 	// or removing a subscriber.
@@ -188,6 +195,7 @@ func (rm *RunManager) LaunchRun(
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	doneCh := make(chan struct{})
+	stopSignalCh := make(chan struct{})
 
 	re := &runEntry{
 		info: RunInfo{
@@ -203,9 +211,10 @@ func (rm *RunManager) LaunchRun(
 			// this run report the same wall-clock launch time.
 			StartedAt: ws.StartedAt,
 		},
-		cancel:   runCancel,
-		doneCh:   doneCh,
-		busReady: make(chan struct{}),
+		cancel:       runCancel,
+		doneCh:       doneCh,
+		busReady:     make(chan struct{}),
+		stopSignalCh: stopSignalCh,
 	}
 
 	rm.mu.Lock()
@@ -218,6 +227,7 @@ func (rm *RunManager) LaunchRun(
 		DangerouslySkipPermissions: dangerouslySkipPermissions,
 		Quiet:                      true,
 		OnAsk:                    "pause",
+		StopSignalCh:               stopSignalCh,
 		// Match the CLI's default behavior so raw Claude stream output
 		// lands on disk (.raymond/debug/<run_id>/*.jsonl). Without this,
 		// daemon-launched runs produce no artifact for diagnosing what
@@ -491,6 +501,36 @@ func (rm *RunManager) ListRuns() []RunInfo {
 		return result[i].RunID > result[j].RunID
 	})
 	return result
+}
+
+// QuiesceAll signals every active run to drain gracefully by closing its
+// per-run stop channel. The orchestrator observes the closed channel and
+// stops launching new executors, letting in-flight agents reach their
+// next-state boundary and persist state.
+//
+// Recovered entries (cancel == nil) have no live orchestrator goroutine and
+// are skipped. Each entry's sync.Once guards against a double-close panic
+// if QuiesceAll is invoked more than once.
+func (rm *RunManager) QuiesceAll() {
+	rm.mu.RLock()
+	entries := make([]*runEntry, 0, len(rm.runs))
+	for _, re := range rm.runs {
+		entries = append(entries, re)
+	}
+	rm.mu.RUnlock()
+
+	for _, re := range entries {
+		re.mu.Lock()
+		isRecovered := re.cancel == nil
+		ch := re.stopSignalCh
+		re.mu.Unlock()
+		if isRecovered || ch == nil {
+			continue
+		}
+		re.stopSignalOnce.Do(func() {
+			close(ch)
+		})
+	}
 }
 
 // CancelRun cancels a running workflow by cancelling its context.

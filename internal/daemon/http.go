@@ -172,6 +172,14 @@ type Server struct {
 	shutdownDriver    shutdownDriver
 	defaultShutdownT1 time.Duration
 	defaultShutdownT2 time.Duration
+
+	// shutdownSignal is consulted by handleCreateRun to reject new launches
+	// with 503 once shutdown has been requested. Installed via
+	// SetShutdownSignal (typically by the serve command alongside the
+	// coordinator). A nil signal means "no shutdown source configured": the
+	// nil-check protects the existing CLI `ray run` path and any test that
+	// builds a Server without a signal.
+	shutdownSignal *ShutdownSignal
 }
 
 // shutdownDriver is the slice of *ShutdownCoordinator that handleShutdown
@@ -271,6 +279,16 @@ func (s *Server) SetShutdownCoordinator(c *ShutdownCoordinator, defaultT1, defau
 	}
 	s.defaultShutdownT1 = defaultT1
 	s.defaultShutdownT2 = defaultT2
+}
+
+// SetShutdownSignal installs the in-process shutdown signal that handleCreateRun
+// consults to reject `POST /runs` with 503 once shutdown has been requested.
+// Typically called by the serve command alongside SetShutdownCoordinator so
+// both the coordinator's drain logic and the launch-rejection guard look at
+// the same source of truth. A nil signal keeps the guard disabled (preserving
+// the existing behaviour for callers that construct a Server without one).
+func (s *Server) SetShutdownSignal(sig *ShutdownSignal) {
+	s.shutdownSignal = sig
 }
 
 // Handler returns the HTTP handler (for testing with httptest).
@@ -672,6 +690,16 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
+	// Reject new launches once shutdown has been requested. This pairs with
+	// the coordinator's running-run drain: tier T1 stops new work entering
+	// the system while existing runs are given a chance to finish. The
+	// nil-check covers the CLI `ray run` path and tests that build a Server
+	// without a signal — both keep their current behaviour.
+	if s.shutdownSignal != nil && s.shutdownSignal.IsRequested() {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "daemon shutting down"})
+		return
+	}
+
 	var req createRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON body: " + err.Error()})

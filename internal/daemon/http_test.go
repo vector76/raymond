@@ -2985,3 +2985,68 @@ func TestHandleShutdown_NotConfigured(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
+// TestCreateRun_PreShutdownSucceeds: with a ShutdownSignal installed but
+// Request() not yet called, POST /runs continues to launch runs as today.
+// Regression guard for the nil-check / IsRequested() short-circuit.
+func TestCreateRun_PreShutdownSucceeds(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	sig := NewShutdownSignal(t.TempDir())
+	srv.SetShutdownSignal(sig)
+
+	body := `{"workflow_id": "test-workflow", "input": "hello"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cr))
+	assert.NotEmpty(t, cr.RunID)
+	assert.Equal(t, 1, fake.callCount(),
+		"orchestrator must be invoked once when the signal is installed but not requested")
+}
+
+// TestCreateRun_ReturnsServiceUnavailableDuringShutdown: once Request() has
+// flipped the signal, POST /runs returns 503 with the JSON error shape and
+// the orchestrator is never invoked.
+func TestCreateRun_ReturnsServiceUnavailableDuringShutdown(t *testing.T) {
+	srv, ts, fake := newTestServer(t)
+	sig := NewShutdownSignal(t.TempDir())
+	srv.SetShutdownSignal(sig)
+	sig.Request()
+
+	body := `{"workflow_id": "test-workflow", "input": "hello"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	var er errorResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&er))
+	assert.Equal(t, "daemon shutting down", er.Error)
+
+	// The orchestrator must not have been invoked: the 503 short-circuits
+	// before LaunchRun.
+	assert.Equal(t, 0, fake.callCount(),
+		"no run should be launched when shutdown has been requested")
+}
+
+// TestCreateRun_NoShutdownSignalUnchanged: a Server constructed without
+// SetShutdownSignal continues to accept POST /runs. The nil-check protects
+// callers (CLI `ray run`, existing tests) that never install a signal.
+func TestCreateRun_NoShutdownSignalUnchanged(t *testing.T) {
+	_, ts, fake := newTestServer(t)
+	// Intentionally do not call SetShutdownSignal.
+
+	body := `{"workflow_id": "test-workflow", "input": "hello"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	assert.Equal(t, 1, fake.callCount())
+}
+

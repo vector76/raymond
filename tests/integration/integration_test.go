@@ -16,16 +16,24 @@ package integration_test
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -664,4 +672,286 @@ func buildZipFromFiles(src, dst string, files []string) error {
 		}
 	}
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// ray serve graceful-shutdown end-to-end test
+// --------------------------------------------------------------------------
+
+// syncBuffer is a concurrent-safe wrapper around bytes.Buffer. exec.Cmd's
+// stdout/stderr copier goroutines write into the buffer in parallel with
+// the test goroutine reading it for diagnostics, which is a data race
+// against a plain bytes.Buffer.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestServeSIGTERMGracefulShutdown drives the full shutdown coordinator path
+// against a real `ray serve` subprocess. It launches a synthetic workflow
+// whose first state sleeps longer than T1+T2 combined, signals the daemon
+// with SIGTERM, and asserts that:
+//
+//   - the daemon exits within a generous wall-clock bound with exit code 0;
+//   - the run's state file survives the shutdown and is parseable JSON with
+//     at least one agent recorded (i.e. resumable shape);
+//   - `ray --resume <id>` against the same state directory runs the workflow
+//     to clean completion (state file removed) using a marker file the
+//     daemon-side script left behind before the force-kill.
+//
+// The marker-flip approach keeps the resume side deterministic without
+// requiring a second workflow definition: the same `1_START.sh` short-
+// circuits to a <result> when it observes the marker, so resume completes
+// in milliseconds even though the daemon-side execution slept until kill.
+func TestServeSIGTERMGracefulShutdown(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGTERM-driven shutdown semantics differ on Windows; POSIX-only test")
+	}
+
+	// ---- temp layout ----
+	tempRoot := t.TempDir()
+	workflowsDir := filepath.Join(tempRoot, "workflows")
+	wfDir := filepath.Join(workflowsDir, "test-shutdown")
+	raymondDir := filepath.Join(tempRoot, ".raymond")
+	stateDir := filepath.Join(raymondDir, "state")
+	marker := filepath.Join(tempRoot, "marker.txt")
+
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+
+	// Pin tiny tier timeouts so the drain path is exercised in a few
+	// seconds rather than the daemon defaults (hours). The [raymond]
+	// section is kept empty so the resume process picks up a clean
+	// config (no stale model/budget from the project's real config).
+	configToml := strings.Join([]string{
+		"[raymond]",
+		"",
+		"[raymond.serve]",
+		"shutdown_tier1_timeout = 2",
+		"shutdown_tier2_timeout = 2",
+		"",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(raymondDir, "config.toml"), []byte(configToml), 0o644))
+
+	// Minimal manifest — input.mode=none keeps POST /runs trivial.
+	manifestYAML := strings.Join([]string{
+		"id: test-shutdown",
+		"name: Shutdown integration test",
+		"description: Sleeps in a loop until the daemon shuts down.",
+		"input:",
+		"  mode: none",
+		"",
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "workflow.yaml"), []byte(manifestYAML), 0o644))
+
+	// The script touches the marker file *before* sleeping so the test
+	// can poll for the marker to know the run has reached in-progress.
+	// The marker also doubles as the resume short-circuit: on the second
+	// invocation (`ray --resume`) the marker exists, so the script
+	// produces a terminal <result> immediately without sleeping.
+	script := fmt.Sprintf(`#!/bin/bash
+MARKER=%q
+if [ -f "$MARKER" ]; then
+  echo '<result>resumed_ok</result>'
+  exit 0
+fi
+touch "$MARKER"
+sleep 10
+echo '<goto>1_START.sh</goto>'
+`, marker)
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.sh"), []byte(script), 0o755))
+
+	// ---- build the ray binary ----
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	require.NoError(t, err)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "ray")
+	{
+		buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/ray")
+		buildCmd.Dir = repoRoot
+		out, err := buildCmd.CombinedOutput()
+		require.NoError(t, err, "go build ./cmd/ray failed:\n%s", out)
+	}
+
+	// ---- pick a free port (bind :0, read back, close) ----
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	// ---- start ray serve ----
+	// No CommandContext: the test owns lifecycle explicitly via SIGTERM
+	// and a watchdog timer below. cmd.Dir = tempRoot so the subprocess's
+	// FindRaymondDir resolves to our temp .raymond (picks up our config
+	// and writes state into stateDir).
+	serveCmd := exec.Command(binPath,
+		"serve",
+		"--root", workflowsDir,
+		"--port", fmt.Sprintf("%d", port),
+	)
+	serveCmd.Dir = tempRoot
+	var serveOut, serveErr syncBuffer
+	serveCmd.Stdout = &serveOut
+	serveCmd.Stderr = &serveErr
+	// WaitDelay belts-and-braces in case a copier goroutine hangs on the
+	// pipe after the process itself exits (or after SIGKILL in a failure
+	// path) — keeps Wait() bounded.
+	serveCmd.WaitDelay = 5 * time.Second
+	require.NoError(t, serveCmd.Start())
+
+	diagnostics := func() string {
+		return fmt.Sprintf("\n-- daemon stdout --\n%s\n-- daemon stderr --\n%s",
+			serveOut.String(), serveErr.String())
+	}
+
+	// Defensive cleanup: if the test fails before we reap the process,
+	// kill it so it doesn't outlive the test run.
+	t.Cleanup(func() {
+		if serveCmd.ProcessState == nil && serveCmd.Process != nil {
+			_ = serveCmd.Process.Signal(syscall.SIGKILL)
+			_, _ = serveCmd.Process.Wait()
+		}
+	})
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	httpClient := &http.Client{Timeout: 2 * time.Second}
+
+	// ---- wait for HTTP to be up and the workflow to be discoverable ----
+	// Verifying the workflow is in /workflows (not just that the endpoint
+	// answers) catches the silent-fail case where tryIndexDir swallows a
+	// manifest parse error; otherwise the symptom would surface as a
+	// confusing 404 from POST /runs.
+	readyDeadline := time.Now().Add(10 * time.Second)
+	var lastListBody []byte
+	for {
+		resp, err := httpClient.Get(baseURL + "/workflows")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			lastListBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if bytes.Contains(lastListBody, []byte(`"id":"test-shutdown"`)) {
+				break
+			}
+		} else if resp != nil {
+			resp.Body.Close()
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("daemon did not start listening or discover test-shutdown within 10s; last /workflows body: %s%s",
+				lastListBody, diagnostics())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// ---- POST /runs ----
+	createBody, err := json.Marshal(map[string]string{"workflow_id": "test-shutdown"})
+	require.NoError(t, err)
+	resp, err := httpClient.Post(baseURL+"/runs", "application/json", bytes.NewReader(createBody))
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode,
+		"POST /runs returned %d: %s%s", resp.StatusCode, body, diagnostics())
+
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	require.NoError(t, json.Unmarshal(body, &created))
+	require.NotEmpty(t, created.RunID, "POST /runs did not return a run_id")
+	runID := created.RunID
+
+	// ---- wait until the run is in progress (marker file written) ----
+	inProgressDeadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(inProgressDeadline) {
+			t.Fatalf("run %s never reached in-progress (marker %s missing)%s",
+				runID, marker, diagnostics())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// ---- SIGTERM the daemon and wait for exit ----
+	require.NoError(t, serveCmd.Process.Signal(syscall.SIGTERM))
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- serveCmd.Wait() }()
+
+	// Generous bound: T1(2) + T2(2) + force-kill patience(10) ≈ 14s,
+	// plus the deferred srv.Shutdown (5s) — 30s is comfortably above.
+	select {
+	case waitErr := <-waitCh:
+		// A clean exit returns nil from Wait; non-zero exit codes
+		// surface as *exec.ExitError. Either way, ProcessState carries
+		// the real exit code for assertion below.
+		if waitErr != nil {
+			if _, ok := waitErr.(*exec.ExitError); !ok {
+				t.Fatalf("unexpected wait error: %v%s", waitErr, diagnostics())
+			}
+		}
+	case <-time.After(30 * time.Second):
+		_ = serveCmd.Process.Signal(syscall.SIGKILL)
+		<-waitCh
+		t.Fatalf("daemon did not exit within 30s of SIGTERM%s", diagnostics())
+	}
+
+	require.NotNil(t, serveCmd.ProcessState)
+	require.Equal(t, 0, serveCmd.ProcessState.ExitCode(),
+		"daemon exit code = %d (want 0)%s",
+		serveCmd.ProcessState.ExitCode(), diagnostics())
+
+	// ---- (c) state file exists in resumable shape ----
+	statePath := filepath.Join(stateDir, runID+".json")
+	info, err := os.Stat(statePath)
+	require.NoError(t, err,
+		"state file %q must persist across graceful shutdown%s", statePath, diagnostics())
+	require.Greater(t, info.Size(), int64(0), "state file should be non-empty")
+
+	ws, err := wfstate.ReadState(runID, stateDir)
+	require.NoError(t, err, "state file must be parseable JSON")
+	require.NotEmpty(t, ws.Agents,
+		"state file must record at least one agent so resume has a transition target to pick up")
+	assert.Equal(t, "1_START.sh", ws.Agents[0].CurrentState,
+		"the agent should still be parked at the script state it was killed in")
+
+	// ---- (d) `ray --resume <id>` runs to completion ----
+	// state-dir is hidden but accepted as a flag; pass it explicitly so
+	// the resume process never walks up looking for some other .raymond.
+	// The 30s context bound is purely a safety net: the script
+	// short-circuits via the marker file and should complete in well
+	// under a second.
+	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer resumeCancel()
+	resumeCmd := exec.CommandContext(resumeCtx, binPath,
+		"--resume", runID,
+		"--state-dir", stateDir,
+		"--quiet",
+	)
+	resumeCmd.Dir = tempRoot
+	var resumeOut, resumeErr bytes.Buffer
+	resumeCmd.Stdout = &resumeOut
+	resumeCmd.Stderr = &resumeErr
+	resumeCmd.WaitDelay = 5 * time.Second
+	err = resumeCmd.Run()
+	require.NoError(t, err,
+		"ray --resume %s failed (ctx err=%v):\n-- stdout --\n%s\n-- stderr --\n%s",
+		runID, resumeCtx.Err(), resumeOut.String(), resumeErr.String())
+
+	// Clean completion → state file is deleted by the orchestrator.
+	_, statErr := os.Stat(statePath)
+	assert.Truef(t, os.IsNotExist(statErr),
+		"state file should be removed after a clean resume completion; got err=%v\n-- resume stdout --\n%s\n-- resume stderr --\n%s",
+		statErr, resumeOut.String(), resumeErr.String())
 }

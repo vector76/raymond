@@ -64,7 +64,18 @@ restarts. Each id must already be discoverable via --root, and launch
 outcomes are logged on the same channel as other startup status messages
 (stdout by default; stderr under --mcp). Workflows whose first state
 requires input cannot be auto-launched and must be started via the HTTP
-API or web UI.`,
+API or web UI.
+
+Graceful shutdown. POST /shutdown drives a three-tier sequence (voluntary
+exit → quiesce at next state boundary → force-kill) and streams one line
+of progress per phase before the daemon exits. SIGINT and SIGTERM run the
+same sequence. The two tier deadlines default to one hour and five
+minutes respectively, are configurable in .raymond/config.toml under
+[raymond.serve] as shutdown_tier1_timeout and shutdown_tier2_timeout
+(both in seconds), and can be overridden per request with the ?t1= and
+?t2= query parameters on POST /shutdown. Precedence is query > config >
+built-in default. See docs/graceful-shutdown.md for the full design,
+workflow-author opt-in pattern, and resume guarantees per tier.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fileCfg, err := config.LoadServeConfig("")
 			if err != nil {

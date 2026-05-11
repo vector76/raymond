@@ -105,7 +105,7 @@ inside scripts, anything that does not return to the orchestrator
 frequently) should re-check the sentinel each iteration:
 
 ```bash
-if [ "$RAYMOND_STOP_REQUESTED" = "1" ] || [ -e "$RAYMOND_STOP_SENTINEL" ]; then
+if [ "$RAYMOND_STOP_REQUESTED" = "1" ] || [ -f "$RAYMOND_STOP_SENTINEL" ]; then
     echo "<result>STOPPED</result>"
     exit 0
 fi
@@ -197,7 +197,7 @@ spawn time. The sentinel file is the way in:
 
 ```bash
 while true; do
-    if [ -e "$RAYMOND_STOP_SENTINEL" ]; then
+    if [ -f "$RAYMOND_STOP_SENTINEL" ]; then
         echo "<result>STOPPED</result>"
         exit 0
     fi
@@ -205,7 +205,35 @@ while true; do
 done
 ```
 
-Combine both checks if the loop does meaningful work per iteration.
+### Combining both: a worker polling `bs wait-ready`
+
+A realistic worker that picks the next bead and runs it should check the
+env var once at the top of the state (cheap, catches the case where the
+orchestrator re-entered after shutdown was already requested) *and* the
+sentinel file inside its polling loop (catches the case where shutdown
+was requested while this step was already mid-iteration):
+
+```bash
+# Top-of-state fast path: shutdown was already requested before we ran.
+if [ "$RAYMOND_STOP_REQUESTED" = "1" ]; then
+    echo "<result>STOPPED</result>"
+    exit 0
+fi
+
+# Polling loop: env var is stale here (captured at spawn), so consult
+# the on-disk sentinel each iteration.
+while ! bs wait-ready --next > /tmp/bead.json 2>/dev/null; do
+    if [ -f "$RAYMOND_STOP_SENTINEL" ]; then
+        echo "<result>STOPPED</result>"
+        exit 0
+    fi
+    sleep 5
+done
+```
+
+Both checks are needed because the env var reflects the snapshot taken
+when the executor spawned this step; a stop that flips *during* the step
+is only visible through the sentinel.
 
 ### Ask-driven workflows usually don't need Tier 1
 
@@ -229,6 +257,56 @@ where in the workflow a resume picks up.
 In serve mode, current passive recovery behaviour is unchanged: at daemon
 startup, the state directory is scanned and existing state files are
 registered as inactive run entries (visible in the UI, resumable via the
-CLI). Multi-run active resume — automatically continuing every paused run
-across a daemon restart — is intentionally out of scope; an operator
-restarting the daemon decides per-run whether to resume.
+CLI). An operator restarting the daemon decides per-run whether to
+resume; automatic multi-run active resume is deferred — see "Out of
+scope" below.
+
+## Out of scope (deferred to follow-up)
+
+The following four concerns are interrelated and will be addressed
+together in a follow-up design. Graceful shutdown deliberately stops
+short of them:
+
+- **Active resume in serve mode (`--resume-all`).** A future flag could
+  walk the state directory at startup and resume every non-terminal run
+  automatically. Today the operator picks runs to resume by hand.
+- **`--launch` and `--resume` coexistence / idempotency.** A daemon
+  invoked with both flags, or restarted with the same `--launch` list,
+  must decide whether previously-launched runs are skipped, replaced, or
+  duplicated. The semantics are not yet pinned down.
+- **Agent introspection of live runs.** Inspecting a still-running
+  orchestrator (state, step, recent output) from outside the daemon
+  process is not yet exposed beyond the existing run-status surface.
+- **`asking`-state runs becoming answerable post-restart.** Today an
+  `<ask>`-paused run registered after a fresh `serve` boot is inactive
+  until explicitly resumed via the CLI; surfacing it as answerable
+  through the daemon HTTP/UI without an explicit resume is future work.
+
+Anything in this list that currently happens to work for some workflow
+shape is incidental, not contractual.
+
+## Operator helper: `container_dev/stop-ray.sh`
+
+For container deployments, `container_dev/stop-ray.sh` is the recommended
+way to drive shutdown. It POSTs `/shutdown` and streams the response,
+giving operators the same per-phase progress lines the daemon emits over
+HTTP:
+
+```bash
+curl --silent --show-error --no-buffer -X POST \
+    "http://${RAYMOND_HOST:-localhost}:${RAYMOND_PORT:-7100}/shutdown"
+```
+
+In the container image, `start-ray.sh --foreground` (the Dockerfile's
+`CMD`) installs a `SIGTERM` trap that invokes this helper, so `docker
+stop` triggers the same tier sequence as a manual `POST /shutdown`:
+
+```bash
+trap '"$STOP_RAY" || true' TERM
+# … start beads_server and `ray serve` in the background …
+wait      # blocks until the trap fires under `docker stop`
+```
+
+The container's PID-1 process therefore drives a graceful shutdown
+within `docker stop`'s default ten-second grace window — or longer if
+the operator passes `docker stop --time=<seconds>` to accommodate T1/T2.

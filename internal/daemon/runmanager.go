@@ -868,6 +868,37 @@ func (rm *RunManager) SubscribeRunEvents(ctx context.Context, runID string) (<-c
 	return ch, cancel, nil
 }
 
+// BroadcastToAllRuns delivers evt to every active per-run subscriber so a
+// client already attached to a per-run /runs/{id}/output stream sees a
+// daemon-wide event (e.g. a shutdown frame) in-band, without having to also
+// be subscribed to /events. The send to each subscriber is non-blocking,
+// matching the per-event recorder's drop-on-slow-consumer policy
+// (see runEntry.startRecorder). The event is intentionally not appended to
+// each entry's replay ring buffer (re.eventLog): that buffer is for events
+// originating on the run's own bus, and a global event delivered at time T
+// to one subscriber should not retroactively appear in another subscriber's
+// initial replay if they connect at T+1 — they will see a fresh /events
+// stream instead.
+func (rm *RunManager) BroadcastToAllRuns(evt any) {
+	rm.mu.RLock()
+	entries := make([]*runEntry, 0, len(rm.runs))
+	for _, re := range rm.runs {
+		entries = append(entries, re)
+	}
+	rm.mu.RUnlock()
+
+	for _, re := range entries {
+		re.logMu.Lock()
+		for _, ch := range re.subscribers {
+			select {
+			case ch <- evt:
+			default:
+			}
+		}
+		re.logMu.Unlock()
+	}
+}
+
 // LookupResolvedInput reads the workflow state for runID and returns the
 // ResolvedInput record matching askID, if any. The state file is the source
 // of truth after a pending input has been claimed and removed from the

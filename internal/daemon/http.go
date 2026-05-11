@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vector76/raymond/internal/manifest"
@@ -150,6 +151,15 @@ type Server struct {
 	defaultMaxFileSize  int64
 	defaultMaxTotalSize int64
 	defaultMaxFileCount int
+
+	// globalSubscribers receives daemon-wide events (e.g. shutdown frames)
+	// published via PublishGlobalEvent. Each subscriber owns a buffered
+	// chan any; publish is non-blocking (slow consumer drops the event)
+	// so the publisher never waits. globalMu serializes append/remove and
+	// is held during fan-out, mirroring runEntry.startRecorder so a
+	// concurrent cancel cannot close a channel mid-send.
+	globalMu          sync.Mutex
+	globalSubscribers []chan any
 }
 
 // NewServer creates a Server wired to the given registry and run manager.
@@ -174,6 +184,7 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 	mux.HandleFunc("GET /runs/{id}/asks/{ask_id}/files", s.handleListInputFiles)
 	mux.HandleFunc("GET /runs/{id}/asks/{ask_id}/files/{path...}", s.handleGetInputFile)
 	mux.HandleFunc("POST /runs/{id}/asks/{ask_id}", s.handleDeliverInput)
+	mux.HandleFunc("GET /events", s.handleGlobalEvents)
 
 	// Serve embedded static UI files at root; API routes above take precedence.
 	staticSub, _ := fs.Sub(staticFiles, "static")
@@ -234,6 +245,110 @@ func (s *Server) ListenAndServe() error {
 // Shutdown gracefully shuts down the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+// globalSubscriberBuffer sizes each global subscriber's channel. A modest
+// buffer absorbs short bursts (the only current publisher is the shutdown
+// coordinator, which emits ~two events per run lifecycle) without coupling
+// the publisher to slow consumers.
+const globalSubscriberBuffer = 16
+
+// PublishGlobalEvent broadcasts evt to every active global subscriber and
+// mirrors it into every per-run event stream so clients already attached to
+// a per-run /runs/{id}/output stream see the event in-band. Sends are
+// non-blocking: a slow or dead subscriber is dropped from this delivery,
+// not awaited. The caller does not need to hold any lock.
+//
+// Fan-out runs under globalMu so a concurrent cancel cannot remove and
+// close a channel between snapshot and send (which would panic on a
+// closed-channel send). This mirrors runEntry.startRecorder's pattern:
+// cancel acquires the same lock to remove before closing, so any channel
+// reachable here is guaranteed open. The mirror to per-run streams is
+// unconditional: callers (currently only the shutdown coordinator) emit a
+// small, controlled set of daemon-wide frames, so duplicating them onto
+// every active per-run stream costs little and keeps the in-band UX simple.
+func (s *Server) PublishGlobalEvent(evt any) {
+	s.globalMu.Lock()
+	for _, ch := range s.globalSubscribers {
+		select {
+		case ch <- evt:
+		default:
+		}
+	}
+	s.globalMu.Unlock()
+
+	if s.runManager != nil {
+		s.runManager.BroadcastToAllRuns(evt)
+	}
+}
+
+// SubscribeGlobalEvents returns a channel that receives daemon-wide events
+// published via PublishGlobalEvent and a cancel function that removes the
+// subscription and drains/closes the channel. The pattern mirrors
+// RunManager.SubscribeRunEvents: a buffered chan any plus a once-guarded
+// cancel that removes the entry under the lock.
+func (s *Server) SubscribeGlobalEvents() (<-chan any, func()) {
+	ch := make(chan any, globalSubscriberBuffer)
+
+	s.globalMu.Lock()
+	s.globalSubscribers = append(s.globalSubscribers, ch)
+	s.globalMu.Unlock()
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			s.globalMu.Lock()
+			for i, c := range s.globalSubscribers {
+				if c == ch {
+					s.globalSubscribers = append(s.globalSubscribers[:i], s.globalSubscribers[i+1:]...)
+					break
+				}
+			}
+			s.globalMu.Unlock()
+			close(ch)
+		})
+	}
+	return ch, cancel
+}
+
+// handleGlobalEvents serves GET /events as an SSE stream of daemon-wide
+// events. It mirrors handleRunOutput's framing (text/event-stream headers,
+// connected comment to flush headers, JSON-encoded events with the type
+// discriminator added by marshalSSEEvent) so a single client-side parser
+// works for both streams.
+func (s *Server) handleGlobalEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "streaming not supported"})
+		return
+	}
+
+	eventCh, cancel := s.SubscribeGlobalEvents()
+	defer cancel()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	fmt.Fprintf(w, ": connected\n\n")
+	flusher.Flush()
+
+	for {
+		select {
+		case event, ok := <-eventCh:
+			if !ok {
+				return
+			}
+			data, err := marshalSSEEvent(event)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 // --- JSON response/request types ---

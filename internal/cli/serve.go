@@ -154,6 +154,29 @@ API or web UI.`,
 			}
 			rm.SetPendingRegistry(pr)
 
+			// Construct the daemon-wide shutdown signal and install it on the
+			// run manager so every subsequent LaunchRun forwards it into the
+			// orchestrator's ExecutionContext. Executors then inject
+			// RAYMOND_STOP_REQUESTED / RAYMOND_STOP_SENTINEL into shell-step
+			// env once Request() flips. The sentinel path lives under
+			// raymondDir so workflow scripts can poll a stable on-disk marker.
+			shutdownSignal := daemon.NewShutdownSignal(raymondDir)
+			// Clear any sentinel left over from a previous crashed daemon
+			// *before* announcing the HTTP/MCP transports — once accepting
+			// work, an executor consulting a stale sentinel would mistakenly
+			// believe shutdown is in progress.
+			if err := shutdownSignal.RemoveStaleSentinel(); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to remove stale shutdown sentinel: %v\n", err)
+			}
+			// Unconditional cleanup on serve exit. Combined with the startup
+			// clear above this gives the at-most-one stale sentinel guarantee.
+			defer func() {
+				if err := shutdownSignal.RemoveStaleSentinel(); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to remove shutdown sentinel on exit: %v\n", err)
+				}
+			}()
+			rm.SetShutdownSignal(shutdownSignal)
+
 			// Extract the configured budget. config.ValidateConfig accepts
 			// non-negative floats (with 0 meaning unlimited). We forward only
 			// strictly positive caps as the server default; absent, malformed,
@@ -180,18 +203,52 @@ API or web UI.`,
 				effectiveServerDSP = dangerouslySkipPermissions
 			}
 
+			// The event sink wired into the coordinator broadcasts
+			// ShutdownRequested/ShutdownComplete frames over /events and
+			// per-run streams. With no HTTP server it has nowhere to land,
+			// so we substitute a no-op (the MCP transport has no equivalent
+			// broadcast channel for daemon-wide events).
+			eventSink := func(_ any) {}
+
+			var srv *daemon.Server
 			if !merged.NoHTTP {
-				srv := daemon.NewServer(reg, rm, merged.Port)
+				srv = daemon.NewServer(reg, rm, merged.Port)
 				srv.SetPendingRegistry(pr)
 				srv.SetDefaultBudget(configBudget)
 				srv.SetDefaultDangerouslySkipPermissions(effectiveServerDSP)
 				srv.SetDefaultUploadCaps(merged.MaxFileSize, merged.MaxTotalSize, merged.MaxFileCount)
+				eventSink = srv.PublishGlobalEvent
+			}
+
+			// Construct the coordinator after the server (if any) so we can
+			// pass its publish surface as the event sink. The rm is the
+			// runFleet — *RunManager satisfies that interface via the
+			// compile-time assertion in shutdowncoordinator.go.
+			t1 := merged.ShutdownTier1Timeout
+			t2 := merged.ShutdownTier2Timeout
+			coordinator := daemon.NewShutdownCoordinator(rm, shutdownSignal, eventSink)
+			if srv != nil {
+				// Install the coordinator and signal on the server *before*
+				// ListenAndServe so an early POST /shutdown or POST /runs
+				// can't race in and observe an unconfigured handler:
+				// SetShutdownCoordinator wires the /shutdown handler with the
+				// default T1/T2 (used when the request body omits them), and
+				// SetShutdownSignal primes the launch guard so POST /runs
+				// returns 503 once Request() flips.
+				srv.SetShutdownCoordinator(coordinator, t1, t2)
+				srv.SetShutdownSignal(shutdownSignal)
+
 				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
 				go func() {
 					if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 						fmt.Fprintf(cmd.ErrOrStderr(), "HTTP server error: %v\n", err)
 					}
 				}()
+				// Final HTTP shutdown after the coordinator has already
+				// drained all runs. Kept at the original short timeout: by
+				// the time this defer fires, ListenAndServe only needs to
+				// release sockets — every in-flight orchestrator goroutine
+				// has already exited via the tier sequence.
 				defer func() {
 					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -230,6 +287,14 @@ API or web UI.`,
 			case <-mcpDone:
 				fmt.Fprintf(logOut, "\nMCP transport closed, shutting down...\n")
 			}
+
+			// Drive the tier sequence. Equivalent to a self-issued
+			// POST /shutdown: the subscribe-or-start contract means a
+			// concurrent human-initiated /shutdown (or a second signal)
+			// attaches to this same sequence rather than racing it. The
+			// result is broadcast via eventSink during Run — discarding
+			// it here is intentional.
+			_ = coordinator.Run(context.Background(), t1, t2)
 
 			return nil
 		},

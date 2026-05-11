@@ -503,6 +503,53 @@ func (rm *RunManager) ListRuns() []RunInfo {
 	return result
 }
 
+// SnapshotActive returns a snapshot of currently-active (non-terminal) runs.
+// "Active" means status is RunStatusRunning or RunStatusAsking — recovered
+// or already-terminal runs are skipped, since the shutdown coordinator only
+// needs to track runs that could still be making progress.
+//
+// The returned slice is owned by the caller; mutating it does not affect
+// internal state. Each entry carries just the minimum the coordinator needs
+// to identify and report on the run.
+func (rm *RunManager) SnapshotActive() []RunSummary {
+	rm.mu.RLock()
+	entries := make([]*runEntry, 0, len(rm.runs))
+	for _, re := range rm.runs {
+		entries = append(entries, re)
+	}
+	rm.mu.RUnlock()
+
+	out := make([]RunSummary, 0, len(entries))
+	for _, re := range entries {
+		re.mu.Lock()
+		status := re.info.Status
+		summary := RunSummary{
+			ID:         re.info.RunID,
+			WorkflowID: re.info.WorkflowID,
+			Status:     status,
+		}
+		re.mu.Unlock()
+		switch status {
+		case RunStatusRunning, RunStatusAsking:
+			out = append(out, summary)
+		}
+	}
+	return out
+}
+
+// DoneCh returns the per-run done channel that closes when the run reaches
+// a terminal state. Returns nil for unknown runs. Used by the shutdown
+// coordinator to classify per-run outcomes by observing close timing.
+func (rm *RunManager) DoneCh(runID string) <-chan struct{} {
+	rm.mu.RLock()
+	re, ok := rm.runs[runID]
+	rm.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return re.doneCh
+}
+
 // QuiesceAll signals every active run to drain gracefully by closing its
 // per-run stop channel. The orchestrator observes the closed channel and
 // stops launching new executors, letting in-flight agents reach their

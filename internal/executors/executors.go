@@ -30,6 +30,16 @@ type sharedStepState struct {
 	m  map[string]int // per-agent step counter for debug filenames
 }
 
+// ShutdownSignal is the minimal contract the executor package needs to learn
+// that the daemon is shutting down and where the on-disk sentinel lives. It is
+// defined here (rather than imported from internal/daemon) to keep the executor
+// package free of a daemon dependency; *daemon.ShutdownSignal naturally
+// satisfies it.
+type ShutdownSignal interface {
+	IsRequested() bool
+	SentinelPath() string
+}
+
 // ExecutionContext holds shared configuration and mutable step-counters passed
 // to every executor invocation.
 type ExecutionContext struct {
@@ -41,6 +51,11 @@ type ExecutionContext struct {
 	DefaultEffort              string  // empty = no override
 	Timeout                    float64 // ≤ 0 = no timeout
 	DangerouslySkipPermissions bool
+
+	// ShutdownSignal, when non-nil and IsRequested, causes shell-step env to
+	// receive RAYMOND_STOP_REQUESTED=1 and RAYMOND_STOP_SENTINEL=<path>. Nil in
+	// the CLI `ray run` path (no daemon) — leaving it zero means "never inject."
+	ShutdownSignal ShutdownSignal
 
 	steps *sharedStepState // shared mutable state for step counters
 }

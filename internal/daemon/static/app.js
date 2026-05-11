@@ -4,6 +4,7 @@
   // --- State ---
   var selectedRunID = null;
   var eventSource = null;
+  var globalEvents = null;
   var pollTimer = null;
   var POLL_INTERVAL = 3000;
   // Cached signature of the last resolved-inputs payload we rendered, scoped
@@ -11,6 +12,14 @@
   // the design, so polling can short-circuit DOM rebuilds when the response
   // hasn't changed — preventing image/PDF embeds from flashing every tick.
   var lastResolvedSig = null;
+  // Shutdown dedupe flags. The same shutdown_requested / shutdown_complete
+  // frame is delivered on both the global /events stream and every active
+  // per-run stream (bead-12 mirrors global events into per-run subscribers),
+  // so a UI subscribed to both will see each event twice. Dedupe is by type,
+  // not by payload — one banner total, one round of EventSource closes total.
+  var shutdownBannerShown = false;
+  var shutdownCompleted = false;
+  var shutdownBannerEl = null;
 
   // --- DOM refs ---
   var workflowsEl = document.getElementById("workflows");
@@ -221,6 +230,13 @@
 
       workflowsEl.appendChild(card);
     });
+
+    // If shutdown announced before/during this render (initial-fetch race, or
+    // the workflows-retry empty-state being clicked), the freshly-built
+    // buttons would otherwise come up enabled. Sweep them off.
+    if (shutdownBannerShown) {
+      disableLaunchButtons();
+    }
   }
 
   function renderRunCard(run, container) {
@@ -849,6 +865,15 @@
     eventSource.onmessage = function (e) {
       try {
         var evt = JSON.parse(e.data);
+        // Shutdown frames are mirrored from the global stream into every
+        // per-run subscriber. Route them through the global handler so the
+        // dedupe flags fire once, and skip the output log entirely — they
+        // are not per-run output.
+        if (evt && evt.type &&
+            (evt.type === "shutdown_requested" || evt.type === "shutdown_complete")) {
+          handleGlobalEvent(evt);
+          return;
+        }
         appendOutputEvent(evt);
       } catch (err) {
         appendOutputLine(e.data);
@@ -870,6 +895,107 @@
         eventSource = null;
       }
     };
+  }
+
+  // connectGlobalEvents opens the daemon-wide /events SSE stream. It is the
+  // page-scoped feed for events that aren't tied to a specific run — today,
+  // just the shutdown lifecycle. The stream stays open for the lifetime of
+  // the page; we only close it once shutdown_complete fires (or proactively
+  // close-and-suppress retries below if the daemon dies first).
+  function connectGlobalEvents() {
+    globalEvents = new EventSource("/events");
+    globalEvents.onmessage = function (e) {
+      try {
+        var evt = JSON.parse(e.data);
+        handleGlobalEvent(evt);
+      } catch (err) {
+        // Malformed frames are dropped silently — the per-run stream's
+        // best-effort posture applies here too.
+      }
+    };
+    globalEvents.onerror = function () {
+      // After shutdown_complete the server-side close is intentional;
+      // EventSource would otherwise begin retrying against a dead daemon.
+      // For non-shutdown errors leave the default retry behaviour in place
+      // so a transient hiccup recovers on its own.
+      if (shutdownCompleted && globalEvents) {
+        globalEvents.close();
+        globalEvents = null;
+      }
+    };
+  }
+
+  // ensureShutdownBanner creates (once) and returns the banner element that
+  // sits at the top of <main>. Spanning both grid columns is handled in CSS.
+  // role="status" (implicit aria-live="polite") tells screen readers to
+  // announce the text when we set it, and again when we swap to the final
+  // "Server shut down" message.
+  function ensureShutdownBanner() {
+    if (shutdownBannerEl) return shutdownBannerEl;
+    shutdownBannerEl = document.createElement("div");
+    shutdownBannerEl.id = "shutdown-banner";
+    shutdownBannerEl.className = "shutdown-banner";
+    shutdownBannerEl.setAttribute("role", "status");
+    var main = document.querySelector("main");
+    if (main) {
+      main.insertBefore(shutdownBannerEl, main.firstChild);
+    } else {
+      document.body.insertBefore(shutdownBannerEl, document.body.firstChild);
+    }
+    return shutdownBannerEl;
+  }
+
+  // disableLaunchButtons turns off any "launch run" controls so the user
+  // can't kick off new work while the daemon is draining. Workflow cards are
+  // fetched once at startup and not re-rendered on poll, so a one-shot pass
+  // suffices.
+  function disableLaunchButtons() {
+    var buttons = workflowsEl.querySelectorAll("button.btn-primary");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].disabled = true;
+    }
+  }
+
+  function handleGlobalEvent(evt) {
+    if (!evt || !evt.type) return;
+    switch (evt.type) {
+      case "shutdown_requested":
+        // Dedupe across the per-run and global streams (see state-section
+        // comment). First arrival renders; subsequent duplicates are noops.
+        if (shutdownBannerShown) return;
+        shutdownBannerShown = true;
+        var runs = Array.isArray(evt.active_runs) ? evt.active_runs : [];
+        var n = runs.length;
+        var banner = ensureShutdownBanner();
+        banner.textContent =
+          "Server shutting down — " + n + " run" + (n !== 1 ? "s" : "") + " draining";
+        banner.classList.remove("shutdown-banner-final");
+        disableLaunchButtons();
+        break;
+      case "shutdown_complete":
+        if (shutdownCompleted) return;
+        shutdownCompleted = true;
+        var finalBanner = ensureShutdownBanner();
+        finalBanner.textContent = "Server shut down";
+        finalBanner.classList.add("shutdown-banner-final");
+        document.body.classList.add("shutdown-final");
+        // Stop polling — every request from here on would 5xx.
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        // Explicitly close every open EventSource so the browser does not
+        // retry against the dying daemon's TCP close.
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        if (globalEvents) {
+          globalEvents.close();
+          globalEvents = null;
+        }
+        break;
+    }
   }
 
   function appendOutputEvent(evt) {
@@ -1077,6 +1203,10 @@
     refreshWorkflows();
     refreshAll();
     pollTimer = setInterval(refreshAll, POLL_INTERVAL);
+    // Open the page-wide /events stream so the runs list reacts to
+    // daemon-level events (shutdown, today) even when no per-run stream is
+    // open.
+    connectGlobalEvents();
   }
 
   // --- Theme ---

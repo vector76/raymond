@@ -573,6 +573,30 @@ section h2 {
   align-items: center;
 }
 
+/* Shutdown banner — injected at the top of <main> by app.js when the daemon
+ * announces a shutdown. Spans both grid columns so it reads as page-wide. */
+.shutdown-banner {
+  grid-column: 1 / -1;
+  background: var(--warning);
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  text-align: center;
+}
+
+.shutdown-banner-final {
+  background: var(--text-secondary);
+}
+
+/* After shutdown_complete, grey the UI so it reads as inert. Pointer events
+ * are dropped because every API call would 5xx against the dead daemon. The
+ * banner itself is excluded so it stays legible. */
+body.shutdown-final main > *:not(.shutdown-banner) {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   main {

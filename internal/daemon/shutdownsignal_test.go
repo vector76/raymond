@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -99,4 +100,66 @@ func TestShutdownSignal_SentinelPath(t *testing.T) {
 	s := NewShutdownSignal(dir)
 
 	assert.Equal(t, filepath.Join(dir, "shutdown.sentinel"), s.SentinelPath())
+}
+
+// assertFileExists is a small helper used by the sentinel tests below.
+func assertFileExists(t *testing.T, path string) {
+	t.Helper()
+	_, err := os.Stat(path)
+	assert.NoError(t, err, "expected sentinel file to exist at %s", path)
+}
+
+func TestShutdownSignal_RequestWritesSentinel(t *testing.T) {
+	s := NewShutdownSignal(t.TempDir())
+
+	// Sanity: sentinel does not yet exist.
+	_, err := os.Stat(s.SentinelPath())
+	require.True(t, os.IsNotExist(err), "sentinel must not exist before Request")
+
+	s.Request()
+
+	assertFileExists(t, s.SentinelPath())
+}
+
+func TestShutdownSignal_RequestExactlyOnceCreate(t *testing.T) {
+	s := NewShutdownSignal(t.TempDir())
+
+	require.NotPanics(t, func() {
+		s.Request()
+		s.Request()
+	})
+
+	// File-level idempotency: file is present, no error path observable.
+	assertFileExists(t, s.SentinelPath())
+}
+
+func TestShutdownSignal_WriteSentinelIdempotent(t *testing.T) {
+	s := NewShutdownSignal(t.TempDir())
+
+	require.NoError(t, s.WriteSentinel())
+	require.NoError(t, s.WriteSentinel(), "second WriteSentinel must not error on existing file")
+	assertFileExists(t, s.SentinelPath())
+}
+
+func TestShutdownSignal_RemoveStaleSentinel_Absent(t *testing.T) {
+	s := NewShutdownSignal(t.TempDir())
+
+	// No file present — must be a silent success.
+	require.NoError(t, s.RemoveStaleSentinel())
+
+	_, err := os.Stat(s.SentinelPath())
+	assert.True(t, os.IsNotExist(err), "file must still be absent after no-op removal")
+}
+
+func TestShutdownSignal_RemoveStaleSentinel_Present(t *testing.T) {
+	s := NewShutdownSignal(t.TempDir())
+
+	// Manually create the sentinel — simulates a leftover from a crashed run.
+	require.NoError(t, os.WriteFile(s.SentinelPath(), nil, 0o644))
+	assertFileExists(t, s.SentinelPath())
+
+	require.NoError(t, s.RemoveStaleSentinel())
+
+	_, err := os.Stat(s.SentinelPath())
+	assert.True(t, os.IsNotExist(err), "sentinel must be gone after RemoveStaleSentinel")
 }

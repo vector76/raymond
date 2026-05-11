@@ -158,6 +158,17 @@ type RunOptions struct {
 	// observers from production code (e.g. the CLI). Tests use SetBusHook
 	// from export_test.go instead.
 	ObserverSetup func(*bus.Bus)
+
+	// StopSignalCh, when receivable, triggers a graceful quiesce: the
+	// orchestrator stops launching new executors and lets in-flight
+	// agent goroutines drain to their next-state boundary, then writes
+	// state. The return value is nil for a pure stop-signal pause, or
+	// *PendingAskError if at least one agent ends up in the asking
+	// status (ask-driven semantics win when both apply). Sending a
+	// single value or closing the channel are both valid ways to
+	// signal. A nil channel never selects, so leaving this unset
+	// disables the feature.
+	StopSignalCh <-chan struct{}
 }
 
 // stepResult is sent by an agent goroutine when its executor call completes.
@@ -391,6 +402,13 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	// nil when not in daemon mode (nil channels block forever in select,
 	// effectively disabling the case).
 	daemonInputCh := askInputCh(opts)
+
+	// Local copy of the stop-signal channel so we can nil it out after
+	// the first receive. Without that, a closed StopSignalCh would
+	// fire on every select iteration (busy-spin) while we wait for
+	// in-flight executors to drain.
+	stopSignalCh := opts.StopSignalCh
+
 	activeAsk := ""
 	var preAskQueue []string
 
@@ -481,12 +499,17 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			// AskInputCh and resume agents as input arrives.
 			if opts.DaemonMode && hasAskingAgents(ws.Agents) {
 				// fall through to select
-			} else if pausing && opts.OnAsk == "pause" {
-				// Quiesce point: all goroutines have drained while pausing was
-				// in effect (at least one agent hit <ask>). The remaining
-				// agents are either asking or held at their next state
-				// boundary. Write state and exit so the caller can serve the
-				// ask or resume later.
+			} else if pausing {
+				// Quiesce point: all goroutines have drained while pausing
+				// was in effect. Two paths lead here:
+				//   1. At least one agent hit <ask> with OnAsk="pause".
+				//      The remaining agents are either asking or held at
+				//      their next-state boundary; return PendingAskError
+				//      so the caller can serve the ask or resume later.
+				//   2. An external StopSignalCh triggered a graceful
+				//      quiesce. No asking agents are present; return nil
+				//      after persisting state so the workflow can be
+				//      resumed cleanly.
 				b.Emit(events.WorkflowPaused{
 					WorkflowID:       workflowID,
 					TotalCostUSD:     ws.TotalCostUSD,
@@ -495,6 +518,13 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				})
 				if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
 					return err
+				}
+
+				if !hasAskingAgents(ws.Agents) {
+					// Stop-signal-induced pause with no pending asks
+					// → clean exit. Same state-file write path used
+					// above; no schema change.
+					return nil
 				}
 
 				// Find the active asking agent to populate the structured output.
@@ -579,6 +609,17 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
+		case <-stopSignalCh:
+			// External quiesce request: stop launching successors and
+			// let in-flight executors drain to their next-state
+			// boundary. The existing launchActive short-circuit on
+			// pausing prevents any new launches; we wait for the
+			// running set to empty and then hit the terminal block
+			// above. Nil out the local channel so a closed signal
+			// does not re-fire on every subsequent select iteration.
+			pausing = true
+			stopSignalCh = nil
 
 		case input := <-daemonInputCh:
 			idx := findAskingAgent(ws.Agents, input.AskID)

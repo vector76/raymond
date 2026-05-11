@@ -4019,3 +4019,196 @@ func TestResumeAskSerializationRoundTrip(t *testing.T) {
 	// Executor was called: once for START.md (run 1) and once for FINISH.md (run 2).
 	assert.Equal(t, int32(2), callCount.Load())
 }
+
+// --------------------------------------------------------------------------
+// StopSignalCh: external graceful quiesce
+// --------------------------------------------------------------------------
+
+// TestStopSignalIdleQuiesce: orchestrator is otherwise idle (single executor
+// is in flight but has not yet produced a transition). The stop signal
+// arrives; the executor then emits a goto. The orchestrator must drain
+// without relaunching, persist state, and return nil.
+func TestStopSignalIdleQuiesce(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	stopCh := make(chan struct{})
+	var callCount atomic.Int32
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, _ *wfstate.AgentState) (executors.ExecutionResult, error) {
+			callCount.Add(1)
+			// Signal arrives now; the sleep gives the main goroutine
+			// time to receive the signal via select before our result
+			// lands. This makes the test deterministic regardless of
+			// goroutine scheduling.
+			close(stopCh)
+			time.Sleep(50 * time.Millisecond)
+			return gotoResult("NEXT.md"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.StopSignalCh = stopCh
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Exactly one launch: the signal prevented relaunch after goto.
+	assert.Equal(t, int32(1), callCount.Load())
+
+	// State persisted with the agent held at its next-state boundary.
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "NEXT.md", ws.Agents[0].CurrentState)
+	assert.Equal(t, "", ws.Agents[0].Status, "agent should be held at boundary, not paused or asking")
+}
+
+// TestStopSignalSingleInFlightDrains: one agent is running when the
+// signal arrives. Its result is processed but it is not relaunched.
+func TestStopSignalSingleInFlightDrains(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	stopCh := make(chan struct{})
+	var callCount atomic.Int32
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, _ *wfstate.AgentState) (executors.ExecutionResult, error) {
+			callCount.Add(1)
+			// Send (rather than close) to exercise the send-once path.
+			stopCh <- struct{}{}
+			time.Sleep(50 * time.Millisecond)
+			return gotoResult("STAGE2.md"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	var pausedEvents []events.WorkflowPaused
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(e events.WorkflowPaused) {
+			pausedEvents = append(pausedEvents, e)
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.StopSignalCh = stopCh
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Mock executor was called exactly once — no relaunch after the
+	// transition was processed under pausing=true.
+	assert.Equal(t, int32(1), callCount.Load())
+
+	// WorkflowPaused was emitted as part of the quiesce sequence.
+	require.Len(t, pausedEvents, 1)
+	assert.Equal(t, wfID, pausedEvents[0].WorkflowID)
+
+	// State written: one agent, held at STAGE2.md with status="".
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, "STAGE2.md", ws.Agents[0].CurrentState)
+	assert.Equal(t, "", ws.Agents[0].Status)
+}
+
+// TestStopSignalMultiAgentDrains: several agents are running when the
+// signal arrives. Each emits a transition and drains to its next-state
+// boundary without relaunching.
+func TestStopSignalMultiAgentDrains(t *testing.T) {
+	dir, wfID := setupMultiAgentWorkflow(t, []wfstate.AgentState{
+		{ID: "alpha", CurrentState: "A.md"},
+		{ID: "beta", CurrentState: "B.md"},
+		{ID: "gamma", CurrentState: "C.md"},
+	})
+
+	stopCh := make(chan struct{})
+	var signaled atomic.Bool
+	var callCounts sync.Map // agent ID → *atomic.Int32
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			cnt, _ := callCounts.LoadOrStore(agent.ID, new(atomic.Int32))
+			cnt.(*atomic.Int32).Add(1)
+			// The first goroutine to reach this point closes the
+			// signal; subsequent ones just proceed. The brief sleep
+			// before returning gives the main loop time to set
+			// pausing=true before our result arrives.
+			if signaled.CompareAndSwap(false, true) {
+				close(stopCh)
+			}
+			time.Sleep(50 * time.Millisecond)
+			return gotoResult(agent.ID + "_NEXT.md"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.StopSignalCh = stopCh
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	require.NoError(t, err)
+
+	// Each agent launched exactly once (no relaunch).
+	for _, id := range []string{"alpha", "beta", "gamma"} {
+		v, ok := callCounts.Load(id)
+		require.True(t, ok, "agent %s should have been launched", id)
+		assert.Equal(t, int32(1), v.(*atomic.Int32).Load(),
+			"agent %s should be launched exactly once, no relaunch after signal", id)
+	}
+
+	// All three agents persisted at their boundary states (status="").
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 3)
+	for _, a := range ws.Agents {
+		assert.True(t, strings.HasSuffix(a.CurrentState, "_NEXT.md"),
+			"agent %s unexpected state %q", a.ID, a.CurrentState)
+		assert.Equal(t, "", a.Status,
+			"agent %s should be held at boundary, not paused or asking", a.ID)
+	}
+}
+
+// TestStopSignalConcurrentAskWins: when an agent emits <ask> at roughly
+// the same time the stop signal arrives, the ask-driven pause semantic
+// wins — PendingAskError surfaces because at least one agent ends up in
+// the asking status.
+func TestStopSignalConcurrentAskWins(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	stopCh := make(chan struct{})
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, _ *wfstate.AgentState) (executors.ExecutionResult, error) {
+			// Close the signal just before returning the ask result so
+			// both events become observable to the orchestrator at
+			// roughly the same time. The orchestrator may receive the
+			// signal first, the result first, or process them in
+			// either order — regardless, an asking agent must surface
+			// as PendingAskError.
+			close(stopCh)
+			time.Sleep(20 * time.Millisecond)
+			return askResult("AFTER.md", "Need input"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(dir)
+	opts.OnAsk = "pause"
+	opts.StopSignalCh = stopCh
+
+	err := orchestrator.RunAllAgents(context.Background(), wfID, opts)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr),
+		"expected *PendingAskError (ask semantics win), got %T: %v", err, err)
+	assert.Equal(t, "Need input", askErr.Asking.Prompt)
+	assert.Equal(t, "main", askErr.Asking.AgentID)
+
+	// State written with the agent in asking status.
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, wfstate.AgentStatusAsking, ws.Agents[0].Status)
+}

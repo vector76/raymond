@@ -1167,6 +1167,310 @@ func TestQuiesceAll_DoubleInvokeIsNoOp(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// CancelAll — fleet-wide context cancellation (Tier 3 force-kill)
+// ----------------------------------------------------------------------------
+
+// TestCancelAll_CancelsEveryActiveRun launches several runs whose
+// orchestrators capture their context, then asserts every captured context
+// is cancelled by a single CancelAll call.
+func TestCancelAll_CancelsEveryActiveRun(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	var (
+		mu      sync.Mutex
+		ctxs    = make(map[string]context.Context)
+		started = make(chan struct{}, 4)
+	)
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			mu.Lock()
+			ctxs[workflowID] = ctx
+			mu.Unlock()
+			started <- struct{}{}
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	entry := testWorkflowEntry(t, scopeDir)
+	id1, err := rm.LaunchRun(context.Background(), entry, "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+	id2, err := rm.LaunchRun(context.Background(), entry, "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for orchestrators to start")
+		}
+	}
+
+	rm.CancelAll()
+
+	for _, id := range []string{id1, id2} {
+		mu.Lock()
+		cctx := ctxs[id]
+		mu.Unlock()
+		require.NotNil(t, cctx, "no captured ctx for run %s", id)
+		select {
+		case <-cctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatalf("run %s ctx was not cancelled by CancelAll", id)
+		}
+	}
+
+	_, err = rm.WaitForCompletion(id1, 5*time.Second)
+	require.NoError(t, err)
+	_, err = rm.WaitForCompletion(id2, 5*time.Second)
+	require.NoError(t, err)
+}
+
+// TestCancelAll_SkipsRecoveredEntries: a recovered entry has cancel == nil.
+// CancelAll must not panic and must not attempt to invoke a nil cancel.
+func TestCancelAll_SkipsRecoveredEntries(t *testing.T) {
+	stateDir := ensureStateDir(t)
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "recovered-cancelall",
+		ScopeDir:   "/some/scope",
+		Agents: []wfstate.AgentState{
+			{ID: "main", CurrentState: "S.md", Status: wfstate.AgentStatusPaused, Stack: []wfstate.StackFrame{}},
+		},
+	}
+	data, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, ws.WorkflowID+".json"), data, 0o644))
+
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	// Confirm the entry was recovered and has no live orchestrator.
+	_, ok := rm.GetRun(ws.WorkflowID)
+	require.True(t, ok)
+
+	require.NotPanics(t, func() { rm.CancelAll() })
+}
+
+// ----------------------------------------------------------------------------
+// WaitAllDone — snapshot-based drain wait
+// ----------------------------------------------------------------------------
+
+// releaseGate gives tests a per-run blocking channel keyed by run ID. Each
+// orchestrator goroutine blocks until its gate channel is closed, letting
+// the test stagger run terminations.
+type releaseGate struct {
+	mu       sync.Mutex
+	channels map[string]chan struct{}
+}
+
+func newReleaseGate() *releaseGate {
+	return &releaseGate{channels: make(map[string]chan struct{})}
+}
+
+func (g *releaseGate) get(id string) chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ch, ok := g.channels[id]
+	if !ok {
+		ch = make(chan struct{})
+		g.channels[id] = ch
+	}
+	return ch
+}
+
+// TestWaitAllDone_EmptySetReturnsClosedChannel: with no active runs the
+// returned channel is already closed so callers can select on it without a
+// special case.
+func TestWaitAllDone_EmptySetReturnsClosedChannel(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	ch := rm.WaitAllDone(context.Background())
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("WaitAllDone on empty set should return an already-closed channel")
+	}
+}
+
+// TestWaitAllDone_ClosesWhenLastDoneChCloses: the returned channel must
+// remain open until the *last* run in the snapshot has terminated.
+func TestWaitAllDone_ClosesWhenLastDoneChCloses(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	gate := newReleaseGate()
+	started := make(chan string, 4)
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			started <- workflowID
+			<-gate.get(workflowID)
+			return nil
+		},
+	}
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	entry := testWorkflowEntry(t, scopeDir)
+	const n = 3
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		id, err := rm.LaunchRun(context.Background(), entry, "", 5.0, "", false, "", nil)
+		require.NoError(t, err)
+		ids = append(ids, id)
+	}
+	// Make sure every orchestrator is parked at its gate before we snapshot.
+	for i := 0; i < n; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("orchestrator did not start in time")
+		}
+	}
+
+	waitCh := rm.WaitAllDone(context.Background())
+
+	// Release the first n-1 runs one at a time. waitCh must stay open until
+	// the final one is released.
+	for i := 0; i < n-1; i++ {
+		close(gate.get(ids[i]))
+		_, err = rm.WaitForCompletion(ids[i], 2*time.Second)
+		require.NoError(t, err)
+		select {
+		case <-waitCh:
+			t.Fatalf("WaitAllDone closed after only %d/%d runs finished", i+1, n)
+		case <-time.After(50 * time.Millisecond):
+			// expected: still waiting on the last run
+		}
+	}
+
+	// Release the last run; waitCh must close.
+	close(gate.get(ids[n-1]))
+	select {
+	case <-waitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitAllDone did not close after the last run finished")
+	}
+}
+
+// TestWaitAllDone_SnapshotIgnoresLaterLaunches: a run launched *after*
+// WaitAllDone returns must not extend the wait — the snapshot is fixed at
+// call time. Verifies the contract that callers (e.g. graceful shutdown)
+// can rely on the wait completing even if some other path tries to launch
+// a new run while shutdown is in progress.
+func TestWaitAllDone_SnapshotIgnoresLaterLaunches(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	gate := newReleaseGate()
+	started := make(chan string, 4)
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			started <- workflowID
+			<-gate.get(workflowID)
+			return nil
+		},
+	}
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	entry := testWorkflowEntry(t, scopeDir)
+	id1, err := rm.LaunchRun(context.Background(), entry, "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+	id2, err := rm.LaunchRun(context.Background(), entry, "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("initial orchestrators did not start")
+		}
+	}
+
+	// Snapshot {id1, id2}.
+	waitCh := rm.WaitAllDone(context.Background())
+
+	// New run launched after the snapshot. Its doneCh must NOT extend waitCh.
+	id3, err := rm.LaunchRun(context.Background(), entry, "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-snapshot run did not start")
+	}
+
+	// Drain the original two; the wait should close even though id3 is
+	// still running.
+	close(gate.get(id1))
+	close(gate.get(id2))
+
+	select {
+	case <-waitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitAllDone should close once the snapshot drains, regardless of new runs")
+	}
+
+	// Sanity: id3 is still active at this point.
+	info, ok := rm.GetRun(id3)
+	require.True(t, ok)
+	assert.Equal(t, RunStatusRunning, info.Status,
+		"post-snapshot run should still be running when WaitAllDone returns")
+
+	// Cleanup: release id3 so the orchestrator goroutine exits before the
+	// test ends.
+	close(gate.get(id3))
+	_, err = rm.WaitForCompletion(id3, 5*time.Second)
+	require.NoError(t, err)
+}
+
+// TestWaitAllDone_CtxCancelClosesEarly: the documented ctx contract says
+// cancelling ctx closes the returned channel early even if runs in the
+// snapshot are still running. Pins that contract so a future refactor that
+// drops the ctx.Done() arm is caught.
+func TestWaitAllDone_CtxCancelClosesEarly(t *testing.T) {
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	fake := &fakeOrchestrator{} // default: blocks on ctx.Done()
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	// Let the orchestrator goroutine reach its ctx-wait.
+	require.Eventually(t, func() bool { return fake.callCount() == 1 },
+		2*time.Second, 10*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waitCh := rm.WaitAllDone(ctx)
+
+	// Active run hasn't terminated, so waitCh must still be open.
+	select {
+	case <-waitCh:
+		t.Fatal("WaitAllDone closed prematurely before ctx-cancel or run drain")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-waitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitAllDone did not close after ctx-cancel")
+	}
+
+	// Cleanup the still-running orchestrator.
+	rm.CancelAll()
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+}
+
+// ----------------------------------------------------------------------------
 // parseRunIDTimestamp
 // ----------------------------------------------------------------------------
 

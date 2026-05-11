@@ -533,6 +533,77 @@ func (rm *RunManager) QuiesceAll() {
 	}
 }
 
+// CancelAll cancels every active run by invoking its context.CancelFunc.
+// Recovered entries (cancel == nil) have no live orchestrator goroutine and
+// are skipped.
+//
+// This is the Tier 3 force-kill surface and is intentionally distinct from
+// QuiesceAll: QuiesceAll signals each run's stop channel so the orchestrator
+// can drain in-flight executors to a clean boundary, leaving the context
+// intact. CancelAll cuts the context immediately; in-flight work is
+// abandoned. QuiesceAll does NOT call the per-run cancel.
+func (rm *RunManager) CancelAll() {
+	rm.mu.RLock()
+	entries := make([]*runEntry, 0, len(rm.runs))
+	for _, re := range rm.runs {
+		entries = append(entries, re)
+	}
+	rm.mu.RUnlock()
+
+	for _, re := range entries {
+		re.mu.Lock()
+		cancel := re.cancel
+		re.mu.Unlock()
+		if cancel == nil {
+			continue // recovered entry, no live orchestrator
+		}
+		cancel()
+	}
+}
+
+// WaitAllDone returns a channel that closes when every run active at call
+// time has reached a terminal state, or when ctx is cancelled.
+//
+// The waited-on set is a *snapshot* taken under the manager lock at call
+// time. Runs launched after the call do not extend the wait, and entries
+// added by a future recoverRuns invocation are likewise ignored. Each entry
+// in the snapshot is observed through its existing doneCh — the same channel
+// WaitForCompletion blocks on — so there is no parallel bookkeeping.
+//
+// ctx semantics: if ctx is cancelled before every doneCh in the snapshot has
+// closed, the internal waiter exits and the returned channel is closed
+// early. The channel is therefore always eventually closed: either every
+// run finished, or the caller asked to stop waiting. An empty snapshot
+// yields an already-closed channel so callers can use the same select arm
+// without a special case.
+func (rm *RunManager) WaitAllDone(ctx context.Context) <-chan struct{} {
+	rm.mu.RLock()
+	dones := make([]chan struct{}, 0, len(rm.runs))
+	for _, re := range rm.runs {
+		dones = append(dones, re.doneCh)
+	}
+	rm.mu.RUnlock()
+
+	out := make(chan struct{})
+	if len(dones) == 0 {
+		close(out)
+		return out
+	}
+
+	go func() {
+		defer close(out)
+		for _, dc := range dones {
+			select {
+			case <-dc:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return out
+}
+
 // CancelRun cancels a running workflow by cancelling its context.
 func (rm *RunManager) CancelRun(runID string) error {
 	rm.mu.RLock()

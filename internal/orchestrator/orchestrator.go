@@ -494,14 +494,16 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				return nil
 			}
 
-			// Daemon mode: if agents are pending an ask, don't exit.
-			// Fall through to the select loop which will read from
-			// AskInputCh and resume agents as input arrives.
-			if opts.DaemonMode && hasAskingAgents(ws.Agents) {
-				// fall through to select
-			} else if pausing {
+			// Quiesce takes priority over the daemon-mode asking-wait:
+			// once pausing is true, the orchestrator must exit so the
+			// shutdown coordinator can see the run drain. Without this
+			// ordering, a daemon-mode run whose only agents are asking
+			// would loop back into the select after StopSignalCh fired
+			// and never reach the exit path below — Tier-2 quiesce
+			// would deadlock until force-kill (bead-10).
+			if pausing {
 				// Quiesce point: all goroutines have drained while pausing
-				// was in effect. Two paths lead here:
+				// was in effect. Three paths lead here:
 				//   1. At least one agent hit <ask> with OnAsk="pause".
 				//      The remaining agents are either asking or held at
 				//      their next-state boundary; return PendingAskError
@@ -510,6 +512,11 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				//      quiesce. No asking agents are present; return nil
 				//      after persisting state so the workflow can be
 				//      resumed cleanly.
+				//   3. StopSignalCh fired in daemon mode while at least
+				//      one agent was already asking. Returns
+				//      PendingAskError — the asking agent is itself a
+				//      safe pause point, so the run is "done" from the
+				//      shutdown coordinator's perspective.
 				b.Emit(events.WorkflowPaused{
 					WorkflowID:       workflowID,
 					TotalCostUSD:     ws.TotalCostUSD,
@@ -558,6 +565,12 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					}
 				}
 				return nil
+			} else if opts.DaemonMode && hasAskingAgents(ws.Agents) {
+				// Daemon mode: agents are pending an ask but we are not
+				// quiescing. Don't exit — fall through to the select
+				// loop which will read from AskInputCh and resume agents
+				// as input arrives (or StopSignalCh to begin a quiesce).
+				// fall through to select
 			} else if allPaused(ws.Agents) {
 				if !opts.NoWait {
 					if waitSec, ok := computeAutoWait(ws.Agents); ok {

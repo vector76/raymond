@@ -4212,3 +4212,59 @@ func TestStopSignalConcurrentAskWins(t *testing.T) {
 	require.Len(t, ws.Agents, 1)
 	assert.Equal(t, wfstate.AgentStatusAsking, ws.Agents[0].Status)
 }
+
+// TestStopSignalDaemonModeAskingAgentExits: bd-lu7f regression. In daemon
+// mode with an asking agent (orchestrator parked in the select on
+// daemonInputCh), a StopSignalCh fire must cause the orchestrator to exit
+// with PendingAskError rather than loop back into the asking-wait branch.
+// The shutdown coordinator's Tier 2 drain relies on this exit.
+func TestStopSignalDaemonModeAskingAgentExits(t *testing.T) {
+	dir, wfID := setupWorkflow(t, "START.md")
+
+	stopCh := make(chan struct{})
+	inputCh := make(chan orchestrator.AskInput, 1) // never sent on
+
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(_ context.Context, _ *wfstate.AgentState) (executors.ExecutionResult, error) {
+			return askResult("AFTER.md", "Need input"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	// Once the agent has entered asking status, send the stop signal —
+	// the orchestrator must observe stopSignalCh from the same select
+	// position where it was waiting on daemonInputCh.
+	orchestrator.SetBusHook(func(b *bus.Bus) {
+		bus.Subscribe(b, func(_ events.AgentAskStarted) {
+			// Brief delay so the orchestrator is parked in the select
+			// before we close the stop channel.
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				close(stopCh)
+			}()
+		})
+	})
+	defer orchestrator.ResetBusHook()
+
+	opts := defaultOpts(dir)
+	opts.OnAsk = "pause"
+	opts.DaemonMode = true
+	opts.AskInputCh = inputCh
+	opts.StopSignalCh = stopCh
+
+	// Hard test timeout via context: if the regression returned, the
+	// orchestrator would loop forever instead of exiting.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := orchestrator.RunAllAgents(ctx, wfID, opts)
+	var askErr *orchestrator.PendingAskError
+	require.True(t, errors.As(err, &askErr),
+		"expected *PendingAskError after StopSignalCh fired with an asking agent, got %T: %v", err, err)
+	assert.Equal(t, "Need input", askErr.Asking.Prompt)
+
+	ws, readErr := wfstate.ReadState(wfID, dir)
+	require.NoError(t, readErr)
+	require.Len(t, ws.Agents, 1)
+	assert.Equal(t, wfstate.AgentStatusAsking, ws.Agents[0].Status)
+}

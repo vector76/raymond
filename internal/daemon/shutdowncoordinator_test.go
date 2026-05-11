@@ -313,6 +313,138 @@ func TestShutdownCoordinator_RequestsSignalBeforeT1Wait(t *testing.T) {
 	<-consumerDone
 }
 
+// TestShutdownCoordinator_AskingRunsDrainInT2: runs whose only agents are in
+// "asking" status appear to QuiesceAll as a safe pause point — the
+// orchestrator's PendingAskError closes the run's done channel during Tier 2,
+// so the coordinator must classify them as Quiesced and never escalate to
+// force-kill. See bd-lu7f acceptance criterion 1.
+func TestShutdownCoordinator_AskingRunsDrainInT2(t *testing.T) {
+	fleet := newFakeFleet()
+	// "asker" stays alive through T1 (status="asking") and only drains
+	// when the coordinator asks the fleet to quiesce. drainOnQuiesce=true
+	// models the orchestrator returning a PendingAskError under
+	// StopSignalCh: the run's done channel closes during Tier 2.
+	r := fleet.addRun("asker", true, false)
+	r.status = RunStatusAsking
+
+	sig := makeTempSignal(t)
+	c := NewShutdownCoordinator(fleet, sig, nil)
+
+	t1 := 50 * time.Millisecond
+	t2 := 200 * time.Millisecond
+	result := c.Run(context.Background(), t1, t2)
+
+	assert.Equal(t, OutcomeQuiesced, result.Outcomes["asker"],
+		"asking-status run must be classified Quiesced when it drains in T2")
+
+	phases := collectProgress(c.Progress())
+	assert.Equal(t, []TierPhase{PhaseTier1Wait, PhaseTier2Quiesce, PhaseComplete}, phases,
+		"asking-state runs must drain in Tier 2 — no force_kill expected")
+	for _, p := range phases {
+		assert.NotEqual(t, PhaseForceKill, p, "force_kill must not be emitted")
+	}
+
+	fleet.mu.Lock()
+	defer fleet.mu.Unlock()
+	assert.Equal(t, 1, fleet.quiesceCalls)
+	assert.Equal(t, 0, fleet.cancelCalls)
+}
+
+// TestShutdownCoordinator_ConcurrentCallersShareResult: two goroutines call
+// Run concurrently. Per the subscribe-or-start contract, the second goroutine
+// must attach to the in-flight sequence, the tier sequence must execute
+// exactly once (QuiesceAll invoked ≤ 1 time), and both callers must observe
+// the same ShutdownResult value.
+func TestShutdownCoordinator_ConcurrentCallersShareResult(t *testing.T) {
+	fleet := newFakeFleet()
+	fleet.addRun("a", true, false)
+	fleet.addRun("b", true, false)
+
+	sig := makeTempSignal(t)
+	c := NewShutdownCoordinator(fleet, sig, nil)
+
+	t1 := 30 * time.Millisecond
+	t2 := 200 * time.Millisecond
+
+	var wg sync.WaitGroup
+	var r1, r2 ShutdownResult
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		r1 = c.Run(context.Background(), t1, t2)
+	}()
+	go func() {
+		defer wg.Done()
+		// Stagger slightly so the second caller almost certainly arrives
+		// after the first has set started=true. The contract holds either
+		// way, but staggering exercises the subscriber path deterministically.
+		time.Sleep(5 * time.Millisecond)
+		r2 = c.Run(context.Background(), t1, t2)
+	}()
+	wg.Wait()
+
+	assert.Equal(t, r1, r2, "both callers must observe the same ShutdownResult")
+	assert.Equal(t, OutcomeQuiesced, r1.Outcomes["a"])
+	assert.Equal(t, OutcomeQuiesced, r1.Outcomes["b"])
+
+	fleet.mu.Lock()
+	defer fleet.mu.Unlock()
+	assert.LessOrEqual(t, fleet.quiesceCalls, 1,
+		"QuiesceAll must be invoked at most once across concurrent Run callers")
+	assert.Equal(t, 0, fleet.cancelCalls, "CancelAll must not fire when T2 drains everything")
+}
+
+// TestShutdownCoordinator_ConcurrentCallersSeeSameProgressStream: each
+// Progress() subscriber receives the full tier sequence, including
+// PhaseComplete, regardless of when it subscribed relative to the
+// in-flight sequence.
+func TestShutdownCoordinator_ConcurrentCallersSeeSameProgressStream(t *testing.T) {
+	fleet := newFakeFleet()
+	fleet.addRun("a", true, false)
+
+	sig := makeTempSignal(t)
+	c := NewShutdownCoordinator(fleet, sig, nil)
+
+	// Two subscribers obtained *before* Run starts so neither relies on
+	// the replay path; each must independently observe the full sequence.
+	prog1 := c.Progress()
+	prog2 := c.Progress()
+
+	t1 := 30 * time.Millisecond
+	t2 := 200 * time.Millisecond
+
+	go func() {
+		_ = c.Run(context.Background(), t1, t2)
+	}()
+
+	want := []TierPhase{PhaseTier1Wait, PhaseTier2Quiesce, PhaseComplete}
+	assert.Equal(t, want, collectProgress(prog1),
+		"first subscriber must see the full tier sequence")
+	assert.Equal(t, want, collectProgress(prog2),
+		"second subscriber must see the same full tier sequence")
+}
+
+// TestShutdownCoordinator_LateSubscriberReplay: a Progress() call after the
+// sequence has already completed still observes the full tier sequence via
+// the replay buffer, and the channel is pre-closed.
+func TestShutdownCoordinator_LateSubscriberReplay(t *testing.T) {
+	fleet := newFakeFleet()
+	fleet.addRun("a", true, false)
+
+	sig := makeTempSignal(t)
+	c := NewShutdownCoordinator(fleet, sig, nil)
+
+	_ = c.Run(context.Background(), 30*time.Millisecond, 200*time.Millisecond)
+
+	// The sequence has finished. A new subscriber must still observe
+	// the full replayed history terminated by a closed channel.
+	late := c.Progress()
+	assert.Equal(t,
+		[]TierPhase{PhaseTier1Wait, PhaseTier2Quiesce, PhaseComplete},
+		collectProgress(late),
+		"late subscriber must replay the full tier sequence")
+}
+
 func TestShutdownCoordinator_PublishesShutdownEvents(t *testing.T) {
 	fleet := newFakeFleet()
 	fleet.addRun("a", false, false)

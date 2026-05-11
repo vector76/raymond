@@ -200,3 +200,32 @@ type ErrorOccurred struct {
 	MaxRetries   int
 	Timestamp    time.Time
 }
+
+// ActiveRunSnapshot captures the minimal per-run state included in a
+// ShutdownRequested event. It is a wire-shape struct: fields carry explicit
+// JSON tags so SSE consumers see a stable snake_case payload.
+type ActiveRunSnapshot struct {
+	ID       string `json:"id"`
+	Workflow string `json:"workflow"`
+	Status   string `json:"status"`
+}
+
+// ShutdownRequested is emitted when a graceful daemon shutdown begins. It
+// reports the active runs at the moment of the request and the two-tier
+// timeout budget the daemon will honour before escalating to forceful
+// termination. Timeouts are encoded as float seconds, matching the existing
+// duration style in this package (see WaitSeconds in WorkflowWaiting).
+type ShutdownRequested struct {
+	ActiveRuns       []ActiveRunSnapshot `json:"active_runs"`
+	Tier1TimeoutSecs float64             `json:"tier_1_timeout_secs"`
+	Tier2TimeoutSecs float64             `json:"tier_2_timeout_secs"`
+	RequestedAt      time.Time           `json:"requested_at"`
+}
+
+// ShutdownComplete is emitted when the daemon has finished its shutdown
+// sequence. Outcomes maps each affected run ID to its terminal disposition:
+// "clean" (run finished on its own), "quiesced" (tier-1 graceful pause), or
+// "killed" (tier-2 forced termination).
+type ShutdownComplete struct {
+	Outcomes map[string]string `json:"outcomes"`
+}

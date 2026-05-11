@@ -2450,3 +2450,83 @@ func TestCamelToSnake(t *testing.T) {
 		assert.Equal(t, tt.expected, camelToSnake(tt.input), "camelToSnake(%q)", tt.input)
 	}
 }
+
+// frameSSE wraps marshalled SSE JSON in the on-the-wire `data: …\n\n` frame
+// used by the streaming handler so we can assert against the final shape a
+// browser would see.
+func frameSSE(t *testing.T, event any) (frame string, payload map[string]any) {
+	t.Helper()
+	data, err := marshalSSEEvent(event)
+	require.NoError(t, err)
+	frame = fmt.Sprintf("data: %s\n\n", data)
+	require.NoError(t, json.Unmarshal(data, &payload))
+	return frame, payload
+}
+
+func TestMarshalSSEEvent_ShutdownRequested(t *testing.T) {
+	requestedAt := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	evt := events.ShutdownRequested{
+		ActiveRuns: []events.ActiveRunSnapshot{
+			{ID: "run-1", Workflow: "wf-a", Status: "running"},
+			{ID: "run-2", Workflow: "wf-b", Status: "paused"},
+		},
+		Tier1TimeoutSecs: 30,
+		Tier2TimeoutSecs: 5,
+		RequestedAt:      requestedAt,
+	}
+
+	frame, payload := frameSSE(t, evt)
+
+	assert.True(t, strings.HasPrefix(frame, "data: {"), "frame should start with `data: {`, got %q", frame)
+	assert.True(t, strings.HasSuffix(frame, "\n\n"), "frame should end with `\\n\\n`")
+
+	assert.Equal(t, "shutdown_requested", payload["type"])
+
+	// active_runs: present, an array, with snake_case per-element keys.
+	rawRuns, ok := payload["active_runs"].([]any)
+	require.True(t, ok, "active_runs should be an array, got %T", payload["active_runs"])
+	require.Len(t, rawRuns, 2)
+	first, ok := rawRuns[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "run-1", first["id"])
+	assert.Equal(t, "wf-a", first["workflow"])
+	assert.Equal(t, "running", first["status"])
+
+	// Tier timeouts: present as JSON numbers (float seconds).
+	t1, ok := payload["tier_1_timeout_secs"].(float64)
+	assert.True(t, ok, "tier_1_timeout_secs should be a JSON number, got %T", payload["tier_1_timeout_secs"])
+	assert.Equal(t, 30.0, t1)
+	t2, ok := payload["tier_2_timeout_secs"].(float64)
+	assert.True(t, ok, "tier_2_timeout_secs should be a JSON number, got %T", payload["tier_2_timeout_secs"])
+	assert.Equal(t, 5.0, t2)
+
+	// requested_at round-trips as an RFC3339 string.
+	rfcStr, ok := payload["requested_at"].(string)
+	require.True(t, ok, "requested_at should be a string, got %T", payload["requested_at"])
+	parsed, err := time.Parse(time.RFC3339Nano, rfcStr)
+	require.NoError(t, err)
+	assert.True(t, parsed.Equal(requestedAt), "requested_at should round-trip; got %s", rfcStr)
+}
+
+func TestMarshalSSEEvent_ShutdownComplete(t *testing.T) {
+	evt := events.ShutdownComplete{
+		Outcomes: map[string]string{
+			"run-1": "clean",
+			"run-2": "quiesced",
+			"run-3": "killed",
+		},
+	}
+
+	frame, payload := frameSSE(t, evt)
+
+	assert.True(t, strings.HasPrefix(frame, "data: {"))
+	assert.True(t, strings.HasSuffix(frame, "\n\n"))
+
+	assert.Equal(t, "shutdown_complete", payload["type"])
+
+	outcomes, ok := payload["outcomes"].(map[string]any)
+	require.True(t, ok, "outcomes should be an object, got %T", payload["outcomes"])
+	assert.Equal(t, "clean", outcomes["run-1"])
+	assert.Equal(t, "quiesced", outcomes["run-2"])
+	assert.Equal(t, "killed", outcomes["run-3"])
+}

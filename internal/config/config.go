@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -434,6 +435,15 @@ func MergeConfig(fileConfig map[string]any, args CLIArgs) CLIArgs {
 // supplied via CLI flag or config file.
 const DefaultServePort = 8080
 
+// Default graceful-shutdown tier timeouts surfaced on MergedServeConfig when
+// the corresponding config keys are absent. T1 is the window in which
+// in-flight runs are given a chance to finish on their own; T2 is the
+// subsequent QuiesceAll window before runs are force-cancelled.
+const (
+	DefaultShutdownTier1Timeout = 1 * time.Hour
+	DefaultShutdownTier2Timeout = 5 * time.Minute
+)
+
 // ServeFileConfig holds values from the [raymond.serve] section of config.toml.
 // Path fields (Root, Workdir) are resolved to absolute paths at load time,
 // relative to the directory containing .raymond/. A pointer or empty/false
@@ -441,16 +451,21 @@ const DefaultServePort = 8080
 //
 // Upload caps (MaxFileSize, MaxTotalSize, MaxFileCount) are zero when the
 // option was not set; the serve resolver treats zero as "unset" and falls
-// through to the daemon's hardcoded defaults.
+// through to the daemon's hardcoded defaults. Shutdown tier timeouts follow
+// the same convention: the parser requires strictly positive values, so a
+// zero ShutdownTier{1,2}Timeout here unambiguously means the key was absent,
+// and MergedServeConfig fills in DefaultShutdownTier{1,2}Timeout.
 type ServeFileConfig struct {
-	Root         string
-	Port         *int
-	MCP          bool
-	NoHTTP       bool
-	Workdir      string
-	MaxFileSize  int64
-	MaxTotalSize int64
-	MaxFileCount int
+	Root                 string
+	Port                 *int
+	MCP                  bool
+	NoHTTP               bool
+	Workdir              string
+	MaxFileSize          int64
+	MaxTotalSize         int64
+	MaxFileCount         int
+	ShutdownTier1Timeout time.Duration
+	ShutdownTier2Timeout time.Duration
 }
 
 // ServeCLIArgs holds values parsed from `ray serve` command-line flags.
@@ -473,27 +488,34 @@ type ServeCLIArgs struct {
 // MergedServeConfig is the resolved configuration the serve command uses.
 // Roots are absolute paths, deduplicated. Upload caps are zero when neither
 // CLI nor config file set them; the daemon resolver treats zero as "unset".
+// Shutdown tier timeouts are always populated — the merge step substitutes
+// DefaultShutdownTier1Timeout / DefaultShutdownTier2Timeout when the file
+// keys are absent.
 type MergedServeConfig struct {
-	Roots        []string
-	Port         int
-	MCP          bool
-	NoHTTP       bool
-	Workdir      string
-	MaxFileSize  int64
-	MaxTotalSize int64
-	MaxFileCount int
+	Roots                []string
+	Port                 int
+	MCP                  bool
+	NoHTTP               bool
+	Workdir              string
+	MaxFileSize          int64
+	MaxTotalSize         int64
+	MaxFileCount         int
+	ShutdownTier1Timeout time.Duration
+	ShutdownTier2Timeout time.Duration
 }
 
 // serveKnownKeys is the recognized set of keys in the [raymond.serve] section.
 var serveKnownKeys = map[string]bool{
-	"root":           true,
-	"port":           true,
-	"mcp":            true,
-	"no_http":        true,
-	"workdir":        true,
-	"max_file_size":  true,
-	"max_total_size": true,
-	"max_file_count": true,
+	"root":                   true,
+	"port":                   true,
+	"mcp":                    true,
+	"no_http":                true,
+	"workdir":                true,
+	"max_file_size":          true,
+	"max_total_size":         true,
+	"max_file_count":         true,
+	"shutdown_tier1_timeout": true,
+	"shutdown_tier2_timeout": true,
 }
 
 // validateServeSection validates and normalizes the raw [raymond.serve] map.
@@ -594,6 +616,31 @@ func validateServeSection(raw map[string]any, configFile string) (ServeFileConfi
 			)}
 		}
 		out.MaxFileCount = int(n)
+	}
+
+	// Shutdown tier timeouts are integer seconds, converted to time.Duration.
+	// Multiplying by time.Second overflows int64 above ~9.2e9 seconds
+	// (~292 years), at which point the resulting Duration wraps negative and
+	// the merge step silently falls back to the default. We don't guard
+	// against this — any value remotely close to that bound is clearly an
+	// out-of-spec input, not a realistic shutdown grace window.
+	if v, ok := raw["shutdown_tier1_timeout"]; ok {
+		n, err := toInt64Positive(v)
+		if err != nil {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'shutdown_tier1_timeout' in %s: %v", configFile, err,
+			)}
+		}
+		out.ShutdownTier1Timeout = time.Duration(n) * time.Second
+	}
+	if v, ok := raw["shutdown_tier2_timeout"]; ok {
+		n, err := toInt64Positive(v)
+		if err != nil {
+			return out, &ConfigError{msg: fmt.Sprintf(
+				"Invalid value for 'shutdown_tier2_timeout' in %s: %v", configFile, err,
+			)}
+		}
+		out.ShutdownTier2Timeout = time.Duration(n) * time.Second
 	}
 
 	return out, nil
@@ -744,6 +791,18 @@ func MergeServeConfig(file ServeFileConfig, args ServeCLIArgs) MergedServeConfig
 	merged.MaxTotalSize = pickPositiveInt64(args.MaxTotalSize, file.MaxTotalSize)
 	merged.MaxFileCount = pickPositiveInt(args.MaxFileCount, file.MaxFileCount)
 
+	// Shutdown tier timeouts: file value if positive, else the hardcoded
+	// default. (There is no CLI flag for these yet — the daemon wiring
+	// lands in a later bead; for now the merged value is always populated.)
+	merged.ShutdownTier1Timeout = file.ShutdownTier1Timeout
+	if merged.ShutdownTier1Timeout <= 0 {
+		merged.ShutdownTier1Timeout = DefaultShutdownTier1Timeout
+	}
+	merged.ShutdownTier2Timeout = file.ShutdownTier2Timeout
+	if merged.ShutdownTier2Timeout <= 0 {
+		merged.ShutdownTier2Timeout = DefaultShutdownTier2Timeout
+	}
+
 	return merged
 }
 
@@ -838,6 +897,14 @@ const configTemplate = `# Raymond configuration file
 # Maximum number of files per upload submission when an <ask> does not
 # declare its own limit (default: 10)
 # max_file_count = 10
+
+# Graceful-shutdown Tier 1 timeout in seconds: how long to wait for in-flight
+# runs to finish on their own after POST /shutdown (default: 3600, i.e. 1h)
+# shutdown_tier1_timeout = 3600
+
+# Graceful-shutdown Tier 2 timeout in seconds: subsequent QuiesceAll window
+# before runs are force-cancelled (default: 300, i.e. 5m)
+# shutdown_tier2_timeout = 300
 `
 
 // InitConfig creates .raymond/config.toml at the project root with all options

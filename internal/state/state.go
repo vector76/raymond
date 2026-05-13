@@ -195,6 +195,16 @@ func (p Pool) poolSubdir() string {
 // .raymond/state/ for PoolCLI, .raymond/serve-state/ for PoolServe. If the
 // raymond directory cannot be discovered, ResolvePoolDir falls back to
 // "<cwd>/.raymond/<subdir>" — the same fallback GetStateDir has always used.
+//
+// Pool selection is intentionally a caller-side decision: there is no env
+// var, file marker, or process-inheritance mechanism that lets a child `ray`
+// process learn it was invoked from inside another ray run. A workflow that
+// shells out to `ray <workflow>` from inside a serve-pool run therefore
+// lands the nested state file in the CLI pool — `ray <workflow>` always
+// resolves to PoolCLI. Authors who want in-process orchestration should use
+// <fork> / <fork-workflow> instead of shelling out. The
+// TestNestedRayLaunchRoutesToCLIPool regression test pins this absence of
+// special-casing.
 func ResolvePoolDir(pool Pool, override string) string {
 	if override != "" {
 		return override

@@ -93,8 +93,6 @@ func newShutdownEnvWorkflow(t *testing.T) *wfstate.WorkflowState {
 // removes. This test goes green once bead-3 deletes the env-injection block
 // in internal/executors/script.go.
 func TestScriptExecutor_StopEnv_NeverInjected(t *testing.T) {
-	t.Skip("pending: bead-3 (remove RAYMOND_STOP_* env injection)")
-
 	cases := []struct {
 		name string
 		sig  executors.ShutdownSignal

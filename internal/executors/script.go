@@ -92,14 +92,6 @@ func (e *ScriptExecutor) Execute(
 	forkAttributes := agent.ForkAttributes
 	env := platform.BuildScriptEnv(workflowID, agentID, agent.TaskFolder, pendingResult, forkAttributes)
 
-	// When the daemon has flipped its shutdown signal, surface that to the
-	// script via well-known env vars so it can quiesce. Absent in CLI mode
-	// (ShutdownSignal is nil) and while the daemon is still healthy.
-	if execCtx.ShutdownSignal != nil && execCtx.ShutdownSignal.IsRequested() {
-		env["RAYMOND_STOP_REQUESTED"] = "1"
-		env["RAYMOND_STOP_SENTINEL"] = execCtx.ShutdownSignal.SentinelPath()
-	}
-
 	// Emit StateStarted.
 	execCtx.Bus.Emit(events.StateStarted{
 		AgentID:   agentID,

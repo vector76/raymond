@@ -3281,6 +3281,69 @@ func TestDaemonModeInputResumesAskingAgent(t *testing.T) {
 	assert.Equal(t, "user-typed-value", capturedPendingResult)
 }
 
+// TestDaemonModeResumeFromAskingStateWaitsForAskInputCh is a regression test
+// for the disjoint-pool Phase-9 finding: when the daemon's recoverRuns path
+// relaunches a run whose persisted state already has at least one agent in
+// the asking status, the orchestrator must NOT short-circuit with
+// PendingAskError. Instead it must drop into the main select loop so input
+// delivered through AskInputCh resumes the asking agent — that is the path
+// `DeliverInput` relies on for recovered asks to be answerable without a
+// per-run resume call.
+//
+// Pre-fix, RunAllAgents returned *PendingAskError immediately whenever an
+// asking agent was seen with no opts.AskInput, even in DaemonMode, so the
+// daemon's relaunchRecoveredRun finished synchronously and any later
+// DeliverInput would land on an orphan channel.
+func TestDaemonModeResumeFromAskingStateWaitsForAskInputCh(t *testing.T) {
+	const askID = "ask-recovered-1"
+
+	dir := filepath.Join(t.TempDir(), ".raymond", "state")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	workflowID := "wf-recovered-ask"
+	// Pre-seed an "asking" state file the way the daemon's runmanager would
+	// have written it before a SIGTERM-and-restart round trip.
+	ws := wfstate.CreateInitialState(workflowID, "workflows/recovered-ask", "1_START.sh", 0, nil, "")
+	ws.Agents[0].Status = wfstate.AgentStatusAsking
+	ws.Agents[0].AskID = askID
+	ws.Agents[0].AskPrompt = "Pick a color"
+	ws.Agents[0].AskNextState = "NEXT.md"
+	require.NoError(t, wfstate.WriteState(workflowID, ws, dir))
+
+	var capturedPendingResult string
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
+		return &funcExec{fn: func(ctx context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			// Only NEXT.md should execute — the recovered asking agent
+			// at 1_START.sh must not be re-run.
+			require.Equal(t, "NEXT.md", agent.CurrentState,
+				"only the post-ask state should execute; recovered asking agent must not re-run its ask state")
+			if agent.PendingResult != nil {
+				capturedPendingResult = *agent.PendingResult
+			}
+			return resultExecResult("done"), nil
+		}}
+	})
+	defer orchestrator.ResetExecutorFactory()
+
+	// Pre-buffer the input so the orchestrator's select picks it up the
+	// moment it reaches the daemon-mode asking-wait branch. The channel's
+	// buffer makes the send non-blocking; ordering relative to the
+	// orchestrator goroutine doesn't matter.
+	inputCh := make(chan orchestrator.AskInput, 1)
+	inputCh <- orchestrator.AskInput{AskID: askID, Response: "blue"}
+
+	opts := defaultOpts(dir)
+	opts.OnAsk = "pause"
+	opts.DaemonMode = true
+	opts.AskInputCh = inputCh
+
+	err := orchestrator.RunAllAgents(context.Background(), workflowID, opts)
+	require.NoError(t, err,
+		"DaemonMode resume from asking state must not return PendingAskError; should wait on AskInputCh")
+	assert.Equal(t, "blue", capturedPendingResult,
+		"PendingResult should carry the value delivered through AskInputCh")
+}
+
 func TestDaemonModeMultipleAgentsAskIndependently(t *testing.T) {
 	// Two agents each hit ask at different times. Each gets independent
 	// input delivery via AskInputCh, resumes, and terminates.

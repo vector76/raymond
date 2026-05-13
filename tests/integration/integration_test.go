@@ -705,16 +705,23 @@ func (b *syncBuffer) String() string {
 // with SIGTERM, and asserts that:
 //
 //   - the daemon exits within a generous wall-clock bound with exit code 0;
-//   - the run's state file survives the shutdown and is parseable JSON with
-//     at least one agent recorded (i.e. resumable shape);
-//   - `ray --resume <id>` against the same state directory runs the workflow
-//     to clean completion (state file removed) using a marker file the
-//     daemon-side script left behind before the force-kill.
+//   - the run's state file survives the shutdown in the serve pool
+//     (.raymond/serve-state/) and is parseable JSON with at least one agent
+//     recorded (i.e. resumable shape);
+//   - restarting `ray serve` against the same pool auto-recovers the run
+//     (no per-run resume call), and the marker-aware script then completes
+//     so the orchestrator deletes the state file.
 //
-// The marker-flip approach keeps the resume side deterministic without
+// The marker-flip approach keeps the recovery side deterministic without
 // requiring a second workflow definition: the same `1_START.sh` short-
-// circuits to a <result> when it observes the marker, so resume completes
-// in milliseconds even though the daemon-side execution slept until kill.
+// circuits to a <result> when it observes the marker, so the recovered
+// run completes in milliseconds even though the daemon-side execution
+// slept until kill.
+//
+// State lives strictly in the serve pool throughout: the daemon writes to
+// .raymond/serve-state/ and recovers from the same directory on restart.
+// The CLI pool (.raymond/state/) is never touched by this test, which is
+// the disjoint-pool invariant Phase 9 exists to spot-check.
 func TestServeSIGTERMGracefulShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("SIGTERM-driven shutdown semantics differ on Windows; POSIX-only test")
@@ -725,7 +732,10 @@ func TestServeSIGTERMGracefulShutdown(t *testing.T) {
 	workflowsDir := filepath.Join(tempRoot, "workflows")
 	wfDir := filepath.Join(workflowsDir, "test-shutdown")
 	raymondDir := filepath.Join(tempRoot, ".raymond")
-	stateDir := filepath.Join(raymondDir, "state")
+	// Serve runs land in the serve pool; the CLI pool (.raymond/state/)
+	// is intentionally never written to in this test.
+	serveStateDir := filepath.Join(raymondDir, "serve-state")
+	cliStateDir := filepath.Join(raymondDir, "state")
 	marker := filepath.Join(tempRoot, "marker.txt")
 
 	require.NoError(t, os.MkdirAll(wfDir, 0o755))
@@ -912,46 +922,93 @@ echo '<goto>1_START.sh</goto>'
 		"daemon exit code = %d (want 0)%s",
 		serveCmd.ProcessState.ExitCode(), diagnostics())
 
-	// ---- (c) state file exists in resumable shape ----
-	statePath := filepath.Join(stateDir, runID+".json")
+	// ---- (c) state file exists in resumable shape, in the SERVE pool ----
+	statePath := filepath.Join(serveStateDir, runID+".json")
 	info, err := os.Stat(statePath)
 	require.NoError(t, err,
 		"state file %q must persist across graceful shutdown%s", statePath, diagnostics())
 	require.Greater(t, info.Size(), int64(0), "state file should be non-empty")
 
-	ws, err := wfstate.ReadState(runID, stateDir)
+	ws, err := wfstate.ReadState(runID, serveStateDir)
 	require.NoError(t, err, "state file must be parseable JSON")
 	require.NotEmpty(t, ws.Agents,
-		"state file must record at least one agent so resume has a transition target to pick up")
+		"state file must record at least one agent so recovery has a transition target to pick up")
 	assert.Equal(t, "1_START.sh", ws.Agents[0].CurrentState,
 		"the agent should still be parked at the script state it was killed in")
 
-	// ---- (d) `ray --resume <id>` runs to completion ----
-	// state-dir is hidden but accepted as a flag; pass it explicitly so
-	// the resume process never walks up looking for some other .raymond.
-	// The 30s context bound is purely a safety net: the script
-	// short-circuits via the marker file and should complete in well
-	// under a second.
-	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer resumeCancel()
-	resumeCmd := exec.CommandContext(resumeCtx, binPath,
-		"--resume", runID,
-		"--state-dir", stateDir,
-		"--quiet",
-	)
-	resumeCmd.Dir = tempRoot
-	var resumeOut, resumeErr bytes.Buffer
-	resumeCmd.Stdout = &resumeOut
-	resumeCmd.Stderr = &resumeErr
-	resumeCmd.WaitDelay = 5 * time.Second
-	err = resumeCmd.Run()
-	require.NoError(t, err,
-		"ray --resume %s failed (ctx err=%v):\n-- stdout --\n%s\n-- stderr --\n%s",
-		runID, resumeCtx.Err(), resumeOut.String(), resumeErr.String())
+	// Disjoint-pool invariant: the CLI pool must remain untouched by a
+	// daemon-only flow. The directory may not even exist; either is fine.
+	if entries, statErr := os.ReadDir(cliStateDir); statErr == nil {
+		assert.Empty(t, entries,
+			"CLI pool %s should not be touched by a daemon-only run", cliStateDir)
+	} else {
+		assert.True(t, os.IsNotExist(statErr),
+			"unexpected error reading CLI pool: %v", statErr)
+	}
 
-	// Clean completion → state file is deleted by the orchestrator.
-	_, statErr := os.Stat(statePath)
-	assert.Truef(t, os.IsNotExist(statErr),
-		"state file should be removed after a clean resume completion; got err=%v\n-- resume stdout --\n%s\n-- resume stderr --\n%s",
-		statErr, resumeOut.String(), resumeErr.String())
+	// ---- (d) restart `ray serve` without --clean: daemon auto-recovers ----
+	// In the disjoint-pool model the daemon owns the serve pool exclusively,
+	// so completion is driven by restarting the daemon rather than by a
+	// per-run `ray --resume`. The marker file the killed-mid-flight script
+	// left behind makes the relaunched script short-circuit to <result>.
+	port2, err := func() (int, error) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return 0, err
+		}
+		p := ln.Addr().(*net.TCPAddr).Port
+		return p, ln.Close()
+	}()
+	require.NoError(t, err)
+
+	serveCmd2 := exec.Command(binPath,
+		"serve",
+		"--root", workflowsDir,
+		"--port", fmt.Sprintf("%d", port2),
+	)
+	serveCmd2.Dir = tempRoot
+	var serveOut2, serveErr2 syncBuffer
+	serveCmd2.Stdout = &serveOut2
+	serveCmd2.Stderr = &serveErr2
+	serveCmd2.WaitDelay = 5 * time.Second
+	require.NoError(t, serveCmd2.Start())
+
+	diagnostics2 := func() string {
+		return fmt.Sprintf("\n-- daemon2 stdout --\n%s\n-- daemon2 stderr --\n%s",
+			serveOut2.String(), serveErr2.String())
+	}
+
+	t.Cleanup(func() {
+		if serveCmd2.ProcessState == nil && serveCmd2.Process != nil {
+			_ = serveCmd2.Process.Signal(syscall.SIGKILL)
+			_, _ = serveCmd2.Process.Wait()
+		}
+	})
+
+	// Poll for state-file deletion: the orchestrator removes the state file
+	// when the recovered run completes cleanly. The marker-aware script
+	// should reach <result> in milliseconds once the daemon re-launches it.
+	completionDeadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(statePath); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(completionDeadline) {
+			t.Fatalf("recovered run did not complete within 30s; state file %s still present%s%s",
+				statePath, diagnostics(), diagnostics2())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Tidy: shut the second daemon down. Failure here is informational —
+	// the recovery assertion above is the real point of the test.
+	_ = serveCmd2.Process.Signal(syscall.SIGTERM)
+	shutdownCh := make(chan error, 1)
+	go func() { shutdownCh <- serveCmd2.Wait() }()
+	select {
+	case <-shutdownCh:
+	case <-time.After(15 * time.Second):
+		_ = serveCmd2.Process.Signal(syscall.SIGKILL)
+		<-shutdownCh
+	}
 }

@@ -320,7 +320,15 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 	// Resume-from-ask: when resuming a paused workflow, detect agents in
 	// the asking state and either deliver input or re-present the prompt.
-	if hasAskingAgents(ws.Agents) {
+	//
+	// Daemon-mode carve-out: when DaemonMode is set, the daemon's recovery
+	// path relaunches the run with the asking state intact and expects input
+	// to arrive later via AskInputCh. The main loop's len(running) == 0
+	// branch (further down) has an explicit DaemonMode-and-asking case that
+	// drops into the select and reads from daemonInputCh. Returning
+	// PendingAskError here would short-circuit that path and make a
+	// recovered run unanswerable through DeliverInput.
+	if hasAskingAgents(ws.Agents) && !opts.DaemonMode {
 		if opts.AskInput == "" {
 			// No input provided — re-present the active ask's prompt so
 			// the caller can see what's pending.
@@ -386,7 +394,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		if err := wfstate.WriteState(workflowID, ws, stateDir); err != nil {
 			return fmt.Errorf("write state: %w", err)
 		}
-	} else if opts.AskInput != "" {
+	} else if !hasAskingAgents(ws.Agents) && opts.AskInput != "" {
 		return fmt.Errorf(
 			"no agents are pending an ask; " +
 				"the --input flag on --resume is only valid when a workflow is paused at an <ask> point",

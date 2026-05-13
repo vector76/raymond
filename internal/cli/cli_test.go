@@ -924,6 +924,12 @@ func TestStartSavesDangerouslySkipPermissionsFalseToLaunchParams(t *testing.T) {
 }
 
 func TestStartSavesDefaultLaunchParamsWhenFlagsUnspecified(t *testing.T) {
+	// Chdir into an empty temp dir so config.LoadConfig finds no
+	// .raymond/config.toml — otherwise the project's own config (which may
+	// set model = "opus" or dangerously_skip_permissions = true) leaks into
+	// the assertion below.
+	t.Chdir(t.TempDir())
+
 	stateDir := makeStateDir(t)
 	scope := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
@@ -939,11 +945,10 @@ func TestStartSavesDefaultLaunchParamsWhenFlagsUnspecified(t *testing.T) {
 	require.NoError(t, err)
 	// launch_params must exist even when no explicit flags are passed.
 	require.NotNil(t, ws.LaunchParams)
-	// Model and Effort should be empty when not specified (config.toml doesn't set them).
+	// Model and Effort should be empty when not specified (no config.toml in
+	// scope thanks to the chdir above).
 	assert.Equal(t, "", ws.LaunchParams.Model)
 	assert.Equal(t, "", ws.LaunchParams.Effort)
-	// Note: DangerouslySkipPermissions is intentionally not checked here because
-	// the project's .raymond/config.toml may set it, making the value environment-dependent.
 }
 
 func TestResumeRestoresSavedModel(t *testing.T) {
@@ -1022,6 +1027,11 @@ func TestResumeCLIExplicitFalseOverridesSavedTrue(t *testing.T) {
 }
 
 func TestResumeNoLaunchParamsUsesDefaults(t *testing.T) {
+	// Chdir into an empty temp dir so the resume path's config.LoadConfig
+	// finds no .raymond/config.toml — otherwise the project's own config
+	// (which may set model = "opus") leaks into the assertion below.
+	t.Chdir(t.TempDir())
+
 	stateDir := makeStateDir(t)
 	// Old-style state file with no launch_params.
 	ws := wfstate.CreateInitialState("wf-no-lp", "scope", "START.md", 10.0, nil, "")
@@ -1030,10 +1040,8 @@ func TestResumeNoLaunchParamsUsesDefaults(t *testing.T) {
 	captured, err := runCapturing(t, "--resume", "wf-no-lp", "--state-dir", stateDir)
 	require.NoError(t, err)
 	require.Len(t, captured, 1)
-	// With no launch_params, model should be empty (the .raymond/config.toml doesn't set it).
+	// With no launch_params and no config.toml in scope, model should be empty.
 	assert.Equal(t, "", captured[0].DefaultModel)
-	// Note: DangerouslySkipPermissions is intentionally not checked here because
-	// the project's .raymond/config.toml may set it, making the value environment-dependent.
 }
 
 // --------------------------------------------------------------------------

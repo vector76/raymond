@@ -41,6 +41,7 @@ func (c *CLI) newServeCmd() *cobra.Command {
 		maxTotalSize               int64
 		maxFileCount               int
 		dangerouslySkipPermissions bool
+		clean                      bool
 	)
 
 	cmd := &cobra.Command{
@@ -163,6 +164,25 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 			// on success (it either returns a path or errors), so we can
 			// join directly without a fallback.
 			serveStateDir := filepath.Join(raymondDir, "serve-state")
+
+			// --clean: archive every non-terminal serve-state file before
+			// recovery sees them. Runs BEFORE the pending registry replays
+			// and BEFORE NewRunManagerForServe so the dangling-record drop
+			// policy (bead-5) naturally fires on the next prune for any
+			// pending entry whose paired state file we just moved aside.
+			// Only the serve pool is touched — the CLI pool at
+			// .raymond/state/ is intentionally out of scope.
+			if clean {
+				abandonDir, archived, err := daemon.ArchiveNonTerminalServeState(serveStateDir, time.Now)
+				if err != nil {
+					return fmt.Errorf("--clean: %w", err)
+				}
+				if len(archived) > 0 {
+					fmt.Fprintf(logOut, "--clean: archived %d non-terminal serve-state file(s) to %s\n", len(archived), abandonDir)
+				} else {
+					fmt.Fprintf(logOut, "--clean: no non-terminal serve-state files to archive\n")
+				}
+			}
 
 			// Build the pending-input registry FIRST so its on-disk
 			// pending_inputs.jsonl is replayed before the run manager's
@@ -353,6 +373,11 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 	f.IntVar(&maxFileCount, "max-file-count", 0, "default maximum file count per upload submission when an <ask> declares no count cap (0 means use [raymond.serve].max_file_count or daemon default)")
 	f.BoolVar(&dangerouslySkipPermissions, "dangerously-skip-permissions", defaultDangerouslySkipPermissions,
 		"skip Claude permission prompts for daemon-launched runs; pass --dangerously-skip-permissions=false to require permissions")
+	f.BoolVar(&clean, "clean", false,
+		"archive non-terminal state files from the serve pool (.raymond/serve-state/) "+
+			"into serve-state/abandoned/<timestamp>/ before recovery runs. Only the serve pool is "+
+			"affected — CLI runs in .raymond/state/ are untouched. Archived files remain on disk "+
+			"for forensics; no state is deleted.")
 
 	return cmd
 }

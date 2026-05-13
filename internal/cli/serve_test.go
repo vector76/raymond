@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -175,6 +176,124 @@ func TestServeRoutesLaunchesToServePool(t *testing.T) {
 				"CLI pool must remain empty of state files after `ray serve`")
 		}
 	}
+}
+
+// TestServeClean_MixedSeed is test (a) of bead bd-z68c. It seeds the
+// serve pool with a mix of terminal and non-terminal state files plus
+// one CLI-pool file, runs `ray serve --clean`, and asserts the
+// rearrangement on disk:
+//
+//   - non-terminal serve-state files live under serve-state/abandoned/<ts>/
+//     with their original bytes (read both ends and byte-compare)
+//   - terminal serve-state files remain in serve-state/ at the top level
+//   - the CLI pool (.raymond/state/) is left strictly untouched
+//
+// "The daemon's active set is empty" is asserted indirectly: after
+// --clean, no non-terminal *.json remains at the top of serve-state/,
+// so recoverRuns has nothing non-terminal to relaunch. The same property
+// is asserted at the daemon API in
+// internal/daemon/cleanpool_test.go (TestArchiveNonTerminalServeState_RecoveryDoesNotDescend).
+func TestServeClean_MixedSeed(t *testing.T) {
+	withClosedStdin(t)
+	chdirIsolated(t)
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	raymondDir := filepath.Join(cwd, ".raymond")
+	serveStateDir := filepath.Join(raymondDir, "serve-state")
+	cliStateDir := filepath.Join(raymondDir, "state")
+	require.NoError(t, os.MkdirAll(serveStateDir, 0o755))
+	require.NoError(t, os.MkdirAll(cliStateDir, 0o755))
+
+	// Two non-terminal state files: one agent each, asking. Recovery
+	// would auto-resume both absent --clean.
+	nonTerminal := func(id string) []byte {
+		ws := map[string]any{
+			"workflow_id": id,
+			"scope_dir":   "/some/scope",
+			"agents": []map[string]any{
+				{
+					"id":            "main",
+					"current_state": "WAIT.md",
+					"session_id":    nil,
+					"stack":         []any{},
+					"status":        "asking",
+				},
+			},
+		}
+		b, err := json.Marshal(ws)
+		require.NoError(t, err)
+		return b
+	}
+	// One terminal state file: zero agents. The recovery path treats
+	// this as a history-only entry; --clean must leave it in place.
+	terminal := func(id string) []byte {
+		ws := map[string]any{
+			"workflow_id": id,
+			"scope_dir":   "/some/scope",
+			"agents":      []any{},
+		}
+		b, err := json.Marshal(ws)
+		require.NoError(t, err)
+		return b
+	}
+
+	ntA := nonTerminal("nt-a")
+	ntB := nonTerminal("nt-b")
+	tDone := terminal("t-done")
+
+	require.NoError(t, os.WriteFile(filepath.Join(serveStateDir, "nt-a.json"), ntA, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(serveStateDir, "nt-b.json"), ntB, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(serveStateDir, "t-done.json"), tDone, 0o644))
+
+	// CLI-pool sentinel: any bytes will do; the test only cares that
+	// --clean does NOT touch this file.
+	cliBytes := []byte(`{"workflow_id":"cli-run","scope_dir":"/x","agents":[]}`)
+	require.NoError(t, os.WriteFile(filepath.Join(cliStateDir, "cli-run.json"), cliBytes, 0o644))
+
+	root := t.TempDir()
+	writeServeWorkflow(t, root, "a")
+
+	_, stderr, err := runServe(t,
+		"serve",
+		"--root", root,
+		"--mcp",
+		"--no-http",
+		"--clean",
+	)
+	require.NoError(t, err)
+	require.Contains(t, stderr, "--clean: archived 2 non-terminal serve-state file(s)")
+
+	// CLI pool is untouched (file present + byte-identical).
+	gotCLI, err := os.ReadFile(filepath.Join(cliStateDir, "cli-run.json"))
+	require.NoError(t, err, "CLI pool file must remain present after `ray serve --clean`")
+	require.Equal(t, cliBytes, gotCLI, "CLI pool file must be byte-identical after `ray serve --clean`")
+
+	// Terminal serve-state file still at the top of the pool, untouched.
+	gotTerm, err := os.ReadFile(filepath.Join(serveStateDir, "t-done.json"))
+	require.NoError(t, err, "terminal serve-state file must remain at top level after --clean")
+	require.Equal(t, tDone, gotTerm, "terminal state file must be byte-identical")
+
+	// Non-terminal serve-state files are gone from the top of the pool.
+	_, err = os.Stat(filepath.Join(serveStateDir, "nt-a.json"))
+	require.True(t, os.IsNotExist(err), "non-terminal file must be moved out of serve-state/ top level")
+	_, err = os.Stat(filepath.Join(serveStateDir, "nt-b.json"))
+	require.True(t, os.IsNotExist(err), "non-terminal file must be moved out of serve-state/ top level")
+
+	// And they live under serve-state/abandoned/<ts>/ with original bytes.
+	abandonedRoot := filepath.Join(serveStateDir, "abandoned")
+	entries, err := os.ReadDir(abandonedRoot)
+	require.NoError(t, err, "abandoned root should exist after --clean archived at least one file")
+	require.Len(t, entries, 1, "exactly one timestamped subdirectory should be created per --clean invocation")
+	tsDir := filepath.Join(abandonedRoot, entries[0].Name())
+	require.True(t, entries[0].IsDir(), "abandoned/<ts> should be a directory")
+
+	gotA, err := os.ReadFile(filepath.Join(tsDir, "nt-a.json"))
+	require.NoError(t, err)
+	require.Equal(t, ntA, gotA, "abandoned file must preserve its original bytes (nt-a)")
+	gotB, err := os.ReadFile(filepath.Join(tsDir, "nt-b.json"))
+	require.NoError(t, err)
+	require.Equal(t, ntB, gotB, "abandoned file must preserve its original bytes (nt-b)")
 }
 
 func TestServeStartupLaunches_UnknownID(t *testing.T) {

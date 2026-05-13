@@ -29,9 +29,8 @@ func TestPublishGlobalEvent_FansOutToSubscribers(t *testing.T) {
 	defer cancel2()
 
 	evt := events.ShutdownRequested{
-		Tier1TimeoutSecs: 1,
-		Tier2TimeoutSecs: 2,
-		RequestedAt:      time.Now(),
+		ActiveRuns:  []events.ActiveRunSnapshot{{ID: "r1"}},
+		RequestedAt: time.Now(),
 	}
 	srv.PublishGlobalEvent(evt)
 
@@ -40,7 +39,7 @@ func TestPublishGlobalEvent_FansOutToSubscribers(t *testing.T) {
 		case got := <-ch:
 			gotEvt, ok := got.(events.ShutdownRequested)
 			require.True(t, ok, "subscriber %d: expected ShutdownRequested, got %T", i, got)
-			assert.Equal(t, evt.Tier1TimeoutSecs, gotEvt.Tier1TimeoutSecs)
+			assert.Equal(t, evt.ActiveRuns, gotEvt.ActiveRuns)
 		case <-time.After(time.Second):
 			t.Fatalf("subscriber %d: timed out waiting for event", i)
 		}
@@ -94,7 +93,7 @@ func TestPublishGlobalEvent_ConcurrentCancelDoesNotPanic(t *testing.T) {
 				return
 			default:
 				srv.PublishGlobalEvent(events.ShutdownComplete{
-					Outcomes: map[string]string{"r": "clean"},
+					Outcomes: map[string]string{"r": "quiesced"},
 				})
 			}
 		}
@@ -136,7 +135,7 @@ func TestPublishGlobalEvent_SlowSubscriberDoesNotBlock(t *testing.T) {
 		// Publish far more than the subscriber buffer (globalSubscriberBuffer = 16).
 		for i := 0; i < 1000; i++ {
 			srv.PublishGlobalEvent(events.ShutdownComplete{
-				Outcomes: map[string]string{"run": "clean"},
+				Outcomes: map[string]string{"run": "quiesced"},
 			})
 		}
 		close(done)
@@ -188,9 +187,8 @@ func TestPublishGlobalEvent_MirrorsToPerRunStreams(t *testing.T) {
 	defer cancel()
 
 	evt := events.ShutdownRequested{
-		Tier1TimeoutSecs: 5,
-		Tier2TimeoutSecs: 10,
-		RequestedAt:      time.Now(),
+		ActiveRuns:  []events.ActiveRunSnapshot{{ID: "r1"}},
+		RequestedAt: time.Now(),
 	}
 	srv.PublishGlobalEvent(evt)
 
@@ -204,7 +202,7 @@ func TestPublishGlobalEvent_MirrorsToPerRunStreams(t *testing.T) {
 				t.Fatal("per-run stream closed before delivering mirrored event")
 			}
 			if sr, ok := got.(events.ShutdownRequested); ok {
-				assert.Equal(t, evt.Tier1TimeoutSecs, sr.Tier1TimeoutSecs)
+				assert.Equal(t, evt.ActiveRuns, sr.ActiveRuns)
 				// Also exercise the SSE marshalling path so the test
 				// covers the discriminator wire-shape callers depend on.
 				data, err := marshalSSEEvent(sr)
@@ -252,9 +250,8 @@ func TestGlobalEventsEndpoint_StreamsPublishedEvents(t *testing.T) {
 	}
 
 	srv.PublishGlobalEvent(events.ShutdownRequested{
-		Tier1TimeoutSecs: 7,
-		Tier2TimeoutSecs: 14,
-		RequestedAt:      time.Now(),
+		ActiveRuns:  []events.ActiveRunSnapshot{{ID: "r1"}},
+		RequestedAt: time.Now(),
 	})
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -268,7 +265,8 @@ func TestGlobalEventsEndpoint_StreamsPublishedEvents(t *testing.T) {
 		var env map[string]any
 		require.NoError(t, json.Unmarshal([]byte(payload), &env))
 		assert.Equal(t, "shutdown_requested", env["type"])
-		assert.Equal(t, float64(7), env["tier_1_timeout_secs"])
+		_, hasT1 := env["tier_1_timeout_secs"]
+		assert.False(t, hasT1, "tier_1_timeout_secs must not appear on the wire")
 		gotEvent = true
 		break
 	}
@@ -289,8 +287,6 @@ func TestGlobalEventsEndpoint_StreamsPublishedEvents(t *testing.T) {
 // events.ShutdownRequested and rewires the coordinator's outcome
 // classification to the two-value set.
 func TestShutdownEventsShape_PostRewrite(t *testing.T) {
-	t.Skip("pending: bead-9 (SSE events)")
-
 	// ShutdownRequested must serialise without the tier-timeout fields.
 	req := events.ShutdownRequested{
 		ActiveRuns:  []events.ActiveRunSnapshot{{ID: "r1"}},

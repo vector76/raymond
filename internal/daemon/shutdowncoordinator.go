@@ -262,11 +262,8 @@ func (c *ShutdownCoordinator) BeginQuiesce(ctx context.Context) {
 			})
 		}
 		c.eventSink(events.ShutdownRequested{
-			ActiveRuns: active,
-			// TODO(bead-9): drop these fields with the struct.
-			Tier1TimeoutSecs: 0,
-			Tier2TimeoutSecs: 0,
-			RequestedAt:      time.Now(),
+			ActiveRuns:  active,
+			RequestedAt: time.Now(),
 		})
 	}
 

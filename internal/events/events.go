@@ -211,21 +211,15 @@ type ActiveRunSnapshot struct {
 }
 
 // ShutdownRequested is emitted when a graceful daemon shutdown begins. It
-// reports the active runs at the moment of the request and the two-tier
-// timeout budget the daemon will honour before escalating to forceful
-// termination. Timeouts are encoded as float seconds, matching the existing
-// duration style in this package (see WaitSeconds in WorkflowWaiting).
+// reports the active runs at the moment of the request.
 type ShutdownRequested struct {
-	ActiveRuns       []ActiveRunSnapshot `json:"active_runs"`
-	Tier1TimeoutSecs float64             `json:"tier_1_timeout_secs"`
-	Tier2TimeoutSecs float64             `json:"tier_2_timeout_secs"`
-	RequestedAt      time.Time           `json:"requested_at"`
+	ActiveRuns  []ActiveRunSnapshot `json:"active_runs"`
+	RequestedAt time.Time           `json:"requested_at"`
 }
 
 // ShutdownComplete is emitted when the daemon has finished its shutdown
 // sequence. Outcomes maps each affected run ID to its terminal disposition:
-// "clean" (run finished on its own), "quiesced" (tier-1 graceful pause), or
-// "killed" (tier-2 forced termination).
+// "quiesced" (run paused gracefully) or "cancelled" (run was cancelled).
 type ShutdownComplete struct {
 	Outcomes map[string]string `json:"outcomes"`
 }

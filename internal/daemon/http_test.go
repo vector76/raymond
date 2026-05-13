@@ -2471,9 +2471,7 @@ func TestMarshalSSEEvent_ShutdownRequested(t *testing.T) {
 			{ID: "run-1", Workflow: "wf-a", Status: "running"},
 			{ID: "run-2", Workflow: "wf-b", Status: "paused"},
 		},
-		Tier1TimeoutSecs: 30,
-		Tier2TimeoutSecs: 5,
-		RequestedAt:      requestedAt,
+		RequestedAt: requestedAt,
 	}
 
 	frame, payload := frameSSE(t, evt)
@@ -2493,13 +2491,11 @@ func TestMarshalSSEEvent_ShutdownRequested(t *testing.T) {
 	assert.Equal(t, "wf-a", first["workflow"])
 	assert.Equal(t, "running", first["status"])
 
-	// Tier timeouts: present as JSON numbers (float seconds).
-	t1, ok := payload["tier_1_timeout_secs"].(float64)
-	assert.True(t, ok, "tier_1_timeout_secs should be a JSON number, got %T", payload["tier_1_timeout_secs"])
-	assert.Equal(t, 30.0, t1)
-	t2, ok := payload["tier_2_timeout_secs"].(float64)
-	assert.True(t, ok, "tier_2_timeout_secs should be a JSON number, got %T", payload["tier_2_timeout_secs"])
-	assert.Equal(t, 5.0, t2)
+	// Tier-timeout fields must not appear on the wire.
+	_, hasT1 := payload["tier_1_timeout_secs"]
+	assert.False(t, hasT1, "tier_1_timeout_secs should not appear in ShutdownRequested JSON")
+	_, hasT2 := payload["tier_2_timeout_secs"]
+	assert.False(t, hasT2, "tier_2_timeout_secs should not appear in ShutdownRequested JSON")
 
 	// requested_at round-trips as an RFC3339 string.
 	rfcStr, ok := payload["requested_at"].(string)
@@ -2512,9 +2508,8 @@ func TestMarshalSSEEvent_ShutdownRequested(t *testing.T) {
 func TestMarshalSSEEvent_ShutdownComplete(t *testing.T) {
 	evt := events.ShutdownComplete{
 		Outcomes: map[string]string{
-			"run-1": "clean",
-			"run-2": "quiesced",
-			"run-3": "killed",
+			"run-1": "quiesced",
+			"run-2": "cancelled",
 		},
 	}
 
@@ -2527,9 +2522,8 @@ func TestMarshalSSEEvent_ShutdownComplete(t *testing.T) {
 
 	outcomes, ok := payload["outcomes"].(map[string]any)
 	require.True(t, ok, "outcomes should be an object, got %T", payload["outcomes"])
-	assert.Equal(t, "clean", outcomes["run-1"])
-	assert.Equal(t, "quiesced", outcomes["run-2"])
-	assert.Equal(t, "killed", outcomes["run-3"])
+	assert.Equal(t, "quiesced", outcomes["run-1"])
+	assert.Equal(t, "cancelled", outcomes["run-2"])
 }
 
 // fakeShutdownDriver is the test double for ShutdownCoordinator. It mirrors

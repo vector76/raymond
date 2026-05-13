@@ -1,25 +1,28 @@
 # pi Backend (Feature Specification)
 
 This document specifies the pi backend for raymond — *what* is to be built,
-not how. It assumes the broader backend abstraction described in
-[multi-backend-design.md](multi-backend-design.md) and picks pi as the first
-non-Claude backend to land.
+not how. The companion document [pi-backend-rationale.md](pi-backend-rationale.md)
+records why **pi is the sole planned non-Claude backend** (codex, gemini,
+cursor, and copilot are postponed indefinitely) and identifies which parts
+of the current Claude-only execution path need to be abstracted to make
+room for pi.
 
 For background on the existing Claude Code integration that this feature
 parallels, see [code-structure.md](code-structure.md) and the
 "Existing Claude Code integration" section of
-[multi-backend-design.md](multi-backend-design.md).
+[pi-backend-rationale.md](pi-backend-rationale.md).
 
 ## Why pi
 
-Of the candidate backends surveyed in the multi-backend design notes, **pi**
-(`badlogic/pi-mono`, binary `pi`) is the closest match to the surface raymond
-already drives. Specifically:
+The strategic rationale (provider coverage via Claude+pi, and pi's
+thin-foundation stability properties) lives in
+[pi-backend-rationale.md](pi-backend-rationale.md). The mechanical reasons
+pi is also a *good fit* for the surface raymond already drives — relevant
+to this feature spec — are:
 
 - It exposes a structured machine protocol (`--mode json` for an event stream
   and `--mode rpc` for a bidirectional JSONL channel on stdin/stdout) that is
-  better-suited to long-lived orchestration than codex / gemini / cursor /
-  copilot.
+  well-suited to long-lived orchestration.
 - It supports first-class `--system-prompt` (replace) and
   `--append-system-prompt` (append) — strictly more than Claude, which has
   only `--append-system-prompt`. Useful as a forward-looking knob even
@@ -200,7 +203,8 @@ These behaviors continue to work but are wired differently under pi.
 ### Stream parsing
 
 Raymond currently parses Claude's `--output-format stream-json` shape
-(`internal/executors/markdown.go` lines 483–589). Under the pi backend, the
+(`internal/executors/markdown.go` lines 485–593, `processStreamForConsole`).
+Under the pi backend, the
 backend implementation parses pi's `--mode json` event stream instead. The
 event types raymond consumes from pi:
 
@@ -431,8 +435,9 @@ the workflow author should know about.
    pi extension is available. Note this is distinct from raymond's own
    *daemon* MCP surface (the tools `raymond serve` exposes to external
    clients): that is a property of the daemon, not the backend, and works
-   regardless of which backend a given workflow uses. (See open question 6
-   in the multi-backend design notes.)
+   regardless of which backend a given workflow uses. (The MCP point is
+   summarized in [pi-backend-rationale.md](pi-backend-rationale.md) under
+   "Resolved questions".)
 
 8. **The `effort: <Claude-specific level>` vocabulary on per-state policies.**
    Claude's `--effort` accepts a different vocabulary than pi's `--thinking`.
@@ -507,7 +512,8 @@ override). Remaining items:
 ### Genuinely open / forward-looking
 
 2. **System prompt usage.** Raymond does not currently set a system prompt
-   for either backend. If the orchestrator-level instructions feature
-   (open question 1 in the multi-backend design notes) lands, pi already
-   supports `--append-system-prompt`; no further pi-specific work is
-   required.
+   for either backend. If a future orchestrator-level instructions feature
+   (injecting transition syntax reminders or tool-use guardrails as a
+   system prompt rather than baking them into every state file) lands, pi
+   already supports `--append-system-prompt`; no further pi-specific work
+   is required.

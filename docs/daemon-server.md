@@ -23,6 +23,7 @@ raymond serve --root <dir> [--root <dir2> ...] [flags]
 | `--workdir` | string | (none) | Default working directory for workflow runs. |
 | `--launch` | string slice | (none) | Workflow id to dispatch automatically once transports are up. May be repeated. The id must be discoverable via `--root`. |
 | `--dangerously-skip-permissions` | bool | true | Server-wide skip-permissions value applied to every run launched via the HTTP API, MCP, or `--launch`. Pass `--dangerously-skip-permissions=false` to require permissions instead. Mirrors the `[raymond].dangerously_skip_permissions` config key with the same precedence (CLI > config > default). |
+| `--clean` | bool | false | Archive every non-terminal state file in the serve pool (`.raymond/serve-state/`) into `serve-state/abandoned/<timestamp>/` before recovery runs. Only the serve pool is touched — CLI runs in `.raymond/state/` are untouched. See [Operational flags](#operational-flags). |
 
 ### Examples
 
@@ -74,6 +75,26 @@ The typical use case is capturing `--launch` flags in a systemd unit or
 Docker entrypoint so that operationally-required workflows (health checks,
 periodic reports driven by an external scheduler that restarts the daemon,
 etc.) start automatically with the server.
+
+## Directory layout
+
+The daemon and the CLI use **disjoint** on-disk pools. Each pool has exactly
+one owner runtime, and neither runtime reads the other's pool during
+recovery. See [serve-run-pool.md](serve-run-pool.md) for the design.
+
+| Path | Owner | Purpose |
+|------|-------|---------|
+| `<project>/.raymond/state/` | `ray <workflow>` (CLI) | Persistent state for runs launched from the command line. The daemon never reads this directory. |
+| `<project>/.raymond/serve-state/` | `ray serve` (daemon) | Persistent state for runs launched through the HTTP API, MCP, or `--launch`. The CLI never writes here. |
+| `<project>/.raymond/serve-state/abandoned/<timestamp>/` | `ray serve --clean` | Forensic archive of non-terminal serve-state files moved aside by `--clean`. Never auto-resumed; left on disk so an operator can inspect or hand-recover. |
+| `<project>/.raymond/pending_inputs.jsonl` | `ray serve` (daemon) | Pending-input registry for `<ask>` records. Lives at the `.raymond/` root, not under the serve pool — one registry per project, intentionally not per pool (see the comment preceding `NewPendingRegistry` in `internal/cli/serve.go`). |
+
+The CLI pool and the serve pool are siblings, not parent-and-child. The
+daemon resolves its pool through the serve-state path and never falls back
+to the CLI pool, so a CLI run left non-terminal by an operator's Ctrl-C will
+not appear in the daemon's view. The dependent operational behaviors —
+[`--clean`](#operational-flags), [diagnostic listings](#diagnostics), and
+[run recovery](#run-recovery) — all derive from this layout.
 
 ## Workflow Registry
 
@@ -382,11 +403,39 @@ an agent enters `<ask>` in daemon mode, the orchestrator registers a pending
 input record with the prompt text, timeout deadline, and target state.
 
 The registry is backed by a JSONL append-only log file (`pending_inputs.jsonl`)
-in the daemon's state directory. On startup, the log is replayed to reconstruct
-the current pending input set, then compacted to a clean file.
+that lives at the project's `.raymond/` directory root — **not** under the
+serve pool. There is exactly one pending registry per project, intentionally
+not per pool: an `<ask>`'s identity (run id + ask id) is independent of which
+pool the run belongs to, and any future inspector should not have to guess a
+pool first. See the comment preceding `NewPendingRegistry` in
+`internal/cli/serve.go` for the recorded rationale.
+
+On startup, the log is replayed to reconstruct the current pending input set,
+then compacted to a clean file.
 
 Input delivery is atomic: `GetAndRemove` claims a pending input and removes it
 from the registry in a single operation, preventing duplicate delivery.
+
+### Asking-state survival across restarts
+
+Pending asks survive a daemon restart and remain answerable through the HTTP
+and MCP transports without an explicit per-run resume call. The mechanism is:
+
+1. `pending_inputs.jsonl` is replayed before run recovery, so the in-memory
+   pending set is rebuilt first.
+2. The serve pool's auto-resume (see [Run Recovery](#run-recovery)) brings
+   every non-terminal state file back as an active run, including those whose
+   agents are in the `asking` status. The relaunch path wires the same
+   `askInputCh` / `AskCallback` that a freshly-launched run uses, so a
+   recovered ask receives input through the normal delivery routes —
+   `POST /runs/{id}/asks/{ask_id}` over HTTP, or `raymond_answer_ask` over
+   MCP. (Auto-pushed `elicitation/create` requests are not re-issued to
+   clients that connect after the restart; an MCP client recovers a pending
+   ask by calling `raymond_list_pending_asks` and answering it explicitly.)
+3. Pending registry entries whose paired serve-pool state file is missing at
+   startup are dropped with a log line during the prune pass. This keeps the
+   registry and the pool consistent — there is never a pending record naming
+   a run the daemon does not know about.
 
 ## Timeout Monitor
 
@@ -401,18 +450,125 @@ expired inputs. When a timeout elapses:
 CLI pause mode (`--on-ask=pause`) does not have built-in timeout monitoring —
 the process is not running between resume cycles.
 
+## Operational flags
+
+### `--clean`
+
+`ray serve --clean` archives every non-terminal state file in the serve pool
+before recovery runs. The behavior is:
+
+- Each non-terminal `*.json` state file in `<project>/.raymond/serve-state/`
+  is **moved** (not deleted) into a fresh
+  `<project>/.raymond/serve-state/abandoned/<timestamp>/` subdirectory. The
+  timestamp is UTC with nanosecond precision so back-to-back `--clean`
+  invocations (e.g. a restart loop) cannot collide on the directory name.
+- Terminal state files (already-completed runs) are left in place.
+- After the move, the dangling-record drop policy fires on the next pending
+  registry prune: any `pending_inputs.jsonl` entry that named one of the
+  archived runs is dropped with a log line, since its paired state file is
+  no longer present in the pool. This is the same rule that fires when a
+  serve-state file goes missing for any other reason at startup.
+- The daemon then recovers what remains, which is by construction nothing
+  non-terminal. It starts with an empty active-run set.
+
+Safety story: `--clean` only acts on the serve pool. CLI runs in
+`.raymond/state/` are never touched, because the daemon does not read or
+write that directory. Listing tooling avoids the `abandoned/` archive by
+construction — `ray serve list` reads only the top level of the serve pool
+(see [Diagnostics](#diagnostics)).
+
+Use `--clean` when an operator wants the daemon to come up cold, abandoning
+in-flight serve work without losing the on-disk evidence of what was
+running.
+
+## Diagnostics
+
+Two read-only listings are available, each scoped to a single pool:
+
+| Command | Pool | Notes |
+|---------|------|-------|
+| `ray --list` | CLI (`.raymond/state/`) | Pre-existing CLI listing; unchanged by the disjoint-pool work. |
+| `ray serve list` | Serve (`.raymond/serve-state/`) | Daemon-free inspector; works without `ray serve` running. Reads only the top level of the serve pool, so the `abandoned/<ts>/` archives created by `--clean` are not enumerated. |
+
+Output is one workflow id per line, sorted alphanumerically. The two views
+are intentionally **not** merged into a single command — an operator who
+wants both unions them explicitly. Keeping them separate preserves the
+property that every id in a given listing was created by exactly one
+runtime, which is the same disjoint-pool guarantee recovery relies on.
+
+`ray --status <id>` is the documented exception: as a read-only diagnostic
+it consults both pools. The CLI pool is checked first; on a not-found, the
+serve pool is checked. When the same id is present in both pools (rare,
+since each pool's id namespace is independent), the CLI copy wins. The
+not-found error stays generic so an operator probing for an id cannot
+learn pool layout from the response.
+
 ## Run Recovery
 
-> **Planned change.** The behavior described here — daemon and CLI
-> share a single `.raymond/state/` directory; recovered runs land as
-> inactive entries until an operator resumes them — is the current
-> behavior. A planned change splits state into disjoint CLI and serve
-> pools and switches serve to auto-resume non-terminal entries
-> actively on startup. See
-> [serve-run-pool.md](serve-run-pool.md).
+On startup, the daemon scans **only** the serve pool
+(`<project>/.raymond/serve-state/`) for persisted workflow state files. The
+CLI pool at `.raymond/state/` is never consulted, by construction: the
+daemon resolves its state directory through the serve-pool path and the
+recovery scan is anchored there.
 
-On startup, the daemon scans the state directory for persisted workflow state
-files. Previously running workflows are recovered in their last known state:
-agents in the `asking` status are surfaced as `asking` runs, and
-other interrupted runs are marked as `failed`. Recovered runs are visible in
-the HTTP API and web UI immediately.
+The serve pool is **curated** — every entry in it was created by an earlier
+`ray serve` invocation in this project — so the daemon **actively
+auto-resumes** every non-terminal entry on startup. There is no
+"recovered but inactive" intermediate state for serve-pool runs. If a state
+file is present and not in a terminal status, the daemon brings the run
+back to life under its own orchestrator. Recovered runs are visible in the
+HTTP API and web UI immediately, and continue running without operator
+intervention.
+
+`asking`-state runs are auto-resumed the same way: the relaunch wires the
+normal `askInputCh` / `AskCallback`, and the pre-replayed
+`pending_inputs.jsonl` makes the recovered ask immediately answerable
+through `POST /runs/{id}/asks/{ask_id}` — no per-run resume call is
+required. See [Asking-state survival across restarts](#asking-state-survival-across-restarts)
+for the full mechanism.
+
+### Dangling pending-registry records
+
+When the pending registry is replayed, an entry whose paired serve-pool
+state file is missing is **dropped with a log line**. This can happen
+because:
+
+- The state file was archived by `ray serve --clean` (intentional).
+- The state file was removed out-of-band by an operator (rare).
+- The run was deleted before its registry compaction completed (corner
+  case).
+
+In all three cases the policy is the same: the registry is reconciled to
+match the on-disk pool, so the in-memory and on-disk views are consistent
+by the time the first orchestrator goroutine starts. There is never a
+pending record naming a run the daemon does not know about.
+
+### Nested launches go to the CLI pool
+
+A workflow that shells out to `ray <workflow_id>` from inside a serve-pool
+run produces a state file in `.raymond/state/`, **not** in
+`.raymond/serve-state/`. The `ray` binary is not treated specially when
+invoked from another raymond process: it is a normal shell command that
+happens to launch a workflow, and its state lands in the CLI pool wherever
+the CLI's resolution rule says.
+
+Consequences for workflow authors:
+
+- The nested run is **detached from the daemon's lifecycle**. It does not
+  appear in the daemon's run list, does not stream events through the
+  parent run's SSE channel, and is not aborted when the parent run is
+  cancelled.
+- `ray serve --clean` does **not** touch the nested run's state file,
+  because `--clean` only scopes to the serve pool.
+- The nested run has its own SIGINT handling, its own budget, and its own
+  termination semantics.
+
+If the intent is "this nested work is part of my serve run" — same
+orchestrator, same budget, same lifecycle, same daemon view — the right
+primitive is **`<fork>`** or **`<fork-workflow>`**. Both run in-process
+under the same orchestrator and produce no separate state file. Shelling
+out to `ray` is the explicit choice to detach.
+
+See [workflow-protocol.md](workflow-protocol.md) for `<fork>` and
+[cross-workflow-design.md](cross-workflow-design.md) for `<fork-workflow>`;
+the guidance above is the daemon-side framing of the same trade-off.

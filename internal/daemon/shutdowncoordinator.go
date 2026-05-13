@@ -87,7 +87,7 @@ type runFleet interface {
 // cancelPatienceWindow is the bounded grace period the coordinator gives
 // goroutines to honour EscalateToCancel() before any surviving runs are
 // classified as OutcomeCancelled. The 5-second target comes from the
-// feature doc (docs/serve-shutdown-signals.md, §"signal mapping"): once
+// feature doc (docs/graceful-shutdown.md, §"Cancel's patience window"): once
 // cancel is engaged, the daemon waits a short, bounded window for in-flight
 // goroutines to exit and then returns regardless. The constant is in code
 // (not config) because it is a property of the daemon's exit contract, not

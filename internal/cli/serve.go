@@ -67,7 +67,14 @@ restarts. Each id must already be discoverable via --root, and launch
 outcomes are logged on the same channel as other startup status messages
 (stdout by default; stderr under --mcp). Workflows whose first state
 requires input cannot be auto-launched and must be started via the HTTP
-API or web UI.`,
+API or web UI.
+
+Shutdown signals: SIGINT (1st) or POST /shutdown enters quiesce — runs
+park at their next state transition with no raymond-imposed timeout.
+A second SIGINT, a second POST /shutdown, or SIGTERM escalates to
+cancel: in-flight executors receive context cancellation, then the
+daemon exits within a bounded patience window. See
+docs/graceful-shutdown.md for the full contract.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fileCfg, err := config.LoadServeConfig("")
 			if err != nil {
@@ -308,7 +315,7 @@ API or web UI.`,
 			// still drive the coordinator forward (quiesce → cancel). It
 			// exits only once the coordinator's WaitComplete channel fires.
 			//
-			// Signal mapping (see docs/serve-shutdown-signals.md):
+			// Signal mapping (see docs/graceful-shutdown.md):
 			//   - 1st SIGINT   → BeginQuiesce (indefinite quiesce).
 			//   - 2nd SIGINT   → EscalateToCancel.
 			//   - SIGTERM (any time) → begin-then-escalate. Coordinator's

@@ -59,8 +59,10 @@ analogous to `ray --resume <id>` for a single CLI run.
 `asking`-state runs are resumed actively as well — their pending input
 records (already in `pending_inputs.jsonl`) become answerable through
 the HTTP/MCP transports immediately, without an explicit per-run resume
-step. This closes the "asking runs becoming answerable post-restart"
-item from `graceful-shutdown.md`'s out-of-scope list.
+step. (This subsumes what was previously an out-of-scope item on
+`graceful-shutdown.md` — "`asking`-state runs becoming answerable
+post-restart" and the related "active resume in serve mode" bullet
+both went away once auto-resume landed.)
 
 ### `--clean` flag
 
@@ -157,17 +159,17 @@ not-found stays generic.
 
 ## Related changes and dependencies
 
-This change was one of a pair. The companion document
-[serve-shutdown-signals.md](serve-shutdown-signals.md) rewrites the
-signal-handling and graceful-shutdown surface (SIGINT/SIGTERM mapping,
-removal of Tier 1 entirely, removal of Tier 2's *timeout* — quiesce
-itself stays as raymond's graceful phase — and removal of
-`RAYMOND_STOP_REQUESTED`).
+This change was one of a pair. The two-phase shutdown contract
+documented in [graceful-shutdown.md](graceful-shutdown.md) landed
+alongside it: SIGINT and SIGTERM map to distinct paths, quiesce no
+longer carries a raymond-imposed timeout, and the voluntary-exit
+tier (with its `RAYMOND_STOP_REQUESTED` / `RAYMOND_STOP_SENTINEL`
+env vars and on-disk sentinel) was removed.
 
 Disjoint pools and auto-resume landed first; the shutdown-signals
-change depends on auto-resume for its cost calculus — without
-auto-resume, dropping Tier 1 and the Tier-2 timeout would leave parked
-runs that an operator had to revive by hand.
+change depended on auto-resume for its cost calculus — without
+auto-resume, dropping the voluntary-exit tier and the quiesce timeout
+would have left parked runs that an operator had to revive by hand.
 
 ## Out of scope for this change
 

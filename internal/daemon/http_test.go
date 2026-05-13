@@ -2641,14 +2641,11 @@ func (f *fakeShutdownDriver) Started() int32 {
 	return f.started
 }
 
-// installFakeShutdownDriver wires the fake driver onto the server along with
-// the supplied fallback timeouts. Tests use this instead of
-// SetShutdownCoordinator (which takes *ShutdownCoordinator) so the fake's
-// recorded arguments can be inspected.
-func installFakeShutdownDriver(srv *Server, fake *fakeShutdownDriver, defaultT1, defaultT2 time.Duration) {
+// installFakeShutdownDriver wires the fake driver onto the server. Tests
+// use this instead of SetShutdownCoordinator (which takes *ShutdownCoordinator)
+// so the fake's recorded sequence-start count can be inspected.
+func installFakeShutdownDriver(srv *Server, fake *fakeShutdownDriver) {
 	srv.shutdownDriver = fake
-	srv.defaultShutdownT1 = defaultT1
-	srv.defaultShutdownT2 = defaultT2
 }
 
 // readShutdownStream reads the full POST /shutdown response body and splits
@@ -2675,7 +2672,7 @@ func TestHandleShutdown_HappyPath(t *testing.T) {
 
 	fleet := newFakeFleet()
 	coord := NewShutdownCoordinator(fleet, nil)
-	srv.SetShutdownCoordinator(coord, 30*time.Millisecond, 30*time.Millisecond)
+	srv.SetShutdownCoordinator(coord)
 
 	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
 	require.NoError(t, err)
@@ -2700,7 +2697,7 @@ func TestHandleShutdown_HappyPath_RunOutcomeSummary(t *testing.T) {
 	fleet := newFakeFleet()
 	fleet.addRun("alpha", false, false)
 	coord := NewShutdownCoordinator(fleet, nil)
-	srv.SetShutdownCoordinator(coord, 200*time.Millisecond, 200*time.Millisecond)
+	srv.SetShutdownCoordinator(coord)
 
 	// Drain shortly after the handler starts the sequence; this happens
 	// during the quiesce phase since the handler never escalates to cancel.
@@ -2721,21 +2718,119 @@ func TestHandleShutdown_HappyPath_RunOutcomeSummary(t *testing.T) {
 	assert.Equal(t, "alpha: quiesced", lines[2])
 }
 
-// (bead-1) The ?t1= / ?t2= precedence-ladder subtests and the
-// parseShutdownTimeoutQuery error-handling subtest that previously lived
-// here were deleted: the two-phase shutdown rewrite drops the query-string
-// override surface entirely (quiesce is unbounded; the cancel patience
-// window is a code constant). The HTTP-handler bead replaces the broader
-// test surface against the new API.
+// TestHandleShutdown_SequentialDoublePOSTEscalates is the HTTP analogue of
+// the SIGINT-escalation integration test. A first POST starts BeginQuiesce
+// against a run that does not drain on quiesce; the coordinator parks on
+// PhaseQuiesce waiting for the run. A second POST issued while the first is
+// still streaming observes InProgress()==true and dispatches
+// EscalateToCancel, which drains the run via CancelAll. The sequence then
+// completes within the patience window, and the per-run trailer classifies
+// the run as `cancelled` (cancelEngagedAt was set before the drain). Both
+// concurrent streams must see the same [Quiesce, Cancel, Complete] phases
+// and the same `<id>: cancelled` summary.
+func TestHandleShutdown_SequentialDoublePOSTEscalates(t *testing.T) {
+	srv, ts, _ := newTestServer(t)
+
+	fleet := newFakeFleet()
+	// drainOnQuiesce=false / drainOnCancel=true: quiesce alone leaves the run
+	// hanging, but CancelAll drains it synchronously so the escalated
+	// sequence completes well within cancelPatienceWindow.
+	fleet.addRun("alpha", false, true)
+	coord := NewShutdownCoordinator(fleet, nil)
+	srv.SetShutdownCoordinator(coord)
+
+	type streamResult struct {
+		lines []string
+		err   error
+	}
+
+	// POST #1: read the response body line-by-line. The first line gates the
+	// second POST so we can prove the escalation path (not the start-quiesce
+	// path) is the one that drives the second call.
+	firstHeadLine := make(chan string, 1)
+	firstDone := make(chan streamResult, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/shutdown", "", nil)
+		if err != nil {
+			firstDone <- streamResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		reader := bufio.NewReader(resp.Body)
+		head, err := reader.ReadString('\n')
+		if err != nil {
+			firstDone <- streamResult{err: err}
+			return
+		}
+		firstHeadLine <- strings.TrimSpace(head)
+		rest, err := io.ReadAll(reader)
+		if err != nil {
+			firstDone <- streamResult{err: err}
+			return
+		}
+		lines := []string{strings.TrimSpace(head)}
+		for _, l := range strings.Split(string(rest), "\n") {
+			if s := strings.TrimSpace(l); s != "" {
+				lines = append(lines, s)
+			}
+		}
+		firstDone <- streamResult{lines: lines}
+	}()
+
+	// Wait for POST #1 to receive PhaseQuiesce. This guarantees the
+	// coordinator has emitted its first phase and that InProgress() will
+	// return true when the second POST arrives, so the handler dispatches
+	// EscalateToCancel rather than starting a fresh sequence.
+	select {
+	case got := <-firstHeadLine:
+		require.Equal(t, string(PhaseQuiesce), got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("POST #1 did not emit PhaseQuiesce within 2s")
+	}
+
+	// POST #2: must escalate. The full sequence has to complete inside the
+	// patience window even if the daemon were stuck (it isn't here, but the
+	// timeout enforces the contract).
+	ctx, cancel := context.WithTimeout(context.Background(), cancelPatienceWindow+2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/shutdown", nil)
+	require.NoError(t, err)
+	resp2, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	secondLines := readShutdownStream(t, resp2.Body)
+	require.GreaterOrEqual(t, len(secondLines), 4,
+		"expected quiesce, cancel, complete, and one summary line; got %v", secondLines)
+	assert.Contains(t, secondLines, string(PhaseQuiesce))
+	assert.Contains(t, secondLines, string(PhaseCancel))
+	assert.Contains(t, secondLines, string(PhaseComplete))
+	assert.Contains(t, secondLines, "alpha: cancelled",
+		"the run must be classified as cancelled because the escalation engaged before the drain")
+
+	// POST #1 must observe the same terminal sequence: subscribe-or-start
+	// shares one in-flight coordinator across both callers.
+	select {
+	case got := <-firstDone:
+		require.NoError(t, got.err)
+		assert.Contains(t, got.lines, string(PhaseQuiesce))
+		assert.Contains(t, got.lines, string(PhaseCancel))
+		assert.Contains(t, got.lines, string(PhaseComplete))
+		assert.Contains(t, got.lines, "alpha: cancelled")
+	case <-time.After(2 * time.Second):
+		t.Fatal("POST #1 did not finish after the escalation")
+	}
+}
 
 // TestSetShutdownCoordinator_NilStaysNil: a typed-nil *ShutdownCoordinator
 // passed to the setter must store an untyped-nil interface, so the handler's
 // nil-guard fires (503) instead of dispatching into a nil pointer and
-// panicking on Progress() / Run().
+// panicking on the first method call.
 func TestSetShutdownCoordinator_NilStaysNil(t *testing.T) {
 	srv, ts, _ := newTestServer(t)
 	var c *ShutdownCoordinator // typed nil
-	srv.SetShutdownCoordinator(c, 1*time.Second, 1*time.Second)
+	srv.SetShutdownCoordinator(c)
 
 	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
 	require.NoError(t, err)
@@ -2750,7 +2845,7 @@ func TestHandleShutdown_ConcurrentCallersShareSequence(t *testing.T) {
 	srv, ts, _ := newTestServer(t)
 
 	fake := newFakeShutdownDriver()
-	installFakeShutdownDriver(srv, fake, 30*time.Second, 30*time.Second)
+	installFakeShutdownDriver(srv, fake)
 
 	// Drive the sequence on a delayed timer so both handlers have time to
 	// subscribe to Progress() before phases are emitted.
@@ -2807,7 +2902,7 @@ func TestHandleShutdown_ClientDisconnectDoesNotCancel(t *testing.T) {
 	srv, ts, _ := newTestServer(t)
 
 	fake := newFakeShutdownDriver()
-	installFakeShutdownDriver(srv, fake, 30*time.Second, 30*time.Second)
+	installFakeShutdownDriver(srv, fake)
 
 	// We control phase emission deliberately so we can disconnect between
 	// the first marker and the rest of the sequence.

@@ -283,10 +283,7 @@ API or web UI.`,
 				// SetShutdownCoordinator wires the /shutdown handler, and
 				// SetShutdownSignal primes the launch guard so POST /runs
 				// returns 503 once Request() flips.
-				// Tier timeouts are passed as zero placeholders; the setter's
-				// signature collapses to a single argument in the HTTP-handler
-				// bead alongside removal of the corresponding config fields.
-				srv.SetShutdownCoordinator(coordinator, 0, 0)
+				srv.SetShutdownCoordinator(coordinator)
 				srv.SetShutdownSignal(shutdownSignal)
 
 				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)

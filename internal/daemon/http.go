@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -164,14 +162,12 @@ type Server struct {
 	globalMu          sync.Mutex
 	globalSubscribers []chan any
 
-	// shutdownDriver runs the three-tier shutdown sequence. It is the
-	// surface of *ShutdownCoordinator that POST /shutdown depends on; an
-	// interface (not a concrete pointer) so tests can install a fake.
-	// SetShutdownCoordinator wires the production coordinator; nil means
-	// the endpoint is not configured.
-	shutdownDriver    shutdownDriver
-	defaultShutdownT1 time.Duration
-	defaultShutdownT2 time.Duration
+	// shutdownDriver runs the two-phase shutdown sequence (quiesce, then
+	// optionally cancel). It is the surface of *ShutdownCoordinator that
+	// POST /shutdown depends on; an interface (not a concrete pointer) so
+	// tests can install a fake. SetShutdownCoordinator wires the production
+	// coordinator; nil means the endpoint is not configured.
+	shutdownDriver shutdownDriver
 
 	// shutdownSignal is consulted by handleCreateRun to reject new launches
 	// with 503 once shutdown has been requested. Installed via
@@ -184,8 +180,8 @@ type Server struct {
 
 // shutdownDriver is the slice of *ShutdownCoordinator that handleShutdown
 // depends on. Defined here (rather than the handler taking *ShutdownCoordinator
-// directly) so tests can inject a fake that records timeout arguments and
-// counts sequence starts.
+// directly) so tests can inject a fake that counts sequence starts and
+// escalations without owning the whole coordinator surface.
 type shutdownDriver interface {
 	// BeginQuiesce starts (or attaches to) the in-flight shutdown sequence.
 	// Idempotent; the first caller drives, subsequent callers are no-ops.
@@ -275,23 +271,19 @@ func (s *Server) SetDefaultUploadCaps(perFile, total int64, count int) {
 }
 
 // SetShutdownCoordinator installs the shutdown coordinator that POST /shutdown
-// drives and the server-wide fallback T1/T2 timeouts applied when the request
-// omits them. The actual call site lives in the serve command (bead-15);
-// passing zero durations is allowed — the handler then falls back to whatever
-// hardcoded default the coordinator itself enforces (currently the caller's
-// responsibility to supply sensible values via this setter).
+// drives. The two-phase model has no per-call timeouts, so the setter takes
+// only the coordinator: quiesce is unbounded and the cancel patience window is
+// a coordinator-internal constant.
 //
 // A nil *ShutdownCoordinator stores an untyped-nil interface so the handler's
 // `s.shutdownDriver == nil` guard fires and returns 503; without this, a typed
 // nil would slip past the guard and panic on the first method dispatch.
-func (s *Server) SetShutdownCoordinator(c *ShutdownCoordinator, defaultT1, defaultT2 time.Duration) {
+func (s *Server) SetShutdownCoordinator(c *ShutdownCoordinator) {
 	if c == nil {
 		s.shutdownDriver = nil
 	} else {
 		s.shutdownDriver = c
 	}
-	s.defaultShutdownT1 = defaultT1
-	s.defaultShutdownT2 = defaultT2
 }
 
 // SetShutdownSignal installs the in-process shutdown signal that handleCreateRun
@@ -424,45 +416,32 @@ func (s *Server) handleGlobalEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleShutdown serves POST /shutdown. It calls BeginQuiesce on the
-// shutdown coordinator and streams a line-per-phase progress report to the
-// client, followed by a per-run outcome summary once the sequence completes.
+// handleShutdown serves POST /shutdown. The first POST dispatches
+// BeginQuiesce; any subsequent POST while the sequence is in flight calls
+// EscalateToCancel, matching the SIGINT/SIGTERM signal handler in `ray serve`.
+// Either way, the handler streams a line-per-phase progress report
+// (quiesce, cancel, complete) followed by a per-run outcome summary
+// (`quiesced` / `cancelled`) once the sequence completes.
 //
-// The ?t1= / ?t2= query parameters are still parsed for backward-compat
-// against any caller that supplied them, but their values are discarded:
-// the two-phase coordinator has no per-call timeouts. The HTTP-handler bead
-// removes the parse+discard scaffolding entirely.
+// Query parameters are ignored: the two-phase coordinator has no per-call
+// timeouts. Quiesce is unbounded; the cancel patience window is a coordinator
+// constant.
 //
-// BeginQuiesce is invoked with a background context so the operator
-// disconnecting mid-stream — for example because `docker stop` did not stay
-// attached — does NOT cancel the sequence. Only the streaming loop stops on
-// disconnect.
+// BeginQuiesce is invoked with a background context — an HTTP-level
+// disconnect (operator closes the connection, proxy idle-timeouts the
+// request, `docker stop` not staying attached) only stops this handler's
+// streaming loop; the coordinator keeps running. EscalateToCancel takes no
+// context, so the same property holds for the escalation path.
 //
-// Concurrent invocations are safe: BeginQuiesce is idempotent (subscribe-
-// or-start), so two simultaneous POSTs both attach to the same in-flight
-// sequence and both observe the same phase stream and outcomes.
+// Concurrent invocations are safe: BeginQuiesce and EscalateToCancel are both
+// idempotent (subscribe-or-start / strict-no-op-if-already-engaged), so two
+// simultaneous POSTs both attach to the same in-flight sequence and both
+// observe the same phase stream and outcomes.
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if s.shutdownDriver == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "shutdown coordinator not configured"})
 		return
 	}
-
-	// bead-2: query params are still parsed so the existing 4xx-on-bad-input
-	// query-param tests keep compiling, but the parsed values are discarded —
-	// the two-phase model has no per-call timeouts to feed them into. The
-	// parse+discard scaffolding (and these tests) are removed in the
-	// HTTP-handler bead.
-	t1, err := parseShutdownTimeoutQuery(r.URL.Query().Get("t1"), s.defaultShutdownT1)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid t1: " + err.Error()})
-		return
-	}
-	t2, err := parseShutdownTimeoutQuery(r.URL.Query().Get("t2"), s.defaultShutdownT2)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid t2: " + err.Error()})
-		return
-	}
-	_, _ = t1, t2
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -475,23 +454,22 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	// Subscribe to phases *before* starting the sequence so the producer
-	// fans the first phase into our buffer even if the driver goroutine
-	// wins the scheduler race. Progress() also replays any phases already
-	// emitted by a concurrent in-flight sequence, so a second caller
-	// arriving mid-shutdown still sees the full sequence.
+	// Subscribe to phases *before* dispatching so the producer fans the
+	// first phase into our buffer even if the driver goroutine wins the
+	// scheduler race. Progress() also replays any phases already emitted by
+	// a concurrent in-flight sequence, so a second caller arriving
+	// mid-shutdown still sees the full sequence.
 	progress := s.shutdownDriver.Progress()
 
-	// Use a background context so an HTTP-level disconnect (operator closes
-	// the connection, proxy idle-timeouts the request, etc.) cannot abort
-	// the sequence: the daemon's docker-stop semantics depend on the
-	// coordinator running to completion regardless.
-	bgCtx := context.Background()
-
-	// Subscribe-or-start: BeginQuiesce is idempotent; concurrent POSTs both
-	// land here, both attach to the same in-flight sequence, both observe
-	// the full Progress() replay and the same Result().
-	s.shutdownDriver.BeginQuiesce(bgCtx)
+	// Dispatch: first POST starts quiesce; a POST that arrives while a
+	// sequence is in flight escalates to cancel. BeginQuiesce takes a
+	// background context so an HTTP-level disconnect cannot abort the
+	// sequence — see the function docstring.
+	if s.shutdownDriver.InProgress() {
+		s.shutdownDriver.EscalateToCancel()
+	} else {
+		s.shutdownDriver.BeginQuiesce(context.Background())
+	}
 
 streamLoop:
 	for {
@@ -525,30 +503,6 @@ streamLoop:
 		fmt.Fprintf(w, "%s: %s\n", id, result.Outcomes[id])
 		flusher.Flush()
 	}
-}
-
-// parseShutdownTimeoutQuery interprets a query-string seconds value, falling
-// back to fallback if the value is empty. Non-negative finite number only;
-// bare integers and fractional seconds are accepted (matching the bead-2
-// config-key idiom of plain numeric seconds on the [raymond.serve] section).
-// NaN and ±Inf are rejected so they can't slip past the >= 0 check
-// (`NaN >= 0` is false; `+Inf * time.Second` overflows int64 to a wild
-// Duration value).
-func parseShutdownTimeoutQuery(raw string, fallback time.Duration) (time.Duration, error) {
-	if raw == "" {
-		return fallback, nil
-	}
-	secs, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return 0, fmt.Errorf("not a number: %q", raw)
-	}
-	if math.IsNaN(secs) || math.IsInf(secs, 0) {
-		return 0, fmt.Errorf("must be a finite number: %q", raw)
-	}
-	if secs < 0 {
-		return 0, fmt.Errorf("must be non-negative: %v", secs)
-	}
-	return time.Duration(secs * float64(time.Second)), nil
 }
 
 // --- JSON response/request types ---

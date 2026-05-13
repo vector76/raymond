@@ -159,12 +159,6 @@ type RunOptions struct {
 	// from export_test.go instead.
 	ObserverSetup func(*bus.Bus)
 
-	// ShutdownSignal, when non-nil, is propagated to the ExecutionContext so
-	// shell-step env receives RAYMOND_STOP_REQUESTED / RAYMOND_STOP_SENTINEL
-	// once the daemon enters shutdown. Nil in the CLI `ray run` path; the
-	// daemon's RunManager populates it from its configured signal.
-	ShutdownSignal executors.ShutdownSignal
-
 	// StopSignalCh, when receivable, triggers a graceful quiesce: the
 	// orchestrator stops launching new executors and lets in-flight
 	// agent goroutines drain to their next-state boundary, then writes
@@ -305,7 +299,6 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	execCtx.DefaultEffort = opts.DefaultEffort
 	execCtx.Timeout = opts.Timeout
 	execCtx.DangerouslySkipPermissions = opts.DangerouslySkipPermissions
-	execCtx.ShutdownSignal = opts.ShutdownSignal
 
 	b.Emit(events.WorkflowStarted{
 		WorkflowID: workflowID,

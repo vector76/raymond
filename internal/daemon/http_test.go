@@ -2979,13 +2979,14 @@ func TestHandleShutdown_NotConfigured(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
-// TestCreateRun_PreShutdownSucceeds: with a ShutdownSignal installed but
-// Request() not yet called, POST /runs continues to launch runs as today.
-// Regression guard for the nil-check / IsRequested() short-circuit.
+// TestCreateRun_PreShutdownSucceeds: with a shutdown driver installed but
+// BeginQuiesce not yet called (InProgress()==false), POST /runs continues to
+// launch runs as today. Regression guard for the nil-check / InProgress()
+// short-circuit.
 func TestCreateRun_PreShutdownSucceeds(t *testing.T) {
 	srv, ts, fake := newTestServer(t)
-	sig := NewShutdownSignal(t.TempDir())
-	srv.SetShutdownSignal(sig)
+	driver := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, driver)
 
 	body := `{"workflow_id": "test-workflow", "input": "hello"}`
 	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
@@ -2998,17 +2999,17 @@ func TestCreateRun_PreShutdownSucceeds(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cr))
 	assert.NotEmpty(t, cr.RunID)
 	assert.Equal(t, 1, fake.callCount(),
-		"orchestrator must be invoked once when the signal is installed but not requested")
+		"orchestrator must be invoked once when the driver is installed but no shutdown is in flight")
 }
 
-// TestCreateRun_ReturnsServiceUnavailableDuringShutdown: once Request() has
-// flipped the signal, POST /runs returns 503 with the JSON error shape and
-// the orchestrator is never invoked.
+// TestCreateRun_ReturnsServiceUnavailableDuringShutdown: once the coordinator
+// reports InProgress()==true, POST /runs returns 503 with the JSON error
+// shape and the orchestrator is never invoked.
 func TestCreateRun_ReturnsServiceUnavailableDuringShutdown(t *testing.T) {
 	srv, ts, fake := newTestServer(t)
-	sig := NewShutdownSignal(t.TempDir())
-	srv.SetShutdownSignal(sig)
-	sig.Request()
+	driver := newFakeShutdownDriver()
+	installFakeShutdownDriver(srv, driver)
+	driver.BeginQuiesce(context.Background())
 
 	body := `{"workflow_id": "test-workflow", "input": "hello"}`
 	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
@@ -3025,15 +3026,15 @@ func TestCreateRun_ReturnsServiceUnavailableDuringShutdown(t *testing.T) {
 	// The orchestrator must not have been invoked: the 503 short-circuits
 	// before LaunchRun.
 	assert.Equal(t, 0, fake.callCount(),
-		"no run should be launched when shutdown has been requested")
+		"no run should be launched when shutdown is in progress")
 }
 
-// TestCreateRun_NoShutdownSignalUnchanged: a Server constructed without
-// SetShutdownSignal continues to accept POST /runs. The nil-check protects
-// callers (CLI `ray run`, existing tests) that never install a signal.
-func TestCreateRun_NoShutdownSignalUnchanged(t *testing.T) {
+// TestCreateRun_NoShutdownDriverUnchanged: a Server constructed without a
+// shutdown driver continues to accept POST /runs. The nil-check protects
+// callers (CLI `ray run`, existing tests) that never install one.
+func TestCreateRun_NoShutdownDriverUnchanged(t *testing.T) {
 	_, ts, fake := newTestServer(t)
-	// Intentionally do not call SetShutdownSignal.
+	// Intentionally do not install a shutdown driver.
 
 	body := `{"workflow_id": "test-workflow", "input": "hello"}`
 	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))

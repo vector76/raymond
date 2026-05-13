@@ -15,7 +15,6 @@ import (
 
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
-	"github.com/vector76/raymond/internal/executors"
 	debugobs "github.com/vector76/raymond/internal/observers/debug"
 	"github.com/vector76/raymond/internal/orchestrator"
 	"github.com/vector76/raymond/internal/parsing"
@@ -126,11 +125,6 @@ type RunManager struct {
 	orchestrator    Orchestrator
 	pendingRegistry *PendingRegistry
 	askNotify     func(runID, askID, prompt string) // optional, called when an agent enters <ask>
-	// shutdownSignal, when non-nil, is forwarded to every orchestrator run
-	// launched after it was installed. Executors read it during shell steps
-	// to inject RAYMOND_STOP_* env vars so user scripts can observe a
-	// pending daemon shutdown. Set by `ray serve` via SetShutdownSignal.
-	shutdownSignal *ShutdownSignal
 }
 
 // NewRunManager creates a RunManager and recovers any in-progress workflows
@@ -316,16 +310,6 @@ func (rm *RunManager) LaunchRun(
 	rm.runs[runID] = re
 	rm.mu.Unlock()
 
-	// rm.shutdownSignal is *ShutdownSignal (concrete daemon type). The
-	// orchestrator's RunOptions takes the executors.ShutdownSignal interface;
-	// the concrete type satisfies it. Guard against the typed-nil pitfall by
-	// only assigning when the pointer is non-nil so the interface stays nil
-	// in the CLI / unwired-test paths.
-	var runShutdownSignal executors.ShutdownSignal
-	if rm.shutdownSignal != nil {
-		runShutdownSignal = rm.shutdownSignal
-	}
-
 	opts := orchestrator.RunOptions{
 		StateDir:                   stateDir,
 		DefaultModel:               model,
@@ -333,7 +317,6 @@ func (rm *RunManager) LaunchRun(
 		Quiet:                      true,
 		OnAsk:                    "pause",
 		StopSignalCh:               stopSignalCh,
-		ShutdownSignal:             runShutdownSignal,
 		// Match the CLI's default behavior so raw Claude stream output
 		// lands on disk (.raymond/debug/<run_id>/*.jsonl). Without this,
 		// daemon-launched runs produce no artifact for diagnosing what
@@ -1063,20 +1046,11 @@ func (rm *RunManager) relaunchRecoveredRun(id string, ws *wfstate.WorkflowState,
 		re.info.CurrentState = agents[0].CurrentState
 	}
 
-	// Same typed-nil guard LaunchRun uses: ShutdownSignal is an interface;
-	// only assign when the concrete pointer is non-nil so the interface stays
-	// nil in CLI / unwired-test paths.
-	var runShutdownSignal executors.ShutdownSignal
-	if rm.shutdownSignal != nil {
-		runShutdownSignal = rm.shutdownSignal
-	}
-
 	opts := orchestrator.RunOptions{
-		StateDir:       stateDir,
-		Quiet:          true,
-		OnAsk:          "pause",
-		StopSignalCh:   stopSignalCh,
-		ShutdownSignal: runShutdownSignal,
+		StateDir:     stateDir,
+		Quiet:        true,
+		OnAsk:        "pause",
+		StopSignalCh: stopSignalCh,
 		// Match LaunchRun's default so debug artefacts still land on disk
 		// for diagnosing a recovered run that misbehaves.
 		Debug: true,
@@ -1374,14 +1348,6 @@ func (rm *RunManager) SetPendingRegistry(pr *PendingRegistry) {
 // It is called from the orchestrator's main goroutine and must not block.
 func (rm *RunManager) SetAskNotifier(fn func(runID, askID, prompt string)) {
 	rm.askNotify = fn
-}
-
-// SetShutdownSignal installs the daemon-wide ShutdownSignal that subsequent
-// LaunchRun calls forward into RunOptions so executors can observe a pending
-// shutdown. Existing in-flight runs are unaffected (the signal is read on the
-// orchestrator's setup path, before the first executor invocation).
-func (rm *RunManager) SetShutdownSignal(sig *ShutdownSignal) {
-	rm.shutdownSignal = sig
 }
 
 // DeliverInput delivers a response to a pending ask input. If runID is

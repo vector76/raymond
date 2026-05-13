@@ -205,29 +205,6 @@ API or web UI.`,
 			// the (pool-dependent) state path.
 			rm.SetRaymondDir(raymondDir)
 
-			// Construct the daemon-wide shutdown signal and install it on the
-			// run manager so every subsequent LaunchRun forwards it into the
-			// orchestrator's ExecutionContext. Executors then inject
-			// RAYMOND_STOP_REQUESTED / RAYMOND_STOP_SENTINEL into shell-step
-			// env once Request() flips. The sentinel path lives under
-			// raymondDir so workflow scripts can poll a stable on-disk marker.
-			shutdownSignal := daemon.NewShutdownSignal(raymondDir)
-			// Clear any sentinel left over from a previous crashed daemon
-			// *before* announcing the HTTP/MCP transports — once accepting
-			// work, an executor consulting a stale sentinel would mistakenly
-			// believe shutdown is in progress.
-			if err := shutdownSignal.RemoveStaleSentinel(); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to remove stale shutdown sentinel: %v\n", err)
-			}
-			// Unconditional cleanup on serve exit. Combined with the startup
-			// clear above this gives the at-most-one stale sentinel guarantee.
-			defer func() {
-				if err := shutdownSignal.RemoveStaleSentinel(); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to remove shutdown sentinel on exit: %v\n", err)
-				}
-			}()
-			rm.SetShutdownSignal(shutdownSignal)
-
 			// Extract the configured budget. config.ValidateConfig accepts
 			// non-negative floats (with 0 meaning unlimited). We forward only
 			// strictly positive caps as the server default; absent, malformed,
@@ -277,14 +254,13 @@ API or web UI.`,
 			// compile-time assertion in shutdowncoordinator.go.
 			coordinator := daemon.NewShutdownCoordinator(rm, eventSink)
 			if srv != nil {
-				// Install the coordinator and signal on the server *before*
+				// Install the coordinator on the server *before*
 				// ListenAndServe so an early POST /shutdown or POST /runs
 				// can't race in and observe an unconfigured handler:
-				// SetShutdownCoordinator wires the /shutdown handler, and
-				// SetShutdownSignal primes the launch guard so POST /runs
-				// returns 503 once Request() flips.
+				// SetShutdownCoordinator wires both the /shutdown handler
+				// and the launch-rejection guard (which consults
+				// shutdownDriver.InProgress()).
 				srv.SetShutdownCoordinator(coordinator)
-				srv.SetShutdownSignal(shutdownSignal)
 
 				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
 				go func() {

@@ -403,6 +403,14 @@ the process is not running between resume cycles.
 
 ## Run Recovery
 
+> **Planned change.** The behavior described here — daemon and CLI
+> share a single `.raymond/state/` directory; recovered runs land as
+> inactive entries until an operator resumes them — is the current
+> behavior. A planned change splits state into disjoint CLI and serve
+> pools and switches serve to auto-resume non-terminal entries
+> actively on startup. See
+> [serve-run-pool.md](serve-run-pool.md).
+
 On startup, the daemon scans the state directory for persisted workflow state
 files. Previously running workflows are recovered in their last known state:
 agents in the `asking` status are surfaced as `asking` runs, and

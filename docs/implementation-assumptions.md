@@ -5,6 +5,12 @@ reasonable choices existed. These can be revisited if they prove problematic.
 
 ## State File Location
 
+> **Planned change.** A planned split introduces a sibling
+> `.raymond/serve-state/` directory owned by the daemon, with
+> `.raymond/state/` reserved for CLI runs. See
+> [serve-run-pool.md](serve-run-pool.md). The assumption recorded
+> here is the current behavior.
+
 **Assumption:** State files live in `.raymond/state/` relative to the
 project root.
 

@@ -1,0 +1,235 @@
+# Disjoint Run Pools: `ray` vs `ray serve`
+
+This document describes a planned change to the run-state layout so that
+runs created by the CLI (`ray <workflow>`) and runs created by the daemon
+(`ray serve`) live in **disjoint state directories** and never appear in
+each other's recovery scans.
+
+It is a forward-looking change document, not a description of current
+behavior. Until the change lands, `docs/daemon-server.md` ("Run Recovery")
+and `docs/graceful-shutdown.md` ("Resume guarantees per tier") describe
+what the system actually does.
+
+## Motivation
+
+Today both `ray` and `ray serve` resolve their state directory through
+`state.GetStateDir("")`, which returns `<project>/.raymond/state/` for any
+caller. This single shared pool has two operational consequences:
+
+1. **The daemon's recovery scan sweeps up CLI residue.** Many workflows
+   have no natural termination — they crunch until the operator hits
+   Ctrl-C. Each such CLI run leaves a non-terminal state file. The next
+   `ray serve` startup registers all of them as inactive entries,
+   surfacing them in the UI and HTTP API even though they have nothing to
+   do with the daemon's session.
+
+2. **Active resume on startup is unsafe by default.** Because the pool is
+   contaminated with stale CLI runs, "resume every non-terminal entry on
+   `serve` startup" cannot be the default — it would revive arbitrarily
+   old experiments along with the daemon's own work. The current
+   compromise (recovered runs are inactive, operator picks per-run) is a
+   workaround for this contamination.
+
+Disjoint pools fix the root cause. Once the daemon's pool contains only
+runs the daemon itself created, "resume everything non-terminal" becomes
+a safe and obvious default, and the recovered-but-inactive intermediate
+state can go away for the serve path.
+
+## The change
+
+### Directory layout
+
+| Pool | Path | Owner |
+|------|------|-------|
+| CLI | `<project>/.raymond/state/` | `ray <workflow>` invocations (unchanged) |
+| Serve | `<project>/.raymond/serve-state/` | `ray serve` daemon (new) |
+
+The two are siblings, not parent-and-child. A future enumeration that
+wants to list both pools iterates two independent roots; no risk of one
+scan accidentally descending into the other.
+
+### Auto-resume on serve startup
+
+`ray serve` resumes every non-terminal state file in `serve-state/` as an
+**active** run on startup. There is no "recovered but inactive"
+intermediate state for serve-pool runs — if the file is there and not
+terminal, the daemon brings the run back to life.
+
+Rationale: the serve pool is now curated. Every entry in it was created
+by an earlier invocation of `ray serve` in this project. Reviving them
+matches the operator's intent of "the daemon picks up where it left off",
+analogous to `ray --resume <id>` for a single CLI run.
+
+`asking`-state runs are resumed actively as well — their pending input
+records (already in `pending_inputs.jsonl`) become answerable through
+the HTTP/MCP transports immediately, without an explicit per-run resume
+step. This closes the "asking runs becoming answerable post-restart"
+item from `graceful-shutdown.md`'s out-of-scope list.
+
+### `--clean` flag
+
+`ray serve --clean` permanently abandons every non-terminal run in
+`serve-state/` before the daemon starts:
+
+- Abandoned state files are moved (not deleted) to
+  `<project>/.raymond/serve-state/abandoned/<timestamp>/` so forensics
+  remain possible.
+- After the move, `serve-state/` is empty of non-terminal entries and the
+  daemon starts with no active runs.
+- Terminal state files (already-completed runs) are left in place.
+
+This is safe to make destructive-by-move only because the pool is
+disjoint: `--clean` cannot accidentally discard CLI work, because CLI
+work is not in this directory.
+
+### No cross-pool resume
+
+Resume operations are scoped to a single pool. Specifically:
+
+- `ray --resume <id>` looks for `<id>` in the CLI pool only. If the id
+  exists only in the serve pool, the command fails with a message
+  pointing the operator at the daemon: *"run `<id>` is managed by `ray
+  serve`; resume it via the daemon."*
+- The daemon's recovery scan reads only `serve-state/`. State files in
+  `.raymond/state/` are not loaded into the daemon's view under any
+  circumstance.
+- There is no flag to "import" a CLI run into the serve pool or vice
+  versa. If that capability is needed later, it is a separate, explicit
+  feature, not a side effect of resume.
+
+The prohibition is symmetric and unconditional. It preserves the
+property that each state file is owned by exactly one runtime — the
+CLI binary for files in `.raymond/state/`, the daemon for files in
+`.raymond/serve-state/`. Disjoint directories make this property
+true by construction; the no-cross-pool-resume rule keeps it true.
+
+### Nested launches go to the CLI pool
+
+A workflow that shells out to `ray <workflow_id>` — whether that
+workflow is itself running under the CLI or under `serve` — writes the
+nested run's state into `.raymond/state/` (the CLI pool). The `ray`
+binary is not treated specially when invoked from another raymond
+process: it is a normal shell command that happens to launch a workflow,
+and its state lands wherever the CLI's resolution rule says.
+
+This is intentional. Examples that motivate keeping the rule simple:
+
+- A workflow could legitimately `cd ../other_project && ray <wf>` to
+  drive work in a different project. The nested run is not part of the
+  caller's serve session in any meaningful sense.
+- Even when the working directory does not change, the nested process
+  has its own lifecycle (its own SIGINT handling, its own budget, its
+  own state file). Bundling it into the parent's pool would imply a
+  parent/child resume relationship the runtime does not actually
+  maintain.
+
+The right primitive for "this nested work is part of my serve run" is
+`<fork>` or `<fork-workflow>`, which run in-process under the same
+orchestrator and produce no separate state file. Shelling out to `ray`
+is the explicit choice to detach.
+
+This means a serve-pool workflow that shells to `ray` will not see its
+nested run in the daemon UI, and the daemon's `--clean` will not touch
+it. Both are the intended consequences of choosing the shell-out path.
+
+### Migration: none
+
+Existing `.raymond/state/*.json` files become the CLI pool by definition
+on first upgrade. No copy, no move, no rewrite.
+
+`serve-state/` is created lazily on first `ray serve` startup after the
+upgrade. It starts empty, so the first post-upgrade `serve` session
+recovers zero runs — which is the correct outcome, because no previous
+serve session had a curated pool to leave behind.
+
+### Diagnostic surface
+
+The CLI listing (`ray list`) continues to enumerate the CLI pool.
+
+A separate command — `ray serve list` (or equivalent, naming TBD during
+implementation) — enumerates the serve pool. The two views are not
+merged into a single command by default. An operator who wants both
+unions them explicitly.
+
+`ray status <id>` is the one documented exception to "CLI tooling
+never reads serve-state, and vice versa": as a read-only diagnostic
+it may consult both pools. Ids are timestamp-with-microseconds plus
+an in-pool collision counter (see `state.GenerateWorkflowID`), so
+cross-pool collisions are vanishingly rare in practice but not
+guaranteed impossible. The lookup checks the CLI pool first, then the
+serve pool, and returns the first match; the error message on a
+not-found stays generic.
+
+## Related changes and dependencies
+
+This change is one of a pair. The companion document
+[serve-shutdown-signals.md](serve-shutdown-signals.md) rewrites the
+signal-handling and graceful-shutdown surface (SIGINT/SIGTERM
+mapping, removal of Tier 1 entirely, removal of Tier 2's *timeout*
+— quiesce itself stays as raymond's graceful phase — and removal of
+`RAYMOND_STOP_REQUESTED`).
+
+**Implementation order matters.** Land disjoint pools and auto-resume
+first. The shutdown-signals change depends on auto-resume for its
+cost calculus — without auto-resume, dropping Tier 1 and the Tier-2
+timeout would leave parked runs that an operator has to revive by
+hand, which is the toil the current three-tier model was designed
+to bound.
+
+## Out of scope for this change
+
+- **Cross-project serve scopes.** If a single `ray serve` invocation
+  ever serves multiple `.raymond/` directories, this document's
+  "per-project pool" framing has to be revisited. Today serve is
+  per-project and the rule is unambiguous.
+- **Lock-file ownership enforcement.** Disjoint pools give the
+  "one runtime per state file" property by construction (CLI cannot
+  reach into the serve pool, daemon cannot reach into the CLI pool).
+  Adding explicit locks (e.g. for two concurrent `ray serve`
+  invocations in the same project) is a separate question.
+
+## Implementation notes
+
+Pointers for the implementer; not contractual surface.
+
+- `internal/state/state.go:154` (`GetStateDir`) — the resolution point.
+  Either grows a mode parameter, or a parallel `GetServeStateDir` is
+  added alongside. Callers in `internal/cli/cli.go` continue to call the
+  CLI variant; callers in `internal/cli/serve.go` and
+  `internal/daemon/runmanager.go` switch to the serve variant.
+- `internal/daemon/runmanager.go:135` (`NewRunManager` → `recoverRuns`)
+  — drop the "register as inactive" behavior for the serve path. Every
+  non-terminal entry becomes active. The "inactive entry" code path can
+  remain in the runmanager for now (CLI-side `ray --resume` still uses
+  the same state package) but the daemon no longer produces inactive
+  entries on its own.
+- `internal/cli/serve.go` — add the `--clean` flag and its move-to-
+  `abandoned/<timestamp>/` behavior, ahead of `NewRunManager`.
+- `docs/daemon-server.md` "Run Recovery" — rewrite to describe the
+  curated pool, active auto-resume, and the disjoint guarantee.
+- `docs/graceful-shutdown.md` — strike the "Active resume in serve mode"
+  and "asking-state runs becoming answerable post-restart" bullets from
+  the out-of-scope list once this change lands; both are resolved by
+  it.
+
+## Test strategy
+
+Per project conventions (TDD), tests are written alongside or before
+the implementation. The minimum coverage for this change:
+
+- A serve startup with stale CLI state files present in `.raymond/state/`
+  must not register them in the daemon. (Pollution-isolation test.)
+- A serve startup with non-terminal state files in `serve-state/` must
+  register them as active runs, not inactive. (Auto-resume test.)
+- `ray --resume <serve-pool-id>` must fail with the
+  pool-mismatch message. (Cross-pool prohibition test.)
+- `ray serve --clean` must move non-terminal files to
+  `serve-state/abandoned/<timestamp>/` and start with an empty active
+  set; terminal files in `serve-state/` must be left untouched.
+- A workflow that shells out to `ray <wf>` from inside a serve run must
+  produce a state file in `.raymond/state/`, not `serve-state/`, and
+  must not appear in the daemon's run list. (Nested-launch routing
+  test.)
+- An `asking`-state run recovered from `serve-state/` on serve startup
+  must have its pending input answerable via the HTTP transport without
+  an explicit resume step. (Recovered-ask answerability test.)

@@ -1,5 +1,14 @@
 # Graceful Shutdown (`raymond serve`)
 
+> **Planned rewrite.** The model described here is the current
+> behavior. A planned change will collapse the three-tier model to two
+> phases (quiesce, cancel), differentiate SIGINT and SIGTERM, and
+> remove the `RAYMOND_STOP_REQUESTED` / `RAYMOND_STOP_SENTINEL`
+> mechanism along with Tier 1. See
+> [serve-shutdown-signals.md](serve-shutdown-signals.md) for the
+> design and [serve-run-pool.md](serve-run-pool.md) for the
+> disjoint-pool + auto-resume change it depends on.
+
 When `raymond serve` is asked to stop — by `POST /shutdown`, by `SIGINT` /
 `SIGTERM`, or by a container runtime sending `SIGTERM` to PID 1 — the daemon
 runs a deterministic three-tier sequence that gives in-flight runs a chance to
@@ -285,28 +294,3 @@ short of them:
 Anything in this list that currently happens to work for some workflow
 shape is incidental, not contractual.
 
-## Operator helper: `container_dev/stop-ray.sh`
-
-For container deployments, `container_dev/stop-ray.sh` is the recommended
-way to drive shutdown. It POSTs `/shutdown` and streams the response,
-giving operators the same per-phase progress lines the daemon emits over
-HTTP:
-
-```bash
-curl --silent --show-error --no-buffer -X POST \
-    "http://${RAYMOND_HOST:-localhost}:${RAYMOND_PORT:-7100}/shutdown"
-```
-
-In the container image, `start-ray.sh --foreground` (the Dockerfile's
-`CMD`) installs a `SIGTERM` trap that invokes this helper, so `docker
-stop` triggers the same tier sequence as a manual `POST /shutdown`:
-
-```bash
-trap '"$STOP_RAY" || true' TERM
-# … start beads_server and `ray serve` in the background …
-wait      # blocks until the trap fires under `docker stop`
-```
-
-The container's PID-1 process therefore drives a graceful shutdown
-within `docker stop`'s default ten-second grace window — or longer if
-the operator passes `docker stop --time=<seconds>` to accommodate T1/T2.

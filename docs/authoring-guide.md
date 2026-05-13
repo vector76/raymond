@@ -504,6 +504,45 @@ back. See [workflow-protocol.md](workflow-protocol.md#file-attachments) for
 the full attribute reference, and the **Pattern: File Upload from User**
 example below.
 
+## Nested Work: In-Process vs Shelling Out to `ray`
+
+There are two ways to drive additional work from a workflow, and they
+have very different lifecycle and visibility consequences — especially
+when the parent runs under `raymond serve`.
+
+**In-process: `<fork>` and `<fork-workflow>` — same orchestrator, same
+pool.** `<fork>` spawns another agent within the current workflow;
+`<fork-workflow>` launches a different workflow under the same
+orchestrator. Both share the parent's budget, lifecycle, and run pool,
+and (under `raymond serve`) appear in the daemon's run list. No separate
+state file is created. This is the right choice when the nested work is
+logically part of the parent run.
+
+**Shelling out (`ray <workflow_id>` in a shell-script state) — detached,
+always CLI pool.** A shell step that invokes the `ray` binary is just
+another shell command; the spawned process resolves its own state
+directory and writes to `.raymond/state/` (the CLI pool) regardless of
+where the parent's state lives. The implications for the author:
+
+- The nested run is **detached from the parent's lifecycle**. If the
+  parent runs under `raymond serve`, the nested run does not appear in
+  the daemon's run list, does not stream events through the parent's
+  channel, and is not aborted when the parent is cancelled or quiesced.
+- `ray serve --clean` does **not** touch the nested run's state file —
+  `--clean` only scopes to the serve pool, and the nested run is in the
+  CLI pool by definition.
+- The nested process has its own SIGINT handling, its own budget, and
+  its own termination semantics.
+
+Prefer `<fork>` or `<fork-workflow>` for in-process orchestration that
+stays in the parent's pool. Shell out to `ray` only when the detachment
+is what you want — for example, when driving work in a different project
+directory or when the nested run should outlive the parent.
+
+See [cross-workflow-design.md](cross-workflow-design.md) for the
+`<fork-workflow>` reference and [serve-run-pool.md](serve-run-pool.md)
+for the pool-routing rule the daemon enforces.
+
 ## Choosing the Right Pattern
 
 | Question | If yes | If no |
@@ -516,6 +555,7 @@ example below.
 | Is prior work saved to files? | `reset` | `goto` |
 | Need parallel execution? | `fork` | Others |
 | Need a human decision before continuing? | `ask` | Others |
+| Nested work that's part of this run? | `fork` / `fork-workflow` (in-pool) | shell-out `ray <wf>` (detaches, CLI pool) |
 
 ### Combined Example
 

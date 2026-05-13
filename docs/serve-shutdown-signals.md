@@ -44,7 +44,7 @@ workflow-space.
 | SIGINT (1st) | Enter quiesce. No raymond-side timeout. Runs park at their next state transition; the daemon waits indefinitely for all of them. |
 | SIGINT (2nd, or any subsequent SIGINT) | Cancel: propagate context cancellation to in-flight executors, bounded patience window for goroutines to honor it, then exit. |
 | SIGTERM (any, including while in quiesce) | Equivalent to a 2nd SIGINT — go straight to cancel. No quiesce attempt. No "press twice" semantic; SIGTERM is a single shot from a supervisor. Subsequent SIGTERMs are idempotent. |
-| SIGKILL | Kernel terminates the daemon process. No in-process handling possible. State files reflect the last completed atomic write (state writes use temp-then-rename — see `internal/state/state.go`); in-progress writes are lost and the prior version remains in place. Orphan `.tmp` files may be left behind in the state directory. |
+| SIGKILL | Kernel terminates the daemon process. No in-process handling possible. State files reflect the last completed atomic write (state writes use temp-then-rename — see `internal/state/state.go`); in-progress writes are lost and the prior version remains in place. Orphan `.tmp` files may be left behind in the serve pool (`.raymond/serve-state/`). |
 | `POST /shutdown` | Equivalent to 1st SIGINT — enter quiesce. A second `POST /shutdown` while already quiescing is equivalent to 2nd SIGINT — cancel. No query parameters; the previous `?t1=…&t2=…` overrides are removed along with the timeouts. |
 | Other signals (SIGHUP, SIGQUIT, etc.) | Not handled by raymond. The Go runtime's default disposition applies (e.g. SIGQUIT dumps goroutine stacks before exit; SIGHUP terminates). None of these are part of raymond's shutdown contract. |
 

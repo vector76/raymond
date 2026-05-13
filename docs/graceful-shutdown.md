@@ -263,22 +263,18 @@ where in the workflow a resume picks up.
 | Tier 2 | Next-state boundary, after the in-flight step's transition was parsed. | Re-enters that next state cleanly. Behaviourally identical to resuming an `<ask>`-paused run today. |
 | Tier 3 | Records the in-progress state the agent was in. | Re-enters that state from the beginning. Interrupted work runs again from scratch. Lossy. |
 
-In serve mode, current passive recovery behaviour is unchanged: at daemon
-startup, the state directory is scanned and existing state files are
-registered as inactive run entries (visible in the UI, resumable via the
-CLI). An operator restarting the daemon decides per-run whether to
-resume; automatic multi-run active resume is deferred — see "Out of
-scope" below.
+In serve mode, the daemon scans the serve pool
+(`.raymond/serve-state/`) on startup and resumes every non-terminal
+state file as an active run — see
+[serve-run-pool.md](serve-run-pool.md) for the pool layout and
+auto-resume contract.
 
 ## Out of scope (deferred to follow-up)
 
-The following four concerns are interrelated and will be addressed
-together in a follow-up design. Graceful shutdown deliberately stops
-short of them:
+The following concerns are interrelated and will be addressed together
+in a follow-up design. Graceful shutdown deliberately stops short of
+them:
 
-- **Active resume in serve mode (`--resume-all`).** A future flag could
-  walk the state directory at startup and resume every non-terminal run
-  automatically. Today the operator picks runs to resume by hand.
 - **`--launch` and `--resume` coexistence / idempotency.** A daemon
   invoked with both flags, or restarted with the same `--launch` list,
   must decide whether previously-launched runs are skipped, replaced, or
@@ -286,10 +282,6 @@ short of them:
 - **Agent introspection of live runs.** Inspecting a still-running
   orchestrator (state, step, recent output) from outside the daemon
   process is not yet exposed beyond the existing run-status surface.
-- **`asking`-state runs becoming answerable post-restart.** Today an
-  `<ask>`-paused run registered after a fresh `serve` boot is inactive
-  until explicitly resumed via the CLI; surfacing it as answerable
-  through the daemon HTTP/UI without an explicit resume is future work.
 
 Anything in this list that currently happens to work for some workflow
 shape is incidental, not contractual.

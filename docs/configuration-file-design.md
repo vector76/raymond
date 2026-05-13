@@ -25,12 +25,11 @@ Based on `internal/config/config.go`, the following options are supported in con
 - `no_wait` (bool, default: false) - Do not auto-wait when usage limit is reached; exit immediately instead
 - `verbose` (bool, default: false)
 
-**Note on `state_dir`**: The `--state-dir` CLI option is not included in the config file. With project-based `.raymond` directory location, all workflows in a project naturally use the same state directory (`.raymond/state`). Since workflows have unique IDs, they can coexist in the same directory. The CLI `--state-dir` option remains available primarily for **testing** (to use temporary directories for test isolation), but for normal end-user operation, the default project-based location is sufficient and doesn't need to be configured.
+**Note on `state_dir`**: The `--state-dir` CLI option is not included in the config file. With project-based `.raymond` directory location, all CLI workflows in a project naturally use the same state directory (`.raymond/state`). Since workflows have unique IDs, they can coexist in the same directory. The CLI `--state-dir` option remains available primarily for **testing** (to use temporary directories for test isolation), but for normal end-user operation, the default project-based location is sufficient and doesn't need to be configured.
 
-> **Planned change.** The "all workflows in a project use the same
-> state directory" property described here applies to CLI runs after
-> a planned split that gives `ray serve` its own `.raymond/serve-state/`
-> directory. See [serve-run-pool.md](serve-run-pool.md). The
+> **Note.** The "same state directory" property above applies to CLI
+> runs only. `ray serve` writes to a sibling `.raymond/serve-state/`
+> pool — see [serve-run-pool.md](serve-run-pool.md). The
 > `--state-dir` flag and its testing role are unaffected.
 
 ## File Format: TOML

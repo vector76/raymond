@@ -375,10 +375,10 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 	f.BoolVar(&dangerouslySkipPermissions, "dangerously-skip-permissions", defaultDangerouslySkipPermissions,
 		"skip Claude permission prompts for daemon-launched runs; pass --dangerously-skip-permissions=false to require permissions")
 	f.BoolVar(&clean, "clean", false,
-		"archive non-terminal state files from the serve pool (.raymond/serve-state/) "+
-			"into serve-state/abandoned/<timestamp>/ before recovery runs. Only the serve pool is "+
-			"affected — CLI runs in .raymond/state/ are untouched. Archived files remain on disk "+
-			"for forensics; no state is deleted.")
+		"archive non-terminal serve-pool runs before startup: move each one to "+
+			".raymond/serve-state/abandoned/<timestamp>/ for forensics so the daemon "+
+			"starts with no active runs. Only the serve pool is touched; the CLI pool "+
+			"at .raymond/state/ is untouched, and no state is deleted.")
 
 	cmd.AddCommand(c.newServeListCmd())
 

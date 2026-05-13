@@ -749,8 +749,6 @@ func TestServeSIGTERMGracefulShutdown(t *testing.T) {
 		"[raymond]",
 		"",
 		"[raymond.serve]",
-		"shutdown_tier1_timeout = 2",
-		"shutdown_tier2_timeout = 2",
 		"",
 	}, "\n")
 	require.NoError(t, os.WriteFile(filepath.Join(raymondDir, "config.toml"), []byte(configToml), 0o644))

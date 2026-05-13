@@ -723,8 +723,6 @@ func TestInitConfigCreatesConfigFile(t *testing.T) {
 	assert.Contains(t, s, "# mcp = false")
 	assert.Contains(t, s, "# no_http = false")
 	assert.Contains(t, s, `# workdir = ""`)
-	assert.Contains(t, s, "# shutdown_tier1_timeout = 3600")
-	assert.Contains(t, s, "# shutdown_tier2_timeout = 300")
 }
 
 func TestInitConfigCreatesRaymondDirIfMissing(t *testing.T) {
@@ -1107,16 +1105,6 @@ func TestMergeServeConfigUploadCapsFromFileWhenCLIZero(t *testing.T) {
 	assert.Equal(t, int64(200), merged.MaxTotalSize)
 	assert.Equal(t, 3, merged.MaxFileCount)
 }
-
-// ----------------------------------------------------------------------------
-// Shutdown tier timeouts
-// ----------------------------------------------------------------------------
-//
-// (bead-1) The parse-behavior subtests for shutdown_tier1_timeout and
-// shutdown_tier2_timeout were deleted: the two-phase shutdown rewrite
-// removes both keys (quiesce is unbounded; the cancel patience window
-// is a code constant). The config-cleanup bead deletes the keys
-// themselves; this bead just clears the test surface that pins them.
 
 func TestMergeServeConfigUploadCapsZeroWhenNeitherSet(t *testing.T) {
 	// Zero in the merged config signals "unset" so the daemon falls

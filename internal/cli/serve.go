@@ -164,22 +164,14 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 			// join directly without a fallback.
 			serveStateDir := filepath.Join(raymondDir, "serve-state")
 
-			rm, err := daemon.NewRunManagerWithOrchestrator(serveStateDir, cwd, &cliOrch{fn: c.runner})
-			if err != nil {
-				return fmt.Errorf("initializing run manager: %w", err)
-			}
-			// Plumb the raymond directory so DeleteRun can derive
-			// `<raymondDir>/tasks/<id>/` without stripping a segment off
-			// the (pool-dependent) state path.
-			rm.SetRaymondDir(raymondDir)
-
-			// Wire up the pending-input registry so that <ask> transitions
-			// run in daemon mode: the orchestrator registers each pending
-			// input via AskCallback and the HTTP layer exposes it for the
-			// UI to surface and answer. Without this, asks fall back to
-			// the CLI pause path (return PendingAskError, wait for
-			// --resume on the next process), which never triggers in a
-			// long-running daemon.
+			// Build the pending-input registry FIRST so its on-disk
+			// pending_inputs.jsonl is replayed before the run manager's
+			// recovery launches. The relaunch path consults the registry
+			// when wiring askInputCh / AskCallback for recovered
+			// asking-state runs, and the dangling-record drop policy
+			// (NewRunManagerForServe → PruneDangling) runs against the
+			// already-replayed in-memory view. Reversing this order would
+			// race the recovery goroutines against an empty registry.
 			//
 			// The registry deliberately lives at `<raymondDir>/`, NOT under
 			// the serve pool: one registry per project, not per pool. A
@@ -193,7 +185,15 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 			if err != nil {
 				return fmt.Errorf("initializing pending registry: %w", err)
 			}
-			rm.SetPendingRegistry(pr)
+
+			rm, err := daemon.NewRunManagerForServe(serveStateDir, cwd, &cliOrch{fn: c.runner}, pr)
+			if err != nil {
+				return fmt.Errorf("initializing run manager: %w", err)
+			}
+			// Plumb the raymond directory so DeleteRun can derive
+			// `<raymondDir>/tasks/<id>/` without stripping a segment off
+			// the (pool-dependent) state path.
+			rm.SetRaymondDir(raymondDir)
 
 			// Construct the daemon-wide shutdown signal and install it on the
 			// run manager so every subsequent LaunchRun forwards it into the

@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -146,6 +149,64 @@ func (pr *PendingRegistry) ListAll() []PendingAsk {
 		result = append(result, pi)
 	}
 	return result
+}
+
+// PruneDangling is the single shared drop-policy for pending-registry entries
+// whose paired workflow state file is missing or unreadable. The caller
+// supplies a stateExists predicate so this function stays independent of any
+// particular pool convention — production wiring stats the resolved serve
+// pool, future callers (e.g. bead-7's --clean flag) can reuse it with a
+// different predicate.
+//
+// Behaviour: every entry whose RunID fails the predicate is removed from the
+// in-memory map AND from the on-disk JSONL log (a "remove" op is appended so
+// the next replay does not resurrect it). The set of dropped run ids is
+// returned in sorted order and also emitted as a single log line so an
+// operator can chase down the underlying cause (manual cleanup, crashed run,
+// future --clean invocation, etc).
+//
+// The predicate is called at most once per distinct RunID — multiple pending
+// asks for the same run share one stat — so the policy stays cheap even on a
+// registry with many entries.
+func (pr *PendingRegistry) PruneDangling(stateExists func(runID string) bool) []string {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+
+	cache := make(map[string]bool)
+	askToDrop := make([]string, 0)
+	droppedRunIDs := make(map[string]struct{})
+	for askID, pi := range pr.inputs {
+		ok, cached := cache[pi.RunID]
+		if !cached {
+			ok = stateExists(pi.RunID)
+			cache[pi.RunID] = ok
+		}
+		if !ok {
+			askToDrop = append(askToDrop, askID)
+			droppedRunIDs[pi.RunID] = struct{}{}
+		}
+	}
+
+	for _, askID := range askToDrop {
+		// Best-effort durable removal: even if the log append fails the
+		// in-memory drop still happens, which is the behaviour callers rely
+		// on at startup. A subsequent replay would resurrect the entry, but
+		// the next prune would drop it again.
+		_ = pr.appendLog(logEntry{Op: "remove", ID: askID})
+		delete(pr.inputs, askID)
+	}
+
+	out := make([]string, 0, len(droppedRunIDs))
+	for id := range droppedRunIDs {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+
+	if len(out) > 0 {
+		log.Printf("daemon: dropped %d pending-registry entr(y/ies) whose state file is missing; run ids: %s",
+			len(askToDrop), strings.Join(out, ", "))
+	}
+	return out
 }
 
 // ListByRun returns pending inputs filtered by run ID.

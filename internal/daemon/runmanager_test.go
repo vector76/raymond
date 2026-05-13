@@ -2054,3 +2054,195 @@ func TestDeleteRun_RemovesTasksDirViaPlumbedRaymondDir(t *testing.T) {
 	_, statErr = os.Stat(filepath.Join(serveStateDir, runID+".json"))
 	assert.True(t, os.IsNotExist(statErr), "serve-pool state file must be removed")
 }
+
+// ----------------------------------------------------------------------------
+// Phase-3 tail (bead-5): recovered-ask answerability + dangling-record policy.
+//
+// The serve daemon must come up such that a recovered asking-state run is
+// reachable via DeliverInput without an intervening per-run resume call (the
+// orchestrator goroutine is wired with AskInputCh through the same path
+// LaunchRun uses for fresh runs), and any pending-registry entry whose paired
+// state file is missing is dropped at startup with a single shared policy.
+// ----------------------------------------------------------------------------
+
+// seedAskingRunForRecovery writes an asking-state state file into the serve
+// pool and a paired PendingAsk into the on-disk pending_inputs.jsonl. It
+// returns a freshly-built PendingRegistry that has replayed the seeded log —
+// the same state a daemon would see on startup after a previous instance
+// crashed mid-ask.
+func seedAskingRunForRecovery(t *testing.T, raymondDir, serveStateDir, runID, askID string) *PendingRegistry {
+	t.Helper()
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: runID,
+		ScopeDir:   "/some/scope",
+		Agents: []wfstate.AgentState{
+			{
+				ID:           "main",
+				CurrentState: "WAIT.md",
+				Status:       wfstate.AgentStatusAsking,
+				AskID:        askID,
+				AskPrompt:    "what next?",
+				AskNextState: "NEXT.md",
+				Stack:        []wfstate.StackFrame{},
+			},
+		},
+	}
+	data, err := json.Marshal(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(serveStateDir, runID+".json"), data, 0o644))
+
+	// Register a pending entry via a throwaway registry so the on-disk log
+	// is populated, then return a fresh registry whose replay reads the
+	// same log back — exactly the path NewRunManagerForServe drives.
+	seedPR, err := NewPendingRegistry(raymondDir)
+	require.NoError(t, err)
+	require.NoError(t, seedPR.Register(PendingAsk{
+		RunID:      runID,
+		AgentID:    "main",
+		AskID:      askID,
+		WorkflowID: runID,
+		Prompt:     "what next?",
+		NextState:  "NEXT.md",
+		CreatedAt:  time.Now(),
+	}))
+
+	pr, err := NewPendingRegistry(raymondDir)
+	require.NoError(t, err)
+	return pr
+}
+
+// TestRestartRecovery_RecoveredAskAnswerableViaDeliverInput is the
+// answerability acceptance test: a recovered asking-state run accepts
+// DeliverInput through the manager API without any per-run resume call, and
+// the input shows up on the orchestrator's AskInputCh.
+func TestRestartRecovery_RecoveredAskAnswerableViaDeliverInput(t *testing.T) {
+	raymondDir := filepath.Join(t.TempDir(), ".raymond")
+	serveStateDir := filepath.Join(raymondDir, "serve-state")
+	require.NoError(t, os.MkdirAll(serveStateDir, 0o755))
+
+	const runID = "asking-recovered"
+	const askID = "ask-1"
+
+	pr := seedAskingRunForRecovery(t, raymondDir, serveStateDir, runID, askID)
+
+	// Fake orchestrator simulates the real one's daemon-mode behaviour for
+	// an already-asking agent: install observers, then block on AskInputCh
+	// until DeliverInput feeds an answer. On receipt, emit StateStarted so
+	// the manager flips the run out of asking.
+	gotInput := make(chan orchestrator.AskInput, 1)
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			if opts.AskInputCh == nil {
+				return fmt.Errorf("recovered asking run launched without AskInputCh; daemon-mode wiring is broken")
+			}
+			if !opts.DaemonMode {
+				return fmt.Errorf("recovered run not launched in daemon mode")
+			}
+			b := bus.New()
+			opts.ObserverSetup(b)
+			select {
+			case in := <-opts.AskInputCh:
+				gotInput <- in
+				b.Emit(events.StateStarted{
+					AgentID:   "main",
+					StateName: "NEXT.md",
+					StateType: "markdown",
+					Timestamp: time.Now(),
+				})
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+
+	rm, err := NewRunManagerForServe(serveStateDir, "/tmp", fake, pr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rm.CancelRun(runID) })
+
+	// Initial classification: the run comes up as asking because the
+	// persisted agent status is asking.
+	info, ok := rm.GetRun(runID)
+	require.True(t, ok)
+	assert.Equal(t, RunStatusAsking, info.Status, "recovered asking-state run should start in asking status")
+
+	// Wait until the fake orchestrator goroutine has started so we can be
+	// sure the askInputCh is being read.
+	assert.Eventually(t, func() bool { return fake.callCount() == 1 },
+		time.Second, 10*time.Millisecond, "orchestrator should be invoked for the recovered asking run")
+
+	// The acceptance criterion: DeliverInput succeeds without an
+	// intervening resume call. The pending entry was replayed from disk,
+	// so GetAndRemove finds it; the runEntry's askInputCh was installed by
+	// relaunchRecoveredRun, so the send is not "no active ask input channel".
+	require.NoError(t, rm.DeliverInput(runID, askID, "the-answer", nil),
+		"DeliverInput on a recovered asking run should succeed without a per-run resume")
+
+	select {
+	case in := <-gotInput:
+		assert.Equal(t, askID, in.AskID)
+		assert.Equal(t, "the-answer", in.Response)
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator never received input on AskInputCh")
+	}
+
+	// And the run transitions out of asking via the fake's signal.
+	assert.Eventually(t, func() bool {
+		info, _ := rm.GetRun(runID)
+		return info != nil && info.Status != RunStatusAsking
+	}, 2*time.Second, 10*time.Millisecond, "run should leave asking after delivered input")
+}
+
+// TestRestartRecovery_DanglingPendingEntryDropped verifies the
+// dangling-record policy: an entry in pending_inputs.jsonl whose paired
+// state file is missing from the serve pool is dropped from the in-memory
+// registry at startup, the dropped id is logged, and the daemon comes up
+// cleanly.
+func TestRestartRecovery_DanglingPendingEntryDropped(t *testing.T) {
+	raymondDir := filepath.Join(t.TempDir(), ".raymond")
+	serveStateDir := filepath.Join(raymondDir, "serve-state")
+	require.NoError(t, os.MkdirAll(serveStateDir, 0o755))
+
+	const ghostRunID = "ghost-run"
+	const ghostAskID = "ask-ghost"
+
+	// Seed a pending entry whose state file does NOT exist in the serve
+	// pool. Go through Register so the on-disk log has the entry, then
+	// rebuild the registry to mimic the post-restart replay.
+	seedPR, err := NewPendingRegistry(raymondDir)
+	require.NoError(t, err)
+	require.NoError(t, seedPR.Register(PendingAsk{
+		RunID:      ghostRunID,
+		AgentID:    "main",
+		AskID:      ghostAskID,
+		WorkflowID: ghostRunID,
+		CreatedAt:  time.Now(),
+	}))
+
+	pr, err := NewPendingRegistry(raymondDir)
+	require.NoError(t, err)
+	// Sanity: the replayed registry sees the entry before the prune runs.
+	if _, ok := pr.Get(ghostAskID); !ok {
+		t.Fatalf("seed harness failed: registry replay did not surface %q", ghostAskID)
+	}
+
+	logBuf := captureLog(t)
+
+	rm, err := NewRunManagerForServe(serveStateDir, "/tmp", &fakeOrchestrator{}, pr)
+	require.NoError(t, err, "daemon should come up cleanly even with a dangling pending entry")
+	require.NotNil(t, rm)
+
+	// The dangling entry is gone from the in-memory registry.
+	_, stillThere := pr.Get(ghostAskID)
+	assert.False(t, stillThere, "dangling pending entry should be dropped from the in-memory registry")
+
+	// The dangling run id is named in the captured log.
+	assert.Contains(t, logBuf.String(), ghostRunID,
+		"the dropped run id should be surfaced in the log so an operator can chase it down")
+
+	// The daemon has no recovered run for the ghost id either — the
+	// state file is absent, so there's nothing to surface.
+	_, ok := rm.GetRun(ghostRunID)
+	assert.False(t, ok, "no run entry should be created for a state-file-less id")
+}

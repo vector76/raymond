@@ -164,6 +164,56 @@ func NewRunManagerWithOrchestrator(stateDir string, cwd string, orch Orchestrato
 	return rm, nil
 }
 
+// NewRunManagerForServe is the daemon-mode constructor. It installs the
+// already-constructed PendingRegistry BEFORE recovery so:
+//
+//   - Recovered asking-state runs see a non-nil registry on the relaunch path
+//     and have their askInputCh / AskCallback wired the same way LaunchRun
+//     wires a fresh run. The acceptance criterion for bead-5 is that
+//     DeliverInput succeeds against a recovered ask without any per-run
+//     resume call; that depends on this ordering.
+//   - The dangling-record drop policy runs against the replayed registry
+//     before any relaunch, so the in-memory and on-disk views are consistent
+//     by the time the first orchestrator goroutine starts.
+//
+// pr may be nil — the daemon construction path always supplies one, but
+// keeping it optional makes the constructor usable in tests that don't
+// exercise the registry surface.
+func NewRunManagerForServe(stateDir string, cwd string, orch Orchestrator, pr *PendingRegistry) (*RunManager, error) {
+	rm := &RunManager{
+		runs:            make(map[string]*runEntry),
+		stateDir:        stateDir,
+		cwd:             cwd,
+		orchestrator:    orch,
+		pendingRegistry: pr,
+	}
+	rm.pruneDanglingPendingEntries()
+	if err := rm.recoverRuns(); err != nil {
+		return nil, fmt.Errorf("recover runs: %w", err)
+	}
+	return rm, nil
+}
+
+// pruneDanglingPendingEntries drops pending-registry entries whose serve-pool
+// state file is missing. The actual drop + log lives in
+// PendingRegistry.PruneDangling — this method is just the production wiring
+// that supplies the serve-pool stat predicate. Future callers (--clean flag
+// in bead-7, manual cleanup tooling) reuse the same registry method.
+//
+// The stat predicate hits one file per distinct RunID at most (PruneDangling
+// caches results) so even a registry holding many entries for many missing
+// runs only walks the disk once per run.
+func (rm *RunManager) pruneDanglingPendingEntries() {
+	if rm.pendingRegistry == nil {
+		return
+	}
+	poolDir := wfstate.ResolvePoolDir(wfstate.PoolServe, rm.stateDir)
+	rm.pendingRegistry.PruneDangling(func(runID string) bool {
+		_, err := os.Stat(filepath.Join(poolDir, runID+".json"))
+		return err == nil
+	})
+}
+
 // SetRaymondDir configures the project's raymond directory so DeleteRun can
 // derive the per-run tasks directory (`<raymondDir>/tasks/<id>/`) directly
 // rather than by stripping a segment off the state path. Called once by
@@ -975,14 +1025,16 @@ func (rm *RunManager) registerTerminalRecovered(id string, ws *wfstate.WorkflowS
 // relaunchRecoveredRun installs a non-terminal recovered run in the registry
 // and launches the orchestrator goroutine against the existing run id and
 // state file. The wiring mirrors LaunchRun (observer setup, stop-signal
-// channel, shutdown-signal propagation) so live and recovered runs publish
-// the same events.
+// channel, shutdown-signal propagation, ask plumbing) so live and recovered
+// runs publish the same events and accept input through the same surfaces.
 //
-// Pending-ask answerability — installing askInputCh and ordering the
-// pendingRegistry's first registration so a recovered asking-state run
-// receives input — is intentionally deferred to bead-5. This bead's job is
-// just to get the orchestrator goroutine running against the persisted
-// state file so bead-5's wiring is a clean add-on.
+// askInputCh is installed when a pending registry is configured so a
+// recovered asking-state run is answerable through DeliverInput without an
+// intervening per-run resume call — the in-process wiring that did not
+// survive the daemon restart. The paired pending_inputs.jsonl entry has
+// already been replayed by the time we get here (NewRunManagerForServe
+// enforces that ordering), so DeliverInput's GetAndRemove sees the same
+// PendingAsk the previous daemon instance registered.
 func (rm *RunManager) relaunchRecoveredRun(id string, ws *wfstate.WorkflowState, startedAt time.Time) {
 	agents := agentInfosFromState(ws.Agents)
 	initialStatus := classifyRecoveredStatus(ws.Agents)
@@ -1047,12 +1099,38 @@ func (rm *RunManager) relaunchRecoveredRun(id string, ws *wfstate.WorkflowState,
 		opts.DangerouslySkipPermissions = ws.LaunchParams.DangerouslySkipPermissions
 	}
 
-	// Mirror LaunchRun: enable daemon-mode ask handling when a pending
-	// registry is configured. AskInputCh installation for recovered
-	// asking-state runs is bead-5's responsibility — see the function
-	// comment.
+	// Mirror LaunchRun's ask wiring. The AskCallback's Register call is
+	// effectively a no-op for the recovered-asking case (the entry was
+	// replayed before recovery, so the duplicate-key Register fails silently
+	// and the existing PendingAsk continues to serve DeliverInput). The
+	// callback only does real work if the orchestrator later re-emits an
+	// ask after this initial resume — i.e. a fresh ask in the same run —
+	// which must register normally.
 	if rm.pendingRegistry != nil {
+		askInputCh := make(chan orchestrator.AskInput, 16)
+		re.askInputCh = askInputCh
 		opts.DaemonMode = true
+		opts.AskInputCh = askInputCh
+		workflowID := ws.WorkflowID
+		opts.AskCallback = func(agentID, askID, prompt, nextState string, affordance *parsing.FileAffordance, stagedFiles []wfstate.FileRecord) {
+			pi := PendingAsk{
+				RunID:          id,
+				AgentID:        agentID,
+				AskID:          askID,
+				WorkflowID:     workflowID,
+				Prompt:         prompt,
+				NextState:      nextState,
+				CreatedAt:      time.Now(),
+				FileAffordance: affordance,
+				StagedFiles:    stagedFiles,
+			}
+			if err := rm.pendingRegistry.Register(pi); err != nil {
+				return // already registered (recovered replay) or registration failed
+			}
+			if rm.askNotify != nil {
+				rm.askNotify(id, askID, prompt)
+			}
+		}
 	}
 
 	rm.runs[id] = re

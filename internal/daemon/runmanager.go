@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,15 +74,15 @@ var (
 type runEntry struct {
 	mu           sync.Mutex
 	info         RunInfo
-	cancel       context.CancelFunc                // nil for recovered (non-running) entries
+	cancel       context.CancelFunc                // nil only for recovered terminal entries (history-only)
 	doneCh       chan struct{}                      // closed when the run reaches a terminal state
-	eventBus     *bus.Bus                           // set by ObserverSetup; nil for recovered runs
+	eventBus     *bus.Bus                           // set by ObserverSetup; nil for recovered terminal entries
 	busReady     chan struct{}                      // closed when eventBus is set
 	askInputCh chan orchestrator.AskInput // delivers responses to pending asks
 
 	// stopSignalCh is closed by QuiesceAll to ask the orchestrator to
-	// gracefully drain in-flight executors. nil for recovered entries that
-	// have no live orchestrator goroutine. stopSignalOnce guards the close
+	// gracefully drain in-flight executors. nil for recovered terminal entries
+	// that have no live orchestrator goroutine. stopSignalOnce guards the close
 	// so repeated QuiesceAll calls are safe.
 	stopSignalCh   chan struct{}
 	stopSignalOnce sync.Once
@@ -610,9 +611,11 @@ func (rm *RunManager) DoneCh(runID string) <-chan struct{} {
 // stops launching new executors, letting in-flight agents reach their
 // next-state boundary and persist state.
 //
-// Recovered entries (cancel == nil) have no live orchestrator goroutine and
-// are skipped. Each entry's sync.Once guards against a double-close panic
-// if QuiesceAll is invoked more than once.
+// Terminal-only recovered entries (cancel == nil) have no live orchestrator
+// goroutine and are skipped; non-terminal recovered entries do — under
+// Phase-3 auto-resume they are launched with their own stopSignalCh and
+// quiesce just like LaunchRun runs. Each entry's sync.Once guards against a
+// double-close panic if QuiesceAll is invoked more than once.
 func (rm *RunManager) QuiesceAll() {
 	rm.mu.RLock()
 	entries := make([]*runEntry, 0, len(rm.runs))
@@ -636,8 +639,9 @@ func (rm *RunManager) QuiesceAll() {
 }
 
 // CancelAll cancels every active run by invoking its context.CancelFunc.
-// Recovered entries (cancel == nil) have no live orchestrator goroutine and
-// are skipped.
+// Terminal-only recovered entries (cancel == nil) have no live orchestrator
+// goroutine and are skipped; non-terminal recovered entries are auto-resumed
+// at startup and therefore carry a cancel.
 //
 // This is the Tier 3 force-kill surface and is intentionally distinct from
 // QuiesceAll: QuiesceAll signals each run's stop channel so the orchestrator
@@ -717,8 +721,12 @@ func (rm *RunManager) CancelRun(runID string) error {
 
 	re.mu.Lock()
 	if re.cancel == nil {
+		// Only recovered TERMINAL entries reach this branch under Phase-3
+		// auto-resume; non-terminal recovered runs are launched with a
+		// cancel of their own. Terminal entries fall through to the
+		// status check below, which catches them with a clearer message.
 		re.mu.Unlock()
-		return fmt.Errorf("run %q is not active (recovered run not yet resumed)", runID)
+		return fmt.Errorf("run %q is not active", runID)
 	}
 	status := re.info.Status
 	re.mu.Unlock()
@@ -874,12 +882,23 @@ func parseRunIDTimestamp(id string) (time.Time, bool) {
 	return t.Add(time.Duration(micros) * time.Microsecond), true
 }
 
-// recoverRuns scans the state directory for existing workflow state files and
-// registers them in the run manager's tracking. Recovered runs are not
-// actively running — they represent interrupted workflows from a previous
-// daemon instance.
+// recoverRuns scans the serve pool for existing workflow state files and
+// re-launches non-terminal runs through the orchestrator using their existing
+// run ids and existing state files. Terminal runs (no remaining agents) are
+// registered as inactive history entries the same way they always were.
+//
+// This is the daemon-side analogue of the CLI's `--resume` path: the
+// orchestrator reads the persisted WorkflowState from disk and continues
+// agent execution from where the previous daemon instance left off. No new
+// run id is generated and no fresh state file is written.
+//
+// Malformed or unreadable state files are skipped — the id is logged and
+// startup continues so a single bad file in the pool can't block the daemon.
 func (rm *RunManager) recoverRuns() error {
-	ids, err := wfstate.RecoverWorkflowsIn(wfstate.PoolServe, rm.stateDir)
+	// Enumerate every json file in the pool (not just RecoverWorkflowsIn,
+	// which silently filters malformed entries) so we can log skips
+	// explicitly per the failure-mode policy.
+	ids, err := wfstate.ListWorkflowsIn(wfstate.PoolServe, rm.stateDir)
 	if err != nil {
 		return err
 	}
@@ -887,23 +906,12 @@ func (rm *RunManager) recoverRuns() error {
 	for _, id := range ids {
 		ws, err := wfstate.ReadStateIn(id, wfstate.PoolServe, rm.stateDir)
 		if err != nil {
-			continue // skip unreadable state files
+			// Preserve the continue-on-error pattern RecoverWorkflows
+			// itself exhibits, but surface the id so an operator can
+			// chase down the corrupted file after startup.
+			log.Printf("daemon: skipping unreadable state file %q during recovery: %v", id, err)
+			continue
 		}
-
-		agents := make([]AgentInfo, len(ws.Agents))
-		for i, a := range ws.Agents {
-			agents[i] = AgentInfo{
-				ID:           a.ID,
-				CurrentState: a.CurrentState,
-				Status:       a.Status,
-			}
-		}
-
-		// Determine status based on agent states.
-		status := classifyRecoveredStatus(ws.Agents)
-
-		doneCh := make(chan struct{})
-		close(doneCh) // recovered runs are not active
 
 		// Prefer the StartedAt persisted in the state file (timezone-safe).
 		// For older state files written before that field existed, fall
@@ -914,43 +922,172 @@ func (rm *RunManager) recoverRuns() error {
 			startedAt, _ = parseRunIDTimestamp(id)
 		}
 
-		re := &runEntry{
-			info: RunInfo{
-				RunID:      id,
-				WorkflowID: ws.WorkflowID,
-				Status:     status,
-				Agents:     agents,
-				CostUSD:    ws.TotalCostUSD,
-				StartedAt:  startedAt,
-			},
-			cancel: nil,
-			doneCh: doneCh,
+		if isTerminalRecoveredState(ws) {
+			rm.registerTerminalRecovered(id, ws, startedAt)
+			continue
 		}
 
-		// Set CurrentState from the first agent.
-		if len(agents) > 0 {
-			re.info.CurrentState = agents[0].CurrentState
-		}
-
-		rm.runs[id] = re
+		rm.relaunchRecoveredRun(id, ws, startedAt)
 	}
 	return nil
 }
 
-// classifyRecoveredStatus determines the status for a recovered run based on
-// the persisted agent states.
-func classifyRecoveredStatus(agents []wfstate.AgentState) string {
-	if len(agents) == 0 {
-		return RunStatusCompleted
+// isTerminalRecoveredState reports whether a persisted state file represents
+// a workflow that has nothing left to do. Today that means "no agents
+// remain" — the orchestrator deletes state on WorkflowCompleted, so a state
+// file with zero agents is the lingering-artifact case rather than the
+// common one. Workflows where agents are merely paused, failed, or asking
+// are NOT terminal: the daemon resumes them through the orchestrator on
+// startup so `failed` stays reserved for workflow-level failures rather
+// than "process restarted while you were running".
+func isTerminalRecoveredState(ws *wfstate.WorkflowState) bool {
+	return len(ws.Agents) == 0
+}
+
+// registerTerminalRecovered installs a recovered terminal run into the
+// in-memory view as an inactive history entry. Mirrors the pre-Phase-3
+// behaviour so the UI still shows historical runs even when their state
+// files outlived completion.
+func (rm *RunManager) registerTerminalRecovered(id string, ws *wfstate.WorkflowState, startedAt time.Time) {
+	agents := agentInfosFromState(ws.Agents)
+
+	doneCh := make(chan struct{})
+	close(doneCh)
+
+	re := &runEntry{
+		info: RunInfo{
+			RunID:      id,
+			WorkflowID: ws.WorkflowID,
+			Status:     RunStatusCompleted,
+			Agents:     agents,
+			CostUSD:    ws.TotalCostUSD,
+			StartedAt:  startedAt,
+		},
+		doneCh: doneCh,
+	}
+	if len(agents) > 0 {
+		re.info.CurrentState = agents[0].CurrentState
 	}
 
+	rm.runs[id] = re
+}
+
+// relaunchRecoveredRun installs a non-terminal recovered run in the registry
+// and launches the orchestrator goroutine against the existing run id and
+// state file. The wiring mirrors LaunchRun (observer setup, stop-signal
+// channel, shutdown-signal propagation) so live and recovered runs publish
+// the same events.
+//
+// Pending-ask answerability — installing askInputCh and ordering the
+// pendingRegistry's first registration so a recovered asking-state run
+// receives input — is intentionally deferred to bead-5. This bead's job is
+// just to get the orchestrator goroutine running against the persisted
+// state file so bead-5's wiring is a clean add-on.
+func (rm *RunManager) relaunchRecoveredRun(id string, ws *wfstate.WorkflowState, startedAt time.Time) {
+	agents := agentInfosFromState(ws.Agents)
+	initialStatus := classifyRecoveredStatus(ws.Agents)
+
+	stateDir := wfstate.ResolvePoolDir(wfstate.PoolServe, rm.stateDir)
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	doneCh := make(chan struct{})
+	stopSignalCh := make(chan struct{})
+
+	re := &runEntry{
+		info: RunInfo{
+			RunID:      id,
+			WorkflowID: ws.WorkflowID,
+			Status:     initialStatus,
+			Agents:     agents,
+			CostUSD:    ws.TotalCostUSD,
+			StartedAt:  startedAt,
+		},
+		cancel:       runCancel,
+		doneCh:       doneCh,
+		busReady:     make(chan struct{}),
+		stopSignalCh: stopSignalCh,
+	}
+	if len(agents) > 0 {
+		re.info.CurrentState = agents[0].CurrentState
+	}
+
+	// Same typed-nil guard LaunchRun uses: ShutdownSignal is an interface;
+	// only assign when the concrete pointer is non-nil so the interface stays
+	// nil in CLI / unwired-test paths.
+	var runShutdownSignal executors.ShutdownSignal
+	if rm.shutdownSignal != nil {
+		runShutdownSignal = rm.shutdownSignal
+	}
+
+	opts := orchestrator.RunOptions{
+		StateDir:       stateDir,
+		Quiet:          true,
+		OnAsk:          "pause",
+		StopSignalCh:   stopSignalCh,
+		ShutdownSignal: runShutdownSignal,
+		// Match LaunchRun's default so debug artefacts still land on disk
+		// for diagnosing a recovered run that misbehaves.
+		Debug: true,
+		ObserverSetup: func(b *bus.Bus) {
+			re.mu.Lock()
+			re.eventBus = b
+			re.mu.Unlock()
+			re.startRecorder(b)
+			rm.subscribeEvents(b, re)
+			debugobs.New(b)
+			close(re.busReady)
+		},
+	}
+
+	// Restore the launch-time flags the original `LaunchRun` persisted so
+	// the recovered run sees the same model / DSP configuration its first
+	// incarnation had.
+	if ws.LaunchParams != nil {
+		opts.DefaultModel = ws.LaunchParams.Model
+		opts.DangerouslySkipPermissions = ws.LaunchParams.DangerouslySkipPermissions
+	}
+
+	// Mirror LaunchRun: enable daemon-mode ask handling when a pending
+	// registry is configured. AskInputCh installation for recovered
+	// asking-state runs is bead-5's responsibility — see the function
+	// comment.
+	if rm.pendingRegistry != nil {
+		opts.DaemonMode = true
+	}
+
+	rm.runs[id] = re
+	go rm.runOrchestrator(runCtx, id, re, opts, doneCh)
+}
+
+// classifyRecoveredStatus returns the fresh-launch status for a non-terminal
+// recovered run. An asking agent flips the run to "asking"; everything else
+// is "running" because the daemon is about to launch the orchestrator
+// against the persisted state. The terminal "no agents left" case is
+// classified by the caller (see isTerminalRecoveredState), not here, so
+// this function never returns the historical "failed" classification —
+// `failed` is now reserved for genuine workflow-level failures.
+func classifyRecoveredStatus(agents []wfstate.AgentState) string {
 	for _, a := range agents {
 		if a.Status == wfstate.AgentStatusAsking {
 			return RunStatusAsking
 		}
 	}
+	return RunStatusRunning
+}
 
-	return RunStatusFailed
+// agentInfosFromState projects persisted AgentStates onto the lighter
+// AgentInfo view RunInfo carries. Extracted so the terminal and
+// non-terminal recovery paths share one copy of the field projection.
+func agentInfosFromState(states []wfstate.AgentState) []AgentInfo {
+	agents := make([]AgentInfo, len(states))
+	for i, a := range states {
+		agents[i] = AgentInfo{
+			ID:           a.ID,
+			CurrentState: a.CurrentState,
+			Status:       a.Status,
+		}
+	}
+	return agents
 }
 
 // startRecorder registers a single set of bus subscriptions that both append

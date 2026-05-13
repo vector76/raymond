@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +22,37 @@ import (
 	"github.com/vector76/raymond/internal/specifier"
 	wfstate "github.com/vector76/raymond/internal/state"
 )
+
+// assertOrchestratorRanFor returns nil if the fake recorded a call for
+// workflowID, or a descriptive error otherwise. Used by recovery tests to
+// confirm the orchestrator goroutine was launched with the existing run id
+// rather than a freshly-generated one.
+func assertOrchestratorRanFor(f *fakeOrchestrator, workflowID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c.WorkflowID == workflowID {
+			return nil
+		}
+	}
+	return fmt.Errorf("orchestrator was not invoked for workflow %q; calls=%+v", workflowID, f.calls)
+}
+
+// captureLog redirects the default logger to a buffer for the duration of
+// the test and returns the buffer. Used to assert the recovery path logs
+// the id of a skipped malformed state file.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prevOut := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(buf)
+	t.Cleanup(func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+	return buf
+}
 
 // fakeOrchestrator implements the Orchestrator interface for tests.
 // It captures ObserverSetup so tests can emit events, and blocks until
@@ -332,10 +365,13 @@ func TestDeleteRun_RemovesTerminalRun(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "tasks dir should be removed")
 }
 
-func TestDeleteRun_RemovesRecoveredFailedRun(t *testing.T) {
+func TestDeleteRun_RemovesRecoveredRunAfterCancel(t *testing.T) {
+	// Under Phase-3 semantics a recovered non-terminal run is active, so
+	// DeleteRun must reject it until it's cancelled. This test exercises
+	// the cancel-then-delete sequence to confirm DeleteRun still cleans up
+	// the on-disk state file once the run has drained.
 	stateDir := ensureStateDir(t)
 
-	// Write a state file simulating a paused/failed run.
 	ws := &wfstate.WorkflowState{
 		WorkflowID: "workflow_recovered_1",
 		ScopeDir:   "/tmp/scope",
@@ -351,7 +387,13 @@ func TestDeleteRun_RemovesRecoveredFailedRun(t *testing.T) {
 
 	info, ok := rm.GetRun(ws.WorkflowID)
 	require.True(t, ok)
-	require.Equal(t, RunStatusFailed, info.Status)
+	require.Equal(t, RunStatusRunning, info.Status,
+		"recovered non-terminal runs are now active, not failed")
+
+	// Active run cannot be deleted; cancel first, then delete.
+	require.NoError(t, rm.CancelRun(ws.WorkflowID))
+	_, err = rm.WaitForCompletion(ws.WorkflowID, 2*time.Second)
+	require.NoError(t, err)
 
 	require.NoError(t, rm.DeleteRun(ws.WorkflowID))
 
@@ -691,9 +733,13 @@ func TestListRuns_ReturnsAllRuns(t *testing.T) {
 }
 
 func TestRestartRecovery_DiscoversInProgressWorkflows(t *testing.T) {
+	// Phase-3 semantics: a "previously running" (paused-with-no-ask) state
+	// file is auto-resumed through the orchestrator on startup. The run
+	// comes up as RunStatusRunning, not the historical RunStatusFailed,
+	// and the orchestrator goroutine is actively running against the
+	// injected fake.
 	stateDir := ensureStateDir(t)
 
-	// Write a state file that looks like an in-progress workflow.
 	ws := &wfstate.WorkflowState{
 		WorkflowID:   "recovered-run-1",
 		ScopeDir:     "/some/scope",
@@ -715,21 +761,32 @@ func TestRestartRecovery_DiscoversInProgressWorkflows(t *testing.T) {
 		data, 0o644,
 	))
 
-	// Create a RunManager — it should discover the state file.
-	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	fake := &fakeOrchestrator{} // default: blocks until ctx cancelled
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = rm.CancelRun("recovered-run-1") })
 
 	info, ok := rm.GetRun("recovered-run-1")
 	require.True(t, ok)
-	assert.Equal(t, RunStatusFailed, info.Status, "paused agents without ask should be classified as failed")
+	assert.Equal(t, RunStatusRunning, info.Status,
+		"a recovered non-terminal run is re-launched through the orchestrator, not parked as failed")
 	assert.Equal(t, 2.5, info.CostUSD)
 	require.Len(t, info.Agents, 1)
 	assert.Equal(t, "main", info.Agents[0].ID)
 	assert.Equal(t, "PROCESS.md", info.Agents[0].CurrentState)
-	assert.Equal(t, wfstate.AgentStatusPaused, info.Agents[0].Status)
+
+	// The orchestrator goroutine should have been launched against the
+	// existing run id and existing state file.
+	assert.Eventually(t, func() bool { return fake.callCount() == 1 },
+		time.Second, 10*time.Millisecond, "orchestrator should be invoked for the recovered run")
+	require.NoError(t, assertOrchestratorRanFor(fake, "recovered-run-1"))
 }
 
 func TestRestartRecovery_AskingWorkflow(t *testing.T) {
+	// Phase-3 semantics: an asking-shape state file is also re-launched
+	// through the orchestrator (full DeliverInput answerability is bead-5;
+	// here we just assert the run comes up as `asking` and the goroutine
+	// runs).
 	stateDir := ensureStateDir(t)
 
 	ws := &wfstate.WorkflowState{
@@ -753,12 +810,18 @@ func TestRestartRecovery_AskingWorkflow(t *testing.T) {
 		data, 0o644,
 	))
 
-	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
+	fake := &fakeOrchestrator{}
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = rm.CancelRun("asking-run") })
 
 	info, ok := rm.GetRun("asking-run")
 	require.True(t, ok)
 	assert.Equal(t, RunStatusAsking, info.Status)
+
+	assert.Eventually(t, func() bool { return fake.callCount() == 1 },
+		time.Second, 10*time.Millisecond, "orchestrator should be invoked for the recovered asking run")
+	require.NoError(t, assertOrchestratorRanFor(fake, "asking-run"))
 }
 
 func TestRestartRecovery_EmptyStateDir(t *testing.T) {
@@ -771,28 +834,58 @@ func TestRestartRecovery_EmptyStateDir(t *testing.T) {
 	assert.Empty(t, runs)
 }
 
-func TestRestartRecovery_RecoveredRunDoneChannelClosed(t *testing.T) {
+func TestRestartRecovery_MalformedStateFileSkipped(t *testing.T) {
+	// Failure-mode policy: a malformed state file in the serve pool is
+	// skipped (the id is logged), startup continues, and other state
+	// files in the pool still come up.
 	stateDir := ensureStateDir(t)
 
+	// (1) A malformed JSON state file — not even parseable.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stateDir, "broken-run.json"),
+		[]byte("{not-json"),
+		0o644,
+	))
+
+	// (2) A well-formed neighbour that should still be recovered and
+	// re-launched alongside the malformed one.
 	ws := &wfstate.WorkflowState{
-		WorkflowID: "old-run",
-		ScopeDir:   "/scope",
+		WorkflowID: "healthy-run",
+		ScopeDir:   "/some/scope",
 		Agents: []wfstate.AgentState{
-			{ID: "main", CurrentState: "S.md", Status: wfstate.AgentStatusPaused, Stack: []wfstate.StackFrame{}},
+			{ID: "main", CurrentState: "S.md", Stack: []wfstate.StackFrame{}},
 		},
 	}
 	data, err := json.Marshal(ws)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "old-run.json"), data, 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stateDir, "healthy-run.json"),
+		data, 0o644,
+	))
 
-	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", &fakeOrchestrator{})
-	require.NoError(t, err)
+	// Capture the log output to assert the skipped id is surfaced.
+	logBuf := captureLog(t)
 
-	// WaitForCompletion on a recovered run should return immediately since
-	// the done channel is already closed.
-	info, err := rm.WaitForCompletion("old-run", time.Second)
+	fake := &fakeOrchestrator{}
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
 	require.NoError(t, err)
-	assert.Equal(t, RunStatusFailed, info.Status)
+	t.Cleanup(func() { _ = rm.CancelRun("healthy-run") })
+
+	// Malformed run is NOT tracked.
+	_, ok := rm.GetRun("broken-run")
+	assert.False(t, ok, "malformed state file should be skipped, not tracked")
+
+	// Healthy neighbour comes up and the orchestrator is invoked for it.
+	info, ok := rm.GetRun("healthy-run")
+	require.True(t, ok)
+	assert.Equal(t, RunStatusRunning, info.Status)
+	assert.Eventually(t, func() bool { return fake.callCount() == 1 },
+		time.Second, 10*time.Millisecond, "the healthy run alongside the malformed one should still launch")
+	require.NoError(t, assertOrchestratorRanFor(fake, "healthy-run"))
+
+	// The skipped id is logged so an operator can chase down the file.
+	assert.Contains(t, logBuf.String(), "broken-run",
+		"the malformed state file's id should be logged on skip")
 }
 
 func TestLaunchRun_FailedOrchestrator(t *testing.T) {

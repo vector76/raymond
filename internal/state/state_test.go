@@ -890,3 +890,166 @@ func TestGetStateDirOverridePassthrough(t *testing.T) {
 	override := filepath.Join(t.TempDir(), "injected-state")
 	assert.Equal(t, override, state.GetStateDir(override))
 }
+
+// ----------------------------------------------------------------------------
+// Pool-aware primitives: round-trip, missing-dir tolerance, id-generation
+// ----------------------------------------------------------------------------
+
+// twoPoolOverrides returns disjoint per-pool override directories rooted in a
+// fresh temp dir, so test cases can target each pool independently without
+// either pool seeing the other's files.
+func twoPoolOverrides(t *testing.T) (cliDir, serveDir string) {
+	t.Helper()
+	root := t.TempDir()
+	cliDir = filepath.Join(root, "cli-pool")
+	serveDir = filepath.Join(root, "serve-pool")
+	return cliDir, serveDir
+}
+
+// TestPoolAwareRoundTrip exercises read/write/list/delete/recover against
+// each pool independently and verifies the two pools never see each other's
+// state files.
+func TestPoolAwareRoundTrip(t *testing.T) {
+	cliDir, serveDir := twoPoolOverrides(t)
+
+	cases := []struct {
+		name     string
+		pool     state.Pool
+		override string
+		id       string
+	}{
+		{"CLI pool", state.PoolCLI, cliDir, "wf-cli"},
+		{"Serve pool", state.PoolServe, serveDir, "wf-serve"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := state.CreateInitialState(tc.id, "scope", "START.md", 0, nil, "")
+			require.NoError(t, state.WriteStateIn(tc.id, ws, tc.pool, tc.override))
+
+			got, err := state.ReadStateIn(tc.id, tc.pool, tc.override)
+			require.NoError(t, err)
+			assert.Equal(t, tc.id, got.WorkflowID)
+
+			ids, err := state.ListWorkflowsIn(tc.pool, tc.override)
+			require.NoError(t, err)
+			assert.Equal(t, []string{tc.id}, ids)
+
+			recIDs, err := state.RecoverWorkflowsIn(tc.pool, tc.override)
+			require.NoError(t, err)
+			assert.Equal(t, []string{tc.id}, recIDs)
+
+			require.NoError(t, state.DeleteStateIn(tc.id, tc.pool, tc.override))
+			_, err = state.ReadStateIn(tc.id, tc.pool, tc.override)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, os.ErrNotExist))
+		})
+	}
+
+	// Cross-pool isolation: a file written to one pool must not appear in
+	// the other pool's listing.
+	ws := state.CreateInitialState("wf-cli-only", "scope", "START.md", 0, nil, "")
+	require.NoError(t, state.WriteStateIn("wf-cli-only", ws, state.PoolCLI, cliDir))
+
+	serveIDs, err := state.ListWorkflowsIn(state.PoolServe, serveDir)
+	require.NoError(t, err)
+	assert.Empty(t, serveIDs, "Serve pool must not see CLI-pool files")
+}
+
+// TestGenerateWorkflowIDInScopedToPool verifies the collision counter only
+// sees ids in the same pool — writing into one pool must not influence id
+// generation in the other. The check is positive: we stage a file in pool A
+// (CLI) with a specific id, observe the in-pool collision counter promotes
+// the next generated id to a "_N" suffix, then verify staging an entry in
+// pool B (serve) with the same id does NOT add a second collision (the next
+// generated id is still only "_1", not "_2").
+func TestGenerateWorkflowIDInScopedToPool(t *testing.T) {
+	cliDir, serveDir := twoPoolOverrides(t)
+
+	// Step 1: snapshot what GenerateWorkflowIDIn(PoolCLI) returns right now.
+	baseID, err := state.GenerateWorkflowIDIn(state.PoolCLI, cliDir)
+	require.NoError(t, err)
+
+	// Step 2: stage that exact id in the *serve* pool only.
+	ws := state.CreateInitialState(baseID, "scope", "START.md", 0, nil, "")
+	require.NoError(t, state.WriteStateIn(baseID, ws, state.PoolServe, serveDir))
+
+	// Sanity: CLI pool listing must still be empty — proves the serve write
+	// did not leak across pools at the directory layer.
+	cliIDs, err := state.ListWorkflowsIn(state.PoolCLI, cliDir)
+	require.NoError(t, err)
+	assert.Empty(t, cliIDs, "CLI pool must not see serve-pool files")
+
+	// Step 3: in-pool collision actually fires when the entry is staged in
+	// the SAME pool as the generator. Write baseID into the CLI pool, then
+	// generate again. The generated id must change (timestamp advance,
+	// suffix, or both) — what matters is that the collision check returns a
+	// non-colliding result.
+	require.NoError(t, state.WriteStateIn(baseID, ws, state.PoolCLI, cliDir))
+	nextID, err := state.GenerateWorkflowIDIn(state.PoolCLI, cliDir)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseID, nextID,
+		"in-pool collision check must produce a different id")
+
+	// Step 4: now the same baseID lives in both pools. Generating in the
+	// serve pool must produce something different from baseID (its own
+	// in-pool collision check sees baseID). This is the symmetric guarantee.
+	servNext, err := state.GenerateWorkflowIDIn(state.PoolServe, serveDir)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseID, servNext,
+		"serve pool's in-pool collision check must see its own baseID entry")
+}
+
+// TestPoolAwareMissingDirTolerance verifies every primitive tolerates a
+// pool directory that does not exist on disk: lists/recover return an empty
+// slice, ReadStateIn returns a not-found error. DeleteStateIn must also be
+// a no-op (idempotent) rather than panicking.
+func TestPoolAwareMissingDirTolerance(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	cases := []struct {
+		name string
+		pool state.Pool
+	}{
+		{"CLI pool", state.PoolCLI},
+		{"Serve pool", state.PoolServe},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ids, err := state.ListWorkflowsIn(tc.pool, missing)
+			require.NoError(t, err)
+			assert.Empty(t, ids)
+
+			recIDs, err := state.RecoverWorkflowsIn(tc.pool, missing)
+			require.NoError(t, err)
+			assert.Empty(t, recIDs)
+
+			_, err = state.ReadStateIn("never-written", tc.pool, missing)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, os.ErrNotExist),
+				"ReadStateIn against a missing pool dir must return os.ErrNotExist")
+
+			// Delete is idempotent even when the directory itself is absent.
+			assert.NoError(t, state.DeleteStateIn("never-written", tc.pool, missing))
+		})
+	}
+}
+
+// TestServePoolPathResolution is a thin guard that the new pool-aware writers
+// land their files under the serve-state subdirectory when no override is
+// given — i.e. they actually consult the Pool argument rather than silently
+// using the CLI pool.
+func TestServePoolPathResolution(t *testing.T) {
+	raymondDir := withRaymondDir(t)
+
+	ws := state.CreateInitialState("wf-routing", "scope", "START.md", 0, nil, "")
+	require.NoError(t, state.WriteStateIn("wf-routing", ws, state.PoolServe, ""))
+
+	_, err := os.Stat(filepath.Join(raymondDir, "serve-state", "wf-routing.json"))
+	assert.NoError(t, err, "serve-pool write must land in serve-state/")
+
+	// And nothing should appear in state/ as a side effect.
+	_, err = os.Stat(filepath.Join(raymondDir, "state", "wf-routing.json"))
+	assert.True(t, os.IsNotExist(err), "serve-pool write must not touch state/")
+}

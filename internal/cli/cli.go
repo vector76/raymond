@@ -206,8 +206,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			// Load the saved LaunchParams before config merging so that any
 			// restored values are treated identically to CLI-specified values.
 			if resume != "" {
-				resolvedDir := wfstate.GetStateDir(stateDir)
-				if ws, err := wfstate.ReadState(resume, resolvedDir); err == nil && ws.LaunchParams != nil {
+				if ws, err := wfstate.ReadStateIn(resume, wfstate.PoolCLI, stateDir); err == nil && ws.LaunchParams != nil {
 					lp := ws.LaunchParams
 					if !cmd.Flags().Changed("dangerously-skip-permissions") {
 						// Restore unconditionally — we want both true and
@@ -469,7 +468,10 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 		}
 	}
 
-	resolvedStateDir := wfstate.GetStateDir(opts.StateDir)
+	// Resolve once via the CLI pool so the orchestrator can be handed a
+	// concrete directory; the pool-aware primitives below get the override
+	// directly so the intent ("CLI pool") is explicit at every call site.
+	resolvedStateDir := wfstate.ResolvePoolDir(wfstate.PoolCLI, opts.StateDir)
 
 	var workflowID string
 	if workflowIDOverride != "" {
@@ -477,20 +479,20 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 			return err
 		}
 		// Reject duplicate IDs: Python raises an explicit error rather than silently overwriting.
-		if _, readErr := wfstate.ReadState(workflowIDOverride, resolvedStateDir); readErr == nil {
+		if _, readErr := wfstate.ReadStateIn(workflowIDOverride, wfstate.PoolCLI, opts.StateDir); readErr == nil {
 			return fmt.Errorf("workflow %q already exists; use --resume to continue it", workflowIDOverride)
 		}
 		workflowID = workflowIDOverride
 	} else {
 		var genErr error
-		workflowID, genErr = wfstate.GenerateWorkflowID(resolvedStateDir)
+		workflowID, genErr = wfstate.GenerateWorkflowIDIn(wfstate.PoolCLI, opts.StateDir)
 		if genErr != nil {
 			return fmt.Errorf("generate workflow ID: %w", genErr)
 		}
 	}
 
 	ws := wfstate.CreateInitialState(workflowID, scopeDir, initialState, budgetUSD, initialInput, scopeURL, lp)
-	if err := wfstate.WriteState(workflowID, ws, resolvedStateDir); err != nil {
+	if err := wfstate.WriteStateIn(workflowID, ws, wfstate.PoolCLI, opts.StateDir); err != nil {
 		return fmt.Errorf("write initial state: %w", err)
 	}
 
@@ -503,9 +505,9 @@ func (c *CLI) cmdStart(arg string, budgetUSD float64, initialInput *string, opts
 
 // cmdResume resumes an existing workflow by ID.
 func (c *CLI) cmdResume(workflowID string, opts orchestrator.RunOptions) error {
-	resolvedStateDir := wfstate.GetStateDir(opts.StateDir)
+	resolvedStateDir := wfstate.ResolvePoolDir(wfstate.PoolCLI, opts.StateDir)
 
-	ws, err := wfstate.ReadState(workflowID, resolvedStateDir)
+	ws, err := wfstate.ReadStateIn(workflowID, wfstate.PoolCLI, opts.StateDir)
 	if err != nil {
 		return fmt.Errorf("workflow %q not found", workflowID)
 	}
@@ -545,7 +547,7 @@ func (c *CLI) cmdResume(workflowID string, opts orchestrator.RunOptions) error {
 
 // cmdList prints the IDs of all workflow state files.
 func (c *CLI) cmdList(cmd *cobra.Command, stateDir string) error {
-	ids, err := wfstate.ListWorkflows(stateDir)
+	ids, err := wfstate.ListWorkflowsIn(wfstate.PoolCLI, stateDir)
 	if err != nil {
 		return fmt.Errorf("list workflows: %w", err)
 	}
@@ -561,7 +563,7 @@ func (c *CLI) cmdList(cmd *cobra.Command, stateDir string) error {
 
 // cmdRecover prints the IDs of workflows that have at least one active agent.
 func (c *CLI) cmdRecover(cmd *cobra.Command, stateDir string) error {
-	ids, err := wfstate.RecoverWorkflows(stateDir)
+	ids, err := wfstate.RecoverWorkflowsIn(wfstate.PoolCLI, stateDir)
 	if err != nil {
 		return fmt.Errorf("recover workflows: %w", err)
 	}
@@ -577,7 +579,7 @@ func (c *CLI) cmdRecover(cmd *cobra.Command, stateDir string) error {
 
 // cmdStatus prints a human-readable status summary for a single workflow.
 func (c *CLI) cmdStatus(cmd *cobra.Command, workflowID, stateDir string) error {
-	ws, err := wfstate.ReadState(workflowID, stateDir)
+	ws, err := wfstate.ReadStateIn(workflowID, wfstate.PoolCLI, stateDir)
 	if err != nil {
 		return fmt.Errorf("workflow %q not found", workflowID)
 	}

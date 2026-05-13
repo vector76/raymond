@@ -222,12 +222,34 @@ func GetStateDir(stateDir string) string {
 	return ResolvePoolDir(PoolCLI, stateDir)
 }
 
+// ReadStateIn reads the workflow state for workflowID from the given pool.
+//
+// override has the same semantics as ResolvePoolDir's override argument: empty
+// means use the pool's default directory; non-empty is the exact directory to
+// read from. This is how the hidden `--state-dir` test-injection flag works.
+//
+// Returns os.ErrNotExist (via errors.Is) when the state file does not exist.
+// Returns *StateFileError when the file exists but contains invalid JSON.
+func ReadStateIn(workflowID string, pool Pool, override string) (*WorkflowState, error) {
+	return readStateFromDir(workflowID, ResolvePoolDir(pool, override))
+}
+
 // ReadState reads the workflow state for workflowID from stateDir.
+//
+// ReadState is a CLI-pool shim around ReadStateIn — it exists so legacy
+// callers and tests that pass a literal directory continue to compile. New
+// callers should prefer ReadStateIn with an explicit Pool.
 //
 // Returns os.ErrNotExist (via errors.Is) when the state file does not exist.
 // Returns *StateFileError when the file exists but contains invalid JSON.
 func ReadState(workflowID, stateDir string) (*WorkflowState, error) {
-	path := filepath.Join(GetStateDir(stateDir), workflowID+".json")
+	return ReadStateIn(workflowID, PoolCLI, stateDir)
+}
+
+// readStateFromDir is the pool-agnostic core. dir must be the already-resolved
+// directory containing <workflowID>.json.
+func readStateFromDir(workflowID, dir string) (*WorkflowState, error) {
+	path := filepath.Join(dir, workflowID+".json")
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -255,18 +277,30 @@ func ReadState(workflowID, stateDir string) (*WorkflowState, error) {
 	return &ws, nil
 }
 
-// WriteState atomically writes ws to stateDir/<workflowID>.json.
+// WriteStateIn atomically writes ws into the given pool's directory.
 //
-// The directory is created if it does not exist. The write is atomic on
-// all supported platforms: the JSON is written to a temporary file and then
+// override has the same semantics as ResolvePoolDir's override argument: empty
+// means use the pool's default directory; non-empty is the exact directory to
+// write into.
+//
+// The directory is created if it does not exist. The write is atomic on all
+// supported platforms: the JSON is written to a temporary file and then
 // renamed over the destination.
 //
 // Nil-pointer fields in WorkflowState and AgentState are serialized as JSON
 // null (not omitted). Callers that want to preserve an existing field value
-// must read the current state first and carry that value forward — WriteState
-// always overwrites the complete state file.
+// must read the current state first and carry that value forward —
+// WriteStateIn always overwrites the complete state file.
+func WriteStateIn(workflowID string, ws *WorkflowState, pool Pool, override string) error {
+	return writeStateToDir(workflowID, ws, ResolvePoolDir(pool, override))
+}
+
+// WriteState is a CLI-pool shim around WriteStateIn.
 func WriteState(workflowID string, ws *WorkflowState, stateDir string) error {
-	dir := GetStateDir(stateDir)
+	return WriteStateIn(workflowID, ws, PoolCLI, stateDir)
+}
+
+func writeStateToDir(workflowID string, ws *WorkflowState, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create state directory %s: %w", dir, err)
 	}
@@ -304,10 +338,20 @@ func WriteState(workflowID string, ws *WorkflowState, stateDir string) error {
 	return nil
 }
 
-// DeleteState removes the state file for workflowID. If the file does not
-// exist, DeleteState returns nil (idempotent).
+// DeleteStateIn removes the state file for workflowID from the given pool's
+// directory. If the file does not exist, DeleteStateIn returns nil
+// (idempotent).
+func DeleteStateIn(workflowID string, pool Pool, override string) error {
+	return deleteStateInDir(workflowID, ResolvePoolDir(pool, override))
+}
+
+// DeleteState is a CLI-pool shim around DeleteStateIn.
 func DeleteState(workflowID, stateDir string) error {
-	path := filepath.Join(GetStateDir(stateDir), workflowID+".json")
+	return DeleteStateIn(workflowID, PoolCLI, stateDir)
+}
+
+func deleteStateInDir(workflowID, dir string) error {
+	path := filepath.Join(dir, workflowID+".json")
 	err := os.Remove(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to delete state file %s: %w", path, err)
@@ -315,12 +359,20 @@ func DeleteState(workflowID, stateDir string) error {
 	return nil
 }
 
-// ListWorkflows returns the workflow IDs of all .json files in stateDir.
-// Non-.json files are ignored. Returns nil (not an error) when the directory
-// does not exist.
-func ListWorkflows(stateDir string) ([]string, error) {
-	dir := GetStateDir(stateDir)
+// ListWorkflowsIn returns the workflow IDs of all .json files in the given
+// pool's directory. Non-.json files are ignored. Returns nil (not an error)
+// when the directory does not exist — every pool tolerates a missing pool
+// directory the same way.
+func ListWorkflowsIn(pool Pool, override string) ([]string, error) {
+	return listWorkflowsInDir(ResolvePoolDir(pool, override))
+}
 
+// ListWorkflows is a CLI-pool shim around ListWorkflowsIn.
+func ListWorkflows(stateDir string) ([]string, error) {
+	return ListWorkflowsIn(PoolCLI, stateDir)
+}
+
+func listWorkflowsInDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -375,13 +427,27 @@ func CreateInitialState(workflowID, scopeDir, initialState string, budgetUSD flo
 	return ws
 }
 
-// GenerateWorkflowID generates a unique workflow ID of the form
-// workflow_YYYY-MM-DD_HH-MM-SS-ffffff (timestamp with microseconds).
+// GenerateWorkflowIDIn generates a unique workflow ID of the form
+// workflow_YYYY-MM-DD_HH-MM-SS-ffffff (timestamp with microseconds) for the
+// given pool.
 //
-// If a collision with an existing state file is detected, a counter suffix
-// is appended until the ID is unique.
+// If a collision with an existing state file in the *same pool* is detected,
+// a counter suffix is appended until the ID is unique within that pool. The
+// collision check is intentionally scoped to one pool: cross-pool collisions
+// are vanishingly rare in practice (microsecond timestamps), and the two
+// pools manage independent id namespaces by design — see
+// docs/serve-run-pool.md.
+func GenerateWorkflowIDIn(pool Pool, override string) (string, error) {
+	return generateWorkflowIDInDir(ResolvePoolDir(pool, override))
+}
+
+// GenerateWorkflowID is a CLI-pool shim around GenerateWorkflowIDIn.
 func GenerateWorkflowID(stateDir string) (string, error) {
-	existing, err := ListWorkflows(stateDir)
+	return GenerateWorkflowIDIn(PoolCLI, stateDir)
+}
+
+func generateWorkflowIDInDir(dir string) (string, error) {
+	existing, err := listWorkflowsInDir(dir)
 	if err != nil {
 		return "", err
 	}
@@ -402,12 +468,21 @@ func GenerateWorkflowID(stateDir string) (string, error) {
 	return id, nil
 }
 
-// RecoverWorkflows returns the IDs of workflows that have at least one active
-// agent (i.e. workflows that can be resumed). Malformed or unreadable state
-// files are silently skipped.
-func RecoverWorkflows(stateDir string) ([]string, error) {
-	dir := GetStateDir(stateDir)
+// RecoverWorkflowsIn returns the IDs of workflows in the given pool that have
+// at least one active agent (i.e. workflows that can be resumed). Malformed
+// or unreadable state files are silently skipped. Returns nil (not an error)
+// when the pool's directory does not exist — every pool tolerates a missing
+// pool directory the same way.
+func RecoverWorkflowsIn(pool Pool, override string) ([]string, error) {
+	return recoverWorkflowsInDir(ResolvePoolDir(pool, override))
+}
 
+// RecoverWorkflows is a CLI-pool shim around RecoverWorkflowsIn.
+func RecoverWorkflows(stateDir string) ([]string, error) {
+	return RecoverWorkflowsIn(PoolCLI, stateDir)
+}
+
+func recoverWorkflowsInDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

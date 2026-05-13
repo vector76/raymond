@@ -16,6 +16,7 @@ import (
 	"github.com/vector76/raymond/internal/config"
 	"github.com/vector76/raymond/internal/daemon"
 	"github.com/vector76/raymond/internal/orchestrator"
+	wfstate "github.com/vector76/raymond/internal/state"
 )
 
 // cliOrch adapts c.runner to the daemon.Orchestrator interface so that
@@ -379,5 +380,62 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 			"affected — CLI runs in .raymond/state/ are untouched. Archived files remain on disk "+
 			"for forensics; no state is deleted.")
 
+	cmd.AddCommand(c.newServeListCmd())
+
 	return cmd
+}
+
+// newServeListCmd builds the "serve list" subcommand: a read-only, daemon-free
+// inspector that enumerates workflow ids in the serve pool
+// (.raymond/serve-state/). It is the serve-pool peer of `ray --list`, which
+// stays scoped to the CLI pool. Like `--list`, it MUST work without a running
+// daemon — there is no HTTP client involved, only a top-level directory read.
+func (c *CLI) newServeListCmd() *cobra.Command {
+	var stateDir string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List workflow ids in the serve pool (.raymond/serve-state/)",
+		Long: `List workflow ids in the serve pool (.raymond/serve-state/).
+
+This is the serve-pool peer of "ray --list", which lists the CLI pool only.
+Output is one id per line, sorted alphanumerically. Subdirectories under
+serve-state/ — notably the abandoned/<ts>/ archives created by
+"ray serve --clean" — are NOT descended into.
+
+Read-only and daemon-free: this command inspects the on-disk pool directly
+and does not require "ray serve" to be running.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return c.cmdServeList(cmd, stateDir)
+		},
+	}
+	// Hidden test hook: lets cli_test point the serve pool at a temp dir
+	// without requiring a real .raymond/serve-state structure. Mirrors the
+	// root command's --state-dir flag, which targets the CLI pool.
+	cmd.Flags().StringVar(&stateDir, "state-dir", "", "")
+	_ = cmd.Flags().MarkHidden("state-dir")
+	return cmd
+}
+
+// cmdServeList prints the ids of every workflow state file in the serve pool.
+//
+// Subdirectories (including serve-state/abandoned/<ts>/) are intentionally
+// skipped: state.ListWorkflowsIn reads only the top level of the pool, which
+// keeps `--clean`'s archive inert by construction — see the regression test
+// TestServeListSkipsAbandonedAndCLIPool in cli_test.go.
+func (c *CLI) cmdServeList(cmd *cobra.Command, stateDir string) error {
+	ids, err := wfstate.ListWorkflowsIn(wfstate.PoolServe, stateDir)
+	if err != nil {
+		return fmt.Errorf("list workflows: %w", err)
+	}
+	if len(ids) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No workflows found.")
+		return nil
+	}
+	// ListWorkflowsIn returns ids in os.ReadDir's filename-sorted order —
+	// alphanumeric by id, matching `--list`'s deterministic output.
+	for _, id := range ids {
+		fmt.Fprintln(cmd.OutOrStdout(), id)
+	}
+	return nil
 }

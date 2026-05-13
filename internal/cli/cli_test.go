@@ -150,16 +150,24 @@ func TestRecoverSkipsCompletedWorkflow(t *testing.T) {
 
 func TestStatusNotFound(t *testing.T) {
 	stateDir := makeStateDir(t)
-	_, _, err := run(t, "--status", "nonexistent", "--state-dir", stateDir)
+	// Phase 7: cmdStatus falls back to the serve pool on CLI-pool miss.
+	// Point the serve pool at an isolated temp dir so a populated working
+	// tree (real .raymond/serve-state/ next to the project) can't flake
+	// this test by happening to contain a file named nonexistent.json.
+	serveDir := makeServeStateDir(t)
+	_, _, err := run(t, "--status", "nonexistent",
+		"--state-dir", stateDir, "--serve-state-dir", serveDir)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestStatusFound(t *testing.T) {
 	stateDir := makeStateDir(t)
+	serveDir := makeServeStateDir(t)
 	writeWorkflow(t, "wf-xyz", "workflows/test", "START.md", stateDir)
 
-	out, _, err := run(t, "--status", "wf-xyz", "--state-dir", stateDir)
+	out, _, err := run(t, "--status", "wf-xyz",
+		"--state-dir", stateDir, "--serve-state-dir", serveDir)
 	require.NoError(t, err)
 	assert.Contains(t, out, "wf-xyz")
 	assert.Contains(t, out, "workflows/test")
@@ -169,25 +177,214 @@ func TestStatusFound(t *testing.T) {
 
 func TestStatusShowsBudget(t *testing.T) {
 	stateDir := makeStateDir(t)
+	serveDir := makeServeStateDir(t)
 	ws := wfstate.CreateInitialState("wf-budget", "workflows/test", "START.md", 25.0, nil, "")
 	require.NoError(t, wfstate.WriteState("wf-budget", ws, stateDir))
 
-	out, _, err := run(t, "--status", "wf-budget", "--state-dir", stateDir)
+	out, _, err := run(t, "--status", "wf-budget",
+		"--state-dir", stateDir, "--serve-state-dir", serveDir)
 	require.NoError(t, err)
 	assert.Contains(t, out, "25.00")
 }
 
 func TestStatusPausedAgent(t *testing.T) {
 	stateDir := makeStateDir(t)
+	serveDir := makeServeStateDir(t)
 	ws := wfstate.CreateInitialState("wf-paused", "workflows/test", "START.md", 10.0, nil, "")
 	ws.Agents[0].Status = "paused"
 	ws.Agents[0].Error = "usage limit hit"
 	require.NoError(t, wfstate.WriteState("wf-paused", ws, stateDir))
 
-	out, _, err := run(t, "--status", "wf-paused", "--state-dir", stateDir)
+	out, _, err := run(t, "--status", "wf-paused",
+		"--state-dir", stateDir, "--serve-state-dir", serveDir)
 	require.NoError(t, err)
 	assert.Contains(t, out, "paused")
 	assert.Contains(t, out, "usage limit hit")
+}
+
+// --------------------------------------------------------------------------
+// Phase 7: serve-pool listing + pool-agnostic `ray status`
+// --------------------------------------------------------------------------
+
+// makeServeStateDir creates a temp .raymond/serve-state directory and returns
+// its path. Parallel to makeStateDir for the CLI pool.
+func makeServeStateDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), ".raymond", "serve-state")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	return dir
+}
+
+// makeBothPoolDirs creates a temp .raymond/state and .raymond/serve-state
+// directory under a *shared* parent so a single test can seed both pools.
+func makeBothPoolDirs(t *testing.T) (cliDir, serveDir string) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), ".raymond")
+	cliDir = filepath.Join(root, "state")
+	serveDir = filepath.Join(root, "serve-state")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, os.MkdirAll(serveDir, 0o755))
+	return cliDir, serveDir
+}
+
+// writeServePoolWorkflow writes a state file directly into the given serve-pool
+// directory using PoolServe semantics, so the test exercises the same
+// listing path production uses.
+func writeServePoolWorkflow(t *testing.T, id, scopeDir, initialState, serveStateDir string) {
+	t.Helper()
+	ws := wfstate.CreateInitialState(id, scopeDir, initialState, 10.0, nil, "")
+	require.NoError(t, wfstate.WriteStateIn(id, ws, wfstate.PoolServe, serveStateDir))
+}
+
+// Test (a): `ray serve list` enumerates only serve-pool entries, skips both
+// the abandoned/<ts>/ archives and any CLI-pool files, and emits ids in
+// deterministic (alphanumeric) order.
+func TestServeListSkipsAbandonedAndCLIPool(t *testing.T) {
+	cliDir, serveDir := makeBothPoolDirs(t)
+
+	// Seed three live serve-pool entries (intentionally out of alphabetical
+	// order on disk; ListWorkflowsIn relies on os.ReadDir's sort to give
+	// callers a deterministic order regardless of write order).
+	writeServePoolWorkflow(t, "wf-serve-c", "workflows/c", "START.md", serveDir)
+	writeServePoolWorkflow(t, "wf-serve-a", "workflows/a", "START.md", serveDir)
+	writeServePoolWorkflow(t, "wf-serve-b", "workflows/b", "START.md", serveDir)
+
+	// Seed an archived file under abandoned/<ts>/ — this MUST NOT appear in
+	// the listing (state.ListWorkflowsIn reads only top level, so any
+	// subdirectory under serve-state/ is inert by construction).
+	abandonedTS := filepath.Join(serveDir, "abandoned", "2026-05-12T00-00-00.000000000Z")
+	require.NoError(t, os.MkdirAll(abandonedTS, 0o755))
+	abandonedWS := wfstate.CreateInitialState("wf-abandoned", "workflows/old", "START.md", 10.0, nil, "")
+	abandonedBytes, err := json.MarshalIndent(abandonedWS, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(abandonedTS, "wf-abandoned.json"), abandonedBytes, 0o644))
+
+	// Seed a CLI-pool entry that must not leak into the serve listing.
+	writeWorkflow(t, "wf-cli-only", "workflows/test", "START.md", cliDir)
+
+	out, _, err := run(t, "serve", "list", "--state-dir", serveDir)
+	require.NoError(t, err)
+
+	// Expected stdout, in order: the three live serve ids, alphanumerically.
+	expected := "wf-serve-a\nwf-serve-b\nwf-serve-c\n"
+	assert.Equal(t, expected, out)
+
+	// Defensive: neither the abandoned id nor the CLI-pool id appears.
+	assert.NotContains(t, out, "wf-abandoned")
+	assert.NotContains(t, out, "wf-cli-only")
+}
+
+// Test (a) extra: empty serve pool reports "No workflows found" rather than
+// erroring or printing a blank line — parity with `ray --list`.
+func TestServeListEmpty(t *testing.T) {
+	serveDir := makeServeStateDir(t)
+	out, _, err := run(t, "serve", "list", "--state-dir", serveDir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "No workflows found")
+}
+
+// Test (b): `ray --list` and `ray --recover` stay scoped to the CLI pool
+// even when the serve pool is non-empty. Locks in the comment guarantee in
+// cli.go's cmdList/cmdRecover.
+func TestCLISurfacesStayCLIOnly(t *testing.T) {
+	cliDir, serveDir := makeBothPoolDirs(t)
+	writeWorkflow(t, "wf-cli-1", "workflows/a", "START.md", cliDir)
+	writeServePoolWorkflow(t, "wf-serve-1", "workflows/b", "START.md", serveDir)
+	writeServePoolWorkflow(t, "wf-serve-2", "workflows/c", "START.md", serveDir)
+
+	listOut, _, err := run(t, "--list", "--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.NoError(t, err)
+	assert.Contains(t, listOut, "wf-cli-1")
+	assert.NotContains(t, listOut, "wf-serve-1")
+	assert.NotContains(t, listOut, "wf-serve-2")
+
+	recOut, _, err := run(t, "--recover", "--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.NoError(t, err)
+	assert.Contains(t, recOut, "wf-cli-1")
+	assert.NotContains(t, recOut, "wf-serve-1")
+	assert.NotContains(t, recOut, "wf-serve-2")
+}
+
+// Test (c): `ray status` falls through to the serve pool when the id is
+// absent from the CLI pool, and remains find-it-in-CLI for ids only in the
+// CLI pool (no regression).
+func TestStatusFallsThroughToServePool(t *testing.T) {
+	cliDir, serveDir := makeBothPoolDirs(t)
+
+	// Seed an id only in the serve pool with a distinguishable scope dir.
+	writeServePoolWorkflow(t, "wf-serve-only", "workflows/from-serve", "START.md", serveDir)
+
+	out, _, err := run(t, "--status", "wf-serve-only",
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "wf-serve-only")
+	assert.Contains(t, out, "workflows/from-serve")
+
+	// And the historical CLI-only path still works.
+	writeWorkflow(t, "wf-cli-only", "workflows/from-cli", "START.md", cliDir)
+	out, _, err = run(t, "--status", "wf-cli-only",
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "wf-cli-only")
+	assert.Contains(t, out, "workflows/from-cli")
+
+	// Miss in both pools surfaces the generic not-found error — never the
+	// pool-specific path or the serve-pool's existence.
+	_, _, err = run(t, "--status", "wf-nowhere",
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	assert.NotContains(t, err.Error(), "serve-state")
+	assert.NotContains(t, err.Error(), "serve pool")
+}
+
+// Edge case for the strict fallback semantic: a MALFORMED state file in the
+// CLI pool must NOT silently fall through to the serve pool. The CLI pool is
+// authoritative whenever its file is present (per the documented precedence
+// rule in cmdStatus); a corrupted CLI copy is a corruption signal, not a
+// miss. The operator gets the same generic "not found" the pre-Phase-7
+// cmdStatus returned for any read error — no regression in error text, no
+// leak of pool layout, and no masking of CLI-side corruption by a serve copy.
+func TestStatusMalformedCLIDoesNotFallThrough(t *testing.T) {
+	cliDir, serveDir := makeBothPoolDirs(t)
+
+	// Same id in both pools; the CLI side is intentionally corrupted.
+	const id = "wf-corrupt"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, id+".json"),
+		[]byte("{not valid json"),
+		0o644,
+	))
+	serveWS := wfstate.CreateInitialState(id, "workflows/from-serve", "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteStateIn(id, serveWS, wfstate.PoolServe, serveDir))
+
+	_, _, err := run(t, "--status", id,
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	assert.NotContains(t, err.Error(), "serve-state")
+}
+
+// Test (d): when the same id is present in both pools, the CLI pool's copy
+// wins. We make the copies distinguishable by their ScopeDir so we can
+// assert which one rendered.
+func TestStatusCLITakesPrecedenceOverServe(t *testing.T) {
+	cliDir, serveDir := makeBothPoolDirs(t)
+
+	const id = "wf-shared"
+	cliWS := wfstate.CreateInitialState(id, "workflows/from-cli", "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteStateIn(id, cliWS, wfstate.PoolCLI, cliDir))
+
+	serveWS := wfstate.CreateInitialState(id, "workflows/from-serve", "START.md", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteStateIn(id, serveWS, wfstate.PoolServe, serveDir))
+
+	out, _, err := run(t, "--status", id,
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "workflows/from-cli",
+		"CLI pool must take precedence when the id is present in both pools")
+	assert.NotContains(t, out, "workflows/from-serve",
+		"serve-pool copy must not be opened when the CLI pool already has the id")
 }
 
 // --------------------------------------------------------------------------

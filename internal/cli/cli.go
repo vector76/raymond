@@ -168,7 +168,8 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		statusID                   string
 		recover                    bool
 		initCfg                    bool
-		stateDir                   string // hidden; for testing
+		stateDir                   string // hidden; CLI-pool override, for testing
+		serveStateDir              string // hidden; serve-pool override, for testing
 		workflowID                 string
 		continueSession            bool
 		onAsk                    string
@@ -193,7 +194,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				return c.cmdRecover(cmd, stateDir)
 			}
 			if statusID != "" {
-				return c.cmdStatus(cmd, statusID, stateDir)
+				return c.cmdStatus(cmd, statusID, stateDir, serveStateDir)
 			}
 
 			// dspExplicit is true when the effective DangerouslySkipPermissions
@@ -367,10 +368,18 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.BoolVar(&continueSession, "continue-session", false, "continue from the most recent interactive Claude session")
 	f.StringVar(&onAsk, "on-ask", "reject", "behaviour when workflow uses <ask> (reject|pause)")
 
-	// Hidden flag: allows tests to control the state directory without
-	// requiring a real .raymond directory structure.
+	// Hidden flag: allows tests to control the CLI-pool state directory
+	// without requiring a real .raymond directory structure.
 	f.StringVar(&stateDir, "state-dir", "", "")
 	_ = f.MarkHidden("state-dir")
+
+	// Hidden flag: lets cli_test inject a serve-pool directory so the
+	// `ray status` CLI-first / serve-fallback path (cmdStatus) can be
+	// exercised without colliding with the real .raymond/serve-state. No
+	// production caller sets this — production resolves the serve pool via
+	// state.ResolvePoolDir(PoolServe, "") from cwd, same as `ray serve`.
+	f.StringVar(&serveStateDir, "serve-state-dir", "", "")
+	_ = f.MarkHidden("serve-state-dir")
 
 	root.AddCommand(c.newDiagramCmd(), c.newLintCmd(), c.newConvertCmd(), c.newServeCmd())
 
@@ -547,6 +556,10 @@ func (c *CLI) cmdResume(workflowID string, opts orchestrator.RunOptions) error {
 
 // cmdList prints the IDs of all workflow state files.
 func (c *CLI) cmdList(cmd *cobra.Command, stateDir string) error {
+	// --list/--recover enumerate the CLI pool only; serve-pool listing is
+	// a separate command (`ray serve list`). Do not widen this to a
+	// merged-pool listing — operators rely on the pool boundary being
+	// visible at the command surface.
 	ids, err := wfstate.ListWorkflowsIn(wfstate.PoolCLI, stateDir)
 	if err != nil {
 		return fmt.Errorf("list workflows: %w", err)
@@ -563,6 +576,9 @@ func (c *CLI) cmdList(cmd *cobra.Command, stateDir string) error {
 
 // cmdRecover prints the IDs of workflows that have at least one active agent.
 func (c *CLI) cmdRecover(cmd *cobra.Command, stateDir string) error {
+	// --list/--recover enumerate the CLI pool only; serve-pool listing is
+	// a separate command (`ray serve list`). The serve pool's recovery
+	// equivalent is the daemon's auto-resume on startup, not this CLI.
 	ids, err := wfstate.RecoverWorkflowsIn(wfstate.PoolCLI, stateDir)
 	if err != nil {
 		return fmt.Errorf("recover workflows: %w", err)
@@ -578,9 +594,37 @@ func (c *CLI) cmdRecover(cmd *cobra.Command, stateDir string) error {
 }
 
 // cmdStatus prints a human-readable status summary for a single workflow.
-func (c *CLI) cmdStatus(cmd *cobra.Command, workflowID, stateDir string) error {
+//
+// `ray status` is pool-agnostic: the CLI pool is consulted first, and on a
+// miss we fall through to the serve pool. When the same id is present in
+// both pools (rare but possible — the two pools manage independent id
+// namespaces) the CLI pool's copy wins by virtue of being read first; the
+// serve copy is never opened in that case. On a miss in BOTH pools we
+// return the generic not-found error verbatim so that an operator probing
+// for an id can never learn pool layout from the error message.
+func (c *CLI) cmdStatus(cmd *cobra.Command, workflowID, stateDir, serveStateDir string) error {
 	ws, err := wfstate.ReadStateIn(workflowID, wfstate.PoolCLI, stateDir)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
+		// Strict CLI-first / serve-fallback: ONLY a not-found from the
+		// CLI pool triggers the fallback. A malformed CLI state file is
+		// a corruption signal, not a miss, and must not be silently
+		// papered over by a serve-pool copy — the documented precedence
+		// rule (CLI wins when both pools hold the id) is only coherent
+		// if the CLI pool is treated as authoritative whenever its file
+		// is present. The fall-through still preserves the generic
+		// not-found error on miss in both pools so an operator probing
+		// for an id can never learn pool layout from the response.
+		serveWS, serveErr := wfstate.ReadStateIn(workflowID, wfstate.PoolServe, serveStateDir)
+		if serveErr != nil {
+			return fmt.Errorf("workflow %q not found", workflowID)
+		}
+		ws = serveWS
+	} else if err != nil {
+		// Malformed/unreadable CLI state file: surface the same generic
+		// not-found that the pre-Phase-7 cmdStatus returned for any
+		// read error. No regression in error text, and no leak of the
+		// underlying corruption to the operator beyond what was already
+		// observable.
 		return fmt.Errorf("workflow %q not found", workflowID)
 	}
 

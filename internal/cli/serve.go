@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -143,10 +144,34 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 				cwd, _ = os.Getwd()
 			}
 
-			rm, err := daemon.NewRunManagerWithOrchestrator("", cwd, &cliOrch{fn: c.runner})
+			// Resolve the project's raymond directory once. Both the run
+			// manager (state pool + tasks cleanup) and the pending registry
+			// (one registry per project, intentionally not per-pool — see
+			// below) anchor here.
+			raymondDir, err := config.FindRaymondDir(cwd, true)
+			if err != nil {
+				return fmt.Errorf("resolving .raymond dir: %w", err)
+			}
+
+			// `ray serve` is the daemon, so route every read/write/recover
+			// through the serve pool (.raymond/serve-state/). Passing the
+			// resolved path explicitly keeps the run manager pool-agnostic:
+			// it treats stateDir as an opaque override and never falls
+			// through to ResolvePoolDir's discovery (which would re-walk
+			// the filesystem from cwd at every read/write).
+			// FindRaymondDir(cwd, true) guarantees raymondDir is non-empty
+			// on success (it either returns a path or errors), so we can
+			// join directly without a fallback.
+			serveStateDir := filepath.Join(raymondDir, "serve-state")
+
+			rm, err := daemon.NewRunManagerWithOrchestrator(serveStateDir, cwd, &cliOrch{fn: c.runner})
 			if err != nil {
 				return fmt.Errorf("initializing run manager: %w", err)
 			}
+			// Plumb the raymond directory so DeleteRun can derive
+			// `<raymondDir>/tasks/<id>/` without stripping a segment off
+			// the (pool-dependent) state path.
+			rm.SetRaymondDir(raymondDir)
 
 			// Wire up the pending-input registry so that <ask> transitions
 			// run in daemon mode: the orchestrator registers each pending
@@ -155,10 +180,15 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 			// the CLI pause path (return PendingAskError, wait for
 			// --resume on the next process), which never triggers in a
 			// long-running daemon.
-			raymondDir, err := config.FindRaymondDir(cwd, true)
-			if err != nil {
-				return fmt.Errorf("resolving .raymond dir for pending registry: %w", err)
-			}
+			//
+			// The registry deliberately lives at `<raymondDir>/`, NOT under
+			// the serve pool: one registry per project, not per pool. A
+			// pending ask is a workflow-author/user-facing artifact whose
+			// identity (run_id + ask_id) is independent of which run pool
+			// the run happens to belong to. Co-locating it with serve-state
+			// would force every future tool that inspects pending asks to
+			// guess the right pool. See the Phase 2 plan for the recorded
+			// rationale.
 			pr, err := daemon.NewPendingRegistry(raymondDir)
 			if err != nil {
 				return fmt.Errorf("initializing pending registry: %w", err)

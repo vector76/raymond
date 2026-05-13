@@ -38,9 +38,10 @@ func withClosedStdin(t *testing.T) {
 // when those writes race the cleanup. We poll RemoveAll briefly to absorb
 // that race instead.
 //
-// Chdir is required because daemon.NewRunManager("", cwd) routes state writes
-// through wfstate.GetStateDir(""), which resolves the location via
-// os.Getwd() — independent of the --workdir flag.
+// Chdir is required because `ray serve` resolves the serve-pool state
+// directory (.raymond/serve-state/) via config.FindRaymondDir +
+// wfstate.ResolvePoolDir, which walk up from os.Getwd() — independent of
+// the --workdir flag.
 func chdirIsolated(t *testing.T) {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ray-serve-test-")
@@ -125,6 +126,55 @@ func TestServeStartupLaunches_HappyPath(t *testing.T) {
 	// Under --mcp, stdout is reserved for JSON-RPC; launch lines must
 	// not leak there.
 	require.NotContains(t, stdout, "Launched run")
+}
+
+// TestServeRoutesLaunchesToServePool verifies that `ray serve --launch <id>`
+// writes the launched run's state file into .raymond/serve-state/ (the serve
+// pool), not .raymond/state/ (the CLI pool). This is the end-to-end shape of
+// the Phase-2 routing change; the manager-level tests in
+// internal/daemon/runmanager_test.go cover the same property at the RunManager
+// API, but only this test exercises the path through serve.go itself.
+func TestServeRoutesLaunchesToServePool(t *testing.T) {
+	withClosedStdin(t)
+	chdirIsolated(t)
+
+	root := t.TempDir()
+	writeServeWorkflow(t, root, "a")
+
+	_, stderr, err := runServe(t,
+		"serve",
+		"--root", root,
+		"--mcp",
+		"--no-http",
+		"--launch", "a",
+	)
+	require.NoError(t, err)
+	require.Contains(t, stderr, "Launched run ")
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	serveStateDir := filepath.Join(cwd, ".raymond", "serve-state")
+	cliStateDir := filepath.Join(cwd, ".raymond", "state")
+
+	// Serve pool should contain exactly the one launched run's state file.
+	serveEntries, err := os.ReadDir(serveStateDir)
+	require.NoError(t, err, "serve-state dir should exist after a launch")
+	var serveJSON []string
+	for _, e := range serveEntries {
+		if filepath.Ext(e.Name()) == ".json" {
+			serveJSON = append(serveJSON, e.Name())
+		}
+	}
+	require.Len(t, serveJSON, 1, "exactly one state file should land in the serve pool")
+
+	// CLI pool either does not exist or holds no state files — serve must
+	// not have written into it.
+	if cliEntries, err := os.ReadDir(cliStateDir); err == nil {
+		for _, e := range cliEntries {
+			require.NotEqual(t, ".json", filepath.Ext(e.Name()),
+				"CLI pool must remain empty of state files after `ray serve`")
+		}
+	}
 }
 
 func TestServeStartupLaunches_UnknownID(t *testing.T) {

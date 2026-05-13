@@ -1104,7 +1104,7 @@ func (s *Server) lookupInputCatalog(runID, askID string) ([]wfstate.FileRecord, 
 // lookupAgentTaskFolder reads the persisted workflow state and returns the
 // TaskFolder assigned to the agent identified by agentID.
 func (s *Server) lookupAgentTaskFolder(runID, agentID string) (string, bool) {
-	ws, err := wfstate.ReadState(runID, s.runManager.stateDir)
+	ws, err := wfstate.ReadStateIn(runID, wfstate.PoolServe, s.runManager.stateDir)
 	if err != nil {
 		return "", false
 	}

@@ -1820,3 +1820,144 @@ func TestSubscribeRunEvents_MultipleSubscribersIndependent(t *testing.T) {
 	assert.Len(t, got1, 3)
 	assert.Len(t, got2, 3)
 }
+
+// ----------------------------------------------------------------------------
+// Pool routing — Phase 2 of the disjoint run-pool plan.
+//
+// The daemon owns the serve pool (.raymond/serve-state/) and must never read
+// from or write to the CLI pool (.raymond/state/). These tests pin that
+// invariant at the manager level: a stale state file seeded into the CLI
+// pool is invisible to the daemon, and a daemon-launched run writes only
+// into the serve pool.
+// ----------------------------------------------------------------------------
+
+// ensureServePoolLayout mirrors ensureStateDir but creates both the CLI and
+// serve pool directories under a synthetic raymond directory. Returns the
+// (raymondDir, cliStateDir, serveStateDir) triple so the caller can seed
+// stale state into the CLI pool while pointing the run manager at the
+// serve pool.
+func ensureServePoolLayout(t *testing.T) (raymondDir, cliStateDir, serveStateDir string) {
+	t.Helper()
+	raymondDir = filepath.Join(t.TempDir(), ".raymond")
+	cliStateDir = filepath.Join(raymondDir, "state")
+	serveStateDir = filepath.Join(raymondDir, "serve-state")
+	require.NoError(t, os.MkdirAll(cliStateDir, 0o755))
+	require.NoError(t, os.MkdirAll(serveStateDir, 0o755))
+	return raymondDir, cliStateDir, serveStateDir
+}
+
+func TestRunManager_PoolIsolation_IgnoresCLIPoolPollution(t *testing.T) {
+	// A daemon pointed at the serve pool must not surface runs that
+	// happen to live in the sibling CLI pool — the two pools are disjoint
+	// by directory.
+	_, cliStateDir, serveStateDir := ensureServePoolLayout(t)
+
+	// Seed two stale runs into the CLI pool; both have an active main
+	// agent so they would pass RecoverWorkflows' filter if the daemon
+	// were (incorrectly) reading from this pool.
+	for _, id := range []string{"stale-cli-run-1", "stale-cli-run-2"} {
+		ws := &wfstate.WorkflowState{
+			WorkflowID: id,
+			ScopeDir:   "/tmp/scope",
+			Agents: []wfstate.AgentState{
+				{ID: "main", CurrentState: "START.md", Status: wfstate.AgentStatusPaused},
+			},
+			StartedAt: time.Now().Add(-time.Hour),
+		}
+		require.NoError(t, wfstate.WriteState(id, ws, cliStateDir))
+	}
+
+	rm, err := NewRunManagerWithOrchestrator(serveStateDir, "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+
+	assert.Empty(t, rm.ListRuns(),
+		"daemon must not surface runs from the CLI pool")
+}
+
+func TestLaunchRun_WritesToServePoolNotCLIPool(t *testing.T) {
+	// LaunchRun must persist initial state in the serve pool; the CLI
+	// pool stays empty. Verifies the WriteState routing change.
+	_, cliStateDir, serveStateDir := ensureServePoolLayout(t)
+	scopeDir := t.TempDir()
+
+	fake := &fakeOrchestrator{}
+	rm, err := NewRunManagerWithOrchestrator(serveStateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runID, err := rm.LaunchRun(ctx, testWorkflowEntry(t, scopeDir), "input", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	// State file present in the serve pool.
+	servePath := filepath.Join(serveStateDir, runID+".json")
+	_, err = os.Stat(servePath)
+	assert.NoError(t, err, "state file should land in the serve pool")
+
+	// And NOT in the CLI pool.
+	cliPath := filepath.Join(cliStateDir, runID+".json")
+	_, statErr := os.Stat(cliPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"state file must not be written into the CLI pool (%s)", cliPath)
+}
+
+func TestDeleteRun_RemovesTasksDirViaPlumbedRaymondDir(t *testing.T) {
+	// DeleteRun derives the tasks directory from the plumbed-in raymond
+	// directory, not by stripping a segment off the state path. Place
+	// raymondDir somewhere that is NOT filepath.Dir(stateDir) so the
+	// plumbed value can be distinguished from the path-stripping fallback.
+	tmp := t.TempDir()
+	raymondDir := filepath.Join(tmp, "alt-raymond")        // plumbed value
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	serveStateDir := filepath.Join(tmp, "elsewhere", "serve-state") // not under raymondDir
+	require.NoError(t, os.MkdirAll(serveStateDir, 0o755))
+	scopeDir := t.TempDir()
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+			b.Emit(events.WorkflowCompleted{
+				WorkflowID: workflowID, TotalCostUSD: 0.1, Timestamp: time.Now(),
+			})
+			return nil
+		},
+	}
+	rm, err := NewRunManagerWithOrchestrator(serveStateDir, "/tmp", fake)
+	require.NoError(t, err)
+	rm.SetRaymondDir(raymondDir)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	_, err = rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+
+	// Seed the per-run tasks dir at the plumbed-in location.
+	runTasksDir := filepath.Join(raymondDir, "tasks", runID)
+	require.NoError(t, os.MkdirAll(filepath.Join(runTasksDir, "main"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(runTasksDir, "main", "out.txt"), []byte("hi"), 0o644))
+
+	// Also drop a decoy tasks dir at the path the legacy fallback would
+	// have computed (filepath.Dir(serveStateDir)/tasks/<id>); DeleteRun
+	// must NOT touch it.
+	decoyTasksDir := filepath.Join(filepath.Dir(serveStateDir), "tasks", runID)
+	require.NoError(t, os.MkdirAll(decoyTasksDir, 0o755))
+
+	require.NoError(t, rm.DeleteRun(runID))
+
+	_, statErr := os.Stat(runTasksDir)
+	assert.True(t, os.IsNotExist(statErr),
+		"tasks dir at <raymondDir>/tasks/<id>/ must be removed by DeleteRun")
+
+	// The decoy at the legacy-fallback location must be untouched —
+	// proof that the plumbed raymondDir wins over path stripping.
+	_, decoyErr := os.Stat(decoyTasksDir)
+	assert.NoError(t, decoyErr,
+		"DeleteRun must not strip a segment off the state path to derive the tasks dir")
+
+	// State file is gone from the serve pool too.
+	_, statErr = os.Stat(filepath.Join(serveStateDir, runID+".json"))
+	assert.True(t, os.IsNotExist(statErr), "serve-pool state file must be removed")
+}

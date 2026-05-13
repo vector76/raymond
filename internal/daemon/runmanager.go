@@ -108,10 +108,19 @@ func (defaultOrchestrator) RunAllAgents(ctx context.Context, workflowID string, 
 }
 
 // RunManager tracks active and completed workflow runs for the daemon.
+//
+// Every state-touching method on RunManager targets the serve pool
+// (state.PoolServe, .raymond/serve-state/) so that daemon-managed runs are
+// physically disjoint from CLI-managed runs that live in .raymond/state/.
+// The stateDir field is interpreted as the pool *override*: when non-empty
+// it points directly at the directory to read/write, bypassing pool
+// resolution. Tests use this to inject a temp directory; production sets it
+// to the resolved serve-pool path computed at construction time.
 type RunManager struct {
 	mu              sync.RWMutex
 	runs            map[string]*runEntry
-	stateDir        string
+	stateDir        string // serve-pool override directory (see type doc)
+	raymondDir      string // project .raymond/ directory; empty falls back to the parent of the resolved serve-pool dir
 	cwd             string // daemon working directory (fallback for workDir)
 	orchestrator    Orchestrator
 	pendingRegistry *PendingRegistry
@@ -124,7 +133,7 @@ type RunManager struct {
 }
 
 // NewRunManager creates a RunManager and recovers any in-progress workflows
-// found in stateDir.
+// found in the serve pool resolved from stateDir.
 func NewRunManager(stateDir string, cwd string) (*RunManager, error) {
 	rm := &RunManager{
 		runs:         make(map[string]*runEntry),
@@ -154,6 +163,30 @@ func NewRunManagerWithOrchestrator(stateDir string, cwd string, orch Orchestrato
 	return rm, nil
 }
 
+// SetRaymondDir configures the project's raymond directory so DeleteRun can
+// derive the per-run tasks directory (`<raymondDir>/tasks/<id>/`) directly
+// rather than by stripping a segment off the state path. Called once by
+// `ray serve` during daemon construction. When unset, DeleteRun falls back
+// to the parent of the resolved serve-pool dir — equivalent to the
+// historical path-stripping behavior — so tests that don't bother plumbing
+// it explicitly keep working.
+func (rm *RunManager) SetRaymondDir(dir string) {
+	rm.raymondDir = dir
+}
+
+// resolvedRaymondDir returns the project's raymond directory, preferring
+// the value plumbed in via SetRaymondDir. The fallback resolves the
+// serve-pool directory (honouring rm.stateDir's override semantics, so an
+// empty rm.stateDir does not yield filepath.Dir("") == ".") and returns
+// its parent. This preserves the historical "tasks live beside the state
+// dir" assumption for tests that don't bother plumbing raymondDir in.
+func (rm *RunManager) resolvedRaymondDir() string {
+	if rm.raymondDir != "" {
+		return rm.raymondDir
+	}
+	return filepath.Dir(wfstate.ResolvePoolDir(wfstate.PoolServe, rm.stateDir))
+}
+
 // LaunchRun starts a new workflow run. It creates initial state, launches the
 // orchestrator in a goroutine, and returns the generated run ID.
 //
@@ -169,9 +202,14 @@ func (rm *RunManager) LaunchRun(
 	workDir string,
 	env map[string]string,
 ) (string, error) {
-	stateDir := wfstate.GetStateDir(rm.stateDir)
+	// Resolve once so the orchestrator's RunOptions.StateDir, the
+	// initial WriteState, and the run-ID collision check all agree on the
+	// same on-disk directory. rm.stateDir acts as an override (test
+	// injection); when empty the serve pool resolves to
+	// .raymond/serve-state/.
+	stateDir := wfstate.ResolvePoolDir(wfstate.PoolServe, rm.stateDir)
 
-	runID, err := wfstate.GenerateWorkflowID(stateDir)
+	runID, err := wfstate.GenerateWorkflowIDIn(wfstate.PoolServe, rm.stateDir)
 	if err != nil {
 		return "", fmt.Errorf("generate run ID: %w", err)
 	}
@@ -195,7 +233,7 @@ func (rm *RunManager) LaunchRun(
 	}
 
 	ws := wfstate.CreateInitialState(runID, entry.ScopeDir, initialState, budget, inputPtr, "", lp)
-	if err := wfstate.WriteState(runID, ws, stateDir); err != nil {
+	if err := wfstate.WriteStateIn(runID, ws, wfstate.PoolServe, rm.stateDir); err != nil {
 		return "", fmt.Errorf("write initial state: %w", err)
 	}
 
@@ -746,15 +784,19 @@ func (rm *RunManager) DeleteRun(runID string) error {
 	rm.mu.Unlock()
 
 	// Remove the state file (idempotent if already deleted on completion).
-	if err := wfstate.DeleteState(runID, rm.stateDir); err != nil {
+	if err := wfstate.DeleteStateIn(runID, wfstate.PoolServe, rm.stateDir); err != nil {
 		return fmt.Errorf("delete state: %w", err)
 	}
 
-	// Remove the per-run tasks directory if it lives in the default
-	// location beside the state directory. Best-effort: a missing
-	// directory is fine; a RemoveAll failure is surfaced so the caller
-	// can tell the user.
-	tasksDir := filepath.Join(filepath.Dir(wfstate.GetStateDir(rm.stateDir)), "tasks", runID)
+	// Remove the per-run tasks directory. The tasks root lives at
+	// `<raymondDir>/tasks/`, derived directly from the plumbed-in raymond
+	// directory rather than by stripping a segment off the state path —
+	// the pool layout no longer guarantees `state` is a single-segment
+	// sibling of `tasks`. Best-effort: a missing directory is fine
+	// (RemoveAll is idempotent); a RemoveAll failure is surfaced so the
+	// caller can tell the user. Runs that used a custom task_folder_pattern
+	// pointing elsewhere will need manual cleanup.
+	tasksDir := filepath.Join(rm.resolvedRaymondDir(), "tasks", runID)
 	if err := os.RemoveAll(tasksDir); err != nil {
 		return fmt.Errorf("delete tasks dir %s: %w", tasksDir, err)
 	}
@@ -837,15 +879,13 @@ func parseRunIDTimestamp(id string) (time.Time, bool) {
 // actively running — they represent interrupted workflows from a previous
 // daemon instance.
 func (rm *RunManager) recoverRuns() error {
-	ids, err := wfstate.RecoverWorkflows(rm.stateDir)
+	ids, err := wfstate.RecoverWorkflowsIn(wfstate.PoolServe, rm.stateDir)
 	if err != nil {
 		return err
 	}
 
-	stateDir := wfstate.GetStateDir(rm.stateDir)
-
 	for _, id := range ids {
-		ws, err := wfstate.ReadState(id, stateDir)
+		ws, err := wfstate.ReadStateIn(id, wfstate.PoolServe, rm.stateDir)
 		if err != nil {
 			continue // skip unreadable state files
 		}
@@ -1080,7 +1120,7 @@ func (rm *RunManager) BroadcastToAllRuns(evt any) {
 // pending registry. Returns false when the state cannot be read or no such
 // resolved input exists.
 func (rm *RunManager) LookupResolvedInput(runID, askID string) (*wfstate.ResolvedInput, bool) {
-	ws, err := wfstate.ReadState(runID, rm.stateDir)
+	ws, err := wfstate.ReadStateIn(runID, wfstate.PoolServe, rm.stateDir)
 	if err != nil {
 		return nil, false
 	}
@@ -1098,7 +1138,7 @@ func (rm *RunManager) LookupResolvedInput(runID, askID string) (*wfstate.Resolve
 // the state file cannot be read; an empty history yields an empty slice and
 // true.
 func (rm *RunManager) ListResolvedInputs(runID string) ([]wfstate.ResolvedInput, bool) {
-	ws, err := wfstate.ReadState(runID, rm.stateDir)
+	ws, err := wfstate.ReadStateIn(runID, wfstate.PoolServe, rm.stateDir)
 	if err != nil {
 		return nil, false
 	}

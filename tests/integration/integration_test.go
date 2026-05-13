@@ -1012,3 +1012,71 @@ echo '<goto>1_START.sh</goto>'
 		<-shutdownCh
 	}
 }
+
+// --------------------------------------------------------------------------
+// Shutdown rewrite — skip-gated placeholders.
+//
+// The bodies and skip-gates land together in bead-10 (integration-tests
+// bead) because the subprocess scaffolding is non-trivial enough that
+// duplicating it across multiple per-bead PRs adds drift risk. Until
+// then each test exists only to fix its name and intent in the test
+// registry, gated behind t.Skip so `go test` stays green.
+// --------------------------------------------------------------------------
+
+// TestServeSIGINTQuiesce: a single SIGINT to `ray serve` enters quiesce
+// indefinitely. Active runs are allowed to park at their next state
+// transition; the daemon does not impose a deadline. The test asserts the
+// process exits cleanly once all runs have parked or finished and that the
+// surviving state files are resumable on the next startup.
+func TestServeSIGINTQuiesce(t *testing.T) {
+	t.Skip("pending: bead-10 (integration tests)")
+	// TODO(bead-10): author the SIGINT-quiesce-no-timeout integration test
+	// body — single SIGINT, run drains naturally, exit code 0, state files
+	// resumable.
+}
+
+// TestServeSIGINTEscalation: a second SIGINT received while the first
+// quiesce is in flight short-circuits to the cancel path. The test asserts
+// that the second signal triggers the bounded patience window (no second
+// quiesce attempt) and that runs that did not park are classified
+// "cancelled" in the SSE outcome map.
+func TestServeSIGINTEscalation(t *testing.T) {
+	t.Skip("pending: bead-10 (integration tests)")
+	// TODO(bead-10): author the SIGINT-escalation integration test body —
+	// two SIGINTs, second one engages cancel within ~5s, state files for
+	// non-draining runs remain in-progress.
+}
+
+// TestServeSIGTERMFastCancel: SIGTERM at any time engages the cancel path
+// without first attempting an unbounded quiesce. The test asserts the
+// daemon exits within the bounded patience window and that any in-flight
+// run's state file reflects an in-progress (not "clean") status.
+func TestServeSIGTERMFastCancel(t *testing.T) {
+	t.Skip("pending: bead-10 (integration tests)")
+	// TODO(bead-10): author the SIGTERM-fast-cancel integration test body —
+	// single SIGTERM, no quiesce attempt, daemon exits within ~5s, run
+	// state file is in-progress and resumable.
+}
+
+// TestServeShutdownSentinelAbsence: across the full SIGINT/SIGTERM shutdown
+// sequence, .raymond/shutdown.sentinel is never created. Regression guard
+// for the deleted T1 sentinel-file mechanism.
+func TestServeShutdownSentinelAbsence(t *testing.T) {
+	t.Skip("pending: bead-10 (integration tests)")
+	// TODO(bead-10): author the sentinel-absence integration test body —
+	// drive a full shutdown sequence and assert .raymond/shutdown.sentinel
+	// is never written.
+}
+
+// TestServeShutdownEnvAbsence: a shell step that runs concurrently with a
+// daemon shutdown never observes RAYMOND_STOP_REQUESTED or
+// RAYMOND_STOP_SENTINEL in its environment. Subprocess-level regression
+// guard for the deleted T1 env-injection mechanism. Distinct from the
+// per-package env-absence test, which captures the executor's env-build
+// path without running a real subprocess.
+func TestServeShutdownEnvAbsence(t *testing.T) {
+	t.Skip("pending: bead-10 (integration tests)")
+	// TODO(bead-10): author the env-absence integration test body — start a
+	// shell step under serve, trigger SIGINT/SIGTERM, and capture the
+	// step's env via a marker file to assert RAYMOND_STOP_* are absent.
+}

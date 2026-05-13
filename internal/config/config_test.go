@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1112,124 +1111,12 @@ func TestMergeServeConfigUploadCapsFromFileWhenCLIZero(t *testing.T) {
 // ----------------------------------------------------------------------------
 // Shutdown tier timeouts
 // ----------------------------------------------------------------------------
-
-func TestLoadServeConfigShutdownTimeoutsParsed(t *testing.T) {
-	// Explicit numeric values for both keys are read correctly.
-	root := t.TempDir()
-	writeServeConfig(t, root, strings.Join([]string{
-		"[raymond.serve]",
-		"shutdown_tier1_timeout = 120",
-		"shutdown_tier2_timeout = 30",
-	}, "\n"))
-
-	cfg, err := config.LoadServeConfig(root)
-	require.NoError(t, err)
-	assert.Equal(t, 120*time.Second, cfg.ShutdownTier1Timeout)
-	assert.Equal(t, 30*time.Second, cfg.ShutdownTier2Timeout)
-}
-
-func TestLoadServeConfigShutdownTimeoutsRejectNonPositive(t *testing.T) {
-	// Matches the MaxFileSize idiom: strictly positive integers only. This
-	// keeps the "zero in the struct == absent in the file" invariant intact
-	// so MergeServeConfig can unambiguously apply the default.
-	for _, key := range []string{"shutdown_tier1_timeout", "shutdown_tier2_timeout"} {
-		for _, v := range []int{0, -1} {
-			root := t.TempDir()
-			writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\n%s = %d\n", key, v))
-			_, err := config.LoadServeConfig(root)
-			require.Errorf(t, err, "%s=%d must be rejected", key, v)
-			assert.Contains(t, err.Error(), key)
-			assert.Contains(t, err.Error(), "positive")
-		}
-	}
-}
-
-func TestLoadServeConfigShutdownTimeoutsRejectWrongType(t *testing.T) {
-	for _, key := range []string{"shutdown_tier1_timeout", "shutdown_tier2_timeout"} {
-		root := t.TempDir()
-		writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\n%s = \"long\"\n", key))
-		_, err := config.LoadServeConfig(root)
-		require.Error(t, err, "%s must reject string", key)
-		assert.Contains(t, err.Error(), key)
-		assert.Contains(t, err.Error(), "integer")
-	}
-
-	// Floats are also rejected — the serve-key idiom is integer seconds.
-	for _, key := range []string{"shutdown_tier1_timeout", "shutdown_tier2_timeout"} {
-		root := t.TempDir()
-		writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\n%s = 1.5\n", key))
-		_, err := config.LoadServeConfig(root)
-		require.Errorf(t, err, "%s must reject float", key)
-		assert.Contains(t, err.Error(), key)
-		assert.Contains(t, err.Error(), "integer")
-	}
-}
-
-func TestLoadServeConfigShutdownTimeoutsAbsentLeavesZero(t *testing.T) {
-	// When the keys are absent, ServeFileConfig holds zero durations —
-	// the defaults are applied at the merge step, not at load time.
-	root := t.TempDir()
-	writeServeConfig(t, root, "[raymond.serve]\nport = 9000\n")
-
-	cfg, err := config.LoadServeConfig(root)
-	require.NoError(t, err)
-	assert.Equal(t, time.Duration(0), cfg.ShutdownTier1Timeout)
-	assert.Equal(t, time.Duration(0), cfg.ShutdownTier2Timeout)
-}
-
-func TestLoadServeConfigUnknownServeKeyDoesNotErrorAfterShutdownKeysAdded(t *testing.T) {
-	// Regression: adding shutdown_tier{1,2}_timeout must not break the
-	// existing forward-compatible behavior — truly unknown keys are still
-	// silently dropped (mirrors TestLoadServeConfigUnknownKeysIgnored, but
-	// guards specifically against typos near the new keys).
-	root := t.TempDir()
-	writeServeConfig(t, root, strings.Join([]string{
-		"[raymond.serve]",
-		"port = 9000",
-		"shutdown_tier3_timeout = 10", // unknown — must be ignored
-		"shutdown_tier1_timeout = 60",
-	}, "\n"))
-
-	cfg, err := config.LoadServeConfig(root)
-	require.NoError(t, err)
-	require.NotNil(t, cfg.Port)
-	assert.Equal(t, 9000, *cfg.Port)
-	assert.Equal(t, 60*time.Second, cfg.ShutdownTier1Timeout)
-}
-
-func TestMergeServeConfigShutdownTimeoutsUseFileValueWhenSet(t *testing.T) {
-	merged := config.MergeServeConfig(
-		config.ServeFileConfig{
-			ShutdownTier1Timeout: 90 * time.Second,
-			ShutdownTier2Timeout: 15 * time.Second,
-		},
-		config.ServeCLIArgs{},
-	)
-	assert.Equal(t, 90*time.Second, merged.ShutdownTier1Timeout)
-	assert.Equal(t, 15*time.Second, merged.ShutdownTier2Timeout)
-}
-
-func TestMergeServeConfigShutdownTimeoutsDefaultWhenAbsent(t *testing.T) {
-	merged := config.MergeServeConfig(
-		config.ServeFileConfig{},
-		config.ServeCLIArgs{},
-	)
-	assert.Equal(t, config.DefaultShutdownTier1Timeout, merged.ShutdownTier1Timeout)
-	assert.Equal(t, config.DefaultShutdownTier2Timeout, merged.ShutdownTier2Timeout)
-	// Sanity check on the magnitudes called out in the spec.
-	assert.Equal(t, time.Hour, merged.ShutdownTier1Timeout)
-	assert.Equal(t, 5*time.Minute, merged.ShutdownTier2Timeout)
-}
-
-func TestMergeServeConfigShutdownTimeoutsDefaultPerFieldIndependently(t *testing.T) {
-	// Only T1 set in the file → T2 falls back to default, T1 does not.
-	merged := config.MergeServeConfig(
-		config.ServeFileConfig{ShutdownTier1Timeout: 42 * time.Second},
-		config.ServeCLIArgs{},
-	)
-	assert.Equal(t, 42*time.Second, merged.ShutdownTier1Timeout)
-	assert.Equal(t, config.DefaultShutdownTier2Timeout, merged.ShutdownTier2Timeout)
-}
+//
+// (bead-1) The parse-behavior subtests for shutdown_tier1_timeout and
+// shutdown_tier2_timeout were deleted: the two-phase shutdown rewrite
+// removes both keys (quiesce is unbounded; the cancel patience window
+// is a code constant). The config-cleanup bead deletes the keys
+// themselves; this bead just clears the test surface that pins them.
 
 func TestMergeServeConfigUploadCapsZeroWhenNeitherSet(t *testing.T) {
 	// Zero in the merged config signals "unset" so the daemon falls

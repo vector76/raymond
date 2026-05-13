@@ -12,7 +12,7 @@ import (
 )
 
 // fakeSig is a minimal stub of the executors.ShutdownSignal interface used to
-// drive the three injection cases below.
+// drive the env-absence assertion across every value the field can take.
 type fakeSig struct {
 	req  bool
 	path string
@@ -85,54 +85,43 @@ func newShutdownEnvWorkflow(t *testing.T) *wfstate.WorkflowState {
 	}
 }
 
-func TestScriptExecutor_StopEnv_NilSignal_NotInjected(t *testing.T) {
-	ws := newShutdownEnvWorkflow(t)
-	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
-	// ShutdownSignal intentionally left nil — CLI default.
+// TestScriptExecutor_StopEnv_NeverInjected asserts the post-rewrite contract:
+// neither RAYMOND_STOP_REQUESTED nor RAYMOND_STOP_SENTINEL appears in the
+// shell-step environment under any value of execCtx.ShutdownSignal. The
+// pre-rewrite three subtests (nil / not-requested / requested injecting the
+// vars) were deleted in bead-1 because they pinned behavior the rewrite
+// removes. This test goes green once bead-3 deletes the env-injection block
+// in internal/executors/script.go.
+func TestScriptExecutor_StopEnv_NeverInjected(t *testing.T) {
+	t.Skip("pending: bead-3 (remove RAYMOND_STOP_* env injection)")
 
-	env := captureScriptEnv(t, execCtx, ws)
-
-	if _, ok := env["RAYMOND_STOP_REQUESTED"]; ok {
-		t.Errorf("RAYMOND_STOP_REQUESTED must not be present when signal is nil; got %q", env["RAYMOND_STOP_REQUESTED"])
-	}
-	if _, ok := env["RAYMOND_STOP_SENTINEL"]; ok {
-		t.Errorf("RAYMOND_STOP_SENTINEL must not be present when signal is nil; got %q", env["RAYMOND_STOP_SENTINEL"])
-	}
-}
-
-func TestScriptExecutor_StopEnv_SignalNotRequested_NotInjected(t *testing.T) {
-	ws := newShutdownEnvWorkflow(t)
-	execCtx := &executors.ExecutionContext{
-		Bus:            newBus(),
-		WorkflowID:     ws.WorkflowID,
-		ShutdownSignal: &fakeSig{req: false, path: "/tmp/should-not-appear"},
+	cases := []struct {
+		name string
+		sig  executors.ShutdownSignal
+	}{
+		{"nil signal", nil},
+		{"signal not requested", &fakeSig{req: false, path: "/tmp/should-not-appear"}},
+		{"signal requested", &fakeSig{req: true, path: "/some/raymond/dir/shutdown.sentinel"}},
 	}
 
-	env := captureScriptEnv(t, execCtx, ws)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newShutdownEnvWorkflow(t)
+			execCtx := &executors.ExecutionContext{
+				Bus:            newBus(),
+				WorkflowID:     ws.WorkflowID,
+				ShutdownSignal: tc.sig,
+			}
 
-	if _, ok := env["RAYMOND_STOP_REQUESTED"]; ok {
-		t.Errorf("RAYMOND_STOP_REQUESTED must not be present when IsRequested=false; got %q", env["RAYMOND_STOP_REQUESTED"])
-	}
-	if _, ok := env["RAYMOND_STOP_SENTINEL"]; ok {
-		t.Errorf("RAYMOND_STOP_SENTINEL must not be present when IsRequested=false; got %q", env["RAYMOND_STOP_SENTINEL"])
-	}
-}
+			env := captureScriptEnv(t, execCtx, ws)
 
-func TestScriptExecutor_StopEnv_SignalRequested_Injected(t *testing.T) {
-	ws := newShutdownEnvWorkflow(t)
-	sentinel := "/some/raymond/dir/shutdown.sentinel"
-	execCtx := &executors.ExecutionContext{
-		Bus:            newBus(),
-		WorkflowID:     ws.WorkflowID,
-		ShutdownSignal: &fakeSig{req: true, path: sentinel},
-	}
-
-	env := captureScriptEnv(t, execCtx, ws)
-
-	if got := env["RAYMOND_STOP_REQUESTED"]; got != "1" {
-		t.Errorf("RAYMOND_STOP_REQUESTED = %q, want %q", got, "1")
-	}
-	if got := env["RAYMOND_STOP_SENTINEL"]; got != sentinel {
-		t.Errorf("RAYMOND_STOP_SENTINEL = %q, want %q", got, sentinel)
+			if v, ok := env["RAYMOND_STOP_REQUESTED"]; ok {
+				t.Errorf("RAYMOND_STOP_REQUESTED must never be injected; got %q", v)
+			}
+			if v, ok := env["RAYMOND_STOP_SENTINEL"]; ok {
+				t.Errorf("RAYMOND_STOP_SENTINEL must never be injected; got %q", v)
+			}
+		})
 	}
 }

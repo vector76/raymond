@@ -274,3 +274,55 @@ func TestGlobalEventsEndpoint_StreamsPublishedEvents(t *testing.T) {
 	}
 	assert.True(t, gotEvent, "expected at least one SSE data line")
 }
+
+// TestShutdownEventsShape_PostRewrite asserts the post-rewrite shape of the
+// shutdown SSE events:
+//
+//   - ShutdownRequested JSON has no tier_1_timeout_secs / tier_2_timeout_secs
+//     keys (quiesce is unbounded; the cancel patience window is a code
+//     constant rather than a wire field).
+//   - ShutdownComplete outcome values are drawn from the closed set
+//     {"quiesced", "cancelled"}; the legacy "clean" / "killed" values are
+//     gone.
+//
+// Unblocked by bead-9, which removes the dead fields from
+// events.ShutdownRequested and rewires the coordinator's outcome
+// classification to the two-value set.
+func TestShutdownEventsShape_PostRewrite(t *testing.T) {
+	t.Skip("pending: bead-9 (SSE events)")
+
+	// ShutdownRequested must serialise without the tier-timeout fields.
+	req := events.ShutdownRequested{
+		ActiveRuns:  []events.ActiveRunSnapshot{{ID: "r1"}},
+		RequestedAt: time.Unix(0, 0),
+	}
+	reqBytes, err := json.Marshal(req)
+	require.NoError(t, err)
+	var reqMap map[string]any
+	require.NoError(t, json.Unmarshal(reqBytes, &reqMap))
+	_, hasT1 := reqMap["tier_1_timeout_secs"]
+	_, hasT2 := reqMap["tier_2_timeout_secs"]
+	assert.False(t, hasT1, "tier_1_timeout_secs must not appear in ShutdownRequested JSON")
+	assert.False(t, hasT2, "tier_2_timeout_secs must not appear in ShutdownRequested JSON")
+
+	// ShutdownComplete's outcome value set is {"quiesced", "cancelled"}.
+	comp := events.ShutdownComplete{
+		Outcomes: map[string]string{
+			"r1": "quiesced",
+			"r2": "cancelled",
+		},
+	}
+	compBytes, err := json.Marshal(comp)
+	require.NoError(t, err)
+	var compMap struct {
+		Outcomes map[string]string `json:"outcomes"`
+	}
+	require.NoError(t, json.Unmarshal(compBytes, &compMap))
+	allowed := map[string]struct{}{"quiesced": {}, "cancelled": {}}
+	for runID, outcome := range compMap.Outcomes {
+		_, ok := allowed[outcome]
+		assert.Truef(t, ok,
+			"ShutdownComplete outcome for %q = %q; must be one of {quiesced, cancelled}",
+			runID, outcome)
+	}
+}

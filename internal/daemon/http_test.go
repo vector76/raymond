@@ -2719,114 +2719,12 @@ func TestHandleShutdown_HappyPath_RunOutcomeSummary(t *testing.T) {
 	assert.Equal(t, "alpha: clean", lines[2])
 }
 
-// TestHandleShutdown_QueryOverridesDefaults: ?t1=&?t2= override the values
-// installed via SetShutdownCoordinator. Verifies via a fake driver that
-// records timeout arguments.
-func TestHandleShutdown_QueryOverridesDefaults(t *testing.T) {
-	srv, ts, _ := newTestServer(t)
-
-	fake := newFakeShutdownDriver()
-	installFakeShutdownDriver(srv, fake, 99*time.Second, 88*time.Second) // bypass the *ShutdownCoordinator setter signature
-
-	go func() {
-		// Brief delay so the handler subscribes before Finish closes.
-		time.Sleep(10 * time.Millisecond)
-		fake.EmitPhase(PhaseTier1Wait)
-		fake.EmitPhase(PhaseComplete)
-		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{}})
-	}()
-
-	resp, err := http.Post(ts.URL+"/shutdown?t1=5&t2=3", "", nil)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	args := fake.CallArgs()
-	require.Len(t, args, 1)
-	assert.Equal(t, 5*time.Second, args[0].t1)
-	assert.Equal(t, 3*time.Second, args[0].t2)
-}
-
-// TestHandleShutdown_DefaultFallback: a POST with no query uses the
-// durations installed via SetShutdownCoordinator.
-func TestHandleShutdown_DefaultFallback(t *testing.T) {
-	srv, ts, _ := newTestServer(t)
-
-	fake := newFakeShutdownDriver()
-	installFakeShutdownDriver(srv, fake, 42*time.Second, 17*time.Second)
-
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		fake.EmitPhase(PhaseTier1Wait)
-		fake.EmitPhase(PhaseComplete)
-		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{}})
-	}()
-
-	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	args := fake.CallArgs()
-	require.Len(t, args, 1)
-	assert.Equal(t, 42*time.Second, args[0].t1)
-	assert.Equal(t, 17*time.Second, args[0].t2)
-}
-
-// TestHandleShutdown_QueryPrecedenceOverConfig: even when both the query
-// and the SetShutdownCoordinator defaults supply values, the query wins. The
-// task's spec models the "config" layer as whatever the serve command
-// installs via SetShutdownCoordinator (bead-15), so checking the setter
-// values plus the query is sufficient.
-func TestHandleShutdown_QueryPrecedenceOverConfig(t *testing.T) {
-	srv, ts, _ := newTestServer(t)
-
-	fake := newFakeShutdownDriver()
-	installFakeShutdownDriver(srv, fake, 99*time.Second, 88*time.Second)
-
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		fake.EmitPhase(PhaseTier1Wait)
-		fake.EmitPhase(PhaseComplete)
-		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{}})
-	}()
-
-	resp, err := http.Post(ts.URL+"/shutdown?t1=7&t2=2", "", nil)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	args := fake.CallArgs()
-	require.Len(t, args, 1)
-	assert.Equal(t, 7*time.Second, args[0].t1)
-	assert.Equal(t, 2*time.Second, args[0].t2)
-}
-
-// TestHandleShutdown_InvalidQueryRejected: a non-numeric or negative query
-// value yields a 400 and never touches the driver.
-func TestHandleShutdown_InvalidQueryRejected(t *testing.T) {
-	srv, ts, _ := newTestServer(t)
-
-	fake := newFakeShutdownDriver()
-	installFakeShutdownDriver(srv, fake, 10*time.Second, 10*time.Second)
-
-	cases := []string{
-		"?t1=abc", "?t2=abc",
-		"?t1=-1", "?t2=-2",
-		"?t1=NaN", "?t2=NaN",
-		"?t1=Inf", "?t2=+Inf",
-	}
-	for _, q := range cases {
-		resp, err := http.Post(ts.URL+"/shutdown"+q, "", nil)
-		require.NoError(t, err, q)
-		resp.Body.Close()
-		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, q)
-	}
-	assert.Empty(t, fake.CallArgs(), "rejected requests must not reach the driver")
-}
+// (bead-1) The ?t1= / ?t2= precedence-ladder subtests and the
+// parseShutdownTimeoutQuery error-handling subtest that previously lived
+// here were deleted: the two-phase shutdown rewrite drops the query-string
+// override surface entirely (quiesce is unbounded; the cancel patience
+// window is a code constant). The HTTP-handler bead replaces the broader
+// test surface against the new API.
 
 // TestSetShutdownCoordinator_NilStaysNil: a typed-nil *ShutdownCoordinator
 // passed to the setter must store an untyped-nil interface, so the handler's

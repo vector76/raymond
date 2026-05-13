@@ -148,12 +148,56 @@ type WorkflowState struct {
 	TaskFolderPattern       string            `json:"-"` // pattern for computing per-task output folders
 }
 
-// GetStateDir returns the state directory to use. If stateDir is non-empty it
-// is returned unchanged. Otherwise the default location (.raymond/state/ at
-// the project root) is computed using config.FindRaymondDir.
-func GetStateDir(stateDir string) string {
-	if stateDir != "" {
-		return stateDir
+// Pool identifies which run-state pool a caller wants to operate on.
+//
+// The CLI pool (PoolCLI) holds state files for `ray <workflow>` invocations
+// and resolves to .raymond/state/ — the historical, byte-for-byte default.
+// The serve pool (PoolServe) holds state files for the `ray serve` daemon
+// and resolves to the sibling .raymond/serve-state/. The two pools are
+// siblings rather than parent-and-child so that any future "enumerate
+// everything" tool walks two independent roots without one descending into
+// the other. See docs/serve-run-pool.md for the full rationale.
+type Pool int
+
+const (
+	// PoolCLI is the run-state pool owned by `ray <workflow>` invocations.
+	// Resolves to .raymond/state/ under the project's raymond directory.
+	PoolCLI Pool = iota
+
+	// PoolServe is the run-state pool owned by the `ray serve` daemon.
+	// Resolves to .raymond/serve-state/ under the project's raymond
+	// directory — a sibling of, not nested inside, the CLI pool.
+	PoolServe
+)
+
+// poolSubdir returns the directory name (relative to the project's raymond
+// directory) that holds the given pool's state files.
+func (p Pool) poolSubdir() string {
+	switch p {
+	case PoolServe:
+		return "serve-state"
+	default:
+		// PoolCLI and any unknown value fall back to the historical CLI
+		// path so that a forgotten/zero Pool never silently writes to the
+		// serve pool.
+		return "state"
+	}
+}
+
+// ResolvePoolDir resolves the on-disk state directory for the given pool.
+//
+// When override is non-empty, it is returned unchanged. This preserves the
+// existing test-injection contract: tests (and the hidden `--state-dir`
+// flag) can point any pool at an arbitrary directory.
+//
+// When override is empty, the project's raymond directory is discovered via
+// config.FindRaymondDir and the pool-specific subdirectory is appended:
+// .raymond/state/ for PoolCLI, .raymond/serve-state/ for PoolServe. If the
+// raymond directory cannot be discovered, ResolvePoolDir falls back to
+// "<cwd>/.raymond/<subdir>" — the same fallback GetStateDir has always used.
+func ResolvePoolDir(pool Pool, override string) string {
+	if override != "" {
+		return override
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -163,7 +207,19 @@ func GetStateDir(stateDir string) string {
 	if err != nil || raymondDir == "" {
 		raymondDir = filepath.Join(cwd, ".raymond")
 	}
-	return filepath.Join(raymondDir, "state")
+	return filepath.Join(raymondDir, pool.poolSubdir())
+}
+
+// GetStateDir returns the CLI-pool state directory to use. If stateDir is
+// non-empty it is returned unchanged. Otherwise the default location
+// (.raymond/state/ at the project root) is computed using
+// config.FindRaymondDir.
+//
+// GetStateDir is preserved as a thin wrapper around ResolvePoolDir(PoolCLI, …)
+// so that existing call sites continue to compile while higher layers migrate
+// to the typed Pool surface.
+func GetStateDir(stateDir string) string {
+	return ResolvePoolDir(PoolCLI, stateDir)
 }
 
 // ReadState reads the workflow state for workflowID from stateDir.

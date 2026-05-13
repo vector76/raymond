@@ -805,3 +805,88 @@ func TestLaunchParamsOnAskBackwardCompatibility(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(raw), &lp))
 	assert.Equal(t, "", lp.OnAsk, "OnAsk should be empty for old state files without the field")
 }
+
+// ----------------------------------------------------------------------------
+// ResolvePoolDir
+// ----------------------------------------------------------------------------
+
+// withRaymondDir creates a fresh project root containing a .raymond directory
+// in a temp dir, chdirs into it for the duration of the test, and returns the
+// absolute path to that .raymond directory.
+func withRaymondDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	raymondDir := filepath.Join(root, ".raymond")
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	require.NoError(t, os.Chdir(root))
+
+	// Resolve symlinks (macOS /var → /private/var, etc.) so the returned
+	// path matches what os.Getwd reports inside the test.
+	resolved, err := filepath.EvalSymlinks(raymondDir)
+	require.NoError(t, err)
+	return resolved
+}
+
+func TestResolvePoolDirNoOverride(t *testing.T) {
+	raymondDir := withRaymondDir(t)
+
+	cases := []struct {
+		name string
+		pool state.Pool
+		want string
+	}{
+		{"CLI pool resolves to state/", state.PoolCLI, filepath.Join(raymondDir, "state")},
+		{"Serve pool resolves to serve-state/", state.PoolServe, filepath.Join(raymondDir, "serve-state")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := state.ResolvePoolDir(tc.pool, "")
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestResolvePoolDirOverridePassthrough(t *testing.T) {
+	// Override must win regardless of whether a raymond dir can be found.
+	_ = withRaymondDir(t)
+
+	override := filepath.Join(t.TempDir(), "custom-state")
+
+	cases := []struct {
+		name string
+		pool state.Pool
+	}{
+		{"CLI pool honours override", state.PoolCLI},
+		{"Serve pool honours override", state.PoolServe},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := state.ResolvePoolDir(tc.pool, override)
+			assert.Equal(t, override, got, "override must be returned unchanged")
+		})
+	}
+}
+
+// TestResolvePoolDirCLIMatchesLegacyGetStateDir is a regression guard: the
+// CLI pool path must be byte-for-byte identical to what GetStateDir("")
+// returned before the typed-Pool surface was introduced.
+func TestResolvePoolDirCLIMatchesLegacyGetStateDir(t *testing.T) {
+	_ = withRaymondDir(t)
+
+	legacy := state.GetStateDir("")
+	pooled := state.ResolvePoolDir(state.PoolCLI, "")
+	assert.Equal(t, legacy, pooled,
+		"PoolCLI must resolve to the same path GetStateDir(\"\") has always returned")
+}
+
+// TestGetStateDirOverridePassthrough preserves the documented contract of
+// GetStateDir: a non-empty argument is returned unchanged. This is the
+// mechanism the hidden --state-dir flag relies on for test injection.
+func TestGetStateDirOverridePassthrough(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "injected-state")
+	assert.Equal(t, override, state.GetStateDir(override))
+}

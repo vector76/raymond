@@ -286,18 +286,18 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 			// pass its publish surface as the event sink. The rm is the
 			// runFleet — *RunManager satisfies that interface via the
 			// compile-time assertion in shutdowncoordinator.go.
-			t1 := merged.ShutdownTier1Timeout
-			t2 := merged.ShutdownTier2Timeout
 			coordinator := daemon.NewShutdownCoordinator(rm, eventSink)
 			if srv != nil {
 				// Install the coordinator and signal on the server *before*
 				// ListenAndServe so an early POST /shutdown or POST /runs
 				// can't race in and observe an unconfigured handler:
-				// SetShutdownCoordinator wires the /shutdown handler with the
-				// default T1/T2 (used when the request body omits them), and
+				// SetShutdownCoordinator wires the /shutdown handler, and
 				// SetShutdownSignal primes the launch guard so POST /runs
 				// returns 503 once Request() flips.
-				srv.SetShutdownCoordinator(coordinator, t1, t2)
+				// Tier timeouts are passed as zero placeholders; the setter's
+				// signature collapses to a single argument in the HTTP-handler
+				// bead alongside removal of the corresponding config fields.
+				srv.SetShutdownCoordinator(coordinator, 0, 0)
 				srv.SetShutdownSignal(shutdownSignal)
 
 				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
@@ -340,25 +340,87 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 				fmt.Fprintf(cmd.ErrOrStderr(), "startup launches aborted: %v\n", err)
 			}
 
-			// Block until interrupted or MCP transport closes.
+			// Long-lived shutdown driver. Unlike the previous single-shot
+			// select, this goroutine keeps listening for the lifetime of
+			// the serve loop so SIGINT/SIGTERM after the first signal can
+			// still drive the coordinator forward (quiesce → cancel). It
+			// exits only once the coordinator's WaitComplete channel fires.
+			//
+			// Signal mapping (see docs/serve-shutdown-signals.md):
+			//   - 1st SIGINT   → BeginQuiesce (indefinite quiesce).
+			//   - 2nd SIGINT   → EscalateToCancel.
+			//   - SIGTERM (any time) → begin-then-escalate. Coordinator's
+			//     EscalateToCancel is a strict no-op until PhaseQuiesce
+			//     has been emitted, so we call BeginQuiesce first and
+			//     rely on its synchronous emit to satisfy that contract.
+			//   - any further signal once cancel has been engaged is
+			//     dropped (no log, no call).
+			//   - MCP transport close: treated like a 1st SIGINT — enter
+			//     quiesce. The pump keeps running so a follow-up signal
+			//     can still escalate.
+			//
+			// Signals, MCP close, and the "already escalated" bookkeeping
+			// are all serialised through this single goroutine on purpose:
+			// the coordinator's strict-no-op policy in EscalateToCancel
+			// requires that the caller hold the BeginQuiesce→EscalateToCancel
+			// ordering, and BeginQuiesce only blocks the FIRST caller (it
+			// returns immediately on subsequent calls without waiting for
+			// the in-flight first call to emit PhaseQuiesce). Folding both
+			// triggers into one goroutine means any local BeginQuiesce
+			// always returns with PhaseQuiesce already emitted before we
+			// reach EscalateToCancel.
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			select {
-			case sig := <-sigCh:
-				fmt.Fprintf(logOut, "\nReceived %v, shutting down...\n", sig)
-			case <-mcpDone:
-				fmt.Fprintf(logOut, "\nMCP transport closed, shutting down...\n")
-			}
+			completeCh := coordinator.WaitComplete()
+			// mcpTrigger is the channel watched by the select. It is set
+			// to mcpDone while we still want to react, and nil'd out after
+			// firing so subsequent select iterations don't re-enter the
+			// case (reads from a nil channel block forever). When MCP is
+			// disabled mcpDone is never closed, so the case is inert.
+			mcpTrigger := mcpDone
+			go func() {
+				escalated := false
+				for {
+					select {
+					case sig := <-sigCh:
+						switch sig {
+						case syscall.SIGINT:
+							switch {
+							case !coordinator.InProgress():
+								fmt.Fprintln(logOut, "Received SIGINT; entering quiesce — runs will park at their next state transition. Send a second SIGINT or SIGTERM to escalate to cancel.")
+								coordinator.BeginQuiesce(context.Background())
+							case !escalated:
+								fmt.Fprintln(logOut, "Received second SIGINT; escalating to cancel.")
+								coordinator.EscalateToCancel()
+								escalated = true
+							}
+							// Else: 3rd+ SIGINT after cancel — drop.
+						case syscall.SIGTERM:
+							if escalated {
+								// Subsequent SIGTERM after cancel — drop.
+								break
+							}
+							fmt.Fprintln(logOut, "Received SIGTERM; cancelling in-flight runs.")
+							coordinator.BeginQuiesce(context.Background())
+							coordinator.EscalateToCancel()
+							escalated = true
+						}
+					case <-mcpTrigger:
+						mcpTrigger = nil
+						if !coordinator.InProgress() {
+							fmt.Fprintln(logOut, "MCP transport closed; entering quiesce.")
+							coordinator.BeginQuiesce(context.Background())
+						}
+					case <-completeCh:
+						return
+					}
+				}
+			}()
 
-			// Drive the shutdown sequence. Equivalent to a self-issued
-			// POST /shutdown: the subscribe-or-start contract means a
-			// concurrent human-initiated /shutdown (or a second signal)
-			// attaches to this same sequence rather than racing it. The
-			// per-run outcomes are broadcast via eventSink at PhaseComplete
-			// — there's nothing to consume here, so we just wait for the
-			// terminal channel to fire.
-			coordinator.BeginQuiesce(context.Background())
-			<-coordinator.WaitComplete()
+			// Main goroutine blocks on the coordinator's terminal channel.
+			// Per-run outcomes are broadcast via eventSink at PhaseComplete
+			// — there's nothing to consume here, just wait for completion.
+			<-completeCh
 
 			return nil
 		},

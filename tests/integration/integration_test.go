@@ -16,6 +16,7 @@ package integration_test
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -699,52 +700,269 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestServeSIGTERMGracefulShutdown drives the full shutdown coordinator path
-// against a real `ray serve` subprocess. It launches a synthetic workflow
-// whose first state sleeps longer than T1+T2 combined, signals the daemon
-// with SIGTERM, and asserts that:
-//
-//   - the daemon exits within a generous wall-clock bound with exit code 0;
-//   - the run's state file survives the shutdown in the serve pool
-//     (.raymond/serve-state/) and is parseable JSON with at least one agent
-//     recorded (i.e. resumable shape);
-//   - restarting `ray serve` against the same pool auto-recovers the run
-//     (no per-run resume call), and the marker-aware script then completes
-//     so the orchestrator deletes the state file.
-//
-// The marker-flip approach keeps the recovery side deterministic without
-// requiring a second workflow definition: the same `1_START.sh` short-
-// circuits to a <result> when it observes the marker, so the recovered
-// run completes in milliseconds even though the daemon-side execution
-// slept until kill.
-//
-// State lives strictly in the serve pool throughout: the daemon writes to
-// .raymond/serve-state/ and recovers from the same directory on restart.
-// The CLI pool (.raymond/state/) is never touched by this test, which is
-// the disjoint-pool invariant Phase 9 exists to spot-check.
-func TestServeSIGTERMGracefulShutdown(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("SIGTERM-driven shutdown semantics differ on Windows; POSIX-only test")
+// --------------------------------------------------------------------------
+// Shared helpers for the shutdown end-to-end tests below.
+// --------------------------------------------------------------------------
+
+// buildRayBinary compiles ./cmd/ray into a fresh temp dir and returns the
+// path. Each shutdown test calls this once so the subprocess they spawn
+// reflects the current working tree.
+func buildRayBinary(t *testing.T) string {
+	t.Helper()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	require.NoError(t, err)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "ray")
+	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/ray")
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "go build ./cmd/ray failed:\n%s", out)
+	return binPath
+}
+
+// pickFreePort binds 127.0.0.1:0, reads the assigned port, and closes the
+// socket. The window between Close() and the daemon's bind is a TOCTOU race
+// but small enough in practice to be fine for these tests.
+func pickFreePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+	return port
+}
+
+// serveProc is a running `ray serve` subprocess plus its captured streams.
+// Tests own its lifecycle: send the eventual stop signal and call waitForExit.
+// The t.Cleanup registered by startServeDaemon is a defensive SIGKILL for
+// tests that fail before reaching their reap step.
+type serveProc struct {
+	cmd        *exec.Cmd
+	stdout     *syncBuffer
+	stderr     *syncBuffer
+	baseURL    string
+	httpClient *http.Client
+	workflowID string
+	tempRoot   string
+}
+
+func (p *serveProc) diagnostics() string {
+	return fmt.Sprintf("\n-- daemon stdout --\n%s\n-- daemon stderr --\n%s",
+		p.stdout.String(), p.stderr.String())
+}
+
+// startServeDaemon launches `ray serve --root <workflowsDir> --port <free>`
+// with cwd = tempRoot (so the subprocess's FindRaymondDir resolves to
+// tempRoot/.raymond), waits for the HTTP endpoint to come up, and waits for
+// workflowID to appear in `/workflows`. Verifying discovery (not just port
+// readiness) catches the silent-fail case where tryIndexDir swallows a
+// manifest parse error.
+func startServeDaemon(t *testing.T, rayBin, tempRoot, workflowsDir, workflowID string) *serveProc {
+	t.Helper()
+	port := pickFreePort(t)
+	cmd := exec.Command(rayBin, "serve",
+		"--root", workflowsDir,
+		"--port", fmt.Sprintf("%d", port),
+	)
+	cmd.Dir = tempRoot
+	var stdout, stderr syncBuffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	// WaitDelay belts-and-braces in case a copier goroutine hangs on the
+	// pipe after the process exits — keeps Wait() bounded.
+	cmd.WaitDelay = 5 * time.Second
+	require.NoError(t, cmd.Start())
+
+	p := &serveProc{
+		cmd:        cmd,
+		stdout:     &stdout,
+		stderr:     &stderr,
+		baseURL:    fmt.Sprintf("http://127.0.0.1:%d", port),
+		httpClient: &http.Client{Timeout: 2 * time.Second},
+		workflowID: workflowID,
+		tempRoot:   tempRoot,
 	}
 
-	// ---- temp layout ----
-	tempRoot := t.TempDir()
-	workflowsDir := filepath.Join(tempRoot, "workflows")
-	wfDir := filepath.Join(workflowsDir, "test-shutdown")
-	raymondDir := filepath.Join(tempRoot, ".raymond")
-	// Serve runs land in the serve pool; the CLI pool (.raymond/state/)
-	// is intentionally never written to in this test.
-	serveStateDir := filepath.Join(raymondDir, "serve-state")
-	cliStateDir := filepath.Join(raymondDir, "state")
-	marker := filepath.Join(tempRoot, "marker.txt")
+	// Defensive cleanup: if the test fails before reaping the process, kill
+	// it so the subprocess doesn't outlive the test run.
+	t.Cleanup(func() {
+		if p.cmd.ProcessState == nil && p.cmd.Process != nil {
+			_ = p.cmd.Process.Signal(syscall.SIGKILL)
+			_, _ = p.cmd.Process.Wait()
+		}
+	})
 
-	require.NoError(t, os.MkdirAll(wfDir, 0o755))
-	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	deadline := time.Now().Add(10 * time.Second)
+	var lastBody []byte
+	want := []byte(fmt.Sprintf(`"id":%q`, workflowID))
+	for {
+		resp, err := p.httpClient.Get(p.baseURL + "/workflows")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			lastBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if bytes.Contains(lastBody, want) {
+				return p
+			}
+		} else if resp != nil {
+			resp.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon did not start listening or discover %q within 10s; last /workflows body: %s%s",
+				workflowID, lastBody, p.diagnostics())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
 
-	// Pin tiny tier timeouts so the drain path is exercised in a few
-	// seconds rather than the daemon defaults (hours). The [raymond]
-	// section is kept empty so the resume process picks up a clean
-	// config (no stale model/budget from the project's real config).
+// createRun POSTs /runs and returns the run id, failing the test on any
+// non-201 response. Workflows used by these tests all declare `input.mode:
+// none`, so the body carries only the workflow id.
+func (p *serveProc) createRun(t *testing.T) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"workflow_id": p.workflowID})
+	require.NoError(t, err)
+	resp, err := p.httpClient.Post(p.baseURL+"/runs", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode,
+		"POST /runs returned %d: %s%s", resp.StatusCode, respBody, p.diagnostics())
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &created))
+	require.NotEmpty(t, created.RunID, "POST /runs did not return a run_id")
+	return created.RunID
+}
+
+// waitForFile polls path until it exists or timeout elapses.
+func waitForFile(t *testing.T, path string, timeout time.Duration, diag func() string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("file %s never appeared within %s%s", path, timeout, diag())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitForExit blocks until the daemon process exits or timeout elapses; on
+// timeout the process is SIGKILLed and reaped so the test does not leak it.
+// Returns the elapsed wait time, exit code (negative on timeout), and a
+// timed-out flag.
+func (p *serveProc) waitForExit(t *testing.T, timeout time.Duration) (waited time.Duration, exitCode int, timedOut bool) {
+	t.Helper()
+	start := time.Now()
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- p.cmd.Wait() }()
+	select {
+	case waitErr := <-waitCh:
+		if waitErr != nil {
+			if _, ok := waitErr.(*exec.ExitError); !ok {
+				t.Fatalf("unexpected wait error: %v%s", waitErr, p.diagnostics())
+			}
+		}
+		return time.Since(start), p.cmd.ProcessState.ExitCode(), false
+	case <-time.After(timeout):
+		_ = p.cmd.Process.Signal(syscall.SIGKILL)
+		<-waitCh
+		return time.Since(start), -1, true
+	}
+}
+
+// shutdownEvent is a parsed SSE frame from GET /events. Only the fields these
+// tests consult are extracted; the marshalSSEEvent envelope's `type` key
+// distinguishes shutdown_requested from shutdown_complete, and Outcomes is
+// populated only on the latter.
+type shutdownEvent struct {
+	Type     string            `json:"type"`
+	Outcomes map[string]string `json:"outcomes"`
+}
+
+// subscribeShutdownEvents opens an SSE connection to GET /events and returns
+// a channel emitting decoded frames until the connection closes. Cancel
+// tears the stream down. The stream's transport carries no read deadline:
+// these tests need to observe events that arrive seconds apart, with the
+// final shutdown_complete frame arriving just before the daemon exits.
+func subscribeShutdownEvents(t *testing.T, baseURL string) (<-chan shutdownEvent, func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/events", nil)
+	require.NoError(t, err)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("GET /events: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		cancel()
+		t.Fatalf("GET /events status = %d (want 200)", resp.StatusCode)
+	}
+
+	out := make(chan shutdownEvent, 16)
+	go func() {
+		defer close(out)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := strings.TrimPrefix(line, "data: ")
+			var ev shutdownEvent
+			if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+				continue
+			}
+			select {
+			case out <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, func() {
+		cancel()
+		_ = resp.Body.Close()
+	}
+}
+
+// awaitShutdownEvent reads from ch until it observes a frame whose `type`
+// matches one of wantTypes and returns it. Fails the test if the stream
+// closes or timeout elapses first.
+func awaitShutdownEvent(t *testing.T, ch <-chan shutdownEvent, timeout time.Duration, diag func() string, wantTypes ...string) shutdownEvent {
+	t.Helper()
+	want := make(map[string]struct{}, len(wantTypes))
+	for _, w := range wantTypes {
+		want[w] = struct{}{}
+	}
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				t.Fatalf("event stream closed before observing %v%s", wantTypes, diag())
+			}
+			if _, hit := want[ev.Type]; hit {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("never received %v within %s%s", wantTypes, timeout, diag())
+		}
+	}
+}
+
+// writeShutdownConfig drops a minimal config.toml at raymondDir/config.toml.
+// Kept as a helper so each test reads the same pinned shape — empty
+// [raymond] and [raymond.serve] sections — without copying the literal.
+func writeShutdownConfig(t *testing.T, raymondDir string) {
+	t.Helper()
 	configToml := strings.Join([]string{
 		"[raymond]",
 		"",
@@ -752,23 +970,77 @@ func TestServeSIGTERMGracefulShutdown(t *testing.T) {
 		"",
 	}, "\n")
 	require.NoError(t, os.WriteFile(filepath.Join(raymondDir, "config.toml"), []byte(configToml), 0o644))
+}
 
-	// Minimal manifest — input.mode=none keeps POST /runs trivial.
+// writeShutdownManifest writes a workflow.yaml with `input.mode: none` so
+// POST /runs needs no body fields beyond workflow_id.
+func writeShutdownManifest(t *testing.T, wfDir, id, description string) {
+	t.Helper()
 	manifestYAML := strings.Join([]string{
-		"id: test-shutdown",
+		"id: " + id,
 		"name: Shutdown integration test",
-		"description: Sleeps in a loop until the daemon shuts down.",
+		"description: " + description,
 		"input:",
 		"  mode: none",
 		"",
 	}, "\n")
 	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "workflow.yaml"), []byte(manifestYAML), 0o644))
+}
+
+// --------------------------------------------------------------------------
+// ray serve graceful-shutdown end-to-end tests.
+//
+// Each test below spawns a real `ray serve` subprocess, drives it through one
+// path of the two-phase shutdown contract (see docs/graceful-shutdown.md),
+// and inspects the published outcomes (SSE /events stream) and on-disk
+// residue (state files, absence of the deleted sentinel file).
+// --------------------------------------------------------------------------
+
+// TestServeSIGTERMFastCancel drives the SIGTERM path of the two-phase
+// shutdown contract end-to-end. The daemon is signalled while a long-sleeping
+// shell step is in flight; the contract is "go straight to cancel, no
+// quiesce attempt, exit inside the patience window" (graceful-shutdown.md
+// §Signal mapping).
+//
+// Assertions:
+//
+//   - the daemon exits within 8 seconds of SIGTERM (5s patience + slack);
+//   - the SSE /events stream emits a shutdown_complete frame whose Outcomes
+//     map classifies the run as "cancelled";
+//   - the run's state file (in the serve pool) records the agent as still
+//     parked at the script state it was killed in — the cancel-path
+//     contract of "agent in STATE_X" rather than at a next-state boundary;
+//   - restarting `ray serve` against the same pool auto-recovers the run;
+//     the marker-aware script short-circuits to <result> and the
+//     orchestrator deletes the state file.
+//
+// The marker-flip approach keeps the recovery side deterministic without
+// requiring a second workflow definition: the same `1_START.sh` short-
+// circuits to a <result> when it observes the marker.
+func TestServeSIGTERMFastCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGTERM-driven shutdown semantics differ on Windows; POSIX-only test")
+	}
+
+	tempRoot := t.TempDir()
+	workflowsDir := filepath.Join(tempRoot, "workflows")
+	wfDir := filepath.Join(workflowsDir, "test-shutdown")
+	raymondDir := filepath.Join(tempRoot, ".raymond")
+	serveStateDir := filepath.Join(raymondDir, "serve-state")
+	cliStateDir := filepath.Join(raymondDir, "state")
+	marker := filepath.Join(tempRoot, "marker.txt")
+
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	writeShutdownConfig(t, raymondDir)
+	writeShutdownManifest(t, wfDir, "test-shutdown",
+		"Sleeps in a loop until the daemon shuts down.")
 
 	// The script touches the marker file *before* sleeping so the test
 	// can poll for the marker to know the run has reached in-progress.
-	// The marker also doubles as the resume short-circuit: on the second
-	// invocation (`ray --resume`) the marker exists, so the script
-	// produces a terminal <result> immediately without sleeping.
+	// The marker doubles as the resume short-circuit: on the second
+	// invocation the marker exists, so the script produces a terminal
+	// <result> immediately without sleeping.
 	script := fmt.Sprintf(`#!/bin/bash
 MARKER=%q
 if [ -f "$MARKER" ]; then
@@ -776,155 +1048,55 @@ if [ -f "$MARKER" ]; then
   exit 0
 fi
 touch "$MARKER"
-sleep 10
+sleep 60
 echo '<goto>1_START.sh</goto>'
 `, marker)
 	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.sh"), []byte(script), 0o755))
 
-	// ---- build the ray binary ----
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	require.NoError(t, err)
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "ray")
-	{
-		buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/ray")
-		buildCmd.Dir = repoRoot
-		out, err := buildCmd.CombinedOutput()
-		require.NoError(t, err, "go build ./cmd/ray failed:\n%s", out)
-	}
+	rayBin := buildRayBinary(t)
+	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "test-shutdown")
+	events, eventsCancel := subscribeShutdownEvents(t, p.baseURL)
+	defer eventsCancel()
 
-	// ---- pick a free port (bind :0, read back, close) ----
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := ln.Addr().(*net.TCPAddr).Port
-	require.NoError(t, ln.Close())
+	runID := p.createRun(t)
+	waitForFile(t, marker, 10*time.Second, p.diagnostics)
 
-	// ---- start ray serve ----
-	// No CommandContext: the test owns lifecycle explicitly via SIGTERM
-	// and a watchdog timer below. cmd.Dir = tempRoot so the subprocess's
-	// FindRaymondDir resolves to our temp .raymond (picks up our config
-	// and writes state into stateDir).
-	serveCmd := exec.Command(binPath,
-		"serve",
-		"--root", workflowsDir,
-		"--port", fmt.Sprintf("%d", port),
-	)
-	serveCmd.Dir = tempRoot
-	var serveOut, serveErr syncBuffer
-	serveCmd.Stdout = &serveOut
-	serveCmd.Stderr = &serveErr
-	// WaitDelay belts-and-braces in case a copier goroutine hangs on the
-	// pipe after the process itself exits (or after SIGKILL in a failure
-	// path) — keeps Wait() bounded.
-	serveCmd.WaitDelay = 5 * time.Second
-	require.NoError(t, serveCmd.Start())
+	// SIGTERM goes straight to cancel — no quiesce attempt. The contract
+	// (docs/graceful-shutdown.md §Cancel's patience window) is 5s patience
+	// for goroutines to honour ctx.Done(); 8s is the bead-spec upper bound
+	// on the daemon's wall-clock from signal to process exit (5s patience
+	// + generous slack).
+	signalSentAt := time.Now()
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
 
-	diagnostics := func() string {
-		return fmt.Sprintf("\n-- daemon stdout --\n%s\n-- daemon stderr --\n%s",
-			serveOut.String(), serveErr.String())
-	}
+	complete := awaitShutdownEvent(t, events, 8*time.Second, p.diagnostics, "shutdown_complete")
+	assert.Equal(t, "cancelled", complete.Outcomes[runID],
+		"SIGTERM should classify the in-flight run as cancelled, got %q%s",
+		complete.Outcomes[runID], p.diagnostics())
 
-	// Defensive cleanup: if the test fails before we reap the process,
-	// kill it so it doesn't outlive the test run.
-	t.Cleanup(func() {
-		if serveCmd.ProcessState == nil && serveCmd.Process != nil {
-			_ = serveCmd.Process.Signal(syscall.SIGKILL)
-			_, _ = serveCmd.Process.Wait()
-		}
-	})
+	// Release our SSE subscription before waiting for exit: the daemon's
+	// deferred srv.Shutdown blocks on active HTTP handlers, and the only
+	// one in flight is the /events stream this test owns. Closing it lets
+	// the daemon's exit path complete promptly so the 8s bead-spec bound
+	// is observable rather than dominated by srv.Shutdown's 5s grace.
+	eventsCancel()
 
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-	httpClient := &http.Client{Timeout: 2 * time.Second}
+	waited, exitCode, timedOut := p.waitForExit(t, 8*time.Second)
+	require.False(t, timedOut,
+		"daemon did not exit within 8s of SIGTERM (bead spec); exit took %s%s",
+		waited, p.diagnostics())
+	require.Equal(t, 0, exitCode,
+		"daemon exit code = %d (want 0); exit took %s%s", exitCode, waited, p.diagnostics())
+	assert.LessOrEqual(t, time.Since(signalSentAt), 8*time.Second,
+		"end-to-end daemon-exit wall-clock should fit the 8s bound%s", p.diagnostics())
 
-	// ---- wait for HTTP to be up and the workflow to be discoverable ----
-	// Verifying the workflow is in /workflows (not just that the endpoint
-	// answers) catches the silent-fail case where tryIndexDir swallows a
-	// manifest parse error; otherwise the symptom would surface as a
-	// confusing 404 from POST /runs.
-	readyDeadline := time.Now().Add(10 * time.Second)
-	var lastListBody []byte
-	for {
-		resp, err := httpClient.Get(baseURL + "/workflows")
-		if err == nil && resp.StatusCode == http.StatusOK {
-			lastListBody, _ = io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if bytes.Contains(lastListBody, []byte(`"id":"test-shutdown"`)) {
-				break
-			}
-		} else if resp != nil {
-			resp.Body.Close()
-		}
-		if time.Now().After(readyDeadline) {
-			t.Fatalf("daemon did not start listening or discover test-shutdown within 10s; last /workflows body: %s%s",
-				lastListBody, diagnostics())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// ---- POST /runs ----
-	createBody, err := json.Marshal(map[string]string{"workflow_id": "test-shutdown"})
-	require.NoError(t, err)
-	resp, err := httpClient.Post(baseURL+"/runs", "application/json", bytes.NewReader(createBody))
-	require.NoError(t, err)
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	require.Equal(t, http.StatusCreated, resp.StatusCode,
-		"POST /runs returned %d: %s%s", resp.StatusCode, body, diagnostics())
-
-	var created struct {
-		RunID string `json:"run_id"`
-	}
-	require.NoError(t, json.Unmarshal(body, &created))
-	require.NotEmpty(t, created.RunID, "POST /runs did not return a run_id")
-	runID := created.RunID
-
-	// ---- wait until the run is in progress (marker file written) ----
-	inProgressDeadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		if time.Now().After(inProgressDeadline) {
-			t.Fatalf("run %s never reached in-progress (marker %s missing)%s",
-				runID, marker, diagnostics())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// ---- SIGTERM the daemon and wait for exit ----
-	require.NoError(t, serveCmd.Process.Signal(syscall.SIGTERM))
-
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- serveCmd.Wait() }()
-
-	// Generous bound: T1(2) + T2(2) + force-kill patience(10) ≈ 14s,
-	// plus the deferred srv.Shutdown (5s) — 30s is comfortably above.
-	select {
-	case waitErr := <-waitCh:
-		// A clean exit returns nil from Wait; non-zero exit codes
-		// surface as *exec.ExitError. Either way, ProcessState carries
-		// the real exit code for assertion below.
-		if waitErr != nil {
-			if _, ok := waitErr.(*exec.ExitError); !ok {
-				t.Fatalf("unexpected wait error: %v%s", waitErr, diagnostics())
-			}
-		}
-	case <-time.After(30 * time.Second):
-		_ = serveCmd.Process.Signal(syscall.SIGKILL)
-		<-waitCh
-		t.Fatalf("daemon did not exit within 30s of SIGTERM%s", diagnostics())
-	}
-
-	require.NotNil(t, serveCmd.ProcessState)
-	require.Equal(t, 0, serveCmd.ProcessState.ExitCode(),
-		"daemon exit code = %d (want 0)%s",
-		serveCmd.ProcessState.ExitCode(), diagnostics())
-
-	// ---- (c) state file exists in resumable shape, in the SERVE pool ----
+	// State file survives in the serve pool, recording the cancel-path
+	// "agent in STATE_X" position (1_START.sh) rather than a next-state
+	// boundary that a quiesce would have produced.
 	statePath := filepath.Join(serveStateDir, runID+".json")
 	info, err := os.Stat(statePath)
 	require.NoError(t, err,
-		"state file %q must persist across graceful shutdown%s", statePath, diagnostics())
+		"state file %q must persist across cancel%s", statePath, p.diagnostics())
 	require.Greater(t, info.Size(), int64(0), "state file should be non-empty")
 
 	ws, err := wfstate.ReadState(runID, serveStateDir)
@@ -932,10 +1104,10 @@ echo '<goto>1_START.sh</goto>'
 	require.NotEmpty(t, ws.Agents,
 		"state file must record at least one agent so recovery has a transition target to pick up")
 	assert.Equal(t, "1_START.sh", ws.Agents[0].CurrentState,
-		"the agent should still be parked at the script state it was killed in")
+		"the agent should still be parked at the script state it was killed in (not a next-state boundary)")
 
-	// Disjoint-pool invariant: the CLI pool must remain untouched by a
-	// daemon-only flow. The directory may not even exist; either is fine.
+	// Disjoint-pool invariant: a daemon-only flow must not touch the CLI
+	// pool. The directory may not even exist; either is fine.
 	if entries, statErr := os.ReadDir(cliStateDir); statErr == nil {
 		assert.Empty(t, entries,
 			"CLI pool %s should not be touched by a daemon-only run", cliStateDir)
@@ -944,48 +1116,12 @@ echo '<goto>1_START.sh</goto>'
 			"unexpected error reading CLI pool: %v", statErr)
 	}
 
-	// ---- (d) restart `ray serve` without --clean: daemon auto-recovers ----
-	// In the disjoint-pool model the daemon owns the serve pool exclusively,
-	// so completion is driven by restarting the daemon rather than by a
-	// per-run `ray --resume`. The marker file the killed-mid-flight script
-	// left behind makes the relaunched script short-circuit to <result>.
-	port2, err := func() (int, error) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return 0, err
-		}
-		p := ln.Addr().(*net.TCPAddr).Port
-		return p, ln.Close()
-	}()
-	require.NoError(t, err)
+	// Auto-resume on next `ray serve` startup: the marker-aware script
+	// short-circuits to <result>, so the orchestrator deletes the state
+	// file. Completion is driven by restarting the daemon, not by a
+	// per-run resume call (disjoint-pool model).
+	p2 := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "test-shutdown")
 
-	serveCmd2 := exec.Command(binPath,
-		"serve",
-		"--root", workflowsDir,
-		"--port", fmt.Sprintf("%d", port2),
-	)
-	serveCmd2.Dir = tempRoot
-	var serveOut2, serveErr2 syncBuffer
-	serveCmd2.Stdout = &serveOut2
-	serveCmd2.Stderr = &serveErr2
-	serveCmd2.WaitDelay = 5 * time.Second
-	require.NoError(t, serveCmd2.Start())
-
-	diagnostics2 := func() string {
-		return fmt.Sprintf("\n-- daemon2 stdout --\n%s\n-- daemon2 stderr --\n%s",
-			serveOut2.String(), serveErr2.String())
-	}
-
-	t.Cleanup(func() {
-		if serveCmd2.ProcessState == nil && serveCmd2.Process != nil {
-			_ = serveCmd2.Process.Signal(syscall.SIGKILL)
-			_, _ = serveCmd2.Process.Wait()
-		}
-	})
-
-	// Poll for state-file deletion: the orchestrator removes the state file
-	// when the recovered run completes cleanly. The marker-aware script
-	// should reach <result> in milliseconds once the daemon re-launches it.
 	completionDeadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := os.Stat(statePath); os.IsNotExist(err) {
@@ -993,88 +1129,327 @@ echo '<goto>1_START.sh</goto>'
 		}
 		if time.Now().After(completionDeadline) {
 			t.Fatalf("recovered run did not complete within 30s; state file %s still present%s%s",
-				statePath, diagnostics(), diagnostics2())
+				statePath, p.diagnostics(), p2.diagnostics())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	// Tidy: shut the second daemon down. Failure here is informational —
-	// the recovery assertion above is the real point of the test.
-	_ = serveCmd2.Process.Signal(syscall.SIGTERM)
-	shutdownCh := make(chan error, 1)
-	go func() { shutdownCh <- serveCmd2.Wait() }()
-	select {
-	case <-shutdownCh:
-	case <-time.After(15 * time.Second):
-		_ = serveCmd2.Process.Signal(syscall.SIGKILL)
-		<-shutdownCh
+	// the auto-resume assertion above is the real point of this step.
+	_ = p2.cmd.Process.Signal(syscall.SIGTERM)
+	_, _, _ = p2.waitForExit(t, 15*time.Second)
+}
+
+// TestServeSIGINTQuiesce drives the 1st-SIGINT path: BeginQuiesce engages,
+// and the daemon stays alive until the in-flight run naturally reaches a
+// terminal state (the run's "next state transition" in the contract is the
+// terminal <result>; either form of natural draining counts as quiesced).
+//
+// The script writes a marker, sleeps a short, deterministic interval (long
+// enough for the test goroutine to send SIGINT while the shell is sleeping),
+// then emits <result>. Because EscalateToCancel is never engaged, the
+// coordinator classifies the run as quiesced.
+func TestServeSIGINTQuiesce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGINT-driven shutdown semantics differ on Windows; POSIX-only test")
+	}
+
+	tempRoot := t.TempDir()
+	workflowsDir := filepath.Join(tempRoot, "workflows")
+	wfDir := filepath.Join(workflowsDir, "test-quiesce")
+	raymondDir := filepath.Join(tempRoot, ".raymond")
+	marker := filepath.Join(tempRoot, "marker.txt")
+
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	writeShutdownConfig(t, raymondDir)
+	writeShutdownManifest(t, wfDir, "test-quiesce",
+		"Sleeps briefly then completes naturally; used to exercise quiesce.")
+
+	// Sleep 3s is long enough that the test reliably sees the script
+	// in-flight (so SIGINT lands while quiesce has work to do) but short
+	// enough that the test wall-clock stays well under any CI budget.
+	script := fmt.Sprintf(`#!/bin/bash
+touch %q
+sleep 3
+echo '<result>quiesced_ok</result>'
+`, marker)
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.sh"), []byte(script), 0o755))
+
+	rayBin := buildRayBinary(t)
+	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "test-quiesce")
+	events, eventsCancel := subscribeShutdownEvents(t, p.baseURL)
+	defer eventsCancel()
+
+	runID := p.createRun(t)
+	waitForFile(t, marker, 10*time.Second, p.diagnostics)
+
+	// Single SIGINT — the daemon enters quiesce and waits without any
+	// raymond-imposed timeout for the run to drain naturally.
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGINT))
+
+	// shutdown_requested fires synchronously inside BeginQuiesce, so it
+	// should land almost immediately. The wide bound is just slack for
+	// SSE flush.
+	awaitShutdownEvent(t, events, 5*time.Second, p.diagnostics, "shutdown_requested")
+
+	// The script sleeps ~3s past SIGINT. Allow generous slack for daemon
+	// teardown after the run drains.
+	complete := awaitShutdownEvent(t, events, 15*time.Second, p.diagnostics, "shutdown_complete")
+	assert.Equal(t, "quiesced", complete.Outcomes[runID],
+		"a single SIGINT followed by natural drain should classify the run as quiesced, got %q%s",
+		complete.Outcomes[runID], p.diagnostics())
+
+	// Release the SSE subscription so srv.Shutdown's 5s grace doesn't stall
+	// on our own connection; see TestServeSIGTERMFastCancel's comment.
+	eventsCancel()
+
+	waited, exitCode, timedOut := p.waitForExit(t, 10*time.Second)
+	require.False(t, timedOut, "daemon did not exit within 10s after natural drain%s", p.diagnostics())
+	require.Equal(t, 0, exitCode,
+		"daemon exit code = %d (want 0); exit took %s%s", exitCode, waited, p.diagnostics())
+}
+
+// TestServeSIGINTEscalation drives the 2nd-SIGINT path: a first SIGINT
+// engages quiesce, and a second SIGINT arriving while quiesce is still in
+// flight escalates to cancel. The test waits for the shutdown_requested
+// event (the contractual InProgress proxy) before sending the second
+// signal, then asserts the daemon exits inside the patience window with
+// the run classified cancelled.
+func TestServeSIGINTEscalation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGINT-driven shutdown semantics differ on Windows; POSIX-only test")
+	}
+
+	tempRoot := t.TempDir()
+	workflowsDir := filepath.Join(tempRoot, "workflows")
+	wfDir := filepath.Join(workflowsDir, "test-escalate")
+	raymondDir := filepath.Join(tempRoot, ".raymond")
+	marker := filepath.Join(tempRoot, "marker.txt")
+
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	writeShutdownConfig(t, raymondDir)
+	writeShutdownManifest(t, wfDir, "test-escalate",
+		"Long-sleeping workflow; only the second SIGINT brings it down.")
+
+	// 120s sleep — well past any expected test wall-clock so the only way
+	// the daemon exits is via the escalated cancel.
+	script := fmt.Sprintf(`#!/bin/bash
+touch %q
+sleep 120
+echo '<goto>1_START.sh</goto>'
+`, marker)
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.sh"), []byte(script), 0o755))
+
+	rayBin := buildRayBinary(t)
+	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "test-escalate")
+	events, eventsCancel := subscribeShutdownEvents(t, p.baseURL)
+	defer eventsCancel()
+
+	runID := p.createRun(t)
+	waitForFile(t, marker, 10*time.Second, p.diagnostics)
+
+	// 1st SIGINT — enter quiesce. The shutdown_requested event proves the
+	// coordinator has actually engaged before we escalate.
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGINT))
+	awaitShutdownEvent(t, events, 5*time.Second, p.diagnostics, "shutdown_requested")
+
+	// 2nd SIGINT — escalate to cancel. Track when we sent it so the
+	// cancel-side wall-clock assertion is anchored to the escalation
+	// moment, not the original quiesce start.
+	escalateAt := time.Now()
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGINT))
+
+	complete := awaitShutdownEvent(t, events, 8*time.Second, p.diagnostics, "shutdown_complete")
+	assert.Equal(t, "cancelled", complete.Outcomes[runID],
+		"a run that never drained between the two SIGINTs should be classified cancelled, got %q%s",
+		complete.Outcomes[runID], p.diagnostics())
+
+	// Release the SSE subscription before waiting for exit (see the
+	// TestServeSIGTERMFastCancel comment for why this matters): srv.Shutdown
+	// otherwise stalls on this very stream for its 5s grace period.
+	eventsCancel()
+
+	waited, exitCode, timedOut := p.waitForExit(t, 8*time.Second)
+	require.False(t, timedOut,
+		"daemon did not exit within 8s of second SIGINT (bead spec: patience window); exit took %s%s",
+		waited, p.diagnostics())
+	require.Equal(t, 0, exitCode,
+		"daemon exit code = %d (want 0); exit took %s%s", exitCode, waited, p.diagnostics())
+	assert.LessOrEqual(t, time.Since(escalateAt), 8*time.Second,
+		"end-to-end daemon-exit wall-clock after escalation should fit the 8s patience-window bound%s",
+		p.diagnostics())
+}
+
+// TestServeShutdownEnvAbsence is the subprocess-level regression guard for
+// the deleted T1 env-injection mechanism (RAYMOND_STOP_REQUESTED /
+// RAYMOND_STOP_SENTINEL). The script captures its env to a file before
+// sleeping; the test triggers shutdown while it is sleeping and asserts
+// neither variable appears in the captured environment.
+//
+// Distinct from the per-package env-absence test
+// (internal/executors/script_shutdown_env_test.go), which captures the
+// executor's env-build path without running a real subprocess.
+func TestServeShutdownEnvAbsence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess env capture uses /bin/sh idioms; POSIX-only test")
+	}
+
+	tempRoot := t.TempDir()
+	workflowsDir := filepath.Join(tempRoot, "workflows")
+	wfDir := filepath.Join(workflowsDir, "test-env-absence")
+	raymondDir := filepath.Join(tempRoot, ".raymond")
+	envFile := filepath.Join(tempRoot, "env.txt")
+	captured := filepath.Join(tempRoot, "captured.marker")
+
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	writeShutdownConfig(t, raymondDir)
+	writeShutdownManifest(t, wfDir, "test-env-absence",
+		"Captures its env and then sleeps until the daemon shuts down.")
+
+	// Dump env to the file *before* sleeping so the captured env reflects
+	// the live script's environment (rather than the env at exit, which
+	// nothing observes anyway). The `captured` marker is touched *after*
+	// `env` has finished writing — that's what the test waits for, so the
+	// race "shell opened envFile but env hasn't written yet" is impossible
+	// by construction. The trailing sleep keeps the script in-flight while
+	// the test signals shutdown.
+	script := fmt.Sprintf(`#!/bin/bash
+env > %q
+touch %q
+sleep 60
+echo '<goto>1_START.sh</goto>'
+`, envFile, captured)
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.sh"), []byte(script), 0o755))
+
+	rayBin := buildRayBinary(t)
+	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "test-env-absence")
+	events, eventsCancel := subscribeShutdownEvents(t, p.baseURL)
+	defer eventsCancel()
+
+	_ = p.createRun(t)
+	waitForFile(t, captured, 10*time.Second, p.diagnostics)
+
+	// Use SIGTERM so the test settles inside the patience window without
+	// needing two signals — env-absence is the same property regardless of
+	// which signal triggered the shutdown.
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
+	awaitShutdownEvent(t, events, 8*time.Second, p.diagnostics, "shutdown_complete")
+	eventsCancel()
+	_, _, timedOut := p.waitForExit(t, 8*time.Second)
+	require.False(t, timedOut, "daemon did not exit within 8s of SIGTERM%s", p.diagnostics())
+
+	envBytes, err := os.ReadFile(envFile)
+	require.NoError(t, err, "captured env file should exist")
+	envText := string(envBytes)
+	require.NotEmpty(t, envText,
+		"captured env file should be non-empty (otherwise the absence assertion is vacuous)")
+	for _, banned := range []string{"RAYMOND_STOP_REQUESTED", "RAYMOND_STOP_SENTINEL"} {
+		// Match the variable as it would appear at the start of an `env`
+		// line ("NAME=…"); avoid false positives if a value happens to
+		// contain the string.
+		marker := banned + "="
+		assert.False(t, strings.Contains(envText, marker),
+			"%s must never appear in a shell step's environment; captured env contained it",
+			banned)
 	}
 }
 
-// --------------------------------------------------------------------------
-// Shutdown rewrite — skip-gated placeholders.
-//
-// The bodies and skip-gates land together in bead-10 (integration-tests
-// bead) because the subprocess scaffolding is non-trivial enough that
-// duplicating it across multiple per-bead PRs adds drift risk. Until
-// then each test exists only to fix its name and intent in the test
-// registry, gated behind t.Skip so `go test` stays green.
-// --------------------------------------------------------------------------
-
-// TestServeSIGINTQuiesce: a single SIGINT to `ray serve` enters quiesce
-// indefinitely. Active runs are allowed to park at their next state
-// transition; the daemon does not impose a deadline. The test asserts the
-// process exits cleanly once all runs have parked or finished and that the
-// surviving state files are resumable on the next startup.
-func TestServeSIGINTQuiesce(t *testing.T) {
-	t.Skip("pending: bead-10 (integration tests)")
-	// TODO(bead-10): author the SIGINT-quiesce-no-timeout integration test
-	// body — single SIGINT, run drains naturally, exit code 0, state files
-	// resumable.
-}
-
-// TestServeSIGINTEscalation: a second SIGINT received while the first
-// quiesce is in flight short-circuits to the cancel path. The test asserts
-// that the second signal triggers the bounded patience window (no second
-// quiesce attempt) and that runs that did not park are classified
-// "cancelled" in the SSE outcome map.
-func TestServeSIGINTEscalation(t *testing.T) {
-	t.Skip("pending: bead-10 (integration tests)")
-	// TODO(bead-10): author the SIGINT-escalation integration test body —
-	// two SIGINTs, second one engages cancel within ~5s, state files for
-	// non-draining runs remain in-progress.
-}
-
-// TestServeSIGTERMFastCancel: SIGTERM at any time engages the cancel path
-// without first attempting an unbounded quiesce. The test asserts the
-// daemon exits within the bounded patience window and that any in-flight
-// run's state file reflects an in-progress (not "clean") status.
-func TestServeSIGTERMFastCancel(t *testing.T) {
-	t.Skip("pending: bead-10 (integration tests)")
-	// TODO(bead-10): author the SIGTERM-fast-cancel integration test body —
-	// single SIGTERM, no quiesce attempt, daemon exits within ~5s, run
-	// state file is in-progress and resumable.
-}
-
-// TestServeShutdownSentinelAbsence: across the full SIGINT/SIGTERM shutdown
-// sequence, .raymond/shutdown.sentinel is never created. Regression guard
-// for the deleted T1 sentinel-file mechanism.
+// TestServeShutdownSentinelAbsence is the on-disk regression guard for the
+// deleted T1 sentinel-file mechanism. Across a full shutdown sequence the
+// daemon must never write .raymond/shutdown.sentinel. The test polls
+// throughout the shutdown so a transient creation-and-delete would still
+// be caught.
 func TestServeShutdownSentinelAbsence(t *testing.T) {
-	t.Skip("pending: bead-10 (integration tests)")
-	// TODO(bead-10): author the sentinel-absence integration test body —
-	// drive a full shutdown sequence and assert .raymond/shutdown.sentinel
-	// is never written.
-}
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only test (matches the sibling shutdown tests)")
+	}
 
-// TestServeShutdownEnvAbsence: a shell step that runs concurrently with a
-// daemon shutdown never observes RAYMOND_STOP_REQUESTED or
-// RAYMOND_STOP_SENTINEL in its environment. Subprocess-level regression
-// guard for the deleted T1 env-injection mechanism. Distinct from the
-// per-package env-absence test, which captures the executor's env-build
-// path without running a real subprocess.
-func TestServeShutdownEnvAbsence(t *testing.T) {
-	t.Skip("pending: bead-10 (integration tests)")
-	// TODO(bead-10): author the env-absence integration test body — start a
-	// shell step under serve, trigger SIGINT/SIGTERM, and capture the
-	// step's env via a marker file to assert RAYMOND_STOP_* are absent.
+	tempRoot := t.TempDir()
+	workflowsDir := filepath.Join(tempRoot, "workflows")
+	wfDir := filepath.Join(workflowsDir, "test-sentinel")
+	raymondDir := filepath.Join(tempRoot, ".raymond")
+	sentinelPath := filepath.Join(raymondDir, "shutdown.sentinel")
+	marker := filepath.Join(tempRoot, "marker.txt")
+
+	require.NoError(t, os.MkdirAll(wfDir, 0o755))
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	writeShutdownConfig(t, raymondDir)
+	writeShutdownManifest(t, wfDir, "test-sentinel",
+		"Long-sleeping workflow; the test drives shutdown via SIGINT escalation.")
+
+	script := fmt.Sprintf(`#!/bin/bash
+touch %q
+sleep 60
+echo '<goto>1_START.sh</goto>'
+`, marker)
+	require.NoError(t, os.WriteFile(filepath.Join(wfDir, "1_START.sh"), []byte(script), 0o755))
+
+	rayBin := buildRayBinary(t)
+	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "test-sentinel")
+	events, eventsCancel := subscribeShutdownEvents(t, p.baseURL)
+	defer eventsCancel()
+
+	// Asserts the sentinel doesn't exist right now. Used at every polling
+	// step so a transient touch-and-remove would still trip the check.
+	assertNoSentinel := func() {
+		t.Helper()
+		if _, err := os.Stat(sentinelPath); !os.IsNotExist(err) {
+			t.Fatalf("shutdown sentinel %s must never exist (stat err = %v)%s",
+				sentinelPath, err, p.diagnostics())
+		}
+	}
+	assertNoSentinel()
+
+	_ = p.createRun(t)
+	waitForFile(t, marker, 10*time.Second, p.diagnostics)
+	assertNoSentinel()
+
+	// Poll the sentinel path in a background goroutine for the duration of
+	// the shutdown sequence — exits when stopPoll closes. Any creation
+	// during the test window flips sentinelSeen. The deferred close runs
+	// on every test exit path (including require.* failures via Goexit) so
+	// the poller never outlives the test goroutine.
+	stopPoll := make(chan struct{})
+	defer close(stopPoll)
+	var sentinelMu sync.Mutex
+	var sentinelSeen bool
+	go func() {
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := os.Stat(sentinelPath); err == nil {
+					sentinelMu.Lock()
+					sentinelSeen = true
+					sentinelMu.Unlock()
+				}
+			case <-stopPoll:
+				return
+			}
+		}
+	}()
+
+	// Drive a full SIGINT-escalation sequence so quiesce and cancel both
+	// run — if any path were going to write the sentinel, one of them is
+	// where it would happen.
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGINT))
+	awaitShutdownEvent(t, events, 5*time.Second, p.diagnostics, "shutdown_requested")
+	assertNoSentinel()
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGINT))
+	awaitShutdownEvent(t, events, 8*time.Second, p.diagnostics, "shutdown_complete")
+	eventsCancel()
+	_, _, timedOut := p.waitForExit(t, 8*time.Second)
+	require.False(t, timedOut, "daemon did not exit within 8s%s", p.diagnostics())
+
+	sentinelMu.Lock()
+	seen := sentinelSeen
+	sentinelMu.Unlock()
+	assert.False(t, seen,
+		"shutdown sentinel %s must never be written during the shutdown sequence%s",
+		sentinelPath, p.diagnostics())
+	assertNoSentinel()
 }

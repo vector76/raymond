@@ -207,6 +207,19 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			// Load the saved LaunchParams before config merging so that any
 			// restored values are treated identically to CLI-specified values.
 			if resume != "" {
+				// Cross-pool guard: if the id is absent from the CLI pool but
+				// present in the serve pool, fail fast with a daemon-pointing
+				// diagnostic. Without this, the operator would see only the
+				// generic "workflow not found" produced by cmdResume — and
+				// have no hint that the run actually exists, just under the
+				// daemon's pool. The check is os.Stat-only on both pools so
+				// it costs nothing on the common "present in CLI pool" path.
+				// On a miss in BOTH pools we return nil and let cmdResume
+				// surface its generic not-found error, so an operator probing
+				// for an id can never learn pool layout from the response.
+				if err := checkCrossPoolResume(resume, stateDir, serveStateDir); err != nil {
+					return err
+				}
 				if ws, err := wfstate.ReadStateIn(resume, wfstate.PoolCLI, stateDir); err == nil && ws.LaunchParams != nil {
 					lp := ws.LaunchParams
 					if !cmd.Flags().Changed("dangerously-skip-permissions") {
@@ -733,6 +746,30 @@ func parseScopeAndState(arg string) (scopeDir, initialState string, err error) {
 
 	// Regular state file.
 	return filepath.Dir(absArg), filepath.Base(absArg), nil
+}
+
+// checkCrossPoolResume returns the documented cross-pool error when the
+// requested resume id is absent from the CLI pool but present in the serve
+// pool. It returns nil otherwise — including the case "missing in both
+// pools", which the caller's existing generic not-found path continues to
+// surface so an operator probing for an id cannot learn pool layout from
+// the response.
+//
+// The check is os.Stat-only against the resolved pool directories; we do
+// not parse either state file. This keeps the guard free on the common
+// "id is in the CLI pool" path. cliOverride and serveOverride mirror the
+// `--state-dir` / `--serve-state-dir` test-injection flags; in production
+// both are empty and ResolvePoolDir picks the project-default locations.
+func checkCrossPoolResume(id, cliOverride, serveOverride string) error {
+	cliPath := filepath.Join(wfstate.ResolvePoolDir(wfstate.PoolCLI, cliOverride), id+".json")
+	if _, err := os.Stat(cliPath); err == nil {
+		return nil
+	}
+	servePath := filepath.Join(wfstate.ResolvePoolDir(wfstate.PoolServe, serveOverride), id+".json")
+	if _, err := os.Stat(servePath); err == nil {
+		return fmt.Errorf("run `%s` is managed by `ray serve`; resume it via the daemon.", id)
+	}
+	return nil
 }
 
 // truncate returns s capped at maxLen characters with "..." appended if cut.

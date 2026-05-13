@@ -392,10 +392,57 @@ func TestStatusCLITakesPrecedenceOverServe(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestResumeNotFound(t *testing.T) {
-	stateDir := makeStateDir(t)
-	_, _, err := run(t, "--resume", "nonexistent-id", "--state-dir", stateDir)
+	// Pass both --state-dir and --serve-state-dir so the cross-pool guard's
+	// serve-pool probe lands in a known-empty temp directory rather than
+	// the project's real .raymond/serve-state/. Without --serve-state-dir,
+	// the helper falls back to a cwd-resolved location and the test
+	// becomes env-dependent. The exhaustive cross-pool semantics are
+	// covered separately by TestResumeCrossPoolMismatch and
+	// TestResumeNotFoundInBothPools below.
+	cliDir, serveDir := makeBothPoolDirs(t)
+	_, _, err := run(t, "--resume", "nonexistent-id",
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+// Cross-pool resume prohibition (Phase 4): an id present only in the serve
+// pool must fail with the daemon-pointing diagnostic, not be silently
+// resumed. This is the CLI-side enforcement of the disjoint-pool rule.
+// docs/serve-run-pool.md pins the exact message text.
+func TestResumeCrossPoolMismatch(t *testing.T) {
+	cliDir, serveDir := makeBothPoolDirs(t)
+
+	const id = "wf-serve-only"
+	writeServePoolWorkflow(t, id, "workflows/from-serve", "START.md", serveDir)
+
+	_, _, err := run(t, "--resume", id,
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.Error(t, err)
+	// Exact message per docs/serve-run-pool.md.
+	assert.Contains(t, err.Error(),
+		"run `"+id+"` is managed by `ray serve`; resume it via the daemon.")
+	// Generic not-found wording from cmdResume must NOT appear — the
+	// cross-pool path is a distinct, more informative failure mode.
+	assert.NotContains(t, err.Error(), "workflow \""+id+"\" not found")
+}
+
+// Generic-not-found preserved (Phase 4 regression guard): when the id is
+// absent from BOTH pools, the user-visible error stays the pre-existing
+// generic message. An operator probing for an id must not learn pool
+// layout from the response.
+func TestResumeNotFoundInBothPools(t *testing.T) {
+	cliDir, serveDir := makeBothPoolDirs(t)
+
+	_, _, err := run(t, "--resume", "wf-nowhere",
+		"--state-dir", cliDir, "--serve-state-dir", serveDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	// No leak of pool layout, daemon-routing hint, or sibling-directory
+	// names through the error surface.
+	assert.NotContains(t, err.Error(), "ray serve")
+	assert.NotContains(t, err.Error(), "serve-state")
+	assert.NotContains(t, err.Error(), "serve pool")
 }
 
 func TestResumeExisting(t *testing.T) {

@@ -288,7 +288,7 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 			// compile-time assertion in shutdowncoordinator.go.
 			t1 := merged.ShutdownTier1Timeout
 			t2 := merged.ShutdownTier2Timeout
-			coordinator := daemon.NewShutdownCoordinator(rm, shutdownSignal, eventSink)
+			coordinator := daemon.NewShutdownCoordinator(rm, eventSink)
 			if srv != nil {
 				// Install the coordinator and signal on the server *before*
 				// ListenAndServe so an early POST /shutdown or POST /runs
@@ -350,13 +350,15 @@ workflow-author opt-in pattern, and resume guarantees per tier.`,
 				fmt.Fprintf(logOut, "\nMCP transport closed, shutting down...\n")
 			}
 
-			// Drive the tier sequence. Equivalent to a self-issued
+			// Drive the shutdown sequence. Equivalent to a self-issued
 			// POST /shutdown: the subscribe-or-start contract means a
 			// concurrent human-initiated /shutdown (or a second signal)
 			// attaches to this same sequence rather than racing it. The
-			// result is broadcast via eventSink during Run — discarding
-			// it here is intentional.
-			_ = coordinator.Run(context.Background(), t1, t2)
+			// per-run outcomes are broadcast via eventSink at PhaseComplete
+			// — there's nothing to consume here, so we just wait for the
+			// terminal channel to fire.
+			coordinator.BeginQuiesce(context.Background())
+			<-coordinator.WaitComplete()
 
 			return nil
 		},

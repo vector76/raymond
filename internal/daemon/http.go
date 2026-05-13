@@ -187,7 +187,20 @@ type Server struct {
 // directly) so tests can inject a fake that records timeout arguments and
 // counts sequence starts.
 type shutdownDriver interface {
-	Run(ctx context.Context, t1, t2 time.Duration) ShutdownResult
+	// BeginQuiesce starts (or attaches to) the in-flight shutdown sequence.
+	// Idempotent; the first caller drives, subsequent callers are no-ops.
+	BeginQuiesce(ctx context.Context)
+	// EscalateToCancel escalates an in-flight sequence to cancellation.
+	// Strict no-op if BeginQuiesce has not yet been called.
+	EscalateToCancel()
+	// InProgress reports whether a sequence has been started.
+	InProgress() bool
+	// WaitComplete returns a channel that closes at PhaseComplete.
+	WaitComplete() <-chan struct{}
+	// Result returns the per-run outcome map; valid only after
+	// WaitComplete fires.
+	Result() ShutdownResult
+	// Progress streams TierPhase transitions; see ShutdownCoordinator.Progress.
 	Progress() <-chan TierPhase
 }
 
@@ -411,32 +424,34 @@ func (s *Server) handleGlobalEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleShutdown serves POST /shutdown. It drives the shutdown coordinator
-// and streams a line-per-phase progress report to the client, followed by a
-// per-run outcome summary once the sequence completes.
+// handleShutdown serves POST /shutdown. It calls BeginQuiesce on the
+// shutdown coordinator and streams a line-per-phase progress report to the
+// client, followed by a per-run outcome summary once the sequence completes.
 //
-// Per-tier timeout precedence (highest first):
+// The ?t1= / ?t2= query parameters are still parsed for backward-compat
+// against any caller that supplied them, but their values are discarded:
+// the two-phase coordinator has no per-call timeouts. The HTTP-handler bead
+// removes the parse+discard scaffolding entirely.
 //
-//	query (?t1=, ?t2= as a non-negative number of seconds; fractional ok)
-//	> config (the defaults installed via SetShutdownCoordinator, which the
-//	  serve command resolves from .raymond/config.toml)
-//	> built-in default (zero — relies on the coordinator's own defaults if
-//	  no setter was called; in practice serve always installs values)
-//
-// The coordinator runs under a background context so the operator
+// BeginQuiesce is invoked with a background context so the operator
 // disconnecting mid-stream — for example because `docker stop` did not stay
 // attached — does NOT cancel the sequence. Only the streaming loop stops on
 // disconnect.
 //
-// Concurrent invocations are safe: ShutdownCoordinator.Run is subscribe-or-
-// start (see bead-10), so two simultaneous POSTs both attach to the same
-// in-flight sequence and both observe the same phase stream and outcomes.
+// Concurrent invocations are safe: BeginQuiesce is idempotent (subscribe-
+// or-start), so two simultaneous POSTs both attach to the same in-flight
+// sequence and both observe the same phase stream and outcomes.
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if s.shutdownDriver == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "shutdown coordinator not configured"})
 		return
 	}
 
+	// bead-2: query params are still parsed so the existing 4xx-on-bad-input
+	// query-param tests keep compiling, but the parsed values are discarded —
+	// the two-phase model has no per-call timeouts to feed them into. The
+	// parse+discard scaffolding (and these tests) are removed in the
+	// HTTP-handler bead.
 	t1, err := parseShutdownTimeoutQuery(r.URL.Query().Get("t1"), s.defaultShutdownT1)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid t1: " + err.Error()})
@@ -447,6 +462,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid t2: " + err.Error()})
 		return
 	}
+	_, _ = t1, t2
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -460,10 +476,10 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Subscribe to phases *before* starting the sequence so the producer
-	// (Run, below) fans the first phase into our buffer even if the
-	// goroutine wins the scheduler race. Progress() also replays any phases
-	// already emitted by a concurrent in-flight sequence, so a second
-	// caller arriving mid-shutdown still sees the full sequence.
+	// fans the first phase into our buffer even if the driver goroutine
+	// wins the scheduler race. Progress() also replays any phases already
+	// emitted by a concurrent in-flight sequence, so a second caller
+	// arriving mid-shutdown still sees the full sequence.
 	progress := s.shutdownDriver.Progress()
 
 	// Use a background context so an HTTP-level disconnect (operator closes
@@ -472,10 +488,10 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	// coordinator running to completion regardless.
 	bgCtx := context.Background()
 
-	resultCh := make(chan ShutdownResult, 1)
-	go func() {
-		resultCh <- s.shutdownDriver.Run(bgCtx, t1, t2)
-	}()
+	// Subscribe-or-start: BeginQuiesce is idempotent; concurrent POSTs both
+	// land here, both attach to the same in-flight sequence, both observe
+	// the full Progress() replay and the same Result().
+	s.shutdownDriver.BeginQuiesce(bgCtx)
 
 streamLoop:
 	for {
@@ -487,16 +503,16 @@ streamLoop:
 			fmt.Fprintln(w, string(phase))
 			flusher.Flush()
 		case <-r.Context().Done():
-			// Client hung up. The Run goroutine keeps the coordinator
-			// going on bgCtx — but there's no one to write to anymore,
-			// so we return immediately rather than blocking up to
-			// T1+T2+kill-patience on resultCh. The goroutine drains
-			// into resultCh's size-1 buffer and is collected on its own.
+			// Client hung up. The coordinator continues independently
+			// of this HTTP request; there's no one to write to anymore,
+			// so we return immediately rather than blocking on the
+			// terminal phase.
 			return
 		}
 	}
 
-	result := <-resultCh
+	// Progress() closed → PhaseComplete fired → Result() is published.
+	result := s.shutdownDriver.Result()
 
 	// Per-run outcome summary, ordered by run ID so the trailer is
 	// deterministic across runs (Go map iteration is randomised).

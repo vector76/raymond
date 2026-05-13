@@ -2532,18 +2532,19 @@ func TestMarshalSSEEvent_ShutdownComplete(t *testing.T) {
 	assert.Equal(t, "killed", outcomes["run-3"])
 }
 
-// fakeShutdownDriver is the test double for ShutdownCoordinator that records
-// every Run invocation's timeout arguments and lets the test drive the phase
-// stream by hand. It mirrors the production coordinator's subscribe-or-start
-// contract: the first Run call counts as the sequence start (started=1); any
-// later concurrent calls block on done and return the same recorded result.
+// fakeShutdownDriver is the test double for ShutdownCoordinator. It mirrors
+// the production coordinator's subscribe-or-start contract: the first
+// BeginQuiesce call counts as the sequence start (started=1); subsequent
+// calls are no-ops. Phase emission and the terminal Finish() transition are
+// driven explicitly by tests.
 type fakeShutdownDriver struct {
 	mu sync.Mutex
 
-	calls   []shutdownDriverCall
-	started int32 // number of Run calls that actually started the sequence
+	started       int32 // number of BeginQuiesce calls that actually started the sequence
+	cancelEngaged bool
+	cancelCalls   int
 
-	// done closes when the test calls Finish(); Run unblocks then.
+	// done closes when the test calls Finish(); WaitComplete returns this.
 	done   chan struct{}
 	result ShutdownResult
 
@@ -2554,29 +2555,43 @@ type fakeShutdownDriver struct {
 	phasesClosed bool
 }
 
-type shutdownDriverCall struct {
-	t1, t2 time.Duration
-}
-
 func newFakeShutdownDriver() *fakeShutdownDriver {
 	return &fakeShutdownDriver{done: make(chan struct{})}
 }
 
-func (f *fakeShutdownDriver) Run(_ context.Context, t1, t2 time.Duration) ShutdownResult {
+func (f *fakeShutdownDriver) BeginQuiesce(_ context.Context) {
 	f.mu.Lock()
-	f.calls = append(f.calls, shutdownDriverCall{t1: t1, t2: t2})
+	defer f.mu.Unlock()
 	if f.started == 0 {
-		// Subscribe-or-start: only the first caller counts as starting
-		// the sequence; subsequent calls block on done and return the
-		// same result.
 		f.started = 1
 	}
-	f.mu.Unlock()
-	<-f.done
+}
+
+func (f *fakeShutdownDriver) EscalateToCancel() {
 	f.mu.Lock()
-	r := f.result
-	f.mu.Unlock()
-	return r
+	defer f.mu.Unlock()
+	// Strict no-op if not started or already engaged.
+	if f.started == 0 || f.cancelEngaged {
+		return
+	}
+	f.cancelEngaged = true
+	f.cancelCalls++
+}
+
+func (f *fakeShutdownDriver) InProgress() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.started > 0
+}
+
+func (f *fakeShutdownDriver) WaitComplete() <-chan struct{} {
+	return f.done
+}
+
+func (f *fakeShutdownDriver) Result() ShutdownResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.result
 }
 
 func (f *fakeShutdownDriver) Progress() <-chan TierPhase {
@@ -2607,8 +2622,8 @@ func (f *fakeShutdownDriver) EmitPhase(p TierPhase) {
 	}
 }
 
-// Finish completes the in-flight sequence: every blocked Run returns result
-// and every Progress subscriber's channel closes. Idempotent.
+// Finish completes the in-flight sequence: WaitComplete unblocks and every
+// Progress subscriber's channel closes. Idempotent.
 func (f *fakeShutdownDriver) Finish(result ShutdownResult) {
 	f.mu.Lock()
 	if f.phasesClosed {
@@ -2624,12 +2639,6 @@ func (f *fakeShutdownDriver) Finish(result ShutdownResult) {
 	for _, s := range subs {
 		close(s)
 	}
-}
-
-func (f *fakeShutdownDriver) CallArgs() []shutdownDriverCall {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]shutdownDriverCall(nil), f.calls...)
 }
 
 func (f *fakeShutdownDriver) Started() int32 {
@@ -2665,14 +2674,13 @@ func readShutdownStream(t *testing.T, body io.Reader) []string {
 
 // TestHandleShutdown_HappyPath drives a full POST /shutdown through a real
 // *ShutdownCoordinator backed by an empty fake fleet. With no active runs
-// the coordinator emits Tier1Wait then Complete; the handler streams both
-// markers and there are no per-run summary lines.
+// the coordinator emits PhaseQuiesce then PhaseComplete; the handler streams
+// both markers and there are no per-run summary lines.
 func TestHandleShutdown_HappyPath(t *testing.T) {
 	srv, ts, _ := newTestServer(t)
 
 	fleet := newFakeFleet()
-	sig := makeTempSignal(t)
-	coord := NewShutdownCoordinator(fleet, sig, nil)
+	coord := NewShutdownCoordinator(fleet, nil)
 	srv.SetShutdownCoordinator(coord, 30*time.Millisecond, 30*time.Millisecond)
 
 	resp, err := http.Post(ts.URL+"/shutdown", "", nil)
@@ -2683,25 +2691,25 @@ func TestHandleShutdown_HappyPath(t *testing.T) {
 
 	lines := readShutdownStream(t, resp.Body)
 	require.GreaterOrEqual(t, len(lines), 2)
-	assert.Equal(t, string(PhaseTier1Wait), lines[0])
+	assert.Equal(t, string(PhaseQuiesce), lines[0])
 	assert.Equal(t, string(PhaseComplete), lines[1])
 	// No active runs → no per-run summary lines after PhaseComplete.
 	assert.Len(t, lines, 2, "no active runs should yield no summary lines")
 }
 
 // TestHandleShutdown_HappyPath_RunOutcomeSummary covers the summary trailer
-// for an active run: it drains during Tier 1, so the trailer reads
-// `<id>: clean`.
+// for an active run: it drains during quiesce (before any cancel), so the
+// trailer reads `<id>: quiesced`.
 func TestHandleShutdown_HappyPath_RunOutcomeSummary(t *testing.T) {
 	srv, ts, _ := newTestServer(t)
 
 	fleet := newFakeFleet()
 	fleet.addRun("alpha", false, false)
-	sig := makeTempSignal(t)
-	coord := NewShutdownCoordinator(fleet, sig, nil)
+	coord := NewShutdownCoordinator(fleet, nil)
 	srv.SetShutdownCoordinator(coord, 200*time.Millisecond, 200*time.Millisecond)
 
-	// Drain shortly after the handler starts the sequence, well within T1.
+	// Drain shortly after the handler starts the sequence; this happens
+	// during the quiesce phase since the handler never escalates to cancel.
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		fleet.drain("alpha")
@@ -2713,10 +2721,10 @@ func TestHandleShutdown_HappyPath_RunOutcomeSummary(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	lines := readShutdownStream(t, resp.Body)
-	require.Len(t, lines, 3, "expected tier_1_wait, complete, and one summary line; got %v", lines)
-	assert.Equal(t, string(PhaseTier1Wait), lines[0])
+	require.Len(t, lines, 3, "expected quiesce, complete, and one summary line; got %v", lines)
+	assert.Equal(t, string(PhaseQuiesce), lines[0])
 	assert.Equal(t, string(PhaseComplete), lines[1])
-	assert.Equal(t, "alpha: clean", lines[2])
+	assert.Equal(t, "alpha: quiesced", lines[2])
 }
 
 // (bead-1) The ?t1= / ?t2= precedence-ladder subtests and the
@@ -2742,9 +2750,8 @@ func TestSetShutdownCoordinator_NilStaysNil(t *testing.T) {
 }
 
 // TestHandleShutdown_ConcurrentCallersShareSequence: two concurrent POSTs
-// both observe the full tier sequence ending in Complete, and the
-// underlying driver started exactly one sequence (subscribe-or-start, per
-// bead-10).
+// both observe the full phase sequence ending in PhaseComplete, and the
+// underlying driver started exactly one sequence (subscribe-or-start).
 func TestHandleShutdown_ConcurrentCallersShareSequence(t *testing.T) {
 	srv, ts, _ := newTestServer(t)
 
@@ -2755,8 +2762,8 @@ func TestHandleShutdown_ConcurrentCallersShareSequence(t *testing.T) {
 	// subscribe to Progress() before phases are emitted.
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		fake.EmitPhase(PhaseTier1Wait)
-		fake.EmitPhase(PhaseTier2Quiesce)
+		fake.EmitPhase(PhaseQuiesce)
+		fake.EmitPhase(PhaseCancel)
 		fake.EmitPhase(PhaseComplete)
 		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{
 			"a": OutcomeQuiesced,
@@ -2786,16 +2793,16 @@ func TestHandleShutdown_ConcurrentCallersShareSequence(t *testing.T) {
 	assert.Equal(t, http.StatusOK, got2.status)
 	for _, g := range []result{got1, got2} {
 		require.GreaterOrEqual(t, len(g.lines), 3)
-		assert.Equal(t, string(PhaseTier1Wait), g.lines[0])
-		assert.Equal(t, string(PhaseTier2Quiesce), g.lines[1])
+		assert.Equal(t, string(PhaseQuiesce), g.lines[0])
+		assert.Equal(t, string(PhaseCancel), g.lines[1])
 		assert.Equal(t, string(PhaseComplete), g.lines[2])
 		assert.Contains(t, g.lines, "a: quiesced")
 	}
 
-	// Subscribe-or-start: the driver counts the first Run as starting the
-	// sequence; the second Run attaches without re-starting.
+	// Subscribe-or-start: the driver counts the first BeginQuiesce as
+	// starting the sequence; the second attaches without re-starting.
 	assert.Equal(t, int32(1), fake.Started(),
-		"the underlying tier sequence must execute exactly once")
+		"the underlying phase sequence must execute exactly once")
 }
 
 // TestHandleShutdown_ClientDisconnectDoesNotCancel: closing the connection
@@ -2812,7 +2819,7 @@ func TestHandleShutdown_ClientDisconnectDoesNotCancel(t *testing.T) {
 	// the first marker and the rest of the sequence.
 	phaseOneEmitted := make(chan struct{})
 	go func() {
-		fake.EmitPhase(PhaseTier1Wait)
+		fake.EmitPhase(PhaseQuiesce)
 		close(phaseOneEmitted)
 	}()
 
@@ -2829,7 +2836,7 @@ func TestHandleShutdown_ClientDisconnectDoesNotCancel(t *testing.T) {
 	reader := bufio.NewReader(resp.Body)
 	line, err := reader.ReadString('\n')
 	require.NoError(t, err)
-	assert.Equal(t, string(PhaseTier1Wait)+"\n", line)
+	assert.Equal(t, string(PhaseQuiesce)+"\n", line)
 	<-phaseOneEmitted
 
 	// Hang up. The coordinator must run to completion regardless.
@@ -2843,7 +2850,7 @@ func TestHandleShutdown_ClientDisconnectDoesNotCancel(t *testing.T) {
 		// Brief settle so the handler goroutine has time to be the lone
 		// blocker on fake.done.
 		time.Sleep(10 * time.Millisecond)
-		fake.EmitPhase(PhaseTier2Quiesce)
+		fake.EmitPhase(PhaseCancel)
 		fake.EmitPhase(PhaseComplete)
 		fake.Finish(ShutdownResult{Outcomes: map[string]RunOutcome{
 			"survivor": OutcomeQuiesced,

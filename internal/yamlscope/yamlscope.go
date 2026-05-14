@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/vector76/raymond/internal/backendcfg"
 	"gopkg.in/yaml.v3"
 )
 
@@ -453,6 +454,35 @@ func ExtractScript(yamlPath, filename string) (string, error) {
 		return "", fmt.Errorf("failed to close temp script file: %w", err)
 	}
 	return tmp.Name(), nil
+}
+
+// GetBackend reads the top-level backend: key from a YAML scope file and
+// returns it as a backendcfg.BackendSpec. The key shares the same semantics as
+// the backend: field in a workflow.yaml manifest — bare string or structured
+// form are both accepted. When the key is absent, a zero-value BackendSpec is
+// returned (Name == ""), which callers interpret as "use the Claude default".
+// Returns a non-nil error only if the YAML file cannot be read or parsed, or
+// if the backend name is not a recognised value.
+func GetBackend(yamlPath string) (backendcfg.BackendSpec, error) {
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return backendcfg.BackendSpec{}, &YamlParseError{msg: fmt.Sprintf("failed to read yaml file: %s: %v", yamlPath, err)}
+	}
+
+	var raw struct {
+		Backend backendcfg.BackendSpec `yaml:"backend"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return backendcfg.BackendSpec{}, &YamlParseError{msg: fmt.Sprintf("invalid YAML syntax in %s: %v", yamlPath, err)}
+	}
+
+	if raw.Backend.Name != "" && raw.Backend.Name != "pi" {
+		return backendcfg.BackendSpec{}, &YamlValidationError{
+			msg: fmt.Sprintf("backend.name must be one of (\"\", \"pi\"); got %q in %s", raw.Backend.Name, yamlPath),
+		}
+	}
+
+	return raw.Backend, nil
 }
 
 // GetStateTimeout returns the per-state timeout for a named state in the YAML

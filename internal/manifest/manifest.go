@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/vector76/raymond/internal/backendcfg"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,14 +23,15 @@ const manifestFileName = "workflow.yaml"
 
 // Manifest holds the parsed contents of a workflow manifest file.
 type Manifest struct {
-	ID                 string            `yaml:"id"`
-	Name               string            `yaml:"name"`
-	Description        string            `yaml:"description"`
-	Input              InputSpec         `yaml:"input"`
-	DefaultBudget      float64           `yaml:"default_budget"`
-	WorkingDirectory   string            `yaml:"working_directory"`
-	Environment        map[string]string `yaml:"environment"`
-	RequiresHumanInput string            `yaml:"requires_human_input"`
+	ID                 string                 `yaml:"id"`
+	Name               string                 `yaml:"name"`
+	Description        string                 `yaml:"description"`
+	Input              InputSpec              `yaml:"input"`
+	DefaultBudget      float64                `yaml:"default_budget"`
+	WorkingDirectory   string                 `yaml:"working_directory"`
+	Environment        map[string]string      `yaml:"environment"`
+	RequiresHumanInput string                 `yaml:"requires_human_input"`
+	Backend            backendcfg.BackendSpec `yaml:"backend"`
 }
 
 // InputSpec describes the workflow's single optional entry-state input string
@@ -123,6 +125,11 @@ func ParseManifestData(data []byte) (*Manifest, error) {
 	// Validate input.mode.
 	if !validInputMode[m.Input.Mode] {
 		return nil, fmt.Errorf("manifest validation: input.mode must be one of required, optional, none; got %q", m.Input.Mode)
+	}
+
+	// Validate backend name (empty = default Claude; "pi" = pi backend).
+	if m.Backend.Name != "" && m.Backend.Name != "pi" {
+		return nil, fmt.Errorf("manifest validation: backend.name must be one of (\"\", \"pi\"); got %q", m.Backend.Name)
 	}
 
 	return m, nil

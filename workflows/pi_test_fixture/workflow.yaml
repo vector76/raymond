@@ -1,0 +1,9 @@
+id: pi-test-fixture
+name: Pi Backend Test Fixture
+description: >
+  A minimal workflow that declares backend: pi but uses script states only.
+  Script states do not invoke the LLM backend, so this fixture can run with a
+  stub pi binary (preflight passes but no model calls occur). Use it to verify
+  that the backend declaration is parsed, the preflight check fires, and the
+  backend is wired into the executor context end-to-end.
+backend: pi

@@ -5,6 +5,8 @@ package orchestrator
 // the executor factory and subscribe to the bus before agents run.
 
 import (
+	"context"
+
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/executors"
 )
@@ -13,6 +15,7 @@ import (
 var (
 	origExecutorFactory = executorFactory
 	origBusHook         = busHook
+	origPiPreflightFn   = piPreflightFn
 )
 
 // SetExecutorFactory replaces the executor factory used by RunAllAgents.
@@ -36,4 +39,15 @@ func SetBusHook(hook func(*bus.Bus)) {
 // ResetBusHook removes the bus hook.
 func ResetBusHook() {
 	busHook = origBusHook
+}
+
+// SetPiPreflightFn replaces the pi preflight check function used by
+// RunAllAgents. Call ResetPiPreflightFn in a defer to restore the original.
+func SetPiPreflightFn(fn func(context.Context) error) {
+	piPreflightFn = fn
+}
+
+// ResetPiPreflightFn restores the original pi preflight function.
+func ResetPiPreflightFn() {
+	piPreflightFn = origPiPreflightFn
 }

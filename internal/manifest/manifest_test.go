@@ -252,3 +252,67 @@ func TestInterpolateEnv_EmptyMap(t *testing.T) {
 	assert.NotNil(t, result)
 	assert.Empty(t, result)
 }
+
+// --- BackendSpec parsing ---
+
+func TestParseManifestData_BackendAbsent(t *testing.T) {
+	data := []byte("id: no-backend\n")
+	m, err := ParseManifestData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "", m.Backend.Name)
+}
+
+func TestParseManifestData_BackendBareString(t *testing.T) {
+	data := []byte("id: pi-workflow\nbackend: pi\n")
+	m, err := ParseManifestData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", m.Backend.Name)
+}
+
+func TestParseManifestData_BackendStructuredNameOnly(t *testing.T) {
+	data := []byte("id: pi-workflow\nbackend:\n  name: pi\n")
+	m, err := ParseManifestData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", m.Backend.Name)
+}
+
+func TestParseManifestData_BackendStructuredWithOptions(t *testing.T) {
+	data := []byte(`id: pi-full
+backend:
+  name: pi
+  options:
+    provider: anthropic
+    thinking: medium
+    tools: [read, edit, write]
+    no_builtin_tools: false
+    no_tools: false
+    no_extensions: true
+    no_skills: false
+    extensions:
+      - my-ext
+    skills:
+      - ./skills/code-review
+    session_dir: /tmp/sessions
+`)
+	m, err := ParseManifestData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", m.Backend.Name)
+	assert.Equal(t, "anthropic", m.Backend.Options.Provider)
+	assert.Equal(t, "medium", m.Backend.Options.Thinking)
+	assert.Equal(t, []string{"read", "edit", "write"}, m.Backend.Options.Tools)
+	assert.False(t, m.Backend.Options.NoBuiltinTools)
+	assert.False(t, m.Backend.Options.NoTools)
+	assert.True(t, m.Backend.Options.NoExtensions)
+	assert.False(t, m.Backend.Options.NoSkills)
+	assert.Equal(t, []string{"my-ext"}, m.Backend.Options.Extensions)
+	assert.Equal(t, []string{"./skills/code-review"}, m.Backend.Options.Skills)
+	assert.Equal(t, "/tmp/sessions", m.Backend.Options.SessionDir)
+}
+
+func TestParseManifestData_BackendUnknownName(t *testing.T) {
+	data := []byte("id: bad-backend\nbackend: codex\n")
+	_, err := ParseManifestData(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "backend.name")
+	assert.Contains(t, err.Error(), "codex")
+}

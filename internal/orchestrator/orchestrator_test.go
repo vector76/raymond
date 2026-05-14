@@ -33,11 +33,11 @@ import (
 
 // mockExec is a StateExecutor whose results are pre-programmed.
 type mockExec struct {
-	mu           sync.Mutex
-	results      []executors.ExecutionResult
-	errs         []error
-	idx          int
-	capturedCtx  []*executors.ExecutionContext // captured contexts for inspection
+	mu          sync.Mutex
+	results     []executors.ExecutionResult
+	errs        []error
+	idx         int
+	capturedCtx []*executors.ExecutionContext // captured contexts for inspection
 }
 
 func (m *mockExec) Execute(
@@ -1590,8 +1590,8 @@ func TestForkAgentsRunConcurrently(t *testing.T) {
 	var resultMu sync.Mutex
 	results := []executors.ExecutionResult{
 		forkResult("WORKER.md", "PARENT_NEXT.md"), // call 0: START.md forks
-		resultExecResult("parent done"),            // call 1: PARENT_NEXT.md
-		resultExecResult("worker done"),            // call 2: WORKER.md
+		resultExecResult("parent done"),           // call 1: PARENT_NEXT.md
+		resultExecResult("worker done"),           // call 2: WORKER.md
 	}
 
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
@@ -2247,8 +2247,8 @@ func TestForkWorkerTaskFolderDirectoryCreatedBeforeWorkerExecutes(t *testing.T) 
 	mock := &taskFolderCapturingMock{
 		results: []executors.ExecutionResult{
 			forkResult("WORKER.md", "PARENT_NEXT.md"), // call 0: parent forks
-			resultExecResult("parent done"),             // call 1: parent continues
-			resultExecResult("worker done"),             // call 2: worker
+			resultExecResult("parent done"),           // call 1: parent continues
+			resultExecResult("worker done"),           // call 2: worker
 		},
 	}
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
@@ -3131,7 +3131,7 @@ func TestDaemonModeAskSiblingsKeepRunning(t *testing.T) {
 			askEvents = append(askEvents, e)
 			// Once alpha is asking, deliver input so the workflow terminates.
 			inputCh <- orchestrator.AskInput{
-				AskID:  e.AskID,
+				AskID:    e.AskID,
 				Response: "user-response",
 			}
 		})
@@ -3255,7 +3255,7 @@ func TestDaemonModeInputResumesAskingAgent(t *testing.T) {
 	orchestrator.SetBusHook(func(b *bus.Bus) {
 		bus.Subscribe(b, func(e events.AgentAskStarted) {
 			inputCh <- orchestrator.AskInput{
-				AskID:  e.AskID,
+				AskID:    e.AskID,
 				Response: "user-typed-value",
 			}
 		})
@@ -3672,12 +3672,12 @@ func TestResumeWithInputDeliversToAskAgent(t *testing.T) {
 	// and AgentAskResumed event is emitted.
 	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
-			ID:             "main",
-			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAsking,
+			ID:           "main",
+			CurrentState: "START.md",
+			Status:       wfstate.AgentStatusAsking,
 			AskPrompt:    "Please provide data",
 			AskNextState: "NEXT.md",
-			AskID:   "ask_main_123",
+			AskID:        "ask_main_123",
 		},
 	})
 
@@ -3722,12 +3722,12 @@ func TestResumeWithInputBindsPendingAskIDForOneState(t *testing.T) {
 	// following state and cleared before the state two transitions deep runs.
 	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
-			ID:             "main",
-			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAsking,
+			ID:           "main",
+			CurrentState: "START.md",
+			Status:       wfstate.AgentStatusAsking,
 			AskPrompt:    "Please provide data",
 			AskNextState: "NEXT.md",
-			AskID:   "ask_main_xyz",
+			AskID:        "ask_main_xyz",
 		},
 	})
 
@@ -3769,19 +3769,22 @@ func TestResumeWithInputClearsPendingAskIDAcrossMultiFork(t *testing.T) {
 	// leak into a state two transitions deep.
 	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
-			ID:             "main",
-			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAsking,
+			ID:           "main",
+			CurrentState: "START.md",
+			Status:       wfstate.AgentStatusAsking,
 			AskPrompt:    "Please provide data",
 			AskNextState: "NEXT.md",
-			AskID:   "ask_mf_xyz",
+			AskID:        "ask_mf_xyz",
 		},
 	})
 
 	captured := map[string]string{} // state name -> PendingAskID seen
+	var capturedMu sync.Mutex
 	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor {
 		return &funcExec{fn: func(_ context.Context, agent *wfstate.AgentState) (executors.ExecutionResult, error) {
+			capturedMu.Lock()
 			captured[agent.CurrentState+"@"+agent.ID] = agent.PendingAskID
+			capturedMu.Unlock()
 			switch agent.CurrentState {
 			case "NEXT.md":
 				// multi-fork: one fork worker + one goto continuation
@@ -3818,12 +3821,12 @@ func TestResumeWithoutInputRepresentsPrompt(t *testing.T) {
 	// active ask's prompt via PendingAskError.
 	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
-			ID:             "main",
-			CurrentState:   "START.md",
-			Status:         wfstate.AgentStatusAsking,
+			ID:           "main",
+			CurrentState: "START.md",
+			Status:       wfstate.AgentStatusAsking,
 			AskPrompt:    "What is the answer?",
 			AskNextState: "NEXT.md",
-			AskID:   "ask_main_456",
+			AskID:        "ask_main_456",
 		},
 	})
 
@@ -3889,20 +3892,20 @@ func TestResumeMultipleAsksDeliverSequentially(t *testing.T) {
 	// agent B's prompt. Second resume delivers to agent B, all proceed.
 	dir, wfID := setupAskingState(t, []wfstate.AgentState{
 		{
-			ID:             "alpha",
-			CurrentState:   "A.md",
-			Status:         wfstate.AgentStatusAsking,
+			ID:           "alpha",
+			CurrentState: "A.md",
+			Status:       wfstate.AgentStatusAsking,
 			AskPrompt:    "Alpha needs input",
 			AskNextState: "A_NEXT.md",
-			AskID:   "ask_alpha_1",
+			AskID:        "ask_alpha_1",
 		},
 		{
-			ID:             "beta",
-			CurrentState:   "B.md",
-			Status:         wfstate.AgentStatusAsking,
+			ID:           "beta",
+			CurrentState: "B.md",
+			Status:       wfstate.AgentStatusAsking,
 			AskPrompt:    "Beta needs input",
 			AskNextState: "B_NEXT.md",
-			AskID:   "ask_beta_1",
+			AskID:        "ask_beta_1",
 		},
 	})
 
@@ -3992,7 +3995,7 @@ func TestResumeAskWithCallStack(t *testing.T) {
 			},
 			AskPrompt:    "Need confirmation",
 			AskNextState: "INNER_NEXT.md",
-			AskID:   "ask_main_stack",
+			AskID:        "ask_main_stack",
 		},
 	})
 

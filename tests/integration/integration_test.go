@@ -1448,3 +1448,109 @@ echo '<goto>1_START.sh</goto>'
 		sentinelPath, p.diagnostics())
 	assertNoSentinel()
 }
+
+// --------------------------------------------------------------------------
+// Pi backend integration tests
+// --------------------------------------------------------------------------
+
+// piFixtureDir returns the path to the pi test fixture workflow.
+func piFixtureDir() string {
+	return filepath.Join("..", "..", "workflows", "pi_test_fixture")
+}
+
+// piAvailable reports whether the pi CLI is in PATH.
+func piAvailable() bool {
+	_, err := exec.LookPath("pi")
+	return err == nil
+}
+
+// makePiStub writes a minimal stub pi script to a temp directory and returns
+// the directory path. The stub responds to --version and exits successfully.
+// All other invocations exit with an error to prevent accidental LLM calls.
+func makePiStub(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "pi")
+	content := `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "pi 0.0.0-test-stub"
+  exit 0
+fi
+echo "pi stub: unexpected invocation: $@" >&2
+exit 1
+`
+	require.NoError(t, os.WriteFile(stub, []byte(content), 0o755))
+	return dir
+}
+
+// TestPiIntegration_PreflightFailure verifies that a pi workflow fails fast
+// with a clear, user-facing error when the pi binary is not in PATH.
+func TestPiIntegration_PreflightFailure(t *testing.T) {
+	// Point PATH at an empty directory so 'pi' cannot be found.
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+
+	_, runErr := runWorkflow(t, piFixtureDir(), "START.sh", 0.0)
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "pi")
+}
+
+// TestPiIntegration_ContinueAndForkRejected verifies that a pi workflow
+// rejects --continue-and-fork at launch with a clear, user-facing error.
+func TestPiIntegration_ContinueAndForkRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pi stub script requires a Unix shell; skipping on Windows")
+	}
+	// Preflight: stub so it passes without a real pi binary.
+	stubDir := makePiStub(t)
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+origPath)
+
+	stateDir := t.TempDir()
+	workflowID := "pi-cf-reject"
+	ws := wfstate.CreateInitialState(workflowID, piFixtureDir(), "START.sh", 0, nil, "")
+	ws.Agents[0].ContinueAndFork = true
+	require.NoError(t, wfstate.WriteState(workflowID, ws, stateDir))
+
+	runErr := orchestrator.RunAllAgents(context.Background(), workflowID,
+		orchestrator.RunOptions{StateDir: stateDir, Quiet: true, NoWait: true},
+	)
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "--continue-and-fork")
+}
+
+// TestPiIntegration_ScriptOnlyWorkflowWithStub verifies the full plumbing
+// for a pi workflow that uses only script states: manifest parsing, preflight
+// (via stub binary), backend construction, and executor wiring all work
+// end-to-end without a real pi installation or LLM calls.
+func TestPiIntegration_ScriptOnlyWorkflowWithStub(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pi stub script requires a Unix shell; skipping on Windows")
+	}
+
+	// Install the stub on PATH.
+	stubDir := makePiStub(t)
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+origPath)
+
+	completed, runErr := runWorkflow(t, piFixtureDir(), "START.sh", 0.0)
+	require.NoError(t, runErr)
+	assert.True(t, completed, "pi script-only workflow should complete cleanly")
+}
+
+// TestPiIntegration_RealPi is an optional test that runs the pi test fixture
+// against a real pi installation. It is skipped when pi is not in PATH.
+// To enable: install pi (npm install -g @mariozechner/pi-coding-agent) and
+// run with -tags integration.
+func TestPiIntegration_RealPi(t *testing.T) {
+	if !piAvailable() {
+		t.Skip("pi CLI not found in PATH; skipping real-pi integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("pi script state requires Unix shell; skipping on Windows")
+	}
+
+	completed, runErr := runWorkflow(t, piFixtureDir(), "START.sh", 0.0)
+	require.NoError(t, runErr)
+	assert.True(t, completed, "pi script-only workflow should complete cleanly with real pi binary")
+}

@@ -24,10 +24,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/vector76/raymond/internal/backend"
+	"github.com/vector76/raymond/internal/backendcfg"
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
@@ -178,6 +181,78 @@ type stepResult struct {
 	err        error
 }
 
+// piPreflightFn is the function used to check whether the pi binary is
+// available. Overridable in tests.
+var piPreflightFn func(context.Context) error = defaultPiPreflight
+
+func defaultPiPreflight(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "pi", "--version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf(
+			"pi not found or failed: %v\n"+
+				"Install with: npm install -g @mariozechner/pi-coding-agent\n"+
+				"(Node.js is required)",
+			err,
+		)
+	}
+	return nil
+}
+
+// readWorkflowBackend resolves the BackendSpec for the given workflow scope.
+// It tries the following in order:
+//  1. YAML scope file: read backend key directly.
+//  2. ZIP scope with embedded workflow.yaml: parse the manifest from the archive.
+//  3. Directory scope with workflow.yaml: parse the manifest.
+//  4. No manifest: return zero-value spec (default to Claude).
+func readWorkflowBackend(scopeDir string) (backendcfg.BackendSpec, error) {
+	if yamlscope.IsYamlScope(scopeDir) {
+		return yamlscope.GetBackend(scopeDir)
+	}
+
+	if zipscope.IsZipScope(scopeDir) {
+		data, err := zipscope.ReadText(scopeDir, "workflow.yaml")
+		if err != nil {
+			var notFound *zipscope.ZipFileNotFoundError
+			if errors.As(err, &notFound) {
+				return backendcfg.BackendSpec{}, nil
+			}
+			return backendcfg.BackendSpec{}, fmt.Errorf("read zip manifest: %w", err)
+		}
+		m, parseErr := manifest.ParseManifestData([]byte(data))
+		if parseErr != nil && !errors.Is(parseErr, manifest.ErrNotManifest) {
+			return backendcfg.BackendSpec{}, fmt.Errorf("parse zip manifest: %w", parseErr)
+		}
+		if parseErr == nil {
+			return m.Backend, nil
+		}
+		return backendcfg.BackendSpec{}, nil
+	}
+
+	// Directory scope: look for workflow.yaml.
+	if manifestPath, ok := manifest.FindManifest(scopeDir); ok {
+		m, parseErr := manifest.ParseManifest(manifestPath)
+		if parseErr != nil && !errors.Is(parseErr, manifest.ErrNotManifest) {
+			return backendcfg.BackendSpec{}, fmt.Errorf("parse manifest: %w", parseErr)
+		}
+		if parseErr == nil {
+			return m.Backend, nil
+		}
+		// ErrNotManifest (YAML scope named workflow.yaml): fall through.
+	}
+	return backendcfg.BackendSpec{}, nil
+}
+
+// buildBackend constructs the backend.Backend from a BackendSpec.
+// Returns a ClaudeBackend when the spec is absent or name is "".
+func buildBackend(spec backendcfg.BackendSpec) backend.Backend {
+	if spec.Name == "pi" {
+		return backend.NewPiBackend(spec.Options)
+	}
+	return backend.NewClaudeBackend()
+}
+
 // RunAllAgents executes the workflow identified by workflowID until all agents
 // have terminated or the workflow is paused due to an unrecoverable error.
 //
@@ -203,6 +278,29 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 	if !opts.NoResetPaused {
 		resetPausedAgents(ws)
+	}
+
+	// Resolve the workflow backend. This is done for all runs (not gated on
+	// OnAsk mode) so the backend is available for all executor invocations.
+	backendSpec, backendErr := readWorkflowBackend(ws.ScopeDir)
+	if backendErr != nil {
+		return fmt.Errorf("read workflow backend: %w", backendErr)
+	}
+
+	// Pi-specific startup checks: preflight (binary reachable) and flag
+	// rejection (--continue-and-fork relies on Claude's -c session semantics).
+	if backendSpec.Name == "pi" {
+		if err := piPreflightFn(ctx); err != nil {
+			return err
+		}
+		for _, a := range ws.Agents {
+			if a.ContinueAndFork {
+				return fmt.Errorf(
+					"--continue-and-fork is not supported for pi backend workflows; " +
+						"use --session <id> (pi's explicit session resume) instead",
+				)
+			}
+		}
 	}
 
 	// Launch-time check: if OnAsk is "reject" (or empty, which defaults to
@@ -299,6 +397,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	execCtx.DefaultEffort = opts.DefaultEffort
 	execCtx.Timeout = opts.Timeout
 	execCtx.DangerouslySkipPermissions = opts.DangerouslySkipPermissions
+	execCtx.Backend = buildBackend(backendSpec)
 
 	b.Emit(events.WorkflowStarted{
 		WorkflowID: workflowID,
@@ -331,7 +430,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				RunID:    workflowID,
 				Workflow: filepath.Base(ws.ScopeDir),
 				Asking: PendingAskDetail{
-					AskID: activeAgent.AskID,
+					AskID:   activeAgent.AskID,
 					AgentID: activeAgent.ID,
 					Prompt:  activeAgent.AskPrompt,
 				},
@@ -357,7 +456,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 		b.Emit(events.AgentAskResumed{
 			AgentID:   a.ID,
-			AskID:   askID,
+			AskID:     askID,
 			Timestamp: time.Now(),
 		})
 
@@ -373,7 +472,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				RunID:    workflowID,
 				Workflow: filepath.Base(ws.ScopeDir),
 				Asking: PendingAskDetail{
-					AskID: nextAgent.AskID,
+					AskID:   nextAgent.AskID,
 					AgentID: nextAgent.ID,
 					Prompt:  nextAgent.AskPrompt,
 				},
@@ -564,7 +663,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 						RunID:    workflowID,
 						Workflow: filepath.Base(ws.ScopeDir),
 						Asking: PendingAskDetail{
-							AskID: activeAgent.AskID,
+							AskID:   activeAgent.AskID,
 							AgentID: activeAgent.ID,
 							Prompt:  activeAgent.AskPrompt,
 						},
@@ -653,7 +752,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			a.PendingAskID = input.AskID
 
 			ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-				AskID:       input.AskID,
+				AskID:         input.AskID,
 				AgentID:       a.ID,
 				Prompt:        a.AskPrompt,
 				NextState:     a.AskNextState,
@@ -676,7 +775,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			a.AskEnteredAt = time.Time{}
 			b.Emit(events.AgentAskResumed{
 				AgentID:   a.ID,
-				AskID:   input.AskID,
+				AskID:     input.AskID,
 				Timestamp: time.Now(),
 			})
 			if err := launchActive(); err != nil {
@@ -801,7 +900,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 						// AskInputCh.
 						b.Emit(events.AgentAskStarted{
 							AgentID:   ws.Agents[idx].ID,
-							AskID:   ws.Agents[idx].AskID,
+							AskID:     ws.Agents[idx].AskID,
 							Prompt:    ws.Agents[idx].AskPrompt,
 							NextState: ws.Agents[idx].AskNextState,
 							Timeout:   ws.Agents[idx].AskTimeout,
@@ -829,7 +928,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 						pausing = true
 						b.Emit(events.AgentAskStarted{
 							AgentID:   ws.Agents[idx].ID,
-							AskID:   ws.Agents[idx].AskID,
+							AskID:     ws.Agents[idx].AskID,
 							Prompt:    ws.Agents[idx].AskPrompt,
 							NextState: ws.Agents[idx].AskNextState,
 							Timeout:   ws.Agents[idx].AskTimeout,

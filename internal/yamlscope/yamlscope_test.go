@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vector76/raymond/internal/backendcfg"
 	"github.com/vector76/raymond/internal/policy"
 )
 
@@ -1183,4 +1184,84 @@ states:
 	result3, err := GetStateTimeout(p, "third")
 	require.NoError(t, err)
 	assert.Nil(t, result3)
+}
+
+// --- GetBackend ---
+
+func TestGetBackend_Absent(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  start:
+    prompt: Hello
+`)
+	got, err := GetBackend(p)
+	require.NoError(t, err)
+	assert.Equal(t, backendcfg.BackendSpec{}, got)
+}
+
+func TestGetBackend_BareString(t *testing.T) {
+	p := writeTempYAML(t, `
+backend: pi
+states:
+  start:
+    prompt: Hello
+`)
+	got, err := GetBackend(p)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", got.Name)
+}
+
+func TestGetBackend_StructuredNameOnly(t *testing.T) {
+	p := writeTempYAML(t, `
+backend:
+  name: pi
+states:
+  start:
+    prompt: Hello
+`)
+	got, err := GetBackend(p)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", got.Name)
+}
+
+func TestGetBackend_StructuredWithOptions(t *testing.T) {
+	p := writeTempYAML(t, `
+backend:
+  name: pi
+  options:
+    provider: openai
+    thinking: high
+    tools: [read, edit]
+    no_extensions: true
+    session_dir: /tmp/pi-sessions
+states:
+  start:
+    prompt: Hello
+`)
+	got, err := GetBackend(p)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", got.Name)
+	assert.Equal(t, "openai", got.Options.Provider)
+	assert.Equal(t, "high", got.Options.Thinking)
+	assert.Equal(t, []string{"read", "edit"}, got.Options.Tools)
+	assert.True(t, got.Options.NoExtensions)
+	assert.Equal(t, "/tmp/pi-sessions", got.Options.SessionDir)
+}
+
+func TestGetBackend_UnknownName(t *testing.T) {
+	p := writeTempYAML(t, `
+backend: gemini
+states:
+  start:
+    prompt: Hello
+`)
+	_, err := GetBackend(p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "backend.name")
+	assert.Contains(t, err.Error(), "gemini")
+}
+
+func TestGetBackend_FileNotFound(t *testing.T) {
+	_, err := GetBackend("/no/such/file.yaml")
+	require.Error(t, err)
 }

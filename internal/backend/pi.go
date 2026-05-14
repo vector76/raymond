@@ -126,13 +126,7 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 		case "tool_execution_end":
 			isErr, _ := obj["isError"].(bool)
 			if isErr && sink.OnToolError != nil {
-				msg := ""
-				if result, ok := obj["result"].(string); ok {
-					msg = result
-				}
-				if msg == "" {
-					msg = fmt.Sprintf("tool error in %s", toolNameFromEvent(obj))
-				}
+				msg, _ := obj["result"].(string)
 				sink.OnToolError(msg)
 			}
 
@@ -153,8 +147,8 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 		} else {
 			costUSD = sc.CostUSD
 			if sc.InputTokens > 0 {
-				t := sc.InputTokens
-				inputTokens = &t
+				localCopy := sc.InputTokens
+				inputTokens = &localCopy
 			}
 		}
 	}
@@ -200,12 +194,4 @@ func extractPiToolDetail(toolName string, obj map[string]any) string {
 		}
 	}
 	return ""
-}
-
-// toolNameFromEvent extracts the tool name from a tool_execution_end event.
-func toolNameFromEvent(obj map[string]any) string {
-	if name, ok := obj["toolName"].(string); ok {
-		return name
-	}
-	return "unknown"
 }

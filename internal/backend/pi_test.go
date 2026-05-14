@@ -77,6 +77,32 @@ func TestPiBackend_ToolInvocationFromToolExecutionStart(t *testing.T) {
 	assert.Equal(t, "main.go", capturedDetail)
 }
 
+func TestPiBackend_BashToolFromToolExecutionStart(t *testing.T) {
+	var capturedName, capturedDetail string
+	sink := Sink{
+		OnToolUse: func(name, detail string) {
+			capturedName = name
+			capturedDetail = detail
+		},
+	}
+
+	restore := SetPiInvokeStreamFnForTest(makePiStream(
+		piwrap.StreamItem{Object: map[string]any{
+			"type":     "tool_execution_start",
+			"toolName": "bash",
+			"args":     map[string]any{"command": "ls -la /tmp"},
+		}},
+		piwrap.StreamItem{Object: map[string]any{"type": "agent_end", "text": "<result>done</result>"}},
+	))
+	defer restore()
+
+	b := NewPiBackend(backendcfg.BackendOptions{})
+	_, err := b.RunTurn(context.Background(), TurnSpec{Prompt: "p"}, sink)
+	require.NoError(t, err)
+	assert.Equal(t, "bash", capturedName)
+	assert.Equal(t, "ls -la /tmp", capturedDetail)
+}
+
 func TestPiBackend_ToolErrorFromToolExecutionEnd(t *testing.T) {
 	var capturedErr string
 	sink := Sink{

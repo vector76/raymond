@@ -305,7 +305,7 @@ section h2 {
 }
 
 .badge-running { background: var(--accent); }
-.badge-awaiting_input { background: var(--awaiting); }
+.badge-asking { background: var(--awaiting); }
 .badge-completed { background: var(--success); }
 .badge-cancelled { background: var(--warning); }
 .badge-failed { background: var(--danger); }

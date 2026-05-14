@@ -56,7 +56,7 @@
   }
 
   function isActive(status) {
-    return status === "running" || status === "awaiting_input";
+    return status === "running" || status === "asking";
   }
 
   // formatBytes returns a short, human-readable file size (e.g. "1.2 MB").
@@ -372,23 +372,23 @@
       return;
     }
 
-    // Index existing cards by input_id so in-progress cards survive polling.
+    // Index existing cards by ask_id so in-progress cards survive polling.
     var existing = {};
     var current = pendingEl.querySelectorAll(".input-card");
     for (var i = 0; i < current.length; i++) {
-      var iid = current[i].dataset.inputId;
+      var iid = current[i].dataset.askId;
       if (iid) existing[iid] = current[i];
     }
 
     var ordered = [];
     inputs.forEach(function (input) {
-      var prior = existing[input.input_id];
+      var prior = existing[input.ask_id];
       if (prior && shouldPreserveCard(prior)) {
         ordered.push(prior);
       } else {
         ordered.push(buildPendingInputCard(input));
       }
-      delete existing[input.input_id];
+      delete existing[input.ask_id];
     });
 
     pendingEl.innerHTML = "";
@@ -401,7 +401,7 @@
   // MIME types — see inlineAllowedContentTypes in http.go.
   function fileURL(runID, inputID, name, inline) {
     var url = "/runs/" + encodeURIComponent(runID) +
-      "/inputs/" + encodeURIComponent(inputID) +
+      "/asks/" + encodeURIComponent(inputID) +
       "/files/" + encodeURIComponent(name);
     if (inline) url += "?disposition=inline";
     return url;
@@ -583,11 +583,11 @@
   function buildPendingInputCard(input) {
     var card = document.createElement("div");
     card.className = "input-card";
-    card.dataset.inputId = input.input_id;
+    card.dataset.askId = input.ask_id;
 
-    var shortInput = input.input_id.length > 12
-      ? input.input_id.substring(0, 12) + "..."
-      : input.input_id;
+    var shortInput = input.ask_id.length > 12
+      ? input.ask_id.substring(0, 12) + "..."
+      : input.ask_id;
 
     var header = document.createElement("div");
     header.className = "input-card-header";
@@ -612,7 +612,7 @@
       var displaySection = document.createElement("div");
       displaySection.className = "input-display-files";
       displayFiles.forEach(function (f) {
-        displaySection.appendChild(buildDisplayFileEl(input.run_id, input.input_id, f));
+        displaySection.appendChild(buildDisplayFileEl(input.run_id, input.ask_id, f));
       });
       card.appendChild(displaySection);
     }
@@ -659,7 +659,7 @@
         if (!trimmed) return;
         btn.disabled = true;
         btn.textContent = "Sending...";
-        submitInput(input.run_id, input.input_id, trimmed).then(function () {
+        submitInput(input.run_id, input.ask_id, trimmed).then(function () {
           card.style.opacity = "0.5";
           refreshAll();
         }).catch(function (err) {
@@ -708,7 +708,7 @@
 
       btn.disabled = true;
       btn.textContent = "Sending...";
-      submitInputMultipart(input.run_id, input.input_id, fd).then(function () {
+      submitInputMultipart(input.run_id, input.ask_id, fd).then(function () {
         card.style.opacity = "0.5";
         refreshAll();
       }).catch(function (err) {
@@ -736,11 +736,11 @@
   function buildResolvedInputCard(runID, ri) {
     var card = document.createElement("div");
     card.className = "input-card resolved-input-card";
-    card.dataset.inputId = ri.input_id;
+    card.dataset.askId = ri.ask_id;
 
-    var shortInput = ri.input_id && ri.input_id.length > 12
-      ? ri.input_id.substring(0, 12) + "..."
-      : (ri.input_id || "");
+    var shortInput = ri.ask_id && ri.ask_id.length > 12
+      ? ri.ask_id.substring(0, 12) + "..."
+      : (ri.ask_id || "");
 
     var header = document.createElement("div");
     header.className = "input-card-header";
@@ -761,7 +761,7 @@
       var stagedSection = document.createElement("div");
       stagedSection.className = "input-display-files";
       staged.forEach(function (f) {
-        stagedSection.appendChild(buildDisplayFileEl(runID, ri.input_id, f));
+        stagedSection.appendChild(buildDisplayFileEl(runID, ri.ask_id, f));
       });
       card.appendChild(stagedSection);
     }
@@ -789,7 +789,7 @@
       var uploadSection = document.createElement("div");
       uploadSection.className = "input-display-files";
       uploaded.forEach(function (f) {
-        uploadSection.appendChild(buildDisplayFileEl(runID, ri.input_id, f));
+        uploadSection.appendChild(buildDisplayFileEl(runID, ri.ask_id, f));
       });
       card.appendChild(uploadSection);
     }
@@ -1027,7 +1027,7 @@
       case "error_occurred":
         line = "[error] " + (evt.ErrorMessage || "unknown");
         break;
-      case "agent_await_started":
+      case "agent_ask_started":
         line = "[awaiting input] " + (evt.Prompt || "");
         break;
       case "agent_paused":
@@ -1079,7 +1079,7 @@
 
   function submitInput(runID, inputID, response) {
     return apiPost(
-      "/runs/" + encodeURIComponent(runID) + "/inputs/" + encodeURIComponent(inputID),
+      "/runs/" + encodeURIComponent(runID) + "/asks/" + encodeURIComponent(inputID),
       { response: response }
     );
   }
@@ -1091,7 +1091,7 @@
   // Error so the form can highlight the right control.
   function submitInputMultipart(runID, inputID, formData) {
     return fetch(
-      "/runs/" + encodeURIComponent(runID) + "/inputs/" + encodeURIComponent(inputID),
+      "/runs/" + encodeURIComponent(runID) + "/asks/" + encodeURIComponent(inputID),
       { method: "POST", body: formData }
     ).then(function (res) {
       if (!res.ok) {
@@ -1161,14 +1161,14 @@
   }
 
   function refreshPendingInputs(runs) {
-    var awaiting = runs.filter(function (r) { return r.status === "awaiting_input"; });
+    var awaiting = runs.filter(function (r) { return r.status === "asking"; });
     if (awaiting.length === 0) {
       renderPendingInputs([]);
       return Promise.resolve();
     }
 
     var promises = awaiting.map(function (r) {
-      return apiGet("/runs/" + encodeURIComponent(r.run_id) + "/pending-inputs").catch(function () {
+      return apiGet("/runs/" + encodeURIComponent(r.run_id) + "/pending-asks").catch(function () {
         return [];
       });
     });

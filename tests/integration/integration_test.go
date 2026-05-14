@@ -1538,6 +1538,23 @@ func TestPiIntegration_ScriptOnlyWorkflowWithStub(t *testing.T) {
 	assert.True(t, completed, "pi script-only workflow should complete cleanly")
 }
 
+// TestPiSessionID_RoundTrip verifies that a *string SessionID round-trips
+// correctly through the JSON state file (write then read).
+func TestPiSessionID_RoundTrip(t *testing.T) {
+	stateDir := t.TempDir()
+	workflowID := "pi-session-rt"
+	ws := wfstate.CreateInitialState(workflowID, piFixtureDir(), "START.sh", 0, nil, "")
+
+	sessionID := "some-uuid"
+	ws.Agents[0].SessionID = &sessionID
+	require.NoError(t, wfstate.WriteState(workflowID, ws, stateDir))
+
+	ws2, err := wfstate.ReadState(workflowID, stateDir)
+	require.NoError(t, err)
+	require.NotNil(t, ws2.Agents[0].SessionID)
+	assert.Equal(t, "some-uuid", *ws2.Agents[0].SessionID)
+}
+
 // TestPiIntegration_RealPi is an optional test that runs the pi test fixture
 // against a real pi installation. It is skipped when pi is not in PATH.
 // To enable: install pi (npm install -g @mariozechner/pi-coding-agent) and

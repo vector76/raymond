@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/vector76/raymond/internal/backend"
 	"github.com/vector76/raymond/internal/ccwrap"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
@@ -473,6 +474,42 @@ func TestMarkdownExecutor_AskIDSubstitutedInImmediatelyFollowingState(t *testing
 	if strings.Contains(capturedPrompt, "{{ask_id}}") {
 		t.Errorf("prompt still contains literal {{ask_id}}: %q", capturedPrompt)
 	}
+}
+
+// TestMarkdownExecutor_CustomBackendIsUsed verifies that when execCtx.Backend
+// is non-nil, MarkdownExecutor calls that backend's RunTurn rather than
+// constructing a default Claude backend.
+func TestMarkdownExecutor_CustomBackendIsUsed(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	var runTurnCalled bool
+	stub := &markdownTestStubBackend{
+		runTurnFn: func(_ context.Context, _ backend.TurnSpec, _ backend.Sink) (backend.TurnResult, error) {
+			runTurnCalled = true
+			return backend.TurnResult{
+				OutputText: "<goto>NEXT.md</goto>",
+				SessionID:  "stub-sess",
+				CostUSD:    0.01,
+			}, nil
+		},
+	}
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID, Backend: stub}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !runTurnCalled {
+		t.Error("expected stub backend RunTurn to be called, but it was not")
+	}
+}
+
+type markdownTestStubBackend struct {
+	runTurnFn func(ctx context.Context, spec backend.TurnSpec, sink backend.Sink) (backend.TurnResult, error)
+}
+
+func (s *markdownTestStubBackend) RunTurn(ctx context.Context, spec backend.TurnSpec, sink backend.Sink) (backend.TurnResult, error) {
+	return s.runTurnFn(ctx, spec, sink)
 }
 
 // TestMarkdownExecutor_AskIDUnsubstitutedWhenNotPending verifies that

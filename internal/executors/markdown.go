@@ -18,11 +18,6 @@ import (
 // maxReminderAttempts is the maximum number of reminder prompts before giving up.
 const maxReminderAttempts = 3
 
-// defaultBackend is the agent backend used by MarkdownExecutor. There is
-// no per-workflow selection logic yet; introducing pi (docs/pi-backend.md)
-// will turn this into a per-Execute choice driven by the manifest.
-var defaultBackend backend.Backend = backend.NewClaudeBackend()
-
 // MarkdownExecutor handles .md states by invoking the configured agent
 // backend.
 //
@@ -101,6 +96,11 @@ func (e *MarkdownExecutor) Execute(
 	}
 
 	// Reminder loop.
+	activeBackend := execCtx.Backend
+	if activeBackend == nil {
+		activeBackend = backend.NewClaudeBackend()
+	}
+
 	var transition *parsing.Transition
 	newSessionID := sessionID
 	reminderAttempt := 0
@@ -190,7 +190,7 @@ func (e *MarkdownExecutor) Execute(
 		}
 
 		// Run one turn.
-		turnResult, runErr := defaultBackend.RunTurn(ctx, backend.TurnSpec{
+		turnResult, runErr := activeBackend.RunTurn(ctx, backend.TurnSpec{
 			Prompt:                     prompt,
 			Model:                      model,
 			Effort:                     effort,

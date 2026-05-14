@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/vector76/raymond/internal/backend"
 	"github.com/vector76/raymond/internal/bus"
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/prompts"
@@ -35,12 +36,13 @@ type sharedStepState struct {
 type ExecutionContext struct {
 	Bus                        *bus.Bus
 	WorkflowID                 string
-	DebugDir                   string  // empty string = debug disabled
-	StateDir                   string  // empty string = use default
-	DefaultModel               string  // empty = no override; policy takes precedence
-	DefaultEffort              string  // empty = no override
-	Timeout                    float64 // ≤ 0 = no timeout
+	DebugDir                   string         // empty string = debug disabled
+	StateDir                   string         // empty string = use default
+	DefaultModel               string         // empty = no override; policy takes precedence
+	DefaultEffort              string         // empty = no override
+	Timeout                    float64        // ≤ 0 = no timeout
 	DangerouslySkipPermissions bool
+	Backend                    backend.Backend // nil = use Claude default
 
 	steps *sharedStepState // shared mutable state for step counters
 }

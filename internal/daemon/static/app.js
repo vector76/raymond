@@ -34,6 +34,8 @@
   var cancelBtn = document.getElementById("cancel-btn");
   var connStatus = document.getElementById("conn-status");
   var themeToggle = document.getElementById("theme-toggle");
+  var workflowsSection = document.getElementById("workflows-section");
+  var workflowsToggle = document.getElementById("workflows-toggle");
 
   // --- Helpers ---
   function formatElapsed(secs) {
@@ -160,10 +162,14 @@
 
     workflows.forEach(function (wf) {
       var card = document.createElement("div");
-      card.className = "workflow-card";
+      // Cards start collapsed: only the name and (when launchable without
+      // input) the Launch button show until the user expands. data-mode lets
+      // CSS hide the Launch button on collapsed cards that need required input.
+      card.className = "workflow-card collapsed";
 
       var input = wf.input || { mode: "optional", label: "", description: "" };
       var mode = input.mode || "optional";
+      card.dataset.mode = mode;
       var label = input.label || "Input";
       var placeholder = label + (mode === "required" ? " (required)" : " (optional)");
       var inputHTML =
@@ -179,19 +185,29 @@
 
       card.innerHTML =
         '<div class="workflow-card-header">' +
-          '<span class="workflow-name">' + escapeHTML(wf.name || wf.id) + '</span>' +
-          '<span class="workflow-id">' + escapeHTML(wf.id) + '</span>' +
+          '<button class="workflow-toggle" type="button" aria-expanded="false">' +
+            '<span class="workflow-chevron" aria-hidden="true">&#9656;</span>' +
+            '<span class="workflow-name">' + escapeHTML(wf.name || wf.id) + '</span>' +
+          '</button>' +
+          '<button class="btn btn-primary workflow-launch">Launch</button>' +
         '</div>' +
-        (wf.description
-          ? '<div class="workflow-description">' + escapeHTML(wf.description) + '</div>'
-          : '') +
-        '<div class="workflow-actions">' +
+        '<div class="workflow-card-body">' +
+          '<div class="workflow-id">' + escapeHTML(wf.id) + '</div>' +
+          (wf.description
+            ? '<div class="workflow-description">' + escapeHTML(wf.description) + '</div>'
+            : '') +
           inputHTML +
-          '<button class="btn btn-primary">Launch</button>' +
         '</div>';
 
+      var toggle = card.querySelector(".workflow-toggle");
       var textarea = card.querySelector("textarea");
-      var btn = card.querySelector("button");
+      var btn = card.querySelector(".workflow-launch");
+
+      toggle.addEventListener("click", function () {
+        var collapsed = card.classList.toggle("collapsed");
+        toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        if (!collapsed && textarea) textarea.focus();
+      });
 
       btn.addEventListener("click", function () {
         var value = textarea ? textarea.value.trim() : "";
@@ -1248,6 +1264,35 @@
   });
 
   updateThemeToggle();
+
+  // --- Workflows section collapse ---
+  // The whole Workflows pane collapses so it doesn't crowd the live-output
+  // and ask area below it. The state persists across sessions.
+  function setWorkflowsCollapsed(collapsed) {
+    workflowsSection.classList.toggle("collapsed", collapsed);
+    workflowsToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    try {
+      localStorage.setItem("raymond-workflows-collapsed", collapsed ? "1" : "0");
+    } catch (e) {}
+  }
+
+  workflowsToggle.addEventListener("click", function () {
+    setWorkflowsCollapsed(!workflowsSection.classList.contains("collapsed"));
+  });
+  workflowsToggle.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      workflowsToggle.click();
+    }
+  });
+
+  (function () {
+    var saved = null;
+    try {
+      saved = localStorage.getItem("raymond-workflows-collapsed");
+    } catch (e) {}
+    if (saved === "1") setWorkflowsCollapsed(true);
+  })();
 
   // --- Event listeners ---
   cancelBtn.addEventListener("click", function () {

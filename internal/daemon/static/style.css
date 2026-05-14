@@ -123,6 +123,32 @@ section h2 {
   grid-column: 1 / -1;
 }
 
+/* The Workflows heading doubles as a collapse toggle for the whole pane. */
+.section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-chevron {
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+#workflows-section:not(.collapsed) .section-chevron {
+  transform: rotate(90deg);
+}
+
+#workflows-section.collapsed .section-toggle {
+  margin-bottom: 0;
+}
+
+#workflows-section.collapsed #workflows {
+  display: none;
+}
+
 /* Pending inputs spans full width */
 #pending-inputs-section {
   grid-column: 1 / -1;
@@ -143,20 +169,74 @@ section h2 {
 .workflow-card-header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 4px;
+}
+
+/* The toggle button fills the header so clicking the name expands the card;
+   the Launch button sits beside it and handles its own click. */
+.workflow-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.workflow-chevron {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+
+.workflow-card:not(.collapsed) .workflow-chevron {
+  transform: rotate(90deg);
 }
 
 .workflow-name {
   font-weight: 600;
   font-size: 14px;
+  /* min-width:0 lets the name shrink below its content width inside the
+     flex toggle so a long name ellipsizes instead of shoving Launch off. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-launch {
+  flex-shrink: 0;
+}
+
+/* Body holds the id, description, and input area — hidden until expanded. */
+.workflow-card-body {
+  margin-top: 8px;
+}
+
+.workflow-card.collapsed .workflow-card-body {
+  display: none;
+}
+
+/* A collapsed card that needs required input can't be launched in place,
+   so hide its Launch button until the user expands to provide input. */
+.workflow-card.collapsed[data-mode="required"] .workflow-launch {
+  display: none;
 }
 
 .workflow-id {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--text-secondary);
+  margin-bottom: 4px;
 }
 
 .workflow-description {
@@ -165,20 +245,13 @@ section h2 {
   margin-bottom: 8px;
 }
 
-.workflow-actions {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-
 .workflow-input {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.workflow-actions textarea {
+.workflow-input textarea {
   width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -192,7 +265,7 @@ section h2 {
   box-sizing: border-box;
 }
 
-.workflow-actions textarea:focus {
+.workflow-input textarea:focus {
   outline: none;
   border-color: var(--accent);
 }

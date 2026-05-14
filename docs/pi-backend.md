@@ -202,11 +202,10 @@ These behaviors continue to work but are wired differently under pi.
 
 ### Stream parsing
 
-Raymond currently parses Claude's `--output-format stream-json` shape
-(`internal/executors/markdown.go` lines 485–593, `processStreamForConsole`).
-Under the pi backend, the
-backend implementation parses pi's `--mode json` event stream instead. The
-event types raymond consumes from pi:
+Raymond parses Claude's `--output-format stream-json` shape inside the
+Claude backend (`internal/backend/claude.go`, `emitClaudeStreamEvents`).
+Under the pi backend, a sibling implementation parses pi's `--mode json`
+event stream instead. The event types raymond consumes from pi:
 
 - `agent_start` — once at session begin, exposes the session UUID. Raymond
   records this id on the agent state so the next turn can pass it to
@@ -400,7 +399,7 @@ the workflow author should know about.
 
 3. **Claude usage-limit detection.** Raymond detects Claude's "hit your limit"
    / "out of extra usage" messages from the result stream
-   (`internal/executors/markdown.go` `limitPatterns`) and treats them as a
+   (`internal/backend/claude.go` `claudeLimitPatterns`) and treats them as a
    special class of failure. Pi has no equivalent provider-level message in
    its event stream; provider rate limits surface as ordinary `tool_execution_end`
    errors or `agent_end` errors, and raymond classifies them as generic

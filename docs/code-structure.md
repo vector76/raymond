@@ -19,6 +19,7 @@ raymond/
 │       └── main.go              # Main ray binary (full workflow runner)
 │
 ├── internal/                    # Private packages (not importable externally)
+│   ├── backend/                 # Agent backend interface + Claude implementation
 │   ├── bus/                     # Event bus (publish/subscribe)
 │   ├── ccwrap/                  # Claude Code CLI wrapper (streaming JSON)
 │   ├── cli/                     # Command-line interface (cobra)
@@ -80,7 +81,9 @@ cmd/ray
              /           \
       internal/executors  internal/transitions
         /       \                   |
-    ccwrap    platform         internal/state
+    backend   platform         internal/state
+       |
+    ccwrap
         \              \            |
          \         internal/parsing |
           \                         |
@@ -99,6 +102,7 @@ on higher-level orchestration code.
 
 | Package | Responsibility |
 |---------|---------------|
+| `backend` | `Backend` interface (one turn → events + `TurnResult`) and the Claude implementation that wraps `ccwrap`. Backend-neutral error types (`TimeoutError`/`LimitError`/`RunError`) shield the executor from CLI-specific details. |
 | `bus` | Typed publish/subscribe event bus with panic recovery |
 | `ccwrap` | Spawn and stream `claude` CLI output; parse JSONL; handle timeouts |
 | `cli` | Parse CLI flags, load config, wire observers, call orchestrator |

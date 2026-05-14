@@ -103,48 +103,55 @@ Out of scope, now and for the foreseeable future:
 
 ## Existing Claude Code integration (what gets abstracted)
 
-The current integration is narrow and well-isolated, so introducing a
-backend interface for pi should not require invasive changes:
+The integration is narrow and well-isolated. A backend abstraction
+(`internal/backend`) is now in place, so adding pi means writing a
+sibling implementation alongside `ClaudeBackend`; no changes to the
+executor, orchestrator, or observers are needed for the seam itself.
 
 - **Command construction:** `internal/ccwrap/ccwrap.go` —
-  `BuildClaudeCommand` (lines 92-141) assembles flags. The binary name
-  `claude` is held in the `claudeExe` package variable (line 50,
-  overridable in tests). `BuildClaudeEnv` (lines 71-83) strips
-  `CLAUDECODE` to prevent nested sessions, and `InvokeStream` / `Invoke`
-  (lines 177-199, 356-396) wrap execution. Flags assembled today:
+  `BuildClaudeCommand` assembles flags. The binary name `claude` is
+  held in the `claudeExe` package variable (overridable in tests).
+  `BuildClaudeEnv` strips `CLAUDECODE` to prevent nested sessions, and
+  `InvokeStream` / `Invoke` wrap execution. Flags assembled today:
   `--output-format stream-json`, `-p`, `--permission-mode acceptEdits`
   or `--dangerously-skip-permissions`, `--model`, `--effort`,
   `--resume <id>` or `-c --fork-session`, `--disallowed-tools`
   (hardcoded: `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`,
   `NotebookEdit`), and the prompt after `--`.
 
-- **Stream parsing:** `internal/executors/markdown.go:485-593`
-  (`processStreamForConsole`) parses the Claude-shaped stream-JSON.
-  Message types handled: `assistant` (text and `tool_use` items),
-  `user` (tool results, with `is_error` driving ErrorOccurred events),
-  and `result` (final, with `is_error` driving usage-limit detection).
-  Cost is read from `total_cost_usd`
-  (`internal/executors/executors.go:191-210`); tokens are summed from
+- **Stream parsing:** `internal/backend/claude.go` —
+  `emitClaudeStreamEvents` translates Claude stream-JSON objects into
+  Sink callbacks. Message types handled: `assistant` (text and
+  `tool_use` items), `user` (tool results, with `is_error` driving
+  ErrorOccurred via Sink.OnToolError), and `result` (final, with
+  `is_error` driving usage-limit detection via `isClaudeLimitResult`).
+  Cost is read from `total_cost_usd` and tokens summed from
   `usage.cache_creation_input_tokens`, `cache_read_input_tokens`, and
-  `input_tokens` (`internal/executors/executors.go:213-246`). Session
-  ID is read from `session_id` or `metadata.session_id`.
+  `input_tokens` (`extractClaudeCost`, `extractClaudeTokens` in the
+  same file). Session ID is read from `session_id` or
+  `metadata.session_id` via `ccwrap.ExtractSessionID`.
 
-- **Per-state agent config:** `internal/policy/policy.go:31-35` defines
+- **Backend interface:** `internal/backend/backend.go` defines
+  `Backend.RunTurn(ctx, TurnSpec, Sink) (TurnResult, error)` plus the
+  neutral error types (`TimeoutError`, `LimitError`, `RunError`). The
+  Claude implementation lives in `internal/backend/claude.go`. A pi
+  implementation goes alongside it (`internal/backend/pi.go`).
+
+- **Per-state agent config:** `internal/policy/policy.go` defines
   `Policy` with `AllowedTransitions`, `Model`, `Effort`. Per-workflow
-  launch defaults live in `internal/state/state.go:122-129` as
+  launch defaults live in `internal/state/state.go` as
   `LaunchParams` (`DangerouslySkipPermissions`, `Model`, `Effort`,
   `Timeout`, `ContinueAndFork`, `OnAsk`).
 
-- **Executor abstraction:** `internal/executors/executors.go:99-106`
-  already defines a `StateExecutor` interface with two implementations
+- **Executor abstraction:** `internal/executors/executors.go` defines
+  a `StateExecutor` interface with two implementations
   (`MarkdownExecutor`, `ScriptExecutor`). Selection is by file
-  extension (`GetExecutor`, line 117). There is **no** backend-level
-  abstraction below this — the markdown executor calls `ccwrap`
-  directly. The new pi-vs-Claude split would sit between
-  `MarkdownExecutor` and the backend-specific command/parse code.
+  extension (`GetExecutor`). The markdown executor now calls
+  `backend.Backend.RunTurn` (defaulting to the Claude backend); the
+  pi-vs-Claude split happens at that call.
 
-- **Manifest:** `internal/manifest/manifest.go:24-33` defines the
-  `Manifest` struct. This is where the `backend:` field lands.
+- **Manifest:** `internal/manifest/manifest.go` defines the `Manifest`
+  struct. This is where the `backend:` field lands.
 
 ## Resolved questions
 

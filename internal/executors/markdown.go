@@ -2,12 +2,12 @@ package executors
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/vector76/raymond/internal/ccwrap"
+	"github.com/vector76/raymond/internal/backend"
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/policy"
@@ -18,26 +18,19 @@ import (
 // maxReminderAttempts is the maximum number of reminder prompts before giving up.
 const maxReminderAttempts = 3
 
-// invokeStreamFn is the ccwrap.InvokeStream implementation used by
-// MarkdownExecutor. Overridable in tests.
-var invokeStreamFn = func(
-	ctx context.Context,
-	prompt, model, effort, sessionID string,
-	idleTimeout float64,
-	dangerouslySkipPermissions, fork bool,
-	cwd string,
-	continueSession bool,
-) <-chan ccwrap.StreamItem {
-	return ccwrap.InvokeStream(ctx, prompt, model, effort, sessionID, idleTimeout,
-		dangerouslySkipPermissions, fork, cwd, continueSession)
-}
+// defaultBackend is the agent backend used by MarkdownExecutor. There is
+// no per-workflow selection logic yet; introducing pi (docs/pi-backend.md)
+// will turn this into a per-Execute choice driven by the manifest.
+var defaultBackend backend.Backend = backend.NewClaudeBackend()
 
-// MarkdownExecutor handles .md states by invoking Claude Code.
+// MarkdownExecutor handles .md states by invoking the configured agent
+// backend.
 //
 //   - Loads and renders the prompt template.
-//   - Invokes Claude via ccwrap.InvokeStream with an optional reminder loop
-//     (up to maxReminderAttempts times) when no valid transition is found.
-//   - Extracts session_id and cost from the stream output.
+//   - Invokes the backend with an optional reminder loop (up to
+//     maxReminderAttempts) when no valid transition is found.
+//   - Records the session id, cost, and token counts returned by each
+//     turn.
 //   - Emits the full set of observer events.
 type MarkdownExecutor struct{}
 
@@ -48,8 +41,8 @@ func (e *MarkdownExecutor) Execute(
 	wfState *wfstate.WorkflowState,
 	execCtx *ExecutionContext,
 ) (ExecutionResult, error) {
-	// Wrap with a cancel so that the InvokeStream goroutine exits cleanly
-	// whenever Execute returns early (error, budget exceeded, etc.).
+	// Wrap with a cancel so the backend exits cleanly whenever Execute
+	// returns early (error, budget exceeded, etc.).
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -148,54 +141,44 @@ func (e *MarkdownExecutor) Execute(
 			Timestamp:       time.Now(),
 		})
 
-		// Prepare step number for debug event.
+		// Build the Sink that bridges normalized backend events onto the
+		// raymond event bus. Allocating per turn is cheap and keeps the
+		// captured agent/state context lexically obvious.
 		stepNumber := 0
 		if execCtx.DebugDir != "" {
 			stepNumber = execCtx.GetNextStepNumber(agentID)
 		}
-
-		// Invoke Claude Code and collect results.
-		var results []map[string]any
-		var streamErr error
-
-		ch := invokeStreamFn(ctx, prompt, model, effort, useSessionID,
-			execCtx.Timeout, execCtx.DangerouslySkipPermissions, useFork, agent.Cwd, useContinue)
-
-	streamLoop:
-		for item := range ch {
-			if item.Err != nil {
-				streamErr = item.Err
-				break streamLoop
-			}
-
-			obj := item.Object
-			results = append(results, obj)
-
-			// Extract session_id.
-			if sid, ok := obj["session_id"].(string); ok && sid != "" {
-				s := sid
-				newSessionID = &s
-			} else if meta, ok := obj["metadata"].(map[string]any); ok {
-				if sid, ok := meta["session_id"].(string); ok && sid != "" {
-					s := sid
-					newSessionID = &s
-				}
-			}
-
-			// Check usage limit.
-			if isLimitError(obj) {
-				limitMsg := ""
-				if r, ok := obj["result"].(string); ok {
-					limitMsg = r
-				}
-				if limitMsg == "" {
-					limitMsg = "Claude Code usage limit reached"
-				}
-				return ExecutionResult{}, &ClaudeCodeLimitError{Msg: limitMsg}
-			}
-
-			// Emit ClaudeStreamOutput when debug is active.
-			if stepNumber > 0 {
+		sink := backend.Sink{
+			OnProgress: func(text string) {
+				execCtx.Bus.Emit(events.ProgressMessage{
+					AgentID:   agentID,
+					Message:   text,
+					Timestamp: time.Now(),
+				})
+			},
+			OnToolUse: func(name, detail string) {
+				execCtx.Bus.Emit(events.ToolInvocation{
+					AgentID:   agentID,
+					ToolName:  name,
+					Detail:    detail,
+					Timestamp: time.Now(),
+				})
+			},
+			OnToolError: func(msg string) {
+				execCtx.Bus.Emit(events.ErrorOccurred{
+					AgentID:      agentID,
+					ErrorType:    "ToolError",
+					ErrorMessage: msg,
+					IsRetryable:  false,
+					Timestamp:    time.Now(),
+				})
+			},
+		}
+		if stepNumber > 0 {
+			// stepNumber is declared with := inside the loop body, so each
+			// iteration gets its own variable; the closure captures the
+			// per-iteration value safely.
+			sink.OnRaw = func(obj map[string]any) {
 				execCtx.Bus.Emit(events.ClaudeStreamOutput{
 					AgentID:    agentID,
 					StateName:  currentState,
@@ -204,38 +187,36 @@ func (e *MarkdownExecutor) Execute(
 					Timestamp:  time.Now(),
 				})
 			}
-
-			// Emit progress/tool events for console observers.
-			e.processStreamForConsole(obj, agentID, execCtx)
 		}
 
-		if streamErr != nil {
-			if te, ok := streamErr.(*ccwrap.ClaudeCodeTimeoutError); ok {
-				return ExecutionResult{}, &ClaudeCodeTimeoutWrappedError{
-					Msg: fmt.Sprintf("Claude Code timeout: %v", te),
-				}
-			}
-			// When claude exits with a non-zero code and the error text
-			// contains a known limit message, treat it as a limit error
-			// so the orchestrator pauses immediately instead of retrying.
-			errText := streamErr.Error()
-			if isLimitMessage(errText) {
-				return ExecutionResult{}, &ClaudeCodeLimitError{Msg: errText}
-			}
-			if strings.Contains(errText, "claude command failed") {
-				return ExecutionResult{}, &ClaudeCodeError{
-					Msg: fmt.Sprintf("Claude Code execution failed: %v", streamErr),
-				}
-			}
-			return ExecutionResult{}, &ClaudeCodeError{Msg: errText}
+		// Run one turn.
+		turnResult, runErr := defaultBackend.RunTurn(ctx, backend.TurnSpec{
+			Prompt:                     prompt,
+			Model:                      model,
+			Effort:                     effort,
+			SessionID:                  useSessionID,
+			Fork:                       useFork,
+			ContinueLatest:             useContinue,
+			Cwd:                        agent.Cwd,
+			IdleTimeout:                execCtx.Timeout,
+			DangerouslySkipPermissions: execCtx.DangerouslySkipPermissions,
+		}, sink)
+
+		if runErr != nil {
+			return ExecutionResult{}, mapBackendError(runErr)
+		}
+
+		// Update session id from the turn (last non-empty wins).
+		if turnResult.SessionID != "" {
+			s := turnResult.SessionID
+			newSessionID = &s
 		}
 
 		// Extract and accumulate cost.
-		invocationCost := ExtractCostFromResults(results)
-		lastInvocationTokens = ExtractTokensFromResults(results)
-		if invocationCost > 0 {
-			stateTotalCost += invocationCost
-			wfState.TotalCostUSD += invocationCost
+		lastInvocationTokens = turnResult.InputTokens
+		if turnResult.CostUSD > 0 {
+			stateTotalCost += turnResult.CostUSD
+			wfState.TotalCostUSD += turnResult.CostUSD
 		}
 
 		// Budget check. The check is intentionally performed after accumulating
@@ -258,8 +239,8 @@ func (e *MarkdownExecutor) Execute(
 
 		// Parse and validate transitions.
 		allTrs, singleTr, doRetry, parseErr := e.parseAndValidate(
-			results, pol, scopeDir,
-			agentID, currentState, newSessionID,
+			turnResult.OutputText, pol, scopeDir,
+			agentID, currentState,
 			execCtx, reminderAttempt, variables,
 		)
 		if parseErr != nil {
@@ -310,6 +291,28 @@ func (e *MarkdownExecutor) Execute(
 	}, nil
 }
 
+// mapBackendError translates backend.* error types into the executor's
+// orchestrator-facing error types (which the orchestrator already
+// switches on for pause/retry/limit handling).
+func mapBackendError(err error) error {
+	var te *backend.TimeoutError
+	if errors.As(err, &te) {
+		return &ClaudeCodeTimeoutWrappedError{
+			Msg: fmt.Sprintf("Claude Code timeout: %v", te),
+		}
+	}
+	var le *backend.LimitError
+	if errors.As(err, &le) {
+		return &ClaudeCodeLimitError{Msg: le.Msg}
+	}
+	var re *backend.RunError
+	if errors.As(err, &re) {
+		return &ClaudeCodeError{Msg: re.Msg}
+	}
+	// Unknown backend error: wrap conservatively.
+	return &ClaudeCodeError{Msg: err.Error()}
+}
+
 // isMultiFork reports whether a transition list should be dispatched via the
 // multi-fork path: multiple fork-family tags, or fork-family + goto together.
 func isMultiFork(trs []parsing.Transition) bool {
@@ -326,7 +329,8 @@ func isMultiFork(trs []parsing.Transition) bool {
 	return forkCount >= 2 || (forkCount >= 1 && hasGoto)
 }
 
-// parseAndValidate parses and validates transitions from stream results.
+// parseAndValidate parses and validates transitions from the assistant
+// output text the backend produced for this turn.
 //
 // Returns:
 //   - (all, nil, false, nil) when multi-fork is detected (all is the full list).
@@ -334,17 +338,14 @@ func isMultiFork(trs []parsing.Transition) bool {
 //   - (nil, nil, true, nil) when a reminder retry is needed.
 //   - (nil, nil, false, err) on a fatal error.
 func (e *MarkdownExecutor) parseAndValidate(
-	results []map[string]any,
+	outputText string,
 	pol *policy.Policy,
 	scopeDir string,
 	agentID, currentState string,
-	sessionID *string,
 	execCtx *ExecutionContext,
 	reminderAttempt int,
 	variables map[string]any,
 ) (all []parsing.Transition, single *parsing.Transition, retry bool, err error) {
-	outputText := extractOutputText(results)
-
 	transitions, parseErr := parsing.ParseTransitions(outputText)
 	if parseErr != nil {
 		return nil, nil, false, fmt.Errorf("transition parse error: %w", parseErr)
@@ -478,196 +479,4 @@ func (e *MarkdownExecutor) parseAndValidate(
 	}
 
 	return nil, &resolved, false, nil
-}
-
-// processStreamForConsole emits ProgressMessage, ToolInvocation, and ErrorOccurred
-// events for assistant and user messages in the Claude stream.
-func (e *MarkdownExecutor) processStreamForConsole(obj map[string]any, agentID string, execCtx *ExecutionContext) {
-	objType, _ := obj["type"].(string)
-
-	// "user" messages carry tool_result items when a tool call fails.
-	// Extract those errors and emit ErrorOccurred so observers can display them.
-	if objType == "user" {
-		message, ok := obj["message"].(map[string]any)
-		if !ok {
-			return
-		}
-		content, ok := message["content"].([]any)
-		if !ok {
-			return
-		}
-		for _, rawItem := range content {
-			item, ok := rawItem.(map[string]any)
-			if !ok {
-				continue
-			}
-			itemType, _ := item["type"].(string)
-			if itemType != "tool_result" {
-				continue
-			}
-			isErr, _ := item["is_error"].(bool)
-			if !isErr {
-				continue
-			}
-			errMsg, _ := item["content"].(string)
-			if errMsg == "" {
-				errMsg = "Tool error"
-			}
-			// Extract content between <tool_use_error> tags when present.
-			if start := strings.Index(errMsg, "<tool_use_error>"); start >= 0 {
-				start += len("<tool_use_error>")
-				if end := strings.Index(errMsg[start:], "</tool_use_error>"); end >= 0 {
-					errMsg = errMsg[start : start+end]
-				}
-			}
-			execCtx.Bus.Emit(events.ErrorOccurred{
-				AgentID:      agentID,
-				ErrorType:    "ToolError",
-				ErrorMessage: errMsg,
-				IsRetryable:  false,
-				Timestamp:    time.Now(),
-			})
-		}
-		return
-	}
-
-	if objType != "assistant" {
-		return
-	}
-	message, ok := obj["message"].(map[string]any)
-	if !ok {
-		return
-	}
-	content, ok := message["content"].([]any)
-	if !ok {
-		return
-	}
-	for _, rawItem := range content {
-		item, ok := rawItem.(map[string]any)
-		if !ok {
-			continue
-		}
-		itemType, _ := item["type"].(string)
-		switch itemType {
-		case "text":
-			text, _ := item["text"].(string)
-			if text != "" {
-				firstLine := text
-				if idx := strings.Index(text, "\n"); idx >= 0 {
-					firstLine = text[:idx]
-				}
-				execCtx.Bus.Emit(events.ProgressMessage{
-					AgentID:   agentID,
-					Message:   firstLine,
-					Timestamp: time.Now(),
-				})
-			}
-		case "tool_use":
-			toolName, _ := item["name"].(string)
-			if toolName == "" {
-				toolName = "unknown"
-			}
-			detail := ""
-			if input, ok := item["input"].(map[string]any); ok {
-				switch toolName {
-				case "Read", "Write", "Edit":
-					if fp, ok := input["file_path"].(string); ok {
-						detail = filepath.Base(fp)
-					}
-				case "Bash":
-					if cmd, ok := input["command"].(string); ok {
-						detail = cmd
-					}
-				}
-			}
-			execCtx.Bus.Emit(events.ToolInvocation{
-				AgentID:   agentID,
-				ToolName:  toolName,
-				Detail:    detail,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-}
-
-// extractOutputText extracts the Claude text output from stream results.
-// Priority: "result" field > message.content[].text > text/content fields.
-func extractOutputText(results []map[string]any) string {
-	// First pass: look for result field.
-	var sb strings.Builder
-	hasResult := false
-	for _, r := range results {
-		if s, ok := r["result"].(string); ok {
-			sb.WriteString(s)
-			hasResult = true
-		}
-	}
-	if hasResult {
-		return sb.String()
-	}
-
-	// Second pass: extract from other sources.
-	sb.Reset()
-	for _, r := range results {
-		if msg, ok := r["message"].(map[string]any); ok {
-			content := msg["content"]
-			switch c := content.(type) {
-			case []any:
-				for _, rawItem := range c {
-					if item, ok := rawItem.(map[string]any); ok {
-						if t, ok := item["text"].(string); ok {
-							sb.WriteString(t)
-						}
-					}
-				}
-			case string:
-				sb.WriteString(c)
-			}
-		} else if t, ok := r["text"].(string); ok {
-			sb.WriteString(t)
-		} else if c, ok := r["content"].(string); ok {
-			sb.WriteString(c)
-		} else if items, ok := r["content"].([]any); ok {
-			for _, rawItem := range items {
-				if item, ok := rawItem.(map[string]any); ok {
-					if t, ok := item["text"].(string); ok {
-						sb.WriteString(t)
-					}
-				}
-			}
-		}
-	}
-	return sb.String()
-}
-
-// limitPatterns lists substrings (lowercase) that identify a Claude usage-limit
-// error. The stream result and stderr fallback paths both use this list.
-var limitPatterns = []string{
-	"hit your limit",
-	"out of extra usage",
-}
-
-// isLimitMessage returns true when msg (case-insensitive) matches any known
-// Claude usage-limit pattern.
-func isLimitMessage(msg string) bool {
-	lower := strings.ToLower(msg)
-	for _, pat := range limitPatterns {
-		if strings.Contains(lower, pat) {
-			return true
-		}
-	}
-	return false
-}
-
-// isLimitError returns true when obj is a Claude usage-limit result object.
-func isLimitError(obj map[string]any) bool {
-	if t, _ := obj["type"].(string); t != "result" {
-		return false
-	}
-	isErr, _ := obj["is_error"].(bool)
-	if !isErr {
-		return false
-	}
-	result, _ := obj["result"].(string)
-	return isLimitMessage(result)
 }

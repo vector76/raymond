@@ -29,7 +29,7 @@ themselves.
 - **Cross-workflow calls** — Invoke other workflows via `<call-workflow>`,
   `<function-workflow>`, `<fork-workflow>`, and `<reset-workflow>` with shared
   budget and state
-- **Daemon mode** — `raymond serve` exposes workflows via HTTP API and MCP
+- **Daemon mode** — `ray serve` exposes workflows via HTTP API and MCP
   tools, with a web UI for monitoring runs and delivering human input
 - **Skill packaging** — Bundle workflows as self-contained skills with a
   contract file (SKILL.md), entry point script, and manifest for daemon
@@ -38,51 +38,50 @@ themselves.
   when exceeded
 - **Crash recovery** — Workflow state is persisted to disk; crashed workflows
   can be resumed
-- **Static analysis** — `raymond lint` validates workflows statically;
-  `raymond diagram` generates Mermaid flowcharts; `raymond convert` turns a
+- **Static analysis** — `ray lint` validates workflows statically;
+  `ray diagram` generates Mermaid flowcharts; `ray convert` turns a
   directory or zip workflow into the single-file YAML format
 
 ## Quick start
 
 ```bash
 # Build (requires Go 1.21+)
-go build -o raymond ./cmd/raymond
 go build -o ray ./cmd/ray
 
 # Or install to GOPATH/bin
-go install ./cmd/raymond ./cmd/ray
+go install ./cmd/ray
 
 # Run a workflow
-raymond workflows/test_cases/CLASSIFY.md
+ray workflows/test_cases/CLASSIFY.md
 
 # Run with options
-raymond workflows/test_cases/START.md --budget 5.0 --model sonnet
+ray workflows/test_cases/START.md --budget 5.0 --model sonnet
 
 # Resume a workflow
-raymond --resume workflow_2026-01-15_14-30-22
+ray --resume workflow_2026-01-15_14-30-22
 
 # Run a workflow with human-in-the-loop support
-raymond workflow/ --on-ask=pause
+ray workflow/ --on-ask=pause
 # If it exits with code 2, deliver input and resume:
-raymond --resume <run_id> --input "approved"
+ray --resume <run_id> --input "approved"
 
 # Start the daemon (HTTP API + web UI)
-raymond serve --root ./workflows
+ray serve --root ./workflows
 
 # Lint, diagram, and convert
-raymond lint ./my-workflow
-raymond diagram --html ./my-workflow
-raymond convert ./my-workflow --output my-workflow.yaml
+ray lint ./my-workflow
+ray diagram --html ./my-workflow
+ray convert ./my-workflow --output my-workflow.yaml
 
 # Generate a config file
-raymond --init-config
+ray --init-config
 ```
 
-By default raymond runs Claude with `--dangerously-skip-permissions` and an
+By default Raymond runs Claude with `--dangerously-skip-permissions` and an
 unlimited budget. Both can be tightened either on the command line
 (`--dangerously-skip-permissions=false`, `--budget=5`) or in
 `.raymond/config.toml` (`dangerously_skip_permissions = false`,
-`budget = 5`). Only run raymond in environments you trust to skip
+`budget = 5`). Only run Raymond in environments you trust to skip
 permission prompts.
 
 ## Example workflow
@@ -114,7 +113,7 @@ When everything passes: <result>Implementation complete</result>
 ```
 
 ```bash
-raymond workflows/example/PLAN.md
+ray workflows/example/PLAN.md
 ```
 
 The `<reset>` discards the planning context (it's captured in plan.md) and
@@ -128,9 +127,9 @@ so the agent can see its previous attempts.
 | [Authoring Guide](docs/authoring-guide.md) | Workflow authors | How to write state files — the complete guide |
 | [Skill Packaging](docs/skill-packaging.md) | Workflow authors | Bundle workflows as skills with SKILL.md, run.sh, and manifest |
 | [Workflow Protocol](docs/workflow-protocol.md) | Reference | Authoritative protocol specification |
-| [Daemon Server](docs/daemon-server.md) | Reference | `raymond serve` — HTTP API, MCP tools, and web UI |
-| [Lint](docs/lint.md) | Reference | `raymond lint` — static analysis checks |
-| [Diagram](docs/diagram.md) | Reference | `raymond diagram` — Mermaid flowchart generation |
+| [Daemon Server](docs/daemon-server.md) | Reference | `ray serve` — HTTP API, MCP tools, and web UI |
+| [Lint](docs/lint.md) | Reference | `ray lint` — static analysis checks |
+| [Diagram](docs/diagram.md) | Reference | `ray diagram` — Mermaid flowchart generation |
 | [Cross-Workflow Design](docs/cross-workflow-design.md) | Reference | Cross-workflow invocation tags |
 | [YAML Workflows](docs/yaml-workflows.md) | Reference | Single-file YAML workflow format |
 | [Reset Stack Retention](docs/reset-stack-retention.md) | Reference | How `<reset>` preserves the call/return stack |

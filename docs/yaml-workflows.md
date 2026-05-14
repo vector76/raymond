@@ -134,13 +134,13 @@ no policy fields produces bare prompt text with no frontmatter block.
 
 ```bash
 # Entry point resolved automatically (looks for 1_START or START)
-raymond workflow.yaml
+ray workflow.yaml
 
 # Start at a specific state
-raymond workflow.yaml/REVIEW
+ray workflow.yaml/REVIEW
 
 # With flags
-raymond workflow.yaml/REVIEW -m sonnet --input "review this PR"
+ray workflow.yaml/REVIEW -m sonnet --input "review this PR"
 ```
 
 The `workflow.yaml/STATE` syntax is not a filesystem path — the CLI splits on
@@ -149,7 +149,7 @@ the YAML extension to extract the scope and initial state.
 ### Resume
 
 ```bash
-raymond --resume <workflow-id>
+ray --resume <workflow-id>
 ```
 
 On resume, the YAML file is re-parsed and re-validated. If the file has been
@@ -159,8 +159,8 @@ a clear error.
 ### Lint
 
 ```bash
-raymond lint workflow.yaml
-raymond lint --json --level error workflow.yaml
+ray lint workflow.yaml
+ray lint --json --level error workflow.yaml
 ```
 
 Runs the same static analysis checks as directory-based workflows (missing
@@ -169,8 +169,8 @@ transition targets, unreachable states, etc.).
 ### Diagram
 
 ```bash
-raymond diagram workflow.yaml
-raymond diagram --html --output diagram.html workflow.yaml
+ray diagram workflow.yaml
+ray diagram --html --output diagram.html workflow.yaml
 ```
 
 Generates a Mermaid flowchart or interactive HTML diagram from the workflow
@@ -178,7 +178,7 @@ states and transitions.
 
 ## Entry point resolution
 
-When no initial state is specified (`raymond workflow.yaml`), the entry point
+When no initial state is specified (`ray workflow.yaml`), the entry point
 is resolved using the same rules as directory-based workflows:
 
 1. Look for a state named `1_START` (any extension)
@@ -186,7 +186,7 @@ is resolved using the same rules as directory-based workflows:
 3. If both exist, report an ambiguity error
 4. If neither exists, report an error
 
-When an initial state is given (`raymond workflow.yaml/REVIEW`), the bare name
+When an initial state is given (`ray workflow.yaml/REVIEW`), the bare name
 is resolved to its virtual filename (`REVIEW.md` or `REVIEW.sh`, depending on
 the state type).
 
@@ -206,7 +206,7 @@ parser detects common state-like keys and suggests adding the wrapper.
 ## Manifest Metadata for Daemon Discovery
 
 A YAML workflow may carry manifest metadata as top-level keys alongside
-`states`. When present, the daemon (`raymond serve`) discovers the file as a
+`states`. When present, the daemon (`ray serve`) discovers the file as a
 runnable workflow and exposes it through the HTTP API, MCP tools, and web UI.
 This makes the YAML file truly self-describing: definition, metadata, and
 discoverability in one file.
@@ -242,7 +242,7 @@ permitted or required.
 
 The entire `input` block is optional. Omitting it is equivalent to `input: {mode: optional}` with no label or description.
 
-Adding manifest fields has **no effect on CLI behavior**. `raymond
+Adding manifest fields has **no effect on CLI behavior**. `ray
 workflow.yaml` runs the workflow identically whether or not `id` and its
 siblings are present — the CLI ignores manifest fields. They are consumed only
 by the daemon registry.
@@ -288,9 +288,9 @@ states:
       - tag: result
 ```
 
-This file can be run directly (`raymond workflow.yaml`), discovered by the
-daemon (`raymond serve --root .`), linted (`raymond lint workflow.yaml`), and
-diagrammed (`raymond diagram workflow.yaml`).
+This file can be run directly (`ray workflow.yaml`), discovered by the
+daemon (`ray serve --root .`), linted (`ray lint workflow.yaml`), and
+diagrammed (`ray diagram workflow.yaml`).
 
 ## Comparison with other scope types
 
@@ -301,7 +301,7 @@ diagrammed (`raymond diagram workflow.yaml`).
 | **Script support** | `.sh`/`.bat`/`.ps1` files | Same, inside archive | `sh`/`ps1`/`bat` keys in state definition |
 | **Policy via frontmatter** | In each `.md` file | Same | `allowed_transitions`, `model`, `effort`, `timeout` keys |
 | **Manifest** | Separate `workflow.yaml` file | `workflow.yaml` inside archive | Embedded in same file |
-| **CLI syntax** | `raymond dir/` or `raymond dir/FILE.md` | `raymond archive.zip` | `raymond workflow.yaml` or `raymond workflow.yaml/STATE` |
+| **CLI syntax** | `ray dir/` or `ray dir/FILE.md` | `ray archive.zip` | `ray workflow.yaml` or `ray workflow.yaml/STATE` |
 
 ## Complete example
 
@@ -338,7 +338,7 @@ states:
 ```
 
 ```bash
-raymond workflow.yaml --input "$(cat src/main.go)"
+ray workflow.yaml --input "$(cat src/main.go)"
 ```
 
 Transition targets use virtual filenames — `.md` for markdown states, `.sh` or

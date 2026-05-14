@@ -234,7 +234,7 @@ The orchestrator's state resolution logic needs to:
 ### Working Directory
 
 By default, scripts execute in the **orchestrator's working directory** (where
-`raymond` was launched), not in the scope directory where state files reside.
+`ray` was launched), not in the scope directory where state files reside.
 This ensures path consistency with Claude Code:
 
 - If Claude Code references `foo/bar/file.txt`, it's relative to the orchestrator

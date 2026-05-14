@@ -14,7 +14,7 @@ Every skill package contains at least three files:
 |------|---------|
 | `SKILL.md` | Interface contract — describes inputs, outputs, human-input expectations, and invocation instructions for callers. |
 | `run.sh` / `run.bat` | Entry point script — the only thing callers execute directly. Handles both `run` (first invocation) and `resume` (subsequent input delivery). |
-| `workflow.yaml` | Daemon manifest — metadata for discovery by `raymond serve` and other tooling. |
+| `workflow.yaml` | Daemon manifest — metadata for discovery by `ray serve` and other tooling. |
 
 The rest of the directory is a normal Raymond workflow scope: state files
 (`.md`, `.sh`), and optionally a `states/` subdirectory when the workflow is
@@ -33,13 +33,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 case "${1:-run}" in
   run)
-    exec raymond "$SCRIPT_DIR" \
+    exec ray "$SCRIPT_DIR" \
       --on-ask=pause \
       --budget "${BUDGET:-5.00}" \
       ${INPUT:+--input "$INPUT"}
     ;;
   resume)
-    exec raymond \
+    exec ray \
       --resume "$RUN_ID" \
       --input "$INPUT"
     ;;
@@ -52,7 +52,7 @@ esac
 
 **Key points:**
 
-- `exec` replaces the shell process with `raymond`, so the caller sees
+- `exec` replaces the shell process with `ray`, so the caller sees
   Raymond's exit code directly.
 - The `run` case passes `--on-ask=pause` so the workflow exits cleanly at
   ask points instead of rejecting them.
@@ -88,7 +88,7 @@ the active ask point:
     "prompt": "Please approve or reject vendor Acme Corp (budget: $50,000)"
   },
   "pending_count": 0,
-  "resume": "raymond --resume vendor-approval-a1b2c3 --input \"[your response]\""
+  "resume": "ray --resume vendor-approval-a1b2c3 --input \"[your response]\""
 }
 ```
 
@@ -115,9 +115,9 @@ Callers drive the skill through a run/resume loop:
 └──────┬──────┘
        │
        ▼
-   ┌────────┐    exit 0    ┌──────┐
-   │ raymond │────────────▶│ done │
-   └────┬───┘              └──────┘
+   ┌─────┐    exit 0    ┌──────┐
+   │ ray │────────────▶│ done │
+   └──┬──┘              └──────┘
         │
         │ exit 2 (JSON on stdout)
         ▼
@@ -202,7 +202,7 @@ for a complete example.
 
 ## `workflow.yaml` Manifest
 
-The manifest provides metadata for `raymond serve` and other tooling that
+The manifest provides metadata for `ray serve` and other tooling that
 discovers and indexes skills.
 
 ```yaml
@@ -268,6 +268,6 @@ path as the scope directory — Raymond resolves state files directly within the
 scope it is given, without searching subdirectories:
 
 ```bash
-exec raymond "$SCRIPT_DIR/states" \
+exec ray "$SCRIPT_DIR/states" \
   --on-ask=pause ...
 ```

@@ -483,11 +483,11 @@ Analyze the proposals and request a decision from the human.
 
 **`--on-ask` CLI flag:** By default (`--on-ask=reject`), workflows that
 emit `<ask>` fail immediately — this protects automated/CI contexts from
-hanging. Use `--on-ask=pause` for interactive use, or run via `raymond serve`
+hanging. Use `--on-ask=pause` for interactive use, or run via `ray serve`
 for daemon mode. See [skill-packaging.md](skill-packaging.md) for the full
 exit code protocol.
 
-**File attachments:** When running under `raymond serve`, `<ask>` can also
+**File attachments:** When running under `ray serve`, `<ask>` can also
 ask the user to upload files or expose files for them to view. Add attributes
 on the opening tag:
 
@@ -508,13 +508,13 @@ example below.
 
 There are two ways to drive additional work from a workflow, and they
 have very different lifecycle and visibility consequences — especially
-when the parent runs under `raymond serve`.
+when the parent runs under `ray serve`.
 
 **In-process: `<fork>` and `<fork-workflow>` — same orchestrator, same
 pool.** `<fork>` spawns another agent within the current workflow;
 `<fork-workflow>` launches a different workflow under the same
 orchestrator. Both share the parent's budget, lifecycle, and run pool,
-and (under `raymond serve`) appear in the daemon's run list. No separate
+and (under `ray serve`) appear in the daemon's run list. No separate
 state file is created. This is the right choice when the nested work is
 logically part of the parent run.
 
@@ -525,7 +525,7 @@ directory and writes to `.raymond/state/` (the CLI pool) regardless of
 where the parent's state lives. The implications for the author:
 
 - The nested run is **detached from the parent's lifecycle**. If the
-  parent runs under `raymond serve`, the nested run does not appear in
+  parent runs under `ray serve`, the nested run does not appear in
   the daemon's run list, does not stream events through the parent's
   channel, and is not aborted when the parent is cancelled or quiesced.
 - `ray serve --clean` does **not** touch the nested run's state file —
@@ -600,7 +600,7 @@ Write a summary based on these findings.
 The `--input` CLI flag sets `{{input}}` for the first state:
 
 ```bash
-raymond workflow.md --input "hello, there"
+ray workflow.md --input "hello, there"
 ```
 
 ### `{{workflow_id}}` — Workflow Identifier
@@ -731,7 +731,7 @@ any transitions that reference it.
 
 ## Working Directory (`cd` Attribute)
 
-By default, all agents execute in the directory where `raymond` was launched.
+By default, all agents execute in the directory where `ray` was launched.
 The `cd` attribute lets agents operate in different directories:
 
 ```markdown
@@ -930,7 +930,7 @@ Execute the decision and produce a final report.
 
 ### Pattern: File Upload from User
 
-Daemon-mode (`raymond serve`) workflows can ask the user to upload a file
+Daemon-mode (`ray serve`) workflows can ask the user to upload a file
 through the web UI. Declare an upload affordance on the `<ask>` tag, then
 read the uploaded file from the input subdirectory in the next state.
 

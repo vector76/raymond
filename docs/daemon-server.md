@@ -1,6 +1,6 @@
 # Raymond Daemon Server
 
-The `raymond serve` command starts a long-running daemon that discovers
+The `ray serve` command starts a long-running daemon that discovers
 workflows from configured directories and exposes them to clients via an HTTP
 API and/or MCP (Model Context Protocol) tool interface. The daemon manages
 workflow runs, handles human-in-the-loop `<ask>` input delivery, and provides
@@ -9,7 +9,7 @@ a minimal web UI for monitoring.
 ## Usage
 
 ```
-raymond serve --root <dir> [--root <dir2> ...] [flags]
+ray serve --root <dir> [--root <dir2> ...] [flags]
 ```
 
 ### Flags
@@ -30,19 +30,19 @@ raymond serve --root <dir> [--root <dir2> ...] [flags]
 Start the daemon scanning a single root:
 
 ```
-raymond serve --root ./workflows
+ray serve --root ./workflows
 ```
 
 Scan multiple roots with a custom port:
 
 ```
-raymond serve --root ./workflows --root /opt/shared-workflows --port 9090
+ray serve --root ./workflows --root /opt/shared-workflows --port 9090
 ```
 
 MCP-only mode (no HTTP server):
 
 ```
-raymond serve --root ./workflows --mcp --no-http
+ray serve --root ./workflows --mcp --no-http
 ```
 
 ### Auto-launching workflows on startup
@@ -51,7 +51,7 @@ Pass one or more `--launch <workflow_id>` flags to dispatch workflows
 automatically once the daemon's transports are ready:
 
 ```
-raymond serve --root ./workflows --launch nightly-report --launch health-check
+ray serve --root ./workflows --launch nightly-report --launch health-check
 ```
 
 Each `--launch` is equivalent to a `POST /runs` with body

@@ -5,13 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 case "${1:-run}" in
   run)
-    exec raymond "$SCRIPT_DIR/states" \
+    exec ray "$SCRIPT_DIR/states" \
       --on-ask=pause \
       --budget "${BUDGET:-5.00}" \
       ${INPUT:+--input "$INPUT"}
     ;;
   resume)
-    exec raymond \
+    exec ray \
       --resume "$RUN_ID" \
       --input "$INPUT"
     ;;

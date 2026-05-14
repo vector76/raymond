@@ -78,7 +78,7 @@ deep-dive section below.
 | Determinism / shell         | Shell-script states with **zero token cost** for polling, builds, data prep                                 | N/A                                 | Agent shells out, LLM-mediated | Tools are Python; orchestration still LLM-driven        |
 | Multi-agent                 | `<fork>` runs independent agents in parallel within one workflow                                            | Single agent                        | Single agent (opaque internals)| Native — multiple roles, sequential or hierarchical     |
 | Cross-workflow reuse        | `<call-workflow>`, `<function-workflow>`, `<fork-workflow>`, `<reset-workflow>`; skill packaging            | N/A                                 | Closed                         | Crews can be composed; no formal call-stack semantics   |
-| Static analysis             | `raymond lint`, `raymond diagram` (Mermaid), convertible YAML form                                          | None                                | None                           | None — behavior emerges at runtime                      |
+| Static analysis             | `ray lint`, `ray diagram` (Mermaid), convertible YAML form                                          | None                                | None                           | None — behavior emerges at runtime                      |
 | Cost budget                 | Per-workflow dollar budget that overrides transitions when exceeded                                         | Token cost only                     | Hosted credit / quota system   | Token cost only                                         |
 | Persistence / resume        | Disk-persisted state; `--resume <run_id>` after crash or human input                                        | Stateless                           | Hosted, session-scoped         | In-memory by default                                    |
 | Distribution                | Go binary plus daemon; self-hosted                                                                          | Open weights (HuggingFace)          | SaaS only                      | `pip install crewai`                                    |
@@ -127,10 +127,10 @@ supervision. Raymond is the only one of the four that distinguishes
 Because workflows are declared as a graph of states with explicit
 `allowed_transitions`, Raymond can:
 
-- `raymond lint` — validate the workflow without running it (catches
+- `ray lint` — validate the workflow without running it (catches
   unreachable states, undeclared transitions, cycles that can't terminate).
-- `raymond diagram` — emit a Mermaid flowchart of the state space.
-- `raymond convert` — collapse a directory or zip workflow into a single YAML
+- `ray diagram` — emit a Mermaid flowchart of the state space.
+- `ray convert` — collapse a directory or zip workflow into a single YAML
   file for review or distribution.
 
 CrewAI and Manus only reveal behavior at runtime; you find out what the agent
@@ -189,7 +189,7 @@ including `sequential-reviewer` and `parallel-planner-with-review`.
 | Static analysis               | `lint`, `diagram`, YAML form                                                  | None — behavior is whatever the JS does                                 |
 | Persistence / resume          | Disk-persisted workflow state; `--resume <run_id>` for crashes and HIL        | Session capture (Claude JSONL) + `resumeSession`; not workflow-level    |
 | Cost control                  | Per-workflow dollar budget that overrides transitions                         | `idleTimeoutSeconds` + `maxIterations` + `AbortSignal`                  |
-| Server / daemon               | `raymond serve` (HTTP + MCP + web UI)                                         | None — it's a library                                                   |
+| Server / daemon               | `ray serve` (HTTP + MCP + web UI)                                         | None — it's a library                                                   |
 | Distribution                  | Go binary plus daemon; self-hosted                                            | npm package (`@ai-hero/sandcastle`)                                     |
 
 ### What Sandcastle does that Raymond doesn't
@@ -299,14 +299,14 @@ after it ends?
 
 | System     | During run                                                                                | After run                                                            |
 |------------|-------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
-| Raymond    | State transition log; web UI under `raymond serve`; lint and Mermaid diagram available *before* the run | Persisted run state on disk (resumable); per-state input/output captured |
+| Raymond    | State transition log; web UI under `ray serve`; lint and Mermaid diagram available *before* the run | Persisted run state on disk (resumable); per-state input/output captured |
 | Sandcastle | `onAgentStreamEvent` callback (text and tool-call chunks); file or stdout logging         | Captured Claude session JSONL; `RunResult` with iterations, commits, usage |
 | CrewAI     | Per-agent / per-task callbacks; verbose logging                                           | In-memory results; persistence requires user code                    |
 | Manus      | Hosted web UI showing the planner's narration                                             | Session log in the product; not exportable as structured data        |
 | Hermes     | N/A                                                                                       | N/A                                                                  |
 
 Raymond's distinctive property here is the **pre-run** observability:
-because workflows are static graphs, `raymond lint` and `raymond diagram`
+because workflows are static graphs, `ray lint` and `ray diagram`
 let the operator inspect the *space of possible behaviors* before any LLM
 call. Sandcastle and CrewAI only let you inspect actual runs.
 

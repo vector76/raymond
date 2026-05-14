@@ -46,15 +46,14 @@ jobs:
           [ "$GOOS" = "windows" ] && EXT=".exe"
 
           LDFLAGS="-s -w -X github.com/vector76/raymond/internal/version.Version=${VERSION}"
-          go build -ldflags "${LDFLAGS}" -o "raymond${EXT}" ./cmd/raymond
           go build -ldflags "${LDFLAGS}" -o "ray${EXT}" ./cmd/ray
 
           if [ "$GOOS" = "windows" ]; then
-            ARCHIVE="raymond-${VERSION}-${GOOS}-${GOARCH}.zip"
-            zip "${ARCHIVE}" raymond.exe ray.exe
+            ARCHIVE="ray-${VERSION}-${GOOS}-${GOARCH}.zip"
+            zip "${ARCHIVE}" ray.exe
           else
-            ARCHIVE="raymond-${VERSION}-${GOOS}-${GOARCH}.tar.gz"
-            tar czf "${ARCHIVE}" raymond ray
+            ARCHIVE="ray-${VERSION}-${GOOS}-${GOARCH}.tar.gz"
+            tar czf "${ARCHIVE}" ray
           fi
 
           echo "ASSET=${ARCHIVE}" >> "$GITHUB_ENV"

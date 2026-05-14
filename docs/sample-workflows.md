@@ -74,7 +74,7 @@ Respond with a pair of "<result>" XML tags enclosing exactly one word: POSITIVE,
 
 **Test procedure:**
 1. Write "I love this beautiful sunny day!" to `workflows/test_cases/test_files/input1.txt`
-2. Run workflow: `raymond workflows/test_cases/CLASSIFY.md`
+2. Run workflow: `ray workflows/test_cases/CLASSIFY.md`
 3. Verify orchestrator captures output containing "POSITIVE" and prints: `Agent main terminated with result: POSITIVE`
 4. Write "This is terrible and I hate it." to `workflows/test_cases/test_files/input1.txt`
 5. Run workflow again
@@ -127,7 +127,7 @@ When done, write the complete mini-story to workflows/test_cases/test_outputs/st
 ```
 
 **Test procedure:**
-1. Start workflow: `raymond workflows/test_cases/1_START.md`
+1. Start workflow: `ray workflows/test_cases/1_START.md`
 2. Verify it transitions to CONFLICT.md
 3. Verify CONFLICT.md references the character by name (context preserved)
 4. Verify it transitions to RESOLUTION.md
@@ -197,7 +197,7 @@ child's `<result>` tag. This is how the parent receives the child's return value
 
 **Test procedure:**
 1. Write "purple elephants" to `workflows/test_cases/test_files/research-input.txt`
-2. Start workflow: `raymond workflows/test_cases/MAIN.md`
+2. Start workflow: `ray workflows/test_cases/MAIN.md`
 3. Verify it calls RESEARCH.md as a child workflow
 4. Verify RESEARCH.md returns facts about purple elephants via `<result>` tag
 5. Verify parent resumes at SUMMARIZE.md with `{{input}}` populated
@@ -279,7 +279,7 @@ metadata through Claude Code's session state.
    rivers
    clouds
    ```
-2. Start workflow: `raymond workflows/test_cases/DISPATCH.md`
+2. Start workflow: `ray workflows/test_cases/DISPATCH.md`
 3. Verify three independent WORKER agents are spawned (all in same state file)
 4. Verify each worker creates its own output file with a haiku
 5. Verify `workflows/test_cases/test_outputs/dispatch-log.txt` says "Dispatched 3 workers"
@@ -314,7 +314,7 @@ Then request another iteration:
 
 **Test procedure:**
 1. Delete `workflows/test_cases/test_outputs/improve-output.txt` if it exists
-2. Start workflow with a small budget: `raymond workflows/test_cases/IMPROVE.md --budget 0.10`
+2. Start workflow with a small budget: `ray workflows/test_cases/IMPROVE.md --budget 0.10`
    (Note: Cost budget limiting is a future feature - this test documents the intended behavior)
 3. Verify workflow runs until total cost exceeds budget, then terminates despite AI requesting more iterations
 4. Verify `workflows/test_cases/test_outputs/improve-output.txt` contains multiple drafts (number depends on cost per iteration)
@@ -364,7 +364,7 @@ Then respond with:
 ```
 
 **Test procedure:**
-1. Start workflow: `raymond workflows/test_cases/PHASE1.md`
+1. Start workflow: `ray workflows/test_cases/PHASE1.md`
 2. Verify it generates a number and writes to `workflows/test_cases/test_outputs/reset-output.txt`
 3. Verify it resets to PHASE2.md (new session ID in state file)
 4. Verify PHASE2.md can read the number from file
@@ -421,8 +421,8 @@ Respond with:
 ```
 
 **Test procedure:**
-1. Run workflow: `raymond workflows/test_cases/SCRIPT_GOTO.sh` (Unix) or
-   `raymond workflows/test_cases/SCRIPT_GOTO.bat` (Windows)
+1. Run workflow: `ray workflows/test_cases/SCRIPT_GOTO.sh` (Unix) or
+   `ray workflows/test_cases/SCRIPT_GOTO.bat` (Windows)
 2. Verify script executes and displays environment variables
 3. Verify transition to SCRIPT_TARGET.md occurs
 4. Verify workflow terminates with result message
@@ -473,7 +473,7 @@ echo ^<result^>%payload%^</result^>
 ```
 
 **Test procedure:**
-1. Run workflow: `raymond workflows/test_cases/SCRIPT_RESULT.sh` (or `.bat`)
+1. Run workflow: `ray workflows/test_cases/SCRIPT_RESULT.sh` (or `.bat`)
 2. Verify script executes and performs work
 3. Verify workflow terminates with result containing timestamp and hostname
 
@@ -520,7 +520,7 @@ fi
 ```
 
 **Test procedure:**
-1. Run workflow: `raymond workflows/test_cases/SCRIPT_RESET.sh` (or `.bat`)
+1. Run workflow: `ray workflows/test_cases/SCRIPT_RESET.sh` (or `.bat`)
 2. Verify script runs 3 times (iterations 1, 2, 3)
 3. Verify counter file is created and incremented
 4. Verify workflow terminates after 3 iterations with result message
@@ -595,7 +595,7 @@ echo "<result>Hybrid workflow completed successfully: script -> markdown -> scri
 ```
 
 **Test procedure:**
-1. Run workflow: `raymond workflows/test_cases/HYBRID_START.sh` (or `.bat`)
+1. Run workflow: `ray workflows/test_cases/HYBRID_START.sh` (or `.bat`)
 2. Verify HYBRID_START script executes and gathers system info
 3. Verify transition to HYBRID_MIDDLE.md (LLM state)
 4. Verify LLM produces observation about hybrid workflows
@@ -661,7 +661,7 @@ Respond with:
 ```
 
 **Test procedure:**
-1. Run workflow: `raymond workflows/test_cases/POLL_EXAMPLE.sh` (or `.bat`)
+1. Run workflow: `ray workflows/test_cases/POLL_EXAMPLE.sh` (or `.bat`)
 2. Verify script polls 3 times with 1-second delays
 3. Verify each poll resets to itself (fresh context)
 4. Verify on third poll, transitions to POLL_PROCESS.md
@@ -681,43 +681,43 @@ workflow file path. Raymond accepts a plain `.md` file, a directory (uses
 
 ```bash
 # Test 1: Pure function
-raymond workflows/test_cases/CLASSIFY.md
+ray workflows/test_cases/CLASSIFY.md
 
 # Test 2: Goto/resume
-raymond workflows/test_cases/1_START.md
+ray workflows/test_cases/1_START.md
 
 # Test 3: Call (child workflow with return)
-raymond workflows/test_cases/MAIN.md
+ray workflows/test_cases/MAIN.md
 
 # Test 4: Fork (independent agents)
-raymond workflows/test_cases/DISPATCH.md
+ray workflows/test_cases/DISPATCH.md
 
 # Test 5: Evaluator override (cost budget, future feature)
-raymond workflows/test_cases/IMPROVE.md --budget 0.10
+ray workflows/test_cases/IMPROVE.md --budget 0.10
 
 # Test 6: Reset (fresh context)
-raymond workflows/test_cases/PHASE1.md
+ray workflows/test_cases/PHASE1.md
 
 # Test 7: Script state with goto (Unix)
-raymond workflows/test_cases/SCRIPT_GOTO.sh
+ray workflows/test_cases/SCRIPT_GOTO.sh
 # Test 7: Script state with goto (Windows)
-raymond workflows/test_cases/SCRIPT_GOTO.bat
+ray workflows/test_cases/SCRIPT_GOTO.bat
 
 # Test 8: Script state with result
-raymond workflows/test_cases/SCRIPT_RESULT.sh   # Unix
-raymond workflows/test_cases/SCRIPT_RESULT.bat  # Windows
+ray workflows/test_cases/SCRIPT_RESULT.sh   # Unix
+ray workflows/test_cases/SCRIPT_RESULT.bat  # Windows
 
 # Test 9: Script reset workflow
-raymond workflows/test_cases/SCRIPT_RESET.sh    # Unix
-raymond workflows/test_cases/SCRIPT_RESET.bat   # Windows
+ray workflows/test_cases/SCRIPT_RESET.sh    # Unix
+ray workflows/test_cases/SCRIPT_RESET.bat   # Windows
 
 # Test 10: Hybrid workflow (script -> markdown -> script)
-raymond workflows/test_cases/HYBRID_START.sh    # Unix
-raymond workflows/test_cases/HYBRID_START.bat   # Windows
+ray workflows/test_cases/HYBRID_START.sh    # Unix
+ray workflows/test_cases/HYBRID_START.bat   # Windows
 
 # Test 11: Polling script
-raymond workflows/test_cases/POLL_EXAMPLE.sh    # Unix
-raymond workflows/test_cases/POLL_EXAMPLE.bat   # Windows
+ray workflows/test_cases/POLL_EXAMPLE.sh    # Unix
+ray workflows/test_cases/POLL_EXAMPLE.bat   # Windows
 ```
 
 ## File Naming

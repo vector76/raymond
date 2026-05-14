@@ -54,7 +54,7 @@ When starting a workflow, you can pass an initial input value that will be
 available to the first state's prompt via the `{{input}}` template variable:
 
 ```bash
-raymond workflow.md --input "hello, there"
+ray workflow.md --input "hello, there"
 ```
 
 This works exactly like the payload from a `<call>` transition returning a
@@ -317,7 +317,7 @@ available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
 - **Input delivery**: Depends on the launch context:
   - **CLI with `--on-ask=pause`**: Raymond quiesces all agents, writes
     structured JSON to stdout, and exits with code 2. Input is delivered via
-    `raymond --resume <id> --input "..."`.
+    `ray --resume <id> --input "..."`.
   - **Daemon mode**: The pending input is registered and delivered via the HTTP
     API (`POST /runs/{id}/asks/{ask_id}`) or MCP elicitation.
 - **`cd` attribute**: Not supported on `<ask>`.
@@ -445,7 +445,7 @@ The runtime stages `out/report.pdf` (shown as `Final Report`) and `out/chart.png
 ## Working Directory (`cd` Attribute)
 
 By default, all agents execute in the orchestrator's working directory (the
-directory where `raymond` was launched). The `cd` attribute on `<fork>` and
+directory where `ray` was launched). The `cd` attribute on `<fork>` and
 `<reset>` transitions allows agents to operate in different directories.
 
 **Supported on:**
@@ -466,7 +466,7 @@ directory where `raymond` was launched). The `cd` attribute on `<fork>` and
 - **Absolute paths** are used as-is (after normalization)
 - **Relative paths** are resolved against the invoking agent's current `cwd`.
   If the agent has no `cwd` set, relative paths resolve against the
-  orchestrator's working directory (where `raymond` was launched)
+  orchestrator's working directory (where `ray` was launched)
 - Path normalization collapses redundant `..` and `.` components, so successive
   relative transitions produce clean paths (e.g., `../foo/../bar` becomes
   `../bar` relative to the base, not a chain of `..` segments)
@@ -510,7 +510,7 @@ that injects a string as `{{input}}` into the target state's prompt:
 
 The value is stored as `pending_result` on the agent before the target state
 executes, then cleared after the state runs — the same mechanism used by
-`raymond --input "..."` and by `<result>` return payloads.
+`ray --input "..."` and by `<result>` return payloads.
 
 **Behavior:**
 - The `input` value is available as `{{input}}` in the target state's prompt
@@ -656,7 +656,7 @@ The `--model` flag on `start` and `run` commands provides a default model for
 all states that don't specify one in frontmatter.
 
 ```bash
-raymond workflows/example/START.md --model sonnet
+ray workflows/example/START.md --model sonnet
 ```
 
 **Precedence:**

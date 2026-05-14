@@ -110,7 +110,7 @@ may use pi-native model patterns directly.
 
 ### Launch flags
 
-`raymond run` and `raymond serve` keep their existing flags. The interpretation
+`ray run` and `ray serve` keep their existing flags. The interpretation
 of `--dangerously-skip-permissions` adapts: pi has no per-call permission
 prompts the way Claude does. Instead, pi's safety boundary is the
 `--tools` allowlist and the `--no-tools` / `--no-builtin-tools` flags. In the
@@ -172,9 +172,9 @@ difference.
   its backend-specific session id (a pi session UUID for pi, a Claude session
   id for Claude), and raymond passes the right one to the right backend on
   resume.
-- **`raymond lint`, `raymond diagram`, `raymond convert`.** Static analysis
+- **`ray lint`, `ray diagram`, `ray convert`.** Static analysis
   is over the workflow graph; the chosen backend has no effect.
-- **`raymond serve` daemon.** HTTP API, MCP tool surface, web UI, and input
+- **`ray serve` daemon.** HTTP API, MCP tool surface, web UI, and input
   delivery all continue to work. The dashboard learns to display the active
   backend and per-agent backend session ids.
 - **`<call>` (stack frame that inherits parent context).** Implemented by
@@ -433,7 +433,7 @@ the workflow author should know about.
    protocol-compatible with MCP. Workflows that depend on the agent calling
    tools exposed by an MCP server cannot run under pi unless an equivalent
    pi extension is available. Note this is distinct from raymond's own
-   *daemon* MCP surface (the tools `raymond serve` exposes to external
+   *daemon* MCP surface (the tools `ray serve` exposes to external
    clients): that is a property of the daemon, not the backend, and works
    regardless of which backend a given workflow uses. (The MCP point is
    summarized in [pi-backend-rationale.md](pi-backend-rationale.md) under
@@ -457,8 +457,8 @@ the workflow author should know about.
 | Cross-workflow invocation | ✓ | ✓ (orchestrator-level) |
 | Per-workflow cost budget | ✓ | ✓ (cost summed from session JSONL after each turn) |
 | `--resume <run_id>` after crash | ✓ | ✓ (pi session UUID persisted) |
-| `raymond lint` / `diagram` / `convert` | ✓ | ✓ (orchestrator-level) |
-| `raymond serve` daemon + web UI | ✓ | ✓ (UI shows pi session ids) |
+| `ray lint` / `diagram` / `convert` | ✓ | ✓ (orchestrator-level) |
+| `ray serve` daemon + web UI | ✓ | ✓ (UI shows pi session ids) |
 | `--dangerously-skip-permissions` | ✓ (acceptEdits / skip) | ✓ but different mechanism — controls tool allowlist |
 | `--continue-and-fork` | ✓ | **✗ rejected at launch** |
 | Per-state `model:` portability | Claude vocabulary | pi vocabulary (use `provider/id` for clarity) |

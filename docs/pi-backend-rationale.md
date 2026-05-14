@@ -170,7 +170,7 @@ remainder are resolved in [pi-backend.md](pi-backend.md):
 - **MCP** — **not supported under pi.** Pi is not MCP-native; it uses
   `--extension` and `--skill` instead. Workflows that require an
   MCP-hosted tool can't run under pi unless the tool also ships as a
-  pi extension or skill. The `raymond serve` daemon's own MCP surface
+  pi extension or skill. The `ray serve` daemon's own MCP surface
   (what external clients call) is unaffected — that's separate from
   the agent-side tool surface.
 - **Availability preflight** — `pi --version` is run once at workflow

@@ -5,7 +5,7 @@
 | Term | Meaning |
 |------|---------|
 | **Prompt folder** | A directory (or zip archive) of state files (`.md` prompts or `.sh`/`.bat`/`.ps1` scripts) that reference each other via transition tags. Represents the static definition of a workflow. |
-| **Orchestrator** | The running Go program (`raymond` binary). Manages agents in a sequential round-robin loop. Each orchestrator instance manages exactly one state file. |
+| **Orchestrator** | The running Go program (`ray` binary). Manages agents in a sequential round-robin loop. Each orchestrator instance manages exactly one state file. |
 | **State file** | JSON file persisting all agent state for one orchestrator run. One orchestrator = one state file. It is an error for multiple orchestrators to access the same state file. |
 | **Agent** | A logical thread of execution within the orchestrator. Has a current state (prompt filename) and a return stack. Created initially or via `<fork>`. Terminates when it emits `<result>` with an empty stack. |
 | **Workflow** | An abstract chain or DAG of steps designed by a prompt engineer. May refer to the static definition (prompt folder) or the conceptual flow. Context clarifies meaning. |
@@ -123,8 +123,8 @@ for typical interactive use because raymond workflows orchestrate Claude on task
 already authorised by launching the workflow. To require permissions instead — Claude's
 `--permission-mode acceptEdits` mode, where edits are auto-accepted but other dangerous
 operations still prompt — pass `--dangerously-skip-permissions=false` on the CLI or set
-`dangerously_skip_permissions = false` in `.raymond/config.toml`. Both the `raymond`
-launcher and `raymond serve` (HTTP API + MCP) honour the same flag and config key with the
+`dangerously_skip_permissions = false` in `.raymond/config.toml`. Both the `ray`
+CLI and `ray serve` (HTTP API + MCP) honour the same flag and config key with the
 same precedence (CLI > config > default-true), so daemon-launched runs match the CLI's
 behaviour.
 
@@ -354,7 +354,7 @@ state with a fresh session.
 
 ### Multiple Workflows
 
-Each workflow has its own state file, and separate `raymond` invocations manage
+Each workflow has its own state file, and separate `ray` invocations manage
 them independently:
 
 ```

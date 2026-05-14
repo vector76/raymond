@@ -38,7 +38,7 @@ raymond orchestrator instance** — not as child processes. This means:
   `<function-workflow>`, and `<reset-workflow>` transition the existing agent
   into the sub-workflow scope (like `<call>` and `<function>`) without creating
   new agent entries.
-  Crash recovery via `raymond --resume` restores the entire composition
+  Crash recovery via `ray --resume` restores the entire composition
   automatically.
 - **Shared event bus**: All events (cost, state transitions, agent lifecycle)
   are visible to a single console observer.
@@ -79,7 +79,7 @@ a different tag.
 ## Workflow Specifier Syntax
 
 The content of all four cross-workflow tags is a **workflow specifier** — the
-same grammar accepted by `raymond --start` on the command line:
+same grammar accepted by `ray --start` on the command line:
 
 | Specifier form | Meaning |
 |----------------|---------|
@@ -201,7 +201,7 @@ specifiers are valid but reduce portability; relative specifiers are preferred
 in workflow repositories.
 
 **At launch time**, when raymond is started with a relative path (e.g.,
-`raymond ./my-workflows/feat/`), the scope directory is resolved to an
+`ray ./my-workflows/feat/`), the scope directory is resolved to an
 **absolute path** immediately and stored as such in the state file. This
 ensures that resumed workflows and sub-workflow specifiers resolve correctly
 regardless of the current directory at resume time.
@@ -213,7 +213,7 @@ entry point is resolved from `1_START` (or `START` as a fallback) inside that
 directory using the same extension-agnostic resolution as `<goto>` (finds
 `1_START.md`, `1_START.sh`, etc.). `1_START` takes priority; if both `1_START`
 and `START` exist, it is a fatal error. This mirrors the convention already used
-for `raymond workflow/` on the command line. If no matching entry point file
+for `ray workflow/` on the command line. If no matching entry point file
 exists, the invocation is an error at dispatch time.
 
 ## Tag Semantics
@@ -231,7 +231,7 @@ created.
 - `return` (required): State in the **caller's** scope to resume after the
   sub-workflow completes.
 - `input` (optional): String injected as `{{input}}` into the sub-workflow's
-  entry state, equivalent to `raymond --input "..."`.
+  entry state, equivalent to `ray --input "..."`.
 - `cd` attribute: **Not permitted — a dispatch-time error.** See
   [Session Constraints on `call-workflow`](#session-constraints-on-call-workflow).
 
@@ -307,7 +307,7 @@ as if it had been launched directly in the target workflow.
 
 **Attributes:**
 - `input` (optional): String injected as `{{input}}` into the target
-  workflow's entry state, equivalent to `raymond --input "..."`. Same
+  workflow's entry state, equivalent to `ray --input "..."`. Same
   semantics as the `input` attribute on the other cross-workflow tags.
 - `cd` (optional): Changes the agent's working directory (`cwd`) to this
   path, resolved against the current `cwd`. If omitted, `cwd` is preserved.
@@ -381,7 +381,7 @@ The `input` attribute on all four tags injects a string as `{{input}}` into
 the sub-workflow's entry state. This is semantically identical to running:
 
 ```bash
-raymond ../other-wf/ --input "some data"
+ray ../other-wf/ --input "some data"
 ```
 
 The input value is stored as `pending_result` on the agent before its first
@@ -629,7 +629,7 @@ Feature development pipeline: decompose a feature, then implement.
 
 ```bash
 # Launch the top-level coordinator
-raymond top-level/
+ray top-level/
 ```
 
 ```markdown

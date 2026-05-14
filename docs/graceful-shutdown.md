@@ -1,6 +1,6 @@
-# Graceful Shutdown (`raymond serve`)
+# Graceful Shutdown (`ray serve`)
 
-When `raymond serve` is asked to stop — by `POST /shutdown`, by `SIGINT`,
+When `ray serve` is asked to stop — by `POST /shutdown`, by `SIGINT`,
 or by a container runtime sending `SIGTERM` to PID 1 — the daemon runs
 a deterministic two-phase sequence: **quiesce** (park each run at its
 next state transition) and **cancel** (propagate context cancellation,
@@ -26,7 +26,7 @@ HTTP surface and operator usage are documented in
 
 The conventional Unix mapping is that SIGTERM means "please clean up
 gracefully" and SIGKILL means "die now". Raymond does not follow that
-convention for `raymond serve`, and the reason is the operational
+convention for `ray serve`, and the reason is the operational
 reality of containerized deployments:
 
 - `docker stop` sends SIGTERM and then waits the configured grace
@@ -38,12 +38,12 @@ reality of containerized deployments:
   window is wishful thinking; the supervisor SIGKILLs us mid-quiesce
   and we get the worst of both behaviors.
 
-So `raymond serve` treats SIGTERM as "the supervisor is in a hurry, do
+So `ray serve` treats SIGTERM as "the supervisor is in a hurry, do
 the fast clean exit". The fast clean exit cancels run contexts (which
 propagates to in-flight shell children) and gives goroutines a few
 seconds to honor the cancel before the daemon exits anyway. State
 files end up recording "agent was in `STATE_X`"; auto-resume on the
-next `raymond serve` startup (see [serve-run-pool.md](serve-run-pool.md))
+next `ray serve` startup (see [serve-run-pool.md](serve-run-pool.md))
 re-enters that state from the beginning.
 
 If an operator does want graceful quiesce in a containerized
@@ -129,7 +129,7 @@ has not terminated by then is recorded as cancelled and the daemon
 exits anyway.
 
 The state file at this point records "agent was in `STATE_X`". On the
-next `raymond serve` startup, auto-resume re-enters `STATE_X` from
+next `ray serve` startup, auto-resume re-enters `STATE_X` from
 the beginning. Work performed inside that state runs again from
 scratch: dollars spent on a partially-completed LLM call are spent
 again, and any non-idempotent side effects from a shell step are at

@@ -1,7 +1,7 @@
 # Input File Attachments (Design)
 
 This document describes the design for letting workflow input steps exchange
-files with the user through the `raymond serve` web interface — both files
+files with the user through the `ray serve` web interface — both files
 uploaded by the user as part of an input response, and files written by the
 workflow that the user can view or download alongside the input prompt.
 
@@ -13,7 +13,7 @@ For the surrounding context, see [daemon-server.md](daemon-server.md) and the
 
 ## Motivation
 
-Today, `<ask>` input steps in `raymond serve` exchange only text. That is
+Today, `<ask>` input steps in `ray serve` exchange only text. That is
 sufficient for confirmations, free-form instructions, and short structured
 answers, but it excludes a class of workflows that are otherwise well-suited
 to the human-in-the-loop model:

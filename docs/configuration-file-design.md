@@ -164,7 +164,7 @@ A command-line option `--init-config` will generate a `.raymond/config.toml` fil
 
 **Example:**
 ```bash
-raymond --init-config
+ray --init-config
 # Creates .raymond/config.toml in project root (or cwd if no .git found)
 ```
 
@@ -227,7 +227,7 @@ CLI-supplied values take precedence over config-file values.
 
 **Example Implementation Flow:**
 
-1. User runs: `raymond workflow.md --budget 100.0`
+1. User runs: `ray workflow.md --budget 100.0`
 2. System searches for `.raymond` directory starting from CWD, stopping at `.git` directory
 3. If `.raymond` directory found, checks for `.raymond/config.toml`
 4. If found, loads config (e.g., `budget = 50.0`)
@@ -285,4 +285,4 @@ CLI-supplied values take precedence over config-file values.
 **Migration Notes:**
 - Existing workflows with CWD-based `.raymond` directories will not be found in the new project-based location
 - Users may need to manually move `.raymond` directories to project root
-- Users can adopt config files gradually using `raymond --init-config`
+- Users can adopt config files gradually using `ray --init-config`

@@ -1,6 +1,6 @@
-# raymond diagram
+# ray diagram
 
-The `raymond diagram` subcommand generates a visual Mermaid flowchart of a
+The `ray diagram` subcommand generates a visual Mermaid flowchart of a
 workflow's state transitions. It scans a workflow directory or zip archive,
 parses every state file, and produces a directed graph showing all transitions
 between states.
@@ -11,7 +11,7 @@ a self-contained interactive HTML file instead.
 ## Usage
 
 ```
-raymond diagram <path>
+ray diagram <path>
 ```
 
 `<path>` is a workflow directory or zip archive.
@@ -29,25 +29,25 @@ raymond diagram <path>
 Print Mermaid flowchart to stdout:
 
 ```
-raymond diagram ./my-workflow
+ray diagram ./my-workflow
 ```
 
 Generate an interactive HTML file (written to `diagram.html`):
 
 ```
-raymond diagram --html ./my-workflow
+ray diagram --html ./my-workflow
 ```
 
 Generate HTML with a custom output filename:
 
 ```
-raymond diagram --html --output review.html ./my-workflow
+ray diagram --html --output review.html ./my-workflow
 ```
 
 Diagram a zip archive in Windows mode:
 
 ```
-raymond diagram --win workflow.zip
+ray diagram --win workflow.zip
 ```
 
 ## Mermaid text output
@@ -125,7 +125,7 @@ flowchart TD
 
 ## HTML mode (`--html`)
 
-With `--html`, `raymond diagram` writes a self-contained interactive HTML file
+With `--html`, `ray diagram` writes a self-contained interactive HTML file
 instead of printing Mermaid text.
 
 ### Layout
@@ -164,7 +164,7 @@ absolute or relative path is given.
 
 ## ZIP archive support
 
-`raymond diagram` accepts a zip archive as `<path>`. Hash validation and layout
-detection follow the same rules as `raymond lint`: the SHA256 hash embedded in
+`ray diagram` accepts a zip archive as `<path>`. Hash validation and layout
+detection follow the same rules as `ray lint`: the SHA256 hash embedded in
 the filename is verified before processing, and both flat and single-folder
 archive layouts are supported transparently.

@@ -15,10 +15,8 @@ raymond/
 ├── go.sum                       # Dependency checksums
 │
 ├── cmd/                         # Binary entry points
-│   ├── raymond/
-│   │   └── main.go              # Main raymond binary (full workflow runner)
 │   └── ray/
-│       └── main.go              # ray alias (thin wrapper around raymond)
+│       └── main.go              # Main ray binary (full workflow runner)
 │
 ├── internal/                    # Private packages (not importable externally)
 │   ├── bus/                     # Event bus (publish/subscribe)
@@ -71,10 +69,9 @@ raymond/
 The internal packages form a layered dependency graph:
 
 ```
-cmd/raymond  cmd/ray
-     └──────────┬──────────┘
-                │
-          internal/cli
+cmd/ray
+   │
+   internal/cli
         / /   /   \   \   \
        / /    |    \   \   \
   lint diagram  |  workflow specifier registry
@@ -161,12 +158,11 @@ when `claude` is not installed.
 ## Building
 
 ```bash
-# Build both binaries
-go build ./cmd/raymond
+# Build the binary
 go build ./cmd/ray
 
 # Build to a specific output path
-go build -o /usr/local/bin/raymond ./cmd/raymond
+go build -o /usr/local/bin/ray ./cmd/ray
 
 # Verify everything compiles (no output produced)
 go build ./...
@@ -176,28 +172,28 @@ go build ./...
 
 ```bash
 # Run a workflow (directory, YAML, or ZIP scope)
-raymond path/to/workflow/START.md
-raymond workflow.yaml
-raymond workflow.yaml/REVIEW
+ray path/to/workflow/START.md
+ray workflow.yaml
+ray workflow.yaml/REVIEW
 
 # Resume a paused workflow
-raymond --resume workflow-id
+ray --resume workflow-id
 
 # Run without debug logging
-raymond --no-debug path/to/workflow/START.md
+ray --no-debug path/to/workflow/START.md
 
 # Run quietly (suppress progress output)
-raymond --quiet path/to/workflow/START.md
+ray --quiet path/to/workflow/START.md
 
 # Lint a workflow for static analysis issues
-raymond lint path/to/workflow/
-raymond lint workflow.yaml
-raymond lint --json --level error path/to/workflow/
+ray lint path/to/workflow/
+ray lint workflow.yaml
+ray lint --json --level error path/to/workflow/
 
 # Generate a workflow diagram
-raymond diagram path/to/workflow/
-raymond diagram workflow.yaml
-raymond diagram --html --output my-diagram.html path/to/workflow/
+ray diagram path/to/workflow/
+ray diagram workflow.yaml
+ray diagram --html --output my-diagram.html path/to/workflow/
 ```
 
 ## Platform Support

@@ -1,6 +1,6 @@
-# raymond lint
+# ray lint
 
-`raymond lint` statically analyzes a workflow directory or zip archive and
+`ray lint` statically analyzes a workflow directory or zip archive and
 reports issues as diagnostics with severity levels: **error**, **warning**, and
 **info**.
 
@@ -13,7 +13,7 @@ messages highlight non-obvious behavior that is worth knowing about.
 ## Usage
 
 ```
-raymond lint <path>
+ray lint <path>
 ```
 
 `<path>` is either a workflow directory or a `.zip` archive path.
@@ -30,22 +30,22 @@ raymond lint <path>
 
 ```sh
 # Lint a workflow directory (default output, warnings and above)
-raymond lint ./my-workflow/
+ray lint ./my-workflow/
 
 # Lint with all info messages visible
-raymond lint --level info ./my-workflow/
+ray lint --level info ./my-workflow/
 
 # Show only errors
-raymond lint --level error ./my-workflow/
+ray lint --level error ./my-workflow/
 
 # Windows platform mode
-raymond lint --win ./my-workflow/
+ray lint --win ./my-workflow/
 
 # JSON output (useful for tooling integration)
-raymond lint --json ./my-workflow/
+ray lint --json ./my-workflow/
 
 # JSON output, errors only
-raymond lint --json --level error ./my-workflow/
+ray lint --json --level error ./my-workflow/
 ```
 
 ---
@@ -157,7 +157,7 @@ statically. Lint skips these tags rather than producing false-positive errors.
 
 ## ZIP archive support
 
-`raymond lint` accepts both directory paths and `.zip` archive paths. When a
+`ray lint` accepts both directory paths and `.zip` archive paths. When a
 zip path is given:
 
 1. **Hash validation** runs first: the SHA-256 hash embedded in the filename is

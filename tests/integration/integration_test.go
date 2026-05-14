@@ -192,31 +192,26 @@ func TestZIPScopeScriptWorkflow(t *testing.T) {
 // Build verification (no Claude required)
 // --------------------------------------------------------------------------
 
-// TestBothBinariesBuild verifies that both the raymond and ray binaries
-// compile successfully from their respective cmd packages.
-func TestBothBinariesBuild(t *testing.T) {
+// TestRayBinaryBuilds verifies that the ray binary compiles successfully
+// from its cmd package.
+func TestRayBinaryBuilds(t *testing.T) {
 	repoRoot := filepath.Join("..", "..")
 	tmpDir := t.TempDir()
 
-	for _, pkg := range []struct{ importPath, name string }{
-		{"./cmd/raymond", "raymond"},
-		{"./cmd/ray", "ray"},
-	} {
-		binName := pkg.name
-		if runtime.GOOS == "windows" {
-			binName += ".exe"
-		}
-		binPath := filepath.Join(tmpDir, binName)
-
-		cmd := exec.Command("go", "build", "-o", binPath, pkg.importPath)
-		cmd.Dir = repoRoot
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "go build %s failed:\n%s", pkg.importPath, string(out))
-
-		info, statErr := os.Stat(binPath)
-		require.NoError(t, statErr, "%s binary should exist after build", pkg.name)
-		assert.Greater(t, info.Size(), int64(0), "%s binary should be non-empty", pkg.name)
+	binName := "ray"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
 	}
+	binPath := filepath.Join(tmpDir, binName)
+
+	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/ray")
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "go build ./cmd/ray failed:\n%s", string(out))
+
+	info, statErr := os.Stat(binPath)
+	require.NoError(t, statErr, "ray binary should exist after build")
+	assert.Greater(t, info.Size(), int64(0), "ray binary should be non-empty")
 }
 
 // --------------------------------------------------------------------------

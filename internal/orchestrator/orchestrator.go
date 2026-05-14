@@ -336,7 +336,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					Prompt:  activeAgent.AskPrompt,
 				},
 				PendingCount: pendingCount - 1,
-				Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
+				Resume:       fmt.Sprintf("ray --resume %s --input \"[your response]\"", workflowID),
 			}
 		}
 
@@ -378,7 +378,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					Prompt:  nextAgent.AskPrompt,
 				},
 				PendingCount: remaining - 1,
-				Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
+				Resume:       fmt.Sprintf("ray --resume %s --input \"[your response]\"", workflowID),
 			}
 		}
 
@@ -569,7 +569,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 							Prompt:  activeAgent.AskPrompt,
 						},
 						PendingCount: len(preAskQueue),
-						Resume:       fmt.Sprintf("raymond --resume %s --input \"[your response]\"", workflowID),
+						Resume:       fmt.Sprintf("ray --resume %s --input \"[your response]\"", workflowID),
 					}
 				}
 				return nil

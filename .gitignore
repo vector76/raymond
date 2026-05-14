@@ -1,7 +1,5 @@
 # Go binaries
-/raymond
 /ray
-raymond.exe
 ray.exe
 *.exe
 

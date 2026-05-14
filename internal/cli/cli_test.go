@@ -461,7 +461,7 @@ func TestResumeExisting(t *testing.T) {
 func TestVersionFlag(t *testing.T) {
 	out, _, err := run(t, "--version")
 	require.NoError(t, err)
-	assert.Equal(t, "raymond version dev\n", out)
+	assert.Equal(t, "ray version dev\n", out)
 }
 
 func TestNoArgsError(t *testing.T) {
@@ -2078,7 +2078,7 @@ func TestPendingAskErrorPropagatesThroughCLI(t *testing.T) {
 			Prompt:  "Please provide data",
 		},
 		PendingCount: 0,
-		Resume:       `raymond --resume test-wf-123 --input "[your response]"`,
+		Resume:       `ray --resume test-wf-123 --input "[your response]"`,
 	}
 
 	var out, errOut bytes.Buffer
@@ -2115,7 +2115,7 @@ func TestPendingAskErrorJSONIsParseable(t *testing.T) {
 			Prompt:  "Enter value",
 		},
 		PendingCount: 2,
-		Resume:       `raymond --resume wf-42 --input "[your response]"`,
+		Resume:       `ray --resume wf-42 --input "[your response]"`,
 	}
 
 	// Use the same encoder path as Run().
@@ -2131,7 +2131,7 @@ func TestPendingAskErrorJSONIsParseable(t *testing.T) {
 	assert.Equal(t, "wf-42", parsed["run_id"])
 	assert.Equal(t, "demo", parsed["workflow"])
 	assert.Equal(t, float64(2), parsed["pending_count"])
-	assert.Equal(t, `raymond --resume wf-42 --input "[your response]"`, parsed["resume"])
+	assert.Equal(t, `ray --resume wf-42 --input "[your response]"`, parsed["resume"])
 
 	asking, ok := parsed["asking"].(map[string]interface{})
 	require.True(t, ok)
@@ -2151,7 +2151,7 @@ func TestPendingAskErrorPendingCountReflectsQueueLength(t *testing.T) {
 			Prompt:  "Primary",
 		},
 		PendingCount: 3,
-		Resume:       `raymond --resume wf-multi --input "[your response]"`,
+		Resume:       `ray --resume wf-multi --input "[your response]"`,
 	}
 
 	data, err := json.Marshal(askErr)

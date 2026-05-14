@@ -1,5 +1,5 @@
-// Package cli implements the cobra-based command-line interface shared by
-// both the raymond and ray binaries.
+// Package cli implements the cobra-based command-line interface for the
+// ray binary.
 //
 // Call Run() from a main package to start the program. For tests, construct
 // a CLI with NewTestCLI to inject output writers and a mock workflow runner.
@@ -125,7 +125,7 @@ func NewTestCLICapturing(stdout, stderr io.Writer, captured *[]orchestrator.RunO
 	}
 }
 
-// Run is the main entry point for both the raymond and ray binaries.
+// Run is the main entry point for the ray binary.
 func Run() {
 	c := newCLI()
 	cmd := c.NewRootCmd()
@@ -176,8 +176,8 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:           "raymond [WORKFLOW.md]",
-		Short:         "raymond workflow orchestrator",
+		Use:           "ray [WORKFLOW.md]",
+		Short:         "Raymond workflow orchestrator",
 		Version:       version.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,

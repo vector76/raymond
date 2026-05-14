@@ -229,7 +229,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 				if requiresHuman {
 					return fmt.Errorf(
 						"workflow %q requires human input. "+
-							"Use --on-ask=pause to allow asking, or use `raymond serve` for interactive workflows",
+							"Use --on-ask=pause to allow asking, or use `ray serve` for interactive workflows",
 						workflowID,
 					)
 				}
@@ -246,7 +246,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			if len(askStates) > 0 {
 				return fmt.Errorf(
 					"workflow %q declares <ask> transitions in state(s): %s. "+
-						"Use --on-ask=pause to allow asking, or use `raymond serve` for interactive workflows",
+						"Use --on-ask=pause to allow asking, or use `ray serve` for interactive workflows",
 					workflowID, strings.Join(askStates, ", "),
 				)
 			}
@@ -840,7 +840,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 						ws.Agents[idx].Status = wfstate.AgentStatusPaused
 						ws.Agents[idx].Error = fmt.Sprintf(
 							"agent %q produced <ask> but --on-ask=reject is in effect; "+
-								"use --on-ask=pause or `raymond serve`",
+								"use --on-ask=pause or `ray serve`",
 							agentBefore.ID,
 						)
 						ws.Agents[idx].AskPrompt = ""

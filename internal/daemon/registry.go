@@ -1,5 +1,5 @@
 // Package daemon implements the workflow registry and server components for
-// the raymond serve subcommand.
+// the `ray serve` subcommand.
 package daemon
 
 import (

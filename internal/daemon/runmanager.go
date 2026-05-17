@@ -129,7 +129,6 @@ type RunManager struct {
 	cwd             string // daemon working directory (fallback for workDir)
 	orchestrator    Orchestrator
 	pendingRegistry *PendingRegistry
-	askNotify     func(runID, askID, prompt string) // optional, called when an agent enters <ask>
 }
 
 // NewRunManager creates a RunManager and recovers any in-progress workflows
@@ -358,10 +357,7 @@ func (rm *RunManager) LaunchRun(
 				StagedFiles:    stagedFiles,
 			}
 			if err := rm.pendingRegistry.Register(pi); err != nil {
-				return // registration failed; skip notification
-			}
-			if rm.askNotify != nil {
-				rm.askNotify(runID, askID, prompt)
+				return // registration failed
 			}
 		}
 	}
@@ -573,7 +569,7 @@ func (rm *RunManager) GetRun(runID string) (*RunInfo, bool) {
 
 // ListRuns returns snapshots of all tracked runs, sorted newest-first by
 // StartedAt with RunID as a stable tiebreaker. The sort guarantees a
-// deterministic order for every consumer (HTTP, MCP, the web UI), so callers
+// deterministic order for every consumer (HTTP API and the web UI), so callers
 // don't have to defend against Go map iteration shuffling the result on each
 // call.
 func (rm *RunManager) ListRuns() []RunInfo {
@@ -1115,9 +1111,6 @@ func (rm *RunManager) relaunchRecoveredRun(id string, ws *wfstate.WorkflowState,
 			if err := rm.pendingRegistry.Register(pi); err != nil {
 				return // already registered (recovered replay) or registration failed
 			}
-			if rm.askNotify != nil {
-				rm.askNotify(id, askID, prompt)
-			}
 		}
 	}
 
@@ -1360,13 +1353,6 @@ func (rm *RunManager) ListResolvedInputs(runID string) ([]wfstate.ResolvedInput,
 // inputs automatically.
 func (rm *RunManager) SetPendingRegistry(pr *PendingRegistry) {
 	rm.pendingRegistry = pr
-}
-
-// SetAskNotifier sets an optional callback invoked when an agent enters
-// <ask> in daemon mode. The callback receives (runID, askID, prompt).
-// It is called from the orchestrator's main goroutine and must not block.
-func (rm *RunManager) SetAskNotifier(fn func(runID, askID, prompt string)) {
-	rm.askNotify = fn
 }
 
 // DeliverInput delivers a response to a pending ask input. If runID is

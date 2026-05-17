@@ -445,8 +445,6 @@ const DefaultServePort = 8080
 type ServeFileConfig struct {
 	Root         string
 	Port         *int
-	MCP          bool
-	NoHTTP       bool
 	Workdir      string
 	MaxFileSize  int64
 	MaxTotalSize int64
@@ -462,8 +460,6 @@ type ServeFileConfig struct {
 type ServeCLIArgs struct {
 	Roots        []string
 	Port         *int
-	MCP          bool
-	NoHTTP       bool
 	Workdir      string
 	MaxFileSize  int64
 	MaxTotalSize int64
@@ -476,8 +472,6 @@ type ServeCLIArgs struct {
 type MergedServeConfig struct {
 	Roots        []string
 	Port         int
-	MCP          bool
-	NoHTTP       bool
 	Workdir      string
 	MaxFileSize  int64
 	MaxTotalSize int64
@@ -488,8 +482,6 @@ type MergedServeConfig struct {
 var serveKnownKeys = map[string]bool{
 	"root":           true,
 	"port":           true,
-	"mcp":            true,
-	"no_http":        true,
 	"workdir":        true,
 	"max_file_size":  true,
 	"max_total_size": true,
@@ -538,24 +530,6 @@ func validateServeSection(raw map[string]any, configFile string) (ServeFileConfi
 			)}
 		}
 		out.Port = &p
-	}
-
-	for _, flag := range []string{"mcp", "no_http"} {
-		if v, ok := raw[flag]; ok {
-			b, isBool := v.(bool)
-			if !isBool {
-				return out, &ConfigError{msg: fmt.Sprintf(
-					"Invalid value for %q in %s: expected boolean, got %T",
-					flag, configFile, v,
-				)}
-			}
-			switch flag {
-			case "mcp":
-				out.MCP = b
-			case "no_http":
-				out.NoHTTP = b
-			}
-		}
 	}
 
 	if v, ok := raw["workdir"]; ok {
@@ -692,7 +666,6 @@ func LoadServeConfig(cwd string) (ServeFileConfig, error) {
 // resolve against the process working directory.
 //
 // Port: CLI value wins if non-nil; otherwise file value; otherwise DefaultServePort.
-// MCP/NoHTTP: CLI true wins; otherwise file value.
 // Workdir: CLI value wins if non-empty; otherwise file value.
 func MergeServeConfig(file ServeFileConfig, args ServeCLIArgs) MergedServeConfig {
 	var roots []string
@@ -726,10 +699,8 @@ func MergeServeConfig(file ServeFileConfig, args ServeCLIArgs) MergedServeConfig
 	}
 
 	merged := MergedServeConfig{
-		Roots:  roots,
-		Port:   port,
-		MCP:    args.MCP || file.MCP,
-		NoHTTP: args.NoHTTP || file.NoHTTP,
+		Roots: roots,
+		Port:  port,
 	}
 	if args.Workdir != "" {
 		merged.Workdir = args.Workdir
@@ -817,12 +788,6 @@ const configTemplate = `# Raymond configuration file
 
 # HTTP server port (default: 8080)
 # port = 8080
-
-# Enable MCP transport over stdio (default: false)
-# mcp = false
-
-# Disable HTTP server; requires mcp = true (default: false)
-# no_http = false
 
 # Default working directory for workflow runs (default: process cwd)
 # workdir = ""

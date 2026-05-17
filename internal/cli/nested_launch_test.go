@@ -66,7 +66,7 @@ func TestNestedRayLaunchRoutesToCLIPool(t *testing.T) {
 
 	// ---- Outer run: launched into the serve pool via the daemon's
 	// RunManager with a no-op orchestrator that blocks on ctx. This is the
-	// same mechanism `ray serve --launch` uses, just without the HTTP/MCP
+	// same mechanism `ray serve --launch` uses, just without the HTTP
 	// layer above it.
 	outerScope := t.TempDir()
 	require.NoError(t, os.WriteFile(

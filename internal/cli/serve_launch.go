@@ -14,7 +14,7 @@ import (
 // no other fields: lookup, input-mode validation, budget resolution, launch.
 // serverDSP is the server-wide DangerouslySkipPermissions value (already
 // resolved by the serve command), passed through to LaunchRun so startup
-// runs honour the same configuration as HTTP- or MCP-launched runs.
+// runs honour the same configuration as HTTP-launched runs.
 //
 // Errors per id are logged to logOut and swallowed; the helper itself only
 // returns an error for impossible internal conditions (nil reg or nil rm).

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -14,22 +18,15 @@ import (
 	"github.com/vector76/raymond/internal/cli"
 )
 
-// withClosedStdin replaces os.Stdin with the read end of a pipe whose write
-// end is immediately closed. Reads return EOF, so the MCP server's scanner
-// loop exits on its first iteration and triggers the mcpDone branch in
-// serve.go's select — letting the test exercise the full RunE path without
-// sending a signal.
-func withClosedStdin(t *testing.T) {
+// freePort grabs an OS-assigned free TCP port for the daemon to bind. There
+// is an inherent race between releasing the port and the daemon binding it,
+// but it is small enough in practice that these tests have proven stable.
+func freePort(t *testing.T) int {
 	t.Helper()
-	r, w, err := os.Pipe()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	require.NoError(t, w.Close())
-	orig := os.Stdin
-	os.Stdin = r
-	t.Cleanup(func() {
-		os.Stdin = orig
-		_ = r.Close()
-	})
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }
 
 // chdirIsolated chdirs into a fresh temp dir whose cleanup tolerates the
@@ -82,12 +79,16 @@ func writeServeWorkflow(t *testing.T, root, id string) {
 	))
 }
 
-// runServe invokes `ray serve ...` against a freshly-built test CLI with a
-// cancellable context, then cancels the context after Execute returns so any
-// orchestrator goroutines spawned by --launch wind down promptly rather than
-// running real LLM work past the assertion phase.
+// runServe invokes `ray serve ...` against a freshly-built test CLI on an
+// ephemeral port, then triggers a graceful shutdown via POST /shutdown once
+// the HTTP server is up. By the time HTTP is accepting requests,
+// launchStartupRuns has already finished synchronously, so launch log lines
+// are guaranteed to be in the captured output before we shut down.
 func runServe(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
+	port := freePort(t)
+	args = append(args, "--port", strconv.Itoa(port))
+
 	var out, errOut bytes.Buffer
 	c := cli.NewTestCLI(&out, &errOut)
 	cmd := c.NewRootCmd()
@@ -97,36 +98,55 @@ func runServe(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	defer cancel()
 	cmd.SetContext(ctx)
 
-	err = cmd.Execute()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err = cmd.Execute()
+	}()
+
+	// Poll POST /shutdown until the daemon accepts it (signals HTTP is up
+	// and the shutdown coordinator is installed). Once accepted, the
+	// coordinator drains active runs and serve.RunE returns.
+	shutdownURL := fmt.Sprintf("http://127.0.0.1:%d/shutdown", port)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, postErr := http.Post(shutdownURL, "application/json", nil)
+		if postErr == nil {
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not exit within 5s of POST /shutdown")
+	}
 	cancel()
 	return out.String(), errOut.String(), err
 }
 
 func TestServeStartupLaunches_HappyPath(t *testing.T) {
-	withClosedStdin(t)
 	chdirIsolated(t)
 
 	root := t.TempDir()
 	writeServeWorkflow(t, root, "a")
 	writeServeWorkflow(t, root, "b")
 
-	stdout, stderr, err := runServe(t,
+	stdout, _, err := runServe(t,
 		"serve",
 		"--root", root,
-		"--mcp",
-		"--no-http",
 		"--launch", "a",
 		"--launch", "b",
 	)
 	require.NoError(t, err)
 
-	require.Contains(t, stderr, "Launched run ")
-	require.Contains(t, stderr, "for workflow a")
-	require.Contains(t, stderr, "for workflow b")
-
-	// Under --mcp, stdout is reserved for JSON-RPC; launch lines must
-	// not leak there.
-	require.NotContains(t, stdout, "Launched run")
+	require.Contains(t, stdout, "Launched run ")
+	require.Contains(t, stdout, "for workflow a")
+	require.Contains(t, stdout, "for workflow b")
 }
 
 // TestServeRoutesLaunchesToServePool verifies that `ray serve --launch <id>`
@@ -136,21 +156,18 @@ func TestServeStartupLaunches_HappyPath(t *testing.T) {
 // internal/daemon/runmanager_test.go cover the same property at the RunManager
 // API, but only this test exercises the path through serve.go itself.
 func TestServeRoutesLaunchesToServePool(t *testing.T) {
-	withClosedStdin(t)
 	chdirIsolated(t)
 
 	root := t.TempDir()
 	writeServeWorkflow(t, root, "a")
 
-	_, stderr, err := runServe(t,
+	stdout, _, err := runServe(t,
 		"serve",
 		"--root", root,
-		"--mcp",
-		"--no-http",
 		"--launch", "a",
 	)
 	require.NoError(t, err)
-	require.Contains(t, stderr, "Launched run ")
+	require.Contains(t, stdout, "Launched run ")
 
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
@@ -194,7 +211,6 @@ func TestServeRoutesLaunchesToServePool(t *testing.T) {
 // is asserted at the daemon API in
 // internal/daemon/cleanpool_test.go (TestArchiveNonTerminalServeState_RecoveryDoesNotDescend).
 func TestServeClean_MixedSeed(t *testing.T) {
-	withClosedStdin(t)
 	chdirIsolated(t)
 
 	cwd, err := os.Getwd()
@@ -254,15 +270,13 @@ func TestServeClean_MixedSeed(t *testing.T) {
 	root := t.TempDir()
 	writeServeWorkflow(t, root, "a")
 
-	_, stderr, err := runServe(t,
+	stdout, _, err := runServe(t,
 		"serve",
 		"--root", root,
-		"--mcp",
-		"--no-http",
 		"--clean",
 	)
 	require.NoError(t, err)
-	require.Contains(t, stderr, "--clean: archived 2 non-terminal serve-state file(s)")
+	require.Contains(t, stdout, "--clean: archived 2 non-terminal serve-state file(s)")
 
 	// CLI pool is untouched (file present + byte-identical).
 	gotCLI, err := os.ReadFile(filepath.Join(cliStateDir, "cli-run.json"))
@@ -297,20 +311,17 @@ func TestServeClean_MixedSeed(t *testing.T) {
 }
 
 func TestServeStartupLaunches_UnknownID(t *testing.T) {
-	withClosedStdin(t)
 	chdirIsolated(t)
 
 	root := t.TempDir()
 	// Intentionally no workflows — registry will be empty.
 
-	_, stderr, err := runServe(t,
+	stdout, _, err := runServe(t,
 		"serve",
 		"--root", root,
-		"--mcp",
-		"--no-http",
 		"--launch", "nope",
 	)
 	require.NoError(t, err)
 
-	require.Contains(t, stderr, "Failed to launch nope:")
+	require.Contains(t, stdout, "Failed to launch nope:")
 }

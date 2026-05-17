@@ -720,8 +720,6 @@ func TestInitConfigCreatesConfigFile(t *testing.T) {
 	assert.Contains(t, s, "[raymond.serve]")
 	assert.Contains(t, s, `# root = "workflows"`)
 	assert.Contains(t, s, "# port = 8080")
-	assert.Contains(t, s, "# mcp = false")
-	assert.Contains(t, s, "# no_http = false")
 	assert.Contains(t, s, `# workdir = ""`)
 }
 
@@ -801,8 +799,6 @@ func TestLoadServeConfigReturnsZeroIfNoConfigFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", cfg.Root)
 	assert.Nil(t, cfg.Port)
-	assert.False(t, cfg.MCP)
-	assert.False(t, cfg.NoHTTP)
 	assert.Equal(t, "", cfg.Workdir)
 }
 
@@ -823,8 +819,6 @@ func TestLoadServeConfigParsesAllFields(t *testing.T) {
 		"[raymond.serve]",
 		`root = "wf"`,
 		"port = 9000",
-		"mcp = true",
-		"no_http = true",
 		`workdir = "wd"`,
 		"max_file_size = 1024",
 		"max_total_size = 4096",
@@ -838,8 +832,6 @@ func TestLoadServeConfigParsesAllFields(t *testing.T) {
 	assert.Equal(t, wantRoot, gotRoot)
 	require.NotNil(t, cfg.Port)
 	assert.Equal(t, 9000, *cfg.Port)
-	assert.True(t, cfg.MCP)
-	assert.True(t, cfg.NoHTTP)
 	wantWD, _ := filepath.EvalSymlinks(filepath.Join(root, "wd"))
 	gotWD, _ := filepath.EvalSymlinks(cfg.Workdir)
 	assert.Equal(t, wantWD, gotWD)
@@ -937,17 +929,6 @@ func TestLoadServeConfigPortRangeRejected(t *testing.T) {
 		_, err := config.LoadServeConfig(root)
 		require.Error(t, err, "port %d should be rejected", p)
 		assert.Contains(t, err.Error(), "port")
-	}
-}
-
-func TestLoadServeConfigBoolFlagsWrongType(t *testing.T) {
-	for _, flag := range []string{"mcp", "no_http"} {
-		root := t.TempDir()
-		writeServeConfig(t, root, fmt.Sprintf("[raymond.serve]\n%s = \"true\"\n", flag))
-		_, err := config.LoadServeConfig(root)
-		require.Error(t, err, "flag %q should fail", flag)
-		assert.Contains(t, err.Error(), flag)
-		assert.Contains(t, err.Error(), "boolean")
 	}
 }
 
@@ -1050,24 +1031,6 @@ func TestMergeServeConfigPortDefaultsTo8080(t *testing.T) {
 		config.ServeCLIArgs{},
 	)
 	assert.Equal(t, 8080, merged.Port)
-}
-
-func TestMergeServeConfigBoolsCLIWinsWhenTrue(t *testing.T) {
-	merged := config.MergeServeConfig(
-		config.ServeFileConfig{MCP: false, NoHTTP: false},
-		config.ServeCLIArgs{MCP: true, NoHTTP: true},
-	)
-	assert.True(t, merged.MCP)
-	assert.True(t, merged.NoHTTP)
-}
-
-func TestMergeServeConfigBoolsFromFileWhenCLIFalse(t *testing.T) {
-	merged := config.MergeServeConfig(
-		config.ServeFileConfig{MCP: true, NoHTTP: true},
-		config.ServeCLIArgs{},
-	)
-	assert.True(t, merged.MCP)
-	assert.True(t, merged.NoHTTP)
 }
 
 func TestMergeServeConfigWorkdirCLIWins(t *testing.T) {

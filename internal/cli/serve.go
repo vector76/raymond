@@ -35,8 +35,6 @@ func (c *CLI) newServeCmd() *cobra.Command {
 		roots                      []string
 		launches                   []string
 		port                       int
-		mcp                        bool
-		noHTTP                     bool
 		workdir                    string
 		maxFileSize                int64
 		maxTotalSize               int64
@@ -48,26 +46,24 @@ func (c *CLI) newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the Raymond workflow daemon",
-		Long: `Start the Raymond daemon which exposes discovered workflows via an HTTP API
-and/or MCP tool interface.
+		Long: `Start the Raymond daemon which exposes discovered workflows via an HTTP API.
 
 The daemon scans the configured --root directories for workflow directories
 and zip archives containing workflow.yaml manifests, then serves them to
 clients.
 
-Defaults for --root, --port, --mcp, --no-http, --workdir, --max-file-size,
---max-total-size, and --max-file-count may also be set in .raymond/config.toml
-under the [raymond.serve] section. CLI --root values are appended to (not
-replacing) the config file's root.
+Defaults for --root, --port, --workdir, --max-file-size, --max-total-size,
+and --max-file-count may also be set in .raymond/config.toml under the
+[raymond.serve] section. CLI --root values are appended to (not replacing)
+the config file's root.
 
 Use --launch <workflow_id> (repeatable) to auto-dispatch one or more
-workflows after the HTTP/MCP transports come up. Launches apply only to
-this invocation — there is no scheduling, retry, or persistence across
+workflows after the HTTP server comes up. Launches apply only to this
+invocation — there is no scheduling, retry, or persistence across
 restarts. Each id must already be discoverable via --root, and launch
-outcomes are logged on the same channel as other startup status messages
-(stdout by default; stderr under --mcp). Workflows whose first state
-requires input cannot be auto-launched and must be started via the HTTP
-API or web UI.
+outcomes are logged on stdout alongside other startup status messages.
+Workflows whose first state requires input cannot be auto-launched and
+must be started via the HTTP API or web UI.
 
 Shutdown signals: SIGINT (1st) or POST /shutdown enters quiesce — runs
 park at their next state transition with no raymond-imposed timeout.
@@ -93,8 +89,6 @@ docs/graceful-shutdown.md for the full contract.`,
 
 			cliArgs := config.ServeCLIArgs{
 				Roots:        roots,
-				MCP:          mcp,
-				NoHTTP:       noHTTP,
 				Workdir:      workdir,
 				MaxFileSize:  maxFileSize,
 				MaxTotalSize: maxTotalSize,
@@ -111,16 +105,7 @@ docs/graceful-shutdown.md for the full contract.`,
 				return fmt.Errorf("at least one --root directory is required (or set [raymond.serve].root in config.toml)")
 			}
 
-			if merged.NoHTTP && !merged.MCP {
-				return fmt.Errorf("--no-http requires --mcp (at least one transport must be enabled)")
-			}
-
-			// When MCP is enabled, stdout is reserved for JSON-RPC.
-			// Direct status messages to stderr instead.
 			logOut := cmd.OutOrStdout()
-			if merged.MCP {
-				logOut = cmd.ErrOrStderr()
-			}
 
 			reg, err := daemon.NewRegistry(merged.Roots)
 			if err != nil {
@@ -238,72 +223,42 @@ docs/graceful-shutdown.md for the full contract.`,
 				effectiveServerDSP = dangerouslySkipPermissions
 			}
 
-			// The event sink wired into the coordinator broadcasts
-			// ShutdownRequested/ShutdownComplete frames over /events and
-			// per-run streams. With no HTTP server it has nowhere to land,
-			// so we substitute a no-op (the MCP transport has no equivalent
-			// broadcast channel for daemon-wide events).
-			eventSink := func(_ any) {}
+			srv := daemon.NewServer(reg, rm, merged.Port)
+			srv.SetPendingRegistry(pr)
+			srv.SetDefaultBudget(configBudget)
+			srv.SetDefaultDangerouslySkipPermissions(effectiveServerDSP)
+			srv.SetDefaultUploadCaps(merged.MaxFileSize, merged.MaxTotalSize, merged.MaxFileCount)
 
-			var srv *daemon.Server
-			if !merged.NoHTTP {
-				srv = daemon.NewServer(reg, rm, merged.Port)
-				srv.SetPendingRegistry(pr)
-				srv.SetDefaultBudget(configBudget)
-				srv.SetDefaultDangerouslySkipPermissions(effectiveServerDSP)
-				srv.SetDefaultUploadCaps(merged.MaxFileSize, merged.MaxTotalSize, merged.MaxFileCount)
-				eventSink = srv.PublishGlobalEvent
-			}
+			// Construct the coordinator with the server's publish surface so
+			// ShutdownRequested/ShutdownComplete frames reach /events and
+			// per-run streams. The rm is the runFleet — *RunManager satisfies
+			// that interface via the compile-time assertion in
+			// shutdowncoordinator.go.
+			coordinator := daemon.NewShutdownCoordinator(rm, srv.PublishGlobalEvent)
+			// Install the coordinator on the server *before*
+			// ListenAndServe so an early POST /shutdown or POST /runs
+			// can't race in and observe an unconfigured handler:
+			// SetShutdownCoordinator wires both the /shutdown handler
+			// and the launch-rejection guard (which consults
+			// shutdownDriver.InProgress()).
+			srv.SetShutdownCoordinator(coordinator)
 
-			// Construct the coordinator after the server (if any) so we can
-			// pass its publish surface as the event sink. The rm is the
-			// runFleet — *RunManager satisfies that interface via the
-			// compile-time assertion in shutdowncoordinator.go.
-			coordinator := daemon.NewShutdownCoordinator(rm, eventSink)
-			if srv != nil {
-				// Install the coordinator on the server *before*
-				// ListenAndServe so an early POST /shutdown or POST /runs
-				// can't race in and observe an unconfigured handler:
-				// SetShutdownCoordinator wires both the /shutdown handler
-				// and the launch-rejection guard (which consults
-				// shutdownDriver.InProgress()).
-				srv.SetShutdownCoordinator(coordinator)
-
-				fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
-				go func() {
-					if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-						fmt.Fprintf(cmd.ErrOrStderr(), "HTTP server error: %v\n", err)
-					}
-				}()
-				// Final HTTP shutdown after the coordinator has already
-				// drained all runs. Kept at the original short timeout: by
-				// the time this defer fires, ListenAndServe only needs to
-				// release sockets — every in-flight orchestrator goroutine
-				// has already exited via the tier sequence.
-				defer func() {
-					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					srv.Shutdown(shutdownCtx)
-				}()
-			}
-
-			mcpDone := make(chan struct{})
-			if merged.MCP {
-				mcpSrv := daemon.NewMCPServer(reg, rm)
-				mcpSrv.SetPendingRegistry(pr)
-				mcpSrv.SetDefaultBudget(configBudget)
-				mcpSrv.SetDefaultDangerouslySkipPermissions(effectiveServerDSP)
-				if !merged.NoHTTP {
-					mcpSrv.SetBaseURL(fmt.Sprintf("http://localhost:%d", merged.Port))
+			fmt.Fprintf(logOut, "HTTP server listening on port %d\n", merged.Port)
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "HTTP server error: %v\n", err)
 				}
-				go func() {
-					defer close(mcpDone)
-					if err := mcpSrv.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "MCP server error: %v\n", err)
-					}
-				}()
-				fmt.Fprintf(logOut, "MCP transport enabled on stdio\n")
-			}
+			}()
+			// Final HTTP shutdown after the coordinator has already
+			// drained all runs. Kept at the original short timeout: by
+			// the time this defer fires, ListenAndServe only needs to
+			// release sockets — every in-flight orchestrator goroutine
+			// has already exited via the tier sequence.
+			defer func() {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				srv.Shutdown(shutdownCtx)
+			}()
 
 			if err := launchStartupRuns(cmd.Context(), reg, rm, configBudget, effectiveServerDSP, launches, logOut); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "startup launches aborted: %v\n", err)
@@ -324,29 +279,20 @@ docs/graceful-shutdown.md for the full contract.`,
 			//     rely on its synchronous emit to satisfy that contract.
 			//   - any further signal once cancel has been engaged is
 			//     dropped (no log, no call).
-			//   - MCP transport close: treated like a 1st SIGINT — enter
-			//     quiesce. The pump keeps running so a follow-up signal
-			//     can still escalate.
 			//
-			// Signals, MCP close, and the "already escalated" bookkeeping
-			// are all serialised through this single goroutine on purpose:
-			// the coordinator's strict-no-op policy in EscalateToCancel
+			// Signals and the "already escalated" bookkeeping are
+			// serialised through this single goroutine on purpose: the
+			// coordinator's strict-no-op policy in EscalateToCancel
 			// requires that the caller hold the BeginQuiesce→EscalateToCancel
 			// ordering, and BeginQuiesce only blocks the FIRST caller (it
 			// returns immediately on subsequent calls without waiting for
-			// the in-flight first call to emit PhaseQuiesce). Folding both
-			// triggers into one goroutine means any local BeginQuiesce
-			// always returns with PhaseQuiesce already emitted before we
-			// reach EscalateToCancel.
+			// the in-flight first call to emit PhaseQuiesce). Funnelling
+			// every trigger through one goroutine means any local
+			// BeginQuiesce always returns with PhaseQuiesce already
+			// emitted before we reach EscalateToCancel.
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 			completeCh := coordinator.WaitComplete()
-			// mcpTrigger is the channel watched by the select. It is set
-			// to mcpDone while we still want to react, and nil'd out after
-			// firing so subsequent select iterations don't re-enter the
-			// case (reads from a nil channel block forever). When MCP is
-			// disabled mcpDone is never closed, so the case is inert.
-			mcpTrigger := mcpDone
 			go func() {
 				escalated := false
 				for {
@@ -374,12 +320,6 @@ docs/graceful-shutdown.md for the full contract.`,
 							coordinator.EscalateToCancel()
 							escalated = true
 						}
-					case <-mcpTrigger:
-						mcpTrigger = nil
-						if !coordinator.InProgress() {
-							fmt.Fprintln(logOut, "MCP transport closed; entering quiesce.")
-							coordinator.BeginQuiesce(context.Background())
-						}
 					case <-completeCh:
 						return
 					}
@@ -399,8 +339,6 @@ docs/graceful-shutdown.md for the full contract.`,
 	f.StringArrayVar(&roots, "root", nil, "scope root directory (may be specified multiple times; appended to [raymond.serve].root from config)")
 	f.StringArrayVar(&launches, "launch", nil, "workflow id to launch on startup (may be repeated; the workflow must be discoverable via --root)")
 	f.IntVar(&port, "port", config.DefaultServePort, "HTTP server port")
-	f.BoolVar(&mcp, "mcp", false, "enable MCP transport")
-	f.BoolVar(&noHTTP, "no-http", false, "disable HTTP server (requires --mcp)")
 	f.StringVar(&workdir, "workdir", "", "default working directory for workflow runs")
 	f.Int64Var(&maxFileSize, "max-file-size", 0, "default maximum bytes per uploaded file when an <ask> declares no per-file cap (0 means use [raymond.serve].max_file_size or daemon default)")
 	f.Int64Var(&maxTotalSize, "max-total-size", 0, "default maximum total bytes per upload submission when an <ask> declares no total cap (0 means use [raymond.serve].max_total_size or daemon default)")

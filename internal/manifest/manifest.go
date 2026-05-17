@@ -37,7 +37,7 @@ type Manifest struct {
 // InputSpec describes the workflow's single optional entry-state input string
 // (substituted into the first state as {{input}}). Mode controls whether the
 // run may, must, or must-not receive a non-empty input at launch time. Label
-// and Description are hints for UI/MCP surfaces.
+// and Description are hints for UI surfaces.
 type InputSpec struct {
 	Mode        string `yaml:"mode" json:"mode"`
 	Label       string `yaml:"label" json:"label"`

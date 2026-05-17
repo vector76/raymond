@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vector76/raymond/internal/backend"
@@ -253,6 +254,71 @@ func buildBackend(spec backendcfg.BackendSpec) backend.Backend {
 	return backend.NewClaudeBackend()
 }
 
+// backendResolver resolves and caches the backend per scope directory, so a
+// cross-workflow transition that lands the agent in a scope with a different
+// backend declaration picks up the right backend on its next state.
+//
+// One resolver lives per RunAllAgents invocation. The cache is keyed by
+// scopeDir; piPreflightDone is a single bit shared across all pi
+// resolutions in this run so the preflight check fires at most once per
+// run (including the upfront check in RunAllAgents).
+type backendResolver struct {
+	mu              sync.Mutex
+	cache           map[string]backend.Backend
+	piPreflightDone bool
+}
+
+func newBackendResolver() *backendResolver {
+	return &backendResolver{cache: map[string]backend.Backend{}}
+}
+
+// markPiPreflightDone records that pi's preflight check has already run, so
+// the resolver doesn't fire it again when it later resolves a pi backend.
+func (r *backendResolver) markPiPreflightDone() {
+	r.mu.Lock()
+	r.piPreflightDone = true
+	r.mu.Unlock()
+}
+
+// For returns the backend for the given scopeDir, parsing the scope's
+// manifest if it is not yet cached. If the resolved backend is pi and the
+// preflight check has not yet run, it fires the preflight first; a
+// preflight failure is returned to the caller without caching the backend
+// (so a transient failure can be retried on the next state).
+func (r *backendResolver) For(ctx context.Context, scopeDir string) (backend.Backend, error) {
+	r.mu.Lock()
+	if b, ok := r.cache[scopeDir]; ok {
+		r.mu.Unlock()
+		return b, nil
+	}
+	r.mu.Unlock()
+
+	spec, err := readWorkflowBackend(scopeDir)
+	if err != nil {
+		return nil, fmt.Errorf("read backend for %q: %w", scopeDir, err)
+	}
+
+	if spec.Name == "pi" {
+		r.mu.Lock()
+		done := r.piPreflightDone
+		r.mu.Unlock()
+		if !done {
+			if err := piPreflightFn(ctx); err != nil {
+				return nil, err
+			}
+			r.mu.Lock()
+			r.piPreflightDone = true
+			r.mu.Unlock()
+		}
+	}
+
+	b := buildBackend(spec)
+	r.mu.Lock()
+	r.cache[scopeDir] = b
+	r.mu.Unlock()
+	return b, nil
+}
+
 // RunAllAgents executes the workflow identified by workflowID until all agents
 // have terminated or the workflow is paused due to an unrecoverable error.
 //
@@ -280,19 +346,29 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		resetPausedAgents(ws)
 	}
 
-	// Resolve the workflow backend. This is done for all runs (not gated on
-	// OnAsk mode) so the backend is available for all executor invocations.
+	// Resolve the outer workflow backend up front. Per-state resolution
+	// happens via backendResolver in the launch closure, so that an agent
+	// that enters a nested cross-workflow with a different backend
+	// declaration picks up the right backend on its next state.
 	backendSpec, backendErr := readWorkflowBackend(ws.ScopeDir)
 	if backendErr != nil {
 		return fmt.Errorf("read workflow backend: %w", backendErr)
 	}
+	resolver := newBackendResolver()
 
 	// Pi-specific startup checks: preflight (binary reachable) and flag
-	// rejection (--continue-and-fork relies on Claude's -c session semantics).
+	// rejection (--continue-and-fork relies on Claude's -c session
+	// semantics). The preflight runs upfront when the outer workflow
+	// declares pi so a missing binary is reported at launch rather than
+	// mid-run; the resolver memoizes this so a later nested pi resolution
+	// doesn't preflight again. When the outer is non-pi and a nested
+	// workflow declares pi, the resolver runs the preflight at first
+	// resolution.
 	if backendSpec.Name == "pi" {
 		if err := piPreflightFn(ctx); err != nil {
 			return err
 		}
+		resolver.markPiPreflightDone()
 		for _, a := range ws.Agents {
 			if a.ContinueAndFork {
 				return fmt.Errorf(
@@ -397,7 +473,10 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	execCtx.DefaultEffort = opts.DefaultEffort
 	execCtx.Timeout = opts.Timeout
 	execCtx.DangerouslySkipPermissions = opts.DangerouslySkipPermissions
-	execCtx.Backend = buildBackend(backendSpec)
+	// execCtx.Backend is set per-state in the launch closure via the
+	// backendResolver, so a cross-workflow transition that lands the agent
+	// in a scope with a different backend picks up the right backend on
+	// its next state.
 
 	b.Emit(events.WorkflowStarted{
 		WorkflowID: workflowID,
@@ -550,9 +629,24 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			}
 		}
 
-		// Create a per-launch copy of execCtx with the effective timeout.
+		// Resolve the backend from the agent's current scope. Cross-workflow
+		// transitions mutate agent.ScopeDir, so the backend may differ from
+		// the outer workflow's. The resolver caches per scopeDir and runs
+		// pi's preflight check at most once per run.
+		stateBackend, backendErr := resolver.For(ctx, agentCopy.ScopeDir)
+		if backendErr != nil {
+			resultCh <- stepResult{
+				agentID: agentCopy.ID,
+				err:     backendErr,
+			}
+			return
+		}
+
+		// Create a per-launch copy of execCtx with the effective timeout
+		// and the per-state backend.
 		launchCtx := *execCtx
 		launchCtx.Timeout = effectiveTimeout
+		launchCtx.Backend = stateBackend
 
 		go func() {
 			execResult, execErr := exec.Execute(ctx, &agentCopy, localWS, &launchCtx)

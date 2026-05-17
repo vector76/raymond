@@ -58,7 +58,7 @@ analogous to `ray --resume <id>` for a single CLI run.
 
 `asking`-state runs are resumed actively as well — their pending input
 records (already in `pending_inputs.jsonl`) become answerable through
-the HTTP/MCP transports immediately, without an explicit per-run resume
+the HTTP API immediately, without an explicit per-run resume
 step. (This subsumes what was previously an out-of-scope item on
 `graceful-shutdown.md` — "`asking`-state runs becoming answerable
 post-restart" and the related "active resume in serve mode" bullet

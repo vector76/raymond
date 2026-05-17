@@ -2,9 +2,14 @@
 
 The `ray serve` command starts a long-running daemon that discovers
 workflows from configured directories and exposes them to clients via an HTTP
-API and/or MCP (Model Context Protocol) tool interface. The daemon manages
-workflow runs, handles human-in-the-loop `<ask>` input delivery, and provides
-a minimal web UI for monitoring.
+API. The daemon manages workflow runs, handles human-in-the-loop `<ask>` input
+delivery, and provides a minimal web UI for monitoring.
+
+> **MCP transport: not supported.** Earlier versions of `ray serve` shipped
+> a Model Context Protocol (MCP) tool surface over stdio. It has been
+> removed and there are no plans to bring it back. HTTP is the only daemon
+> interface; an MCP-speaking client must call the HTTP API directly or
+> through a separate adapter.
 
 ## Usage
 
@@ -18,11 +23,9 @@ ray serve --root <dir> [--root <dir2> ...] [flags]
 |------|------|---------|-------------|
 | `--root` | string slice | (required) | One or more directories to scan for workflows. Each root is scanned for subdirectories, zip archives, and YAML workflow files carrying manifest metadata. |
 | `--port` | int | 8080 | Port for the HTTP API server. |
-| `--mcp` | bool | false | Enable the MCP transport interface. |
-| `--no-http` | bool | false | Disable the HTTP server entirely. Requires `--mcp` — at least one transport must be active. |
 | `--workdir` | string | (none) | Default working directory for workflow runs. |
-| `--launch` | string slice | (none) | Workflow id to dispatch automatically once transports are up. May be repeated. The id must be discoverable via `--root`. |
-| `--dangerously-skip-permissions` | bool | true | Server-wide skip-permissions value applied to every run launched via the HTTP API, MCP, or `--launch`. Pass `--dangerously-skip-permissions=false` to require permissions instead. Mirrors the `[raymond].dangerously_skip_permissions` config key with the same precedence (CLI > config > default). |
+| `--launch` | string slice | (none) | Workflow id to dispatch automatically once the HTTP server is up. May be repeated. The id must be discoverable via `--root`. |
+| `--dangerously-skip-permissions` | bool | true | Server-wide skip-permissions value applied to every run launched via the HTTP API or `--launch`. Pass `--dangerously-skip-permissions=false` to require permissions instead. Mirrors the `[raymond].dangerously_skip_permissions` config key with the same precedence (CLI > config > default). |
 | `--clean` | bool | false | Archive every non-terminal state file in the serve pool (`.raymond/serve-state/`) into `serve-state/abandoned/<timestamp>/` before recovery runs. Only the serve pool is touched — CLI runs in `.raymond/state/` are untouched. See [Operational flags](#operational-flags). |
 
 ### Examples
@@ -39,16 +42,10 @@ Scan multiple roots with a custom port:
 ray serve --root ./workflows --root /opt/shared-workflows --port 9090
 ```
 
-MCP-only mode (no HTTP server):
-
-```
-ray serve --root ./workflows --mcp --no-http
-```
-
 ### Auto-launching workflows on startup
 
 Pass one or more `--launch <workflow_id>` flags to dispatch workflows
-automatically once the daemon's transports are ready:
+automatically once the daemon's HTTP server is ready:
 
 ```
 ray serve --root ./workflows --launch nightly-report --launch health-check
@@ -67,7 +64,7 @@ Operational properties:
 2. **Failures do not abort startup** — if a launch fails (unknown id,
    `input.mode: required` workflow, etc.), the error is logged alongside
    other startup status messages and the daemon continues serving. Other
-   launches and the HTTP/MCP transports are unaffected.
+   launches and the HTTP server are unaffected.
 3. **Order of run creation is not guaranteed** — launches are dispatched
    concurrently. Do not depend on the flag order matching run start order.
 
@@ -85,7 +82,7 @@ recovery. See [serve-run-pool.md](serve-run-pool.md) for the design.
 | Path | Owner | Purpose |
 |------|-------|---------|
 | `<project>/.raymond/state/` | `ray <workflow>` (CLI) | Persistent state for runs launched from the command line. The daemon never reads this directory. |
-| `<project>/.raymond/serve-state/` | `ray serve` (daemon) | Persistent state for runs launched through the HTTP API, MCP, or `--launch`. The CLI never writes here. |
+| `<project>/.raymond/serve-state/` | `ray serve` (daemon) | Persistent state for runs launched through the HTTP API or `--launch`. The CLI never writes here. |
 | `<project>/.raymond/serve-state/abandoned/<timestamp>/` | `ray serve --clean` | Forensic archive of non-terminal serve-state files moved aside by `--clean`. Never auto-resumed; left on disk so an operator can inspect or hand-recover. |
 | `<project>/.raymond/pending_inputs.jsonl` | `ray serve` (daemon) | Pending-input registry for `<ask>` records. Lives at the `.raymond/` root, not under the serve pool — one registry per project, intentionally not per pool (see the comment preceding `NewPendingRegistry` in `internal/cli/serve.go`). |
 
@@ -296,24 +293,6 @@ The total cap is a hard limit on the request body via
 `http.MaxBytesReader` — clients cannot stream past it even if per-file
 accounting would have rejected the body later.
 
-#### MCP degradation rules
-
-The MCP transport has no native channel for binary file exchange in
-`elicitation/create`. The daemon degrades file-bearing asks as follows:
-
-- **Text-only asks** — delivered via elicitation as before.
-- **Display-only asks** — delivered via elicitation; the prompt is augmented
-  with absolute URLs (under the configured `base_url`) for each staged file so
-  an MCP client can fetch them out of band via the file content endpoint. If
-  no base URL is configured, the URLs are omitted.
-- **Slot- or bucket-mode asks** (any upload affordance) — **not delivered
-  via MCP**. The ask stays pending and a warning is logged; the user must
-  complete it via the HTTP UI.
-
-Workflow authors targeting both transports should design asks that are
-either text-only or text-plus-display, and avoid making upload affordances
-mandatory for progress.
-
 ### SSE output stream
 
 The `GET /runs/{id}/output` endpoint returns a Server-Sent Events stream. Each
@@ -333,68 +312,6 @@ The daemon serves a minimal web UI at the root path (`/`). The UI provides:
 
 The UI is a static single-page application (HTML, CSS, JavaScript) that calls
 the HTTP API endpoints above. No additional backend is needed.
-
-## MCP Tool Interface
-
-When `--mcp` is enabled, the daemon exposes a fixed set of MCP tools for
-workflow discovery, run management, and input delivery. The MCP transport
-operates over stdio using JSON-RPC 2.0, compatible with standard MCP client
-implementations.
-
-### Tools
-
-**`raymond_list_workflows`** — List all discovered workflows.
-
-Returns an array of workflow objects with `id`, `name`, `description`,
-`input` (an object with `mode`, `label`, and `description`), `default_budget`,
-and `requires_human_input`.
-
-**`raymond_run`** — Launch a workflow run.
-
-Parameters: `workflow_id` (required), `input`, `budget`, `model`,
-`working_directory`, `environment` (all optional). Returns `{run_id, status}`.
-Rejects workflows requiring human input if the client lacks elicitation
-support. Also rejects calls that violate the workflow's `input.mode` (empty
-`input` when `mode: required`, or non-empty `input` when `mode: none`).
-
-**`raymond_status`** — Get current status of a run.
-
-Parameters: `run_id`. Returns `{run_id, status, current_state, agents,
-cost_usd, elapsed_seconds}`.
-
-**`raymond_await`** — Block until a run completes.
-
-Parameters: `run_id`, `timeout_seconds` (optional). Returns `{run_id, status,
-result, cost_usd}`. If the MCP client supports elicitation, any `<ask>`
-prompts encountered during the run are delivered to the client via
-`elicitation/create` requests and responses are injected automatically.
-
-**`raymond_cancel`** — Cancel a running workflow.
-
-Parameters: `run_id`. Returns `{run_id, status: "cancelled"}`.
-
-**`raymond_list_pending_asks`** — List all pending human input requests.
-
-Returns an array with `run_id`, `ask_id`, `workflow_id`, `prompt`,
-`created_at`, and `timeout_at`.
-
-**`raymond_answer_ask`** — Deliver a response to a pending ask.
-
-Parameters: `ask_id`, `response`. Returns `{run_id, ask_id, status:
-"resumed"}`.
-
-### MCP Elicitation
-
-When a connected MCP client declares elicitation capability (in the
-`initialize` handshake), the daemon can deliver `<ask>` prompts directly to
-the client via `elicitation/create` requests. This allows MCP callers to handle
-human-in-the-loop workflows transparently: the caller invokes `raymond_run`
-then `raymond_await`, and any human input requests are surfaced as elicitation
-prompts without additional API calls.
-
-If the client does not support elicitation, workflows that require human input
-(`requires_human_input: true` or detected via auto-scan) are rejected at launch
-time with a specific error message.
 
 ## Pending Input Registry
 
@@ -419,7 +336,7 @@ from the registry in a single operation, preventing duplicate delivery.
 ### Asking-state survival across restarts
 
 Pending asks survive a daemon restart and remain answerable through the HTTP
-and MCP transports without an explicit per-run resume call. The mechanism is:
+API without an explicit per-run resume call. The mechanism is:
 
 1. `pending_inputs.jsonl` is replayed before run recovery, so the in-memory
    pending set is rebuilt first.
@@ -427,11 +344,8 @@ and MCP transports without an explicit per-run resume call. The mechanism is:
    every non-terminal state file back as an active run, including those whose
    agents are in the `asking` status. The relaunch path wires the same
    `askInputCh` / `AskCallback` that a freshly-launched run uses, so a
-   recovered ask receives input through the normal delivery routes —
-   `POST /runs/{id}/asks/{ask_id}` over HTTP, or `raymond_answer_ask` over
-   MCP. (Auto-pushed `elicitation/create` requests are not re-issued to
-   clients that connect after the restart; an MCP client recovers a pending
-   ask by calling `raymond_list_pending_asks` and answering it explicitly.)
+   recovered ask receives input through the normal delivery route —
+   `POST /runs/{id}/asks/{ask_id}`.
 3. Pending registry entries whose paired serve-pool state file is missing at
    startup are dropped with a log line during the prune pass. This keeps the
    registry and the pool consistent — there is never a pending record naming

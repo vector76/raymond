@@ -54,8 +54,8 @@ Out of scope (for this design):
 
 - A general-purpose task file browser exposing arbitrary files in any task
   folder. File access is mediated by an input step.
-- File exchange over the MCP transport. This design is HTTP-only; the MCP
-  transport behavior is addressed only as a degradation note.
+- File exchange over any non-HTTP transport. This design is HTTP-only; the
+  daemon no longer ships an MCP tool surface.
 - Authentication or per-user access control. The daemon remains
   unauthenticated and assumes a trusted network, consistent with current
   behavior.
@@ -347,24 +347,6 @@ artifact to a path within the task folder, and the `<ask>` declares
 that path as a display file source. The runtime stages it on entry; the
 agent does not need to know `ask_id` at the time it writes the
 artifact.
-
-## Interaction with the MCP Transport
-
-The MCP transport does not have a natural representation for binary file
-exchange in the input-resolution flow. Asks that declare upload affordances
-(slot or bucket mode) are not delivered via MCP elicitation: the ask stays
-pending, a warning is logged, and the user must complete it via the HTTP UI.
-
-Asks that declare only display files do degrade gracefully on MCP: the
-elicitation prompt is augmented with absolute URLs (under the daemon's
-configured base URL) for each staged file, so an MCP client can fetch them
-out of band via the HTTP file content endpoint. If no base URL is configured
-for the daemon, the URLs are omitted and the ask effectively degrades to
-text-only.
-
-Workflow authors targeting both transports should design asks that are
-either text-only or text-plus-display, and avoid making upload affordances
-mandatory for progress.
 
 ## Security Considerations
 

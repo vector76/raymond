@@ -31,8 +31,8 @@ When you need to look something up:
 
 ## I'm operating `ray serve`
 
-- [daemon-server.md](daemon-server.md) — HTTP API, MCP transport, workflow
-  registry, run lifecycle.
+- [daemon-server.md](daemon-server.md) — HTTP API, workflow registry,
+  run lifecycle.
 - [serve-run-pool.md](serve-run-pool.md) — why CLI runs and daemon runs use
   separate state pools.
 - [graceful-shutdown.md](graceful-shutdown.md) — signal handling and the

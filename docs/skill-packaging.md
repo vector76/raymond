@@ -221,10 +221,10 @@ requires_human_input: auto
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique identifier — used as the tool name in MCP and the endpoint name in the HTTP API. |
+| `id` | Unique identifier — used as the endpoint name in the HTTP API. |
 | `name` | Human-readable display name. |
-| `description` | Shown in tool/endpoint documentation. |
-| `input` | Describes the single optional input string passed to the first state as `{{input}}`. `mode` is `required`, `optional`, or `none`; `label` and `description` are UI/MCP hints. |
+| `description` | Shown in endpoint documentation. |
+| `input` | Describes the single optional input string passed to the first state as `{{input}}`. `mode` is `required`, `optional`, or `none`; `label` and `description` are UI hints. |
 | `default_budget` | Default USD budget when callers don't specify one. |
 | `requires_human_input` | `"auto"` (scan states for `<ask>` tags), `"true"` (always), or `"false"` (never). Controls how the daemon handles the workflow. |
 

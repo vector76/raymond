@@ -207,7 +207,7 @@ parser detects common state-like keys and suggests adding the wrapper.
 
 A YAML workflow may carry manifest metadata as top-level keys alongside
 `states`. When present, the daemon (`ray serve`) discovers the file as a
-runnable workflow and exposes it through the HTTP API, MCP tools, and web UI.
+runnable workflow and exposes it through the HTTP API and web UI.
 This makes the YAML file truly self-describing: definition, metadata, and
 discoverability in one file.
 
@@ -218,7 +218,7 @@ still usable via direct CLI invocation.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `id` | string | (none) | Unique identifier. Required for daemon discovery; used as the workflow ID in the HTTP API and MCP tools. |
+| `id` | string | (none) | Unique identifier. Required for daemon discovery; used as the workflow ID in the HTTP API. |
 | `name` | string | `""` | Human-readable display name. |
 | `description` | string | `""` | Description shown in tool/endpoint documentation. |
 | `input` | object | `{mode: optional}` | Describes the single optional string passed to the first state as `{{input}}`. See [Input block](#input-block). |
@@ -231,13 +231,13 @@ still usable via direct CLI invocation.
 
 A workflow receives at most one string of input at launch time, substituted
 into the first state as `{{input}}`. The `input` block describes that string
-for UI and MCP surfaces, and lets the daemon enforce whether input is
-permitted or required.
+for UI surfaces, and lets the daemon enforce whether input is permitted or
+required.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mode` | string | `"optional"` | One of `required`, `optional`, `none`. `required` rejects launches with an empty input; `none` rejects launches with a non-empty input. |
-| `label` | string | `""` | Short prompt shown in the web UI field and surfaced to MCP callers. |
+| `label` | string | `""` | Short prompt shown in the web UI field. |
 | `description` | string | `""` | Longer help text shown under the input field. |
 
 The entire `input` block is optional. Omitting it is equivalent to `input: {mode: optional}` with no label or description.

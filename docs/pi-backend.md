@@ -204,9 +204,9 @@ remainder are resolved in the rest of this document:
 - **MCP** — **not supported under pi.** Pi is not MCP-native; it uses
   `--extension` and `--skill` instead. Workflows that require an
   MCP-hosted tool can't run under pi unless the tool also ships as a
-  pi extension or skill. The `ray serve` daemon's own MCP surface
-  (what external clients call) is unaffected — that's separate from
-  the agent-side tool surface.
+  pi extension or skill. (Raymond's `ray serve` daemon does not expose
+  an MCP surface either; see [daemon-server.md](daemon-server.md). The
+  agent-side tool surface discussed here is a separate concern.)
 - **Availability preflight** — `pi --version` is run once at workflow
   start (and on resume), failing fast with a clear message if pi
   isn't installed.
@@ -344,9 +344,9 @@ difference.
   resume.
 - **`ray lint`, `ray diagram`, `ray convert`.** Static analysis
   is over the workflow graph; the chosen backend has no effect.
-- **`ray serve` daemon.** HTTP API, MCP tool surface, web UI, and input
-  delivery all continue to work. The dashboard learns to display the active
-  backend and per-agent backend session ids.
+- **`ray serve` daemon.** HTTP API, web UI, and input delivery all
+  continue to work. The dashboard learns to display the active backend
+  and per-agent backend session ids.
 - **`<call>` (stack frame that inherits parent context).** Implemented by
   invoking pi with `--fork <caller-session-id>`, which branches a new
   session off the caller's so the callee starts with the caller's history.
@@ -623,11 +623,9 @@ the workflow author should know about.
    skill (`--skill`) mechanisms, which are pi-specific and not
    protocol-compatible with MCP. Workflows that depend on the agent calling
    tools exposed by an MCP server cannot run under pi unless an equivalent
-   pi extension is available. Note this is distinct from raymond's own
-   *daemon* MCP surface (the tools `ray serve` exposes to external
-   clients): that is a property of the daemon, not the backend, and works
-   regardless of which backend a given workflow uses. (See "Resolved
-   questions" above for the same point in the context of the strategy.)
+   pi extension is available. (Raymond's `ray serve` daemon does not expose
+   an MCP surface either, so there is no daemon-side equivalent to fall
+   back on; see [daemon-server.md](daemon-server.md).)
 
 7. **The `effort: <Claude-specific level>` vocabulary on per-state policies.**
    Claude's `--effort` accepts a different vocabulary than pi's `--thinking`.

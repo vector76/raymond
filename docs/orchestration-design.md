@@ -124,7 +124,7 @@ already authorised by launching the workflow. To require permissions instead —
 `--permission-mode acceptEdits` mode, where edits are auto-accepted but other dangerous
 operations still prompt — pass `--dangerously-skip-permissions=false` on the CLI or set
 `dangerously_skip_permissions = false` in `.raymond/config.toml`. Both the `ray`
-CLI and `ray serve` (HTTP API + MCP) honour the same flag and config key with the
+CLI and `ray serve` (HTTP API) honour the same flag and config key with the
 same precedence (CLI > config > default-true), so daemon-launched runs match the CLI's
 behaviour.
 

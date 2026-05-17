@@ -298,9 +298,9 @@ available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
 ### `<ask next="NEXT.md" ...>prompt</ask>`
 
 - **Meaning**: Suspend the agent and request human input. The tag content is the
-  human-facing prompt — presented to the human via the CLI, HTTP API, or MCP
-  elicitation. When input arrives, the agent transitions to `next` with the
-  response available as `{{input}}`.
+  human-facing prompt — presented to the human via the CLI or the daemon's
+  HTTP API / web UI. When input arrives, the agent transitions to `next`
+  with the response available as `{{input}}`.
 - **Required attribute**: `next="NEXT.md"` (the state to transition to when
   input arrives)
 - **Optional attribute**: `timeout="24h"` — duration string. If no input arrives
@@ -319,7 +319,7 @@ available in the worker's prompt (e.g., `item="task1"` becomes `{{item}}`).
     structured JSON to stdout, and exits with code 2. Input is delivered via
     `ray --resume <id> --input "..."`.
   - **Daemon mode**: The pending input is registered and delivered via the HTTP
-    API (`POST /runs/{id}/asks/{ask_id}`) or MCP elicitation.
+    API (`POST /runs/{id}/asks/{ask_id}`).
 - **`cd` attribute**: Not supported on `<ask>`.
 
 **Example:**

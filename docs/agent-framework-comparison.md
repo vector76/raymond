@@ -74,7 +74,7 @@ deep-dive section below.
 | Primary unit of composition | State (markdown prompt or shell script) with declared transitions                                           | A single tool-calling turn          | A "task" the agent decomposes  | `Agent` + `Task` + `Crew` (sequential or hierarchical)  |
 | Control flow                | Author-declared; transitions are explicit tags in the prompt; `allowed_transitions` enforced                | Implicit, inside the model loop     | Implicit, planner inside agent | Author wires Tasks; Process determines order            |
 | Context management          | First-class: seven transition tags differ in what context they preserve, discard, branch, or pause          | None at framework level             | Opaque, agent-managed          | Per-agent memory; hand-off via task outputs             |
-| Human-in-the-loop           | Built in (`<ask>` suspends; daemon delivers input via HTTP, web UI, or MCP)                               | Not provided                        | Yes, ad-hoc                    | `human_input=True` on a Task (blocking prompt)          |
+| Human-in-the-loop           | Built in (`<ask>` suspends; daemon delivers input via HTTP API and web UI)                                | Not provided                        | Yes, ad-hoc                    | `human_input=True` on a Task (blocking prompt)          |
 | Determinism / shell         | Shell-script states with **zero token cost** for polling, builds, data prep                                 | N/A                                 | Agent shells out, LLM-mediated | Tools are Python; orchestration still LLM-driven        |
 | Multi-agent                 | `<fork>` runs independent agents in parallel within one workflow                                            | Single agent                        | Single agent (opaque internals)| Native — multiple roles, sequential or hierarchical     |
 | Cross-workflow reuse        | `<call-workflow>`, `<function-workflow>`, `<fork-workflow>`, `<reset-workflow>`; skill packaging            | N/A                                 | Closed                         | Crews can be composed; no formal call-stack semantics   |
@@ -189,7 +189,7 @@ including `sequential-reviewer` and `parallel-planner-with-review`.
 | Static analysis               | `lint`, `diagram`, YAML form                                                  | None — behavior is whatever the JS does                                 |
 | Persistence / resume          | Disk-persisted workflow state; `--resume <run_id>` for crashes and HIL        | Session capture (Claude JSONL) + `resumeSession`; not workflow-level    |
 | Cost control                  | Per-workflow dollar budget that overrides transitions                         | `idleTimeoutSeconds` + `maxIterations` + `AbortSignal`                  |
-| Server / daemon               | `ray serve` (HTTP + MCP + web UI)                                         | None — it's a library                                                   |
+| Server / daemon               | `ray serve` (HTTP API + web UI)                                           | None — it's a library                                                   |
 | Distribution                  | Go binary plus daemon; self-hosted                                            | npm package (`@ai-hero/sandcastle`)                                     |
 
 ### What Sandcastle does that Raymond doesn't
@@ -235,7 +235,7 @@ The two systems are not the same product:
 - **Static analysis, cross-workflow reuse, skill packaging.** None of this
   exists in Sandcastle — equivalent reuse would mean writing JS modules and
   importing them.
-- **Daemon with HTTP / MCP / web UI.** Sandcastle is a library, not a
+- **Daemon with HTTP API and web UI.** Sandcastle is a library, not a
   service.
 
 ### Convergent vocabulary

@@ -33,8 +33,10 @@ prompts themselves.
 - **Pluggable backend** — Workflows run against Claude Code by default; opt
   into the pi backend (multi-provider, supports Anthropic, OpenAI, Google,
   and more) by declaring `backend: pi` in the manifest
-- **Daemon mode** — `ray serve` exposes workflows via HTTP API and MCP
-  tools, with a web UI for monitoring runs and delivering human input
+- **Daemon mode** — `ray serve` exposes workflows via an HTTP API and
+  web UI for monitoring runs and delivering human input. (An MCP tool
+  surface is intentionally not provided; see
+  [docs/daemon-server.md](docs/daemon-server.md).)
 - **Skill packaging** — Bundle workflows as self-contained skills with a
   contract file (SKILL.md), entry point script, and manifest for daemon
   discovery
@@ -134,7 +136,7 @@ table below highlights the most commonly referenced documents.
 | [Authoring Guide](docs/authoring-guide.md) | Workflow authors | How to write state files — the complete guide |
 | [Skill Packaging](docs/skill-packaging.md) | Workflow authors | Bundle workflows as skills with SKILL.md, run.sh, and manifest |
 | [Workflow Protocol](docs/workflow-protocol.md) | Reference | Authoritative protocol specification |
-| [Daemon Server](docs/daemon-server.md) | Reference | `ray serve` — HTTP API, MCP tools, and web UI |
+| [Daemon Server](docs/daemon-server.md) | Reference | `ray serve` — HTTP API and web UI |
 | [Lint](docs/lint.md) | Reference | `ray lint` — static analysis checks |
 | [Diagram](docs/diagram.md) | Reference | `ray diagram` — Mermaid flowchart generation |
 | [Cross-Workflow Design](docs/cross-workflow-design.md) | Reference | Cross-workflow invocation tags |

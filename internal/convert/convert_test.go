@@ -739,6 +739,149 @@ func TestConvert_NonStateFileWarnings(t *testing.T) {
 	assert.Equal(t, "skipping non-state file: something.txt", warnings[0])
 }
 
+// TestConvert_PreservesManifestFields verifies that every top-level field from
+// workflow.yaml (id, name, description, default_budget, input,
+// requires_human_input, working_directory, environment, backend) round-trips
+// into the converted YAML scope. Before the fix, workflow.yaml was treated as
+// a "non-state file" and its contents — including backend: pi declarations —
+// were silently dropped, so a converted pi workflow ran on Claude.
+func TestConvert_PreservesManifestFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "START.md", "do work\n<result>done</result>")
+	writeFile(t, dir, "workflow.yaml", `id: round-trip
+name: Round-trip workflow
+description: Verifies manifest fields survive the convert tool.
+default_budget: 1.25
+requires_human_input: "false"
+working_directory: /tmp/scratch
+environment:
+  FOO: bar
+input:
+  mode: required
+  label: Query
+  description: The user's query string
+backend:
+  name: pi
+  options:
+    tools: [read, grep, find, ls]
+    thinking: medium
+`)
+
+	yamlStr, warnings, err := Convert(dir)
+	require.NoError(t, err)
+	// workflow.yaml must not appear in warnings — it's consumed as the
+	// manifest, not skipped as an unknown file.
+	for _, w := range warnings {
+		assert.NotContains(t, w, "workflow.yaml",
+			"workflow.yaml must be consumed, not skipped as a non-state file: %s", w)
+	}
+
+	// Parse the output as a generic map so we can assert on every top-level key.
+	var got map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &got),
+		"converter output must be valid YAML")
+
+	assert.Equal(t, "round-trip", got["id"])
+	assert.Equal(t, "Round-trip workflow", got["name"])
+	assert.Equal(t, "Verifies manifest fields survive the convert tool.", got["description"])
+	assert.Equal(t, 1.25, got["default_budget"])
+	assert.Equal(t, "false", got["requires_human_input"])
+	assert.Equal(t, "/tmp/scratch", got["working_directory"])
+
+	envMap, ok := got["environment"].(map[string]any)
+	require.True(t, ok, "environment must round-trip as a map")
+	assert.Equal(t, "bar", envMap["FOO"])
+
+	inputMap, ok := got["input"].(map[string]any)
+	require.True(t, ok, "input must round-trip as a map")
+	assert.Equal(t, "required", inputMap["mode"])
+	assert.Equal(t, "Query", inputMap["label"])
+	assert.Equal(t, "The user's query string", inputMap["description"])
+
+	// The critical assertion: backend: pi survives the conversion. Without
+	// this, a pi workflow converted to YAML would silently run on Claude.
+	backendMap, ok := got["backend"].(map[string]any)
+	require.True(t, ok, "backend must round-trip as a map (was: %T = %v)", got["backend"], got["backend"])
+	assert.Equal(t, "pi", backendMap["name"])
+	optionsMap, ok := backendMap["options"].(map[string]any)
+	require.True(t, ok, "backend.options must round-trip as a map")
+	assert.Equal(t, "medium", optionsMap["thinking"])
+	tools, ok := optionsMap["tools"].([]any)
+	require.True(t, ok, "backend.options.tools must round-trip as a list")
+	assert.Equal(t, []any{"read", "grep", "find", "ls"}, tools)
+
+	// states: must still be present and parse via the YAML-scope parser
+	// (proves we haven't broken the existing convert contract).
+	assert.Contains(t, yamlStr, "states:")
+}
+
+// TestConvert_PreservesBackendString verifies the bare-string backend
+// declaration round-trips. `backend: pi` is the most common shape — the
+// structured form is covered by TestConvert_PreservesManifestFields.
+func TestConvert_PreservesBackendString(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "START.md", "<result>done</result>")
+	writeFile(t, dir, "workflow.yaml", "id: short-form\nbackend: pi\n")
+
+	yamlStr, _, err := Convert(dir)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &got))
+
+	// Bare string is acceptable, as is the structured form with just name=pi.
+	switch v := got["backend"].(type) {
+	case string:
+		assert.Equal(t, "pi", v)
+	case map[string]any:
+		assert.Equal(t, "pi", v["name"])
+	default:
+		t.Fatalf("backend must be a string or map; got %T = %v", got["backend"], got["backend"])
+	}
+}
+
+// TestConvert_NoManifest verifies a directory without workflow.yaml still
+// converts cleanly (no manifest fields emitted at root, but states: is intact).
+// Guards against the fix breaking the existing manifest-less convert path.
+func TestConvert_NoManifest(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "START.md", "<result>done</result>")
+
+	yamlStr, warnings, err := Convert(dir)
+	require.NoError(t, err)
+	assert.Empty(t, warnings)
+	assert.True(t, strings.HasPrefix(yamlStr, "states:"),
+		"manifest-less convert must still produce a states-only YAML")
+}
+
+// TestConvert_PreservesManifestFieldsInZip verifies the zip-scope code path
+// (readManifestFromScope dispatches to zipscope.ReadText for zips, vs
+// manifest.ParseManifest for directories). Same fields should round-trip
+// through either source.
+func TestConvert_PreservesManifestFieldsInZip(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := writeTestZip(t, dir, map[string]string{
+		"workflow.yaml": "id: zipped-pi\nname: Zipped Pi Workflow\nbackend: pi\n",
+		"START.md":      "<result>done</result>",
+	})
+
+	yamlStr, warnings, err := Convert(zipPath)
+	require.NoError(t, err)
+	for _, w := range warnings {
+		assert.NotContains(t, w, "workflow.yaml",
+			"workflow.yaml inside a zip must be consumed, not skipped: %s", w)
+	}
+
+	var got map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &got))
+	assert.Equal(t, "zipped-pi", got["id"])
+	assert.Equal(t, "Zipped Pi Workflow", got["name"])
+
+	backendMap, ok := got["backend"].(map[string]any)
+	require.True(t, ok, "backend must round-trip from a zipped workflow.yaml")
+	assert.Equal(t, "pi", backendMap["name"])
+}
+
 // Test 11: No-frontmatter state has only prompt key
 func TestConvert_NoFrontmatterState(t *testing.T) {
 	dir := t.TempDir()

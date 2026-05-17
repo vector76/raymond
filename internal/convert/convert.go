@@ -2,6 +2,7 @@
 package convert
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -11,6 +12,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/vector76/raymond/internal/backendcfg"
+	"github.com/vector76/raymond/internal/manifest"
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/policy"
 	"github.com/vector76/raymond/internal/workflow"
@@ -51,9 +54,22 @@ func Convert(scopeDir string) (string, []string, error) {
 		return "", nil, err
 	}
 
-	// Step 2: Classify files.
+	// Step 2: Classify files. workflow.yaml is consumed as the manifest;
+	// README.md is silently skipped; anything else with an unrecognised
+	// extension produces a warning.
 	var stateFiles []string
+	var mani *manifest.Manifest
 	for _, name := range allFiles {
+		if strings.EqualFold(name, "workflow.yaml") {
+			m, parseErr := readManifestFromScope(scopeDir, name)
+			if parseErr != nil {
+				warnings = append(warnings,
+					fmt.Sprintf("workflow.yaml: failed to parse manifest, top-level fields will be dropped: %v", parseErr))
+			} else if m != nil {
+				mani = m
+			}
+			continue
+		}
 		ext := strings.ToLower(filepath.Ext(name))
 		if !workflow.StateExtensions[ext] {
 			if !strings.EqualFold(name, "README.md") {
@@ -173,12 +189,37 @@ func Convert(scopeDir string) (string, []string, error) {
 	})
 
 	// Step 8: Generate YAML output.
-	yamlStr, err := buildYAML(entries, groups)
+	yamlStr, err := buildYAML(entries, groups, mani)
 	if err != nil {
 		return "", nil, err
 	}
 
 	return yamlStr, warnings, nil
+}
+
+// readManifestFromScope parses workflow.yaml from either a directory scope or
+// a zip scope and returns the manifest. Returns (nil, nil) if the file is a
+// YAML scope rather than a manifest (manifest.ErrNotManifest).
+func readManifestFromScope(scopeDir, name string) (*manifest.Manifest, error) {
+	var m *manifest.Manifest
+	var err error
+	if zipscope.IsZipScope(scopeDir) {
+		content, readErr := zipscope.ReadText(scopeDir, name)
+		if readErr != nil {
+			return nil, readErr
+		}
+		m, err = manifest.ParseManifestData([]byte(content))
+	} else {
+		m, err = manifest.ParseManifest(filepath.Join(scopeDir, name))
+	}
+	if errors.Is(err, manifest.ErrNotManifest) {
+		// File looked like a YAML scope, not a manifest — nothing to preserve.
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // listAllFiles returns all filenames in the scope.
@@ -254,7 +295,10 @@ func normalizeAllowedTransitions(entries []map[string]string) {
 }
 
 // buildYAML constructs the YAML document string using the yaml.v3 Node API.
-func buildYAML(order []sortEntry, groups map[string]*stateGroup) (string, error) {
+// When mani is non-nil, its top-level fields are emitted before "states:" so
+// they survive the conversion (id, name, description, default_budget,
+// requires_human_input, working_directory, environment, input, backend).
+func buildYAML(order []sortEntry, groups map[string]*stateGroup, mani *manifest.Manifest) (string, error) {
 	// Root document → mapping with single key "states".
 	statesMapping := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 
@@ -294,6 +338,9 @@ func buildYAML(order []sortEntry, groups map[string]*stateGroup) (string, error)
 	}
 
 	rootMapping := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	if err := appendManifestFields(rootMapping, mani); err != nil {
+		return "", err
+	}
 	rootMapping.Content = append(rootMapping.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Value: "states", Tag: "!!str"},
 		statesMapping,
@@ -313,6 +360,163 @@ func buildYAML(order []sortEntry, groups map[string]*stateGroup) (string, error)
 	}
 
 	return buf.String(), nil
+}
+
+// appendManifestFields adds the non-zero top-level manifest fields (id, name,
+// description, default_budget, requires_human_input, working_directory,
+// environment, input, backend) to rootMapping in canonical order. Each field
+// is omitted when its zero value matches the manifest's zero value, mirroring
+// the rule the convert tool uses for state-level fields (don't emit what the
+// user didn't supply).
+func appendManifestFields(rootMapping *yaml.Node, mani *manifest.Manifest) error {
+	if mani == nil {
+		return nil
+	}
+	if mani.ID != "" {
+		addScalar(rootMapping, "id", mani.ID)
+	}
+	if mani.Name != "" {
+		addScalar(rootMapping, "name", mani.Name)
+	}
+	if mani.Description != "" {
+		addScalar(rootMapping, "description", mani.Description)
+	}
+	if mani.DefaultBudget != 0 {
+		// Format with a decimal point so the value is unambiguously a float
+		// even for whole numbers (1.0, not 1). The default !!float tag from
+		// fmt.Sprintf "%g" produces "1" for 1.0, which the YAML library
+		// then has to disambiguate with an explicit !!float tag in output.
+		val := fmt.Sprintf("%g", mani.DefaultBudget)
+		if !strings.Contains(val, ".") && !strings.Contains(val, "e") {
+			val += ".0"
+		}
+		rootMapping.Content = append(rootMapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "default_budget", Tag: "!!str"},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: val},
+		)
+	}
+	// Skip the "auto" default for requires_human_input. The manifest parser
+	// fills this in when the field is omitted, so emitting "auto" would add
+	// noise to converted output for workflows that didn't declare it.
+	if mani.RequiresHumanInput != "" && mani.RequiresHumanInput != "auto" {
+		addScalar(rootMapping, "requires_human_input", mani.RequiresHumanInput)
+	}
+	if mani.WorkingDirectory != "" {
+		addScalar(rootMapping, "working_directory", mani.WorkingDirectory)
+	}
+	if len(mani.Environment) > 0 {
+		envNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		var keys []string
+		for k := range mani.Environment {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			addScalar(envNode, k, mani.Environment[k])
+		}
+		rootMapping.Content = append(rootMapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "environment", Tag: "!!str"},
+			envNode,
+		)
+	}
+	// Emit `input:` only when the user supplied label/description or a
+	// non-default mode. The parser fills mode="optional" when input is
+	// absent, so an all-default input block would round-trip noise.
+	hasNonDefaultInput := mani.Input.Label != "" || mani.Input.Description != "" ||
+		(mani.Input.Mode != "" && mani.Input.Mode != manifest.InputModeOptional)
+	if hasNonDefaultInput {
+		inputNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		if mani.Input.Mode != "" {
+			addScalar(inputNode, "mode", mani.Input.Mode)
+		}
+		if mani.Input.Label != "" {
+			addScalar(inputNode, "label", mani.Input.Label)
+		}
+		if mani.Input.Description != "" {
+			addScalar(inputNode, "description", mani.Input.Description)
+		}
+		rootMapping.Content = append(rootMapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "input", Tag: "!!str"},
+			inputNode,
+		)
+	}
+	if mani.Backend.Name != "" {
+		// Emit the structured form (name + options) rather than the bare
+		// string. BackendSpec.UnmarshalYAML accepts both shapes, so a
+		// downstream YAML scope parser handles either; the structured form
+		// is preferred because it preserves any options the user declared.
+		backendNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		addScalar(backendNode, "name", mani.Backend.Name)
+		if err := appendBackendOptions(backendNode, &mani.Backend.Options); err != nil {
+			return err
+		}
+		rootMapping.Content = append(rootMapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "backend", Tag: "!!str"},
+			backendNode,
+		)
+	}
+	return nil
+}
+
+// appendBackendOptions emits backend.options under backendNode, skipping
+// fields whose values match the BackendOptions zero value (so a workflow that
+// only declared `backend: pi` doesn't get noisy default-zero options written
+// back). The options key is only added if at least one field has a value.
+func appendBackendOptions(backendNode *yaml.Node, opts *backendcfg.BackendOptions) error {
+	optsNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+
+	if opts.Provider != "" {
+		addScalar(optsNode, "provider", opts.Provider)
+	}
+	if opts.Thinking != "" {
+		addScalar(optsNode, "thinking", opts.Thinking)
+	}
+	if len(opts.Tools) > 0 {
+		addStringList(optsNode, "tools", opts.Tools)
+	}
+	if opts.NoBuiltinTools {
+		addScalar(optsNode, "no_builtin_tools", "true")
+	}
+	if opts.NoTools {
+		addScalar(optsNode, "no_tools", "true")
+	}
+	if opts.NoExtensions {
+		addScalar(optsNode, "no_extensions", "true")
+	}
+	if opts.NoSkills {
+		addScalar(optsNode, "no_skills", "true")
+	}
+	if len(opts.Extensions) > 0 {
+		addStringList(optsNode, "extensions", opts.Extensions)
+	}
+	if len(opts.Skills) > 0 {
+		addStringList(optsNode, "skills", opts.Skills)
+	}
+	if opts.SessionDir != "" {
+		addScalar(optsNode, "session_dir", opts.SessionDir)
+	}
+
+	if len(optsNode.Content) == 0 {
+		// No options declared — emit `backend: { name: ... }` without
+		// an empty `options:` key.
+		return nil
+	}
+	backendNode.Content = append(backendNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: "options", Tag: "!!str"},
+		optsNode,
+	)
+	return nil
+}
+
+// addStringList adds a key with a sequence of strings to a mapping node.
+func addStringList(mapping *yaml.Node, key string, values []string) {
+	seqNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, v := range values {
+		seqNode.Content = append(seqNode.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: v, Tag: "!!str"})
+	}
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key, Tag: "!!str"}
+	mapping.Content = append(mapping.Content, keyNode, seqNode)
 }
 
 // addBlockScalar adds a key with a literal block scalar (|) value to a mapping node.

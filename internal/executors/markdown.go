@@ -79,9 +79,21 @@ func (e *MarkdownExecutor) Execute(
 	basePrompt := prompts.RenderPrompt(body, variables)
 
 	// Determine model and effort (frontmatter takes precedence over defaults).
-	// Default to "sonnet" when nothing else specifies, for a predictable
-	// baseline instead of relying on ~/.claude/settings.json.
-	model := "sonnet"
+	// The active backend is resolved first because the fallback differs:
+	// Claude has a predictable "sonnet" baseline that avoids relying on
+	// ~/.claude/settings.json, but pi has its own configured default model
+	// and accepts pi-native model patterns — injecting "sonnet" sends pi
+	// fuzzy-matching against the wrong provider.
+	activeBackend := execCtx.Backend
+	if activeBackend == nil {
+		activeBackend = backend.NewClaudeBackend()
+	}
+	_, isClaude := activeBackend.(*backend.ClaudeBackend)
+
+	model := ""
+	if isClaude {
+		model = "sonnet"
+	}
 	if pol != nil && pol.Model != "" {
 		model = pol.Model
 	} else if execCtx.DefaultModel != "" {
@@ -93,12 +105,6 @@ func (e *MarkdownExecutor) Execute(
 		effort = pol.Effort
 	} else if execCtx.DefaultEffort != "" {
 		effort = execCtx.DefaultEffort
-	}
-
-	// Reminder loop.
-	activeBackend := execCtx.Backend
-	if activeBackend == nil {
-		activeBackend = backend.NewClaudeBackend()
 	}
 
 	var transition *parsing.Transition

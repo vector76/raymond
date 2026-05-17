@@ -61,57 +61,36 @@ must not contain `/` or `\` anywhere.
 
 ## Transition Tag Format
 
-**Assumption:** Use distinct tags for each transition type:
-- `<goto>FILE.md</goto>` - Pattern 3 (resume/continue in same context)
-- `<reset>FILE.md</reset>` - Pattern 4 (discard context, start fresh, continue)
-- `<reset cd="/path">FILE.md</reset>` - Pattern 4 with working directory change
-- `<call return="NEXT.md">CHILD.md</call>` - Pattern 2 (call with return)
-- `<function return="NEXT.md">EVAL.md</function>` - Pattern 1 (stateless evaluation with return)
-- `<fork next="NEXT.md" item="data">WORKER.md</fork>` - Independent spawn (parent continues at `next`)
-- `<fork next="NEXT.md" cd="/path">WORKER.md</fork>` - Independent spawn with working directory
-- `<result>...</result>` - Return/terminate
+**Assumption:** Use distinct tags per transition type — `<goto>`, `<reset>`,
+`<call>`, `<function>`, `<fork>`, `<result>`, `<ask>` — rather than a single
+`<transition pattern="…">` tag.
 
-The `<call>` tag requires a `return` attribute specifying which state to
-resume at when the child completes. The `<fork>` tag accepts arbitrary
-attributes that become metadata for the spawned agent. The `cd` attribute
-on `<fork>` and `<reset>` sets the agent's working directory (consumed by the
-orchestrator, not passed as metadata). The `cd` value can be absolute or
-relative; relative paths are resolved against the invoking agent's current
-working directory (or the orchestrator's directory if no agent cwd is set).
-The result is always stored as an absolute, normalized path.
+The full tag list, attribute syntax, and the `cd` / `input` / `next`
+attribute behaviors are specified in
+[workflow-protocol.md](workflow-protocol.md#tag-semantics). This section
+records only the *why*.
 
-**Rationale:** Distinct tag names are self-documenting. `<goto>` clearly
-indicates same-context continuation. `<reset>` indicates intentional context
-clearing. `<call>` evokes subroutine semantics. `<function>` suggests stateless
-evaluation. `<fork>` matches Unix fork() semantics (independent child process).
+**Rationale:** Distinct tag names are self-documenting. `<goto>` indicates
+same-context continuation. `<reset>` indicates intentional context clearing.
+`<call>` evokes subroutine semantics. `<function>` suggests stateless
+evaluation. `<fork>` matches Unix `fork()` semantics (independent child
+process).
 
-**Alternative considered:** Single `<transition>` tag with pattern attribute,
-naming conventions, YAML frontmatter.
+**Alternatives considered:** Single `<transition>` tag with a pattern
+attribute; naming conventions on the target file (e.g. `*_call.md`); YAML
+frontmatter declaring the type instead of tag-level distinctions.
 
-**Note on first invocation:** The very first invocation of a workflow has no
-session to resume. The orchestrator treats this as an implicit fresh start.
-Subsequent `<goto>` tags resume the existing session. `<reset>` explicitly
-creates a new session, discarding the current one.
+**Future consideration:** A `<compact>` tag could perform context
+summarization rather than full discard — partially preserving context while
+reducing token usage. Deferred; the philosophy is to avoid context overflow in
+the first place through intentional `<reset>` at phase boundaries.
 
-**Protocol note:** The authoritative protocol is defined in
-`docs/workflow-protocol.md`, including the return stack model and the rule that
-each Claude Code run must end with exactly one protocol tag.
-
-**Per-state policy:** Prompt files may optionally include YAML frontmatter that
-declares allowed tags/targets for that state; the orchestrator enforces it (see
-`docs/workflow-protocol.md`).
-
-**Future consideration:** A `<compact>` tag could perform context summarization
-rather than full discard - partially preserving context while reducing token
-usage. However, this is deferred; the philosophy is to avoid context overflow
-in the first place through intentional `<reset>` at phase boundaries.
-
-**Naming clarification:** Claude Code has a `--fork-session` CLI flag whose name is
-unfortunate in this context. In Raymond docs:
-- The `<fork>...</fork>` **tag** refers to spawning an independent agent
-  (process-like, fork() syscall analogy).
-- Claude Code `--fork-session` (flag) refers to branching a conversation history and is
-  an implementation detail unrelated to the `<fork>` tag's meaning.
+**Naming clarification:** Claude Code has a `--fork-session` CLI flag whose
+name is unfortunate in this context. The `<fork>...</fork>` **tag** refers to
+spawning an independent agent (process-like, `fork()` syscall analogy).
+Claude Code `--fork-session` (flag) refers to branching a conversation
+history and is an implementation detail unrelated to the `<fork>` tag's
+meaning.
 
 ## Default Model
 

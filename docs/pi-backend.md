@@ -688,7 +688,7 @@ A workflow that is meant to run portably across both backends should:
 
 Resolved in the body of this spec: protocol mode (`--mode json`), cost data
 path (post-turn JSONL parse), session storage (pi's default with optional
-override). Remaining items:
+override). Status of the rest:
 
 ### Pre-implementation validation (now complete)
 
@@ -704,7 +704,7 @@ ports pi's actual mangling.
 
 ### Genuinely open / forward-looking
 
-2. **System prompt usage.** Raymond does not currently set a system prompt
+1. **System prompt usage.** Raymond does not currently set a system prompt
    for either backend. If a future orchestrator-level instructions feature
    (injecting transition syntax reminders or tool-use guardrails as a
    system prompt rather than baking them into every state file) lands, pi

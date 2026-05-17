@@ -1,8 +1,15 @@
 # Configuration File Design
 
+**Status:** Implemented. This document records the design — the format,
+discovery rules, and precedence — of `.raymond/config.toml`. See the
+"Implementation Status" section at the bottom for the code that owns each
+piece.
+
 ## Overview
 
-This document explores design alternatives for a per-project configuration file to avoid repeatedly specifying options like `--dangerously-skip-permissions` or `--budget` on the command line.
+This document records the design of the per-project configuration file that
+avoids repeatedly specifying options like `--dangerously-skip-permissions` or
+`--budget` on the command line.
 
 ## Requirements
 
@@ -147,7 +154,7 @@ Example: If config file has `budget = 50.0` but CLI specifies `--budget 100.0`, 
 
 ## Config File Generation
 
-A command-line option `--init-config` will generate a `.raymond/config.toml` file with all options commented out.
+The `--init-config` command-line option generates a `.raymond/config.toml` file with all options commented out.
 
 **Behavior:**
 1. Search for existing `.raymond/config.toml` file using the same upward search logic
@@ -242,9 +249,9 @@ CLI-supplied values take precedence over config-file values.
 - All options are commented out by default; users uncomment only what they need
 
 **`.raymond` Directory Location:**
-- The `.raymond` directory location will follow the same search policy (upward until `.git` is found)
+- The `.raymond` directory location follows the same search policy (upward until `.git` is found)
 - This makes it project-based rather than CWD-based
-- Config file, state files, and debug files will all be in the same project-based `.raymond` directory
+- Config file, state files, and debug files all live in the same project-based `.raymond` directory
 
 ## Testing Considerations
 

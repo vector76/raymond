@@ -1,0 +1,12 @@
+id: pi-smoke-call
+name: Pi Backend Call Smoke Test
+description: >
+  Three-state pi workflow exercising the intra-workflow <call> transition,
+  which under the pi backend launches the callee with --fork <caller-session-id>
+  so it inherits the caller's conversation history. Verifies:
+  (1) the callee can recall a secret set in the caller (history was carried),
+  (2) the callee's session id differs from the caller's (it's a fork, not a resume),
+  (3) per-turn cost subtraction is correct so caller history isn't re-charged when
+  pi copies it into the fork file.
+backend: pi
+default_budget: 1.0

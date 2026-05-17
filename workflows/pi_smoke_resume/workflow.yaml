@@ -1,0 +1,7 @@
+id: pi-smoke-resume
+name: Pi Backend Resume Smoke Test
+description: >
+  Two-state pi workflow used to verify that turn 2 carries --session <id>
+  from turn 1 and that pi inherits the prior turn's context.
+backend: pi
+default_budget: 1.0

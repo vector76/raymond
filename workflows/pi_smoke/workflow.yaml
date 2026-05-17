@@ -1,0 +1,9 @@
+id: pi-smoke
+name: Pi Backend Smoke Test
+description: >
+  Minimal real-pi smoke workflow. One prompt state, one terminal result.
+  Used to verify end-to-end that the pi backend captures the session id,
+  reads cost from the session jsonl, and terminates cleanly. Relies on
+  pi's already-configured default provider/model.
+backend: pi
+default_budget: 1.0

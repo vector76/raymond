@@ -1,0 +1,10 @@
+id: pi-smoke-fork
+name: Pi Backend Fork Smoke Test
+description: >
+  Three-state pi workflow exercising the intra-workflow <fork> transition,
+  which spawns a parallel worker agent with fresh pi context (no --session,
+  no --fork flag). Verifies that two pi agents can run in parallel against
+  the same backend and both terminate cleanly with independent session ids
+  and independent per-turn costs.
+backend: pi
+default_budget: 1.0

@@ -1571,3 +1571,251 @@ func TestPiIntegration_RealPi(t *testing.T) {
 	require.NoError(t, runErr)
 	assert.True(t, completed, "pi script-only workflow should complete cleanly with real pi binary")
 }
+
+// piSmokeDir returns the path to the pi_smoke workflow (one real-LLM turn).
+func piSmokeDir() string {
+	return filepath.Join("..", "..", "workflows", "pi_smoke")
+}
+
+// piSmokeResumeDir returns the path to the pi_smoke_resume workflow (two
+// real-LLM turns; second turn must resume from the first).
+func piSmokeResumeDir() string {
+	return filepath.Join("..", "..", "workflows", "pi_smoke_resume")
+}
+
+// TestPiIntegration_RealPi_SmokeWorkflow runs a single-turn LLM workflow
+// against real pi and asserts the full end-to-end contract: result payload,
+// session id capture, and non-zero per-turn cost reading. This guards
+// against regressions of the pi-protocol mismatches that were silently
+// masked by stubbed unit tests (session-event name, agent_end message
+// extraction, on-disk usage shape, cwd mangling, timestamp-prefixed
+// session filenames, etc.). Skipped when pi isn't installed; requires the
+// host's pi to be already authenticated with a working default provider.
+//
+// Cost: one short turn, typically well under $0.01.
+func TestPiIntegration_RealPi_SmokeWorkflow(t *testing.T) {
+	if !piAvailable() {
+		t.Skip("pi CLI not found in PATH; skipping real-pi smoke test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("pi cwd-mangling on Windows is unverified; skipping")
+	}
+
+	var lastCompleted events.StateCompleted
+	completed, payload, runErr := runWorkflowCapture(t, piSmokeDir(), "START.md", 1.0, nil,
+		func(opts *orchestrator.RunOptions) {
+			prev := opts.ObserverSetup
+			opts.ObserverSetup = func(b *bus.Bus) {
+				if prev != nil {
+					prev(b)
+				}
+				bus.Subscribe(b, func(e events.StateCompleted) {
+					lastCompleted = e
+				})
+			}
+		},
+	)
+
+	require.NoError(t, runErr)
+	assert.True(t, completed, "pi_smoke workflow should complete cleanly")
+	assert.Equal(t, "ok", payload, "agent_end text extraction must yield the result payload")
+	assert.NotEmpty(t, lastCompleted.SessionID, "session id must be captured from pi's 'session' event")
+	assert.Greater(t, lastCompleted.CostUSD, 0.0, "per-turn cost must be populated from session jsonl")
+}
+
+// TestPiIntegration_RealPi_ResumeRoundTrip runs the two-turn pi_smoke_resume
+// workflow and asserts (1) the second turn's agent inherited context from
+// the first (proves --session round-trip), (2) per-turn cost is reported as
+// a delta — the sum of the two per-turn costs equals the total, not double
+// counted. Guards against regression of the cumulative-vs-delta bug fixed
+// in pi.go (the orchestrator adds CostUSD to wfState.TotalCostUSD; the
+// backend must return per-turn deltas, not cumulative session totals).
+//
+// Cost: two short turns, typically well under $0.02.
+func TestPiIntegration_RealPi_ResumeRoundTrip(t *testing.T) {
+	if !piAvailable() {
+		t.Skip("pi CLI not found in PATH; skipping real-pi resume test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("pi cwd-mangling on Windows is unverified; skipping")
+	}
+
+	var perTurnCosts []float64
+	var sessionIDs []string
+	var finalTotal float64
+	completed, payload, runErr := runWorkflowCapture(t, piSmokeResumeDir(), "START.md", 1.0, nil,
+		func(opts *orchestrator.RunOptions) {
+			prev := opts.ObserverSetup
+			opts.ObserverSetup = func(b *bus.Bus) {
+				if prev != nil {
+					prev(b)
+				}
+				bus.Subscribe(b, func(e events.StateCompleted) {
+					perTurnCosts = append(perTurnCosts, e.CostUSD)
+					sessionIDs = append(sessionIDs, e.SessionID)
+					finalTotal = e.TotalCostUSD
+				})
+			}
+		},
+	)
+
+	require.NoError(t, runErr)
+	assert.True(t, completed, "pi_smoke_resume should complete cleanly")
+	assert.Equal(t, "SECRET=8472", payload,
+		"second turn must recall the secret from the first turn (proves --session resume)")
+	require.Len(t, perTurnCosts, 2, "expected exactly two StateCompleted events")
+	assert.Greater(t, perTurnCosts[0], 0.0, "turn 1 cost must be > 0")
+	assert.Greater(t, perTurnCosts[1], 0.0, "turn 2 cost must be > 0")
+	assert.InDelta(t, perTurnCosts[0]+perTurnCosts[1], finalTotal, 1e-9,
+		"sum of per-turn costs must equal total — backend must return per-turn deltas, not cumulative")
+	assert.Equal(t, sessionIDs[0], sessionIDs[1],
+		"both turns must report the same session id (pi preserves id across resume)")
+}
+
+// piSmokeCallDir returns the path to the pi_smoke_call workflow (three states:
+// caller establishes a secret, <call> forks into child, child recalls it,
+// caller resumes at DONE).
+func piSmokeCallDir() string {
+	return filepath.Join("..", "..", "workflows", "pi_smoke_call")
+}
+
+// piSmokeForkDir returns the path to the pi_smoke_fork workflow (caller
+// spawns one parallel worker via <fork> and advances to JOIN).
+func piSmokeForkDir() string {
+	return filepath.Join("..", "..", "workflows", "pi_smoke_fork")
+}
+
+// TestPiIntegration_RealPi_CallTransition exercises the intra-workflow <call>
+// tag against real pi. This is the only end-to-end check that pi's --fork
+// <caller-session-id> actually carries the caller's conversation history into
+// the child session, and that the prior-cost subtraction in pi.go does not
+// over- or under-charge when pi copies the caller's history into the forked
+// session file.
+//
+// Assertions:
+//  1. Final payload is "SECRET=8472" — proves CHILD inherited START's history
+//     via pi's --fork (without it, CHILD would not know the secret).
+//  2. Three StateCompleted events with non-zero per-turn cost.
+//  3. Sum of per-turn costs equals the workflow's final TotalCostUSD — guards
+//     against double-counting the caller history that pi's --fork copies into
+//     the new session file (the per-turn delta logic in pi.go).
+//  4. CHILD's session id differs from START's (it's a fork — pi mints a new
+//     uuid for the forked file) while DONE matches START (caller resumed).
+//
+// Cost: three short turns, typically well under $0.03.
+func TestPiIntegration_RealPi_CallTransition(t *testing.T) {
+	if !piAvailable() {
+		t.Skip("pi CLI not found in PATH; skipping real-pi call-transition test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("pi cwd-mangling on Windows is unverified; skipping")
+	}
+
+	var perTurnCosts []float64
+	stateSessions := map[string]string{}
+	var finalTotal float64
+	completed, payload, runErr := runWorkflowCapture(t, piSmokeCallDir(), "START.md", 1.0, nil,
+		func(opts *orchestrator.RunOptions) {
+			prev := opts.ObserverSetup
+			opts.ObserverSetup = func(b *bus.Bus) {
+				if prev != nil {
+					prev(b)
+				}
+				bus.Subscribe(b, func(e events.StateCompleted) {
+					perTurnCosts = append(perTurnCosts, e.CostUSD)
+					stateSessions[e.StateName] = e.SessionID
+					finalTotal = e.TotalCostUSD
+				})
+			}
+		},
+	)
+
+	require.NoError(t, runErr)
+	assert.True(t, completed, "pi_smoke_call should complete cleanly")
+	assert.Equal(t, "SECRET=8472", payload,
+		"child must recall the secret from the caller (proves pi --fork carried history)")
+	require.Len(t, perTurnCosts, 3, "expected exactly three StateCompleted events (START, CHILD, DONE)")
+	for i, c := range perTurnCosts {
+		assert.Greater(t, c, 0.0, "turn %d cost must be > 0", i)
+	}
+	// Sum of per-turn costs must equal the workflow total. If pi.go did not
+	// subtract prior cost on the --fork turn, the forked child's CostUSD would
+	// include the caller's full history again and the sum would exceed the total.
+	var sum float64
+	for _, c := range perTurnCosts {
+		sum += c
+	}
+	assert.InDelta(t, sum, finalTotal, 1e-9,
+		"sum of per-turn costs must equal total — pi.go must subtract caller history on <call>/--fork")
+
+	require.NotEmpty(t, stateSessions["START.md"], "START.md must have a session id")
+	require.NotEmpty(t, stateSessions["CHILD.md"], "CHILD.md must have a session id")
+	require.NotEmpty(t, stateSessions["DONE.md"], "DONE.md must have a session id")
+	assert.NotEqual(t, stateSessions["START.md"], stateSessions["CHILD.md"],
+		"CHILD must run in a forked session (new uuid), not resume the caller's")
+	assert.Equal(t, stateSessions["START.md"], stateSessions["DONE.md"],
+		"DONE must resume the caller's session after the <call> frame pops")
+}
+
+// TestPiIntegration_RealPi_ForkTransition exercises the intra-workflow <fork>
+// tag against real pi: the caller advances to JOIN while a freshly-spawned
+// worker runs WORKER in parallel. Confirms that pi runs with no --session
+// and no --fork on the worker (fresh session id), and that two pi subprocesses
+// running concurrently against the same session directory don't trip over
+// each other's session files.
+//
+// Cost: three short turns (START on the caller, JOIN on the caller, WORKER on
+// the spawned agent), typically well under $0.03.
+func TestPiIntegration_RealPi_ForkTransition(t *testing.T) {
+	if !piAvailable() {
+		t.Skip("pi CLI not found in PATH; skipping real-pi fork-transition test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("pi cwd-mangling on Windows is unverified; skipping")
+	}
+
+	// The caller and worker agents run in separate goroutines and may emit
+	// StateCompleted concurrently. Guard the slice with a mutex.
+	var mu sync.Mutex
+	var completedEvents []events.StateCompleted
+	completed, _, runErr := runWorkflowCapture(t, piSmokeForkDir(), "START.md", 1.0, nil,
+		func(opts *orchestrator.RunOptions) {
+			prev := opts.ObserverSetup
+			opts.ObserverSetup = func(b *bus.Bus) {
+				if prev != nil {
+					prev(b)
+				}
+				bus.Subscribe(b, func(e events.StateCompleted) {
+					mu.Lock()
+					completedEvents = append(completedEvents, e)
+					mu.Unlock()
+				})
+			}
+		},
+	)
+
+	require.NoError(t, runErr)
+	assert.True(t, completed, "pi_smoke_fork should complete cleanly")
+
+	// Three states ran in total: START (spawns the fork), WORKER (the spawned
+	// agent), JOIN (the caller's continuation).
+	require.Len(t, completedEvents, 3, "expected three StateCompleted events (START, WORKER, JOIN)")
+
+	// Each turn must have a non-empty session id and non-zero cost.
+	stateSessions := map[string]string{}
+	for i, e := range completedEvents {
+		assert.NotEmpty(t, e.SessionID, "event %d (%s) must have a session id", i, e.StateName)
+		assert.Greater(t, e.CostUSD, 0.0, "event %d (%s) cost must be > 0", i, e.StateName)
+		stateSessions[e.StateName] = e.SessionID
+	}
+	require.NotEmpty(t, stateSessions["START.md"], "START.md must have a session id")
+	require.NotEmpty(t, stateSessions["WORKER.md"], "WORKER.md must have a session id")
+	require.NotEmpty(t, stateSessions["JOIN.md"], "JOIN.md must have a session id")
+	// WORKER spawns with SessionID=nil → pi runs with no --session/--fork flag
+	// → fresh session id, distinct from the caller's.
+	assert.NotEqual(t, stateSessions["START.md"], stateSessions["WORKER.md"],
+		"WORKER must run in a fresh session, not the caller's")
+	// JOIN runs on the caller agent after the fork, so its session matches START.
+	assert.Equal(t, stateSessions["START.md"], stateSessions["JOIN.md"],
+		"JOIN must resume the caller's session (caller advances past <fork> with its session preserved)")
+}

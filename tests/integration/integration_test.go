@@ -1819,3 +1819,107 @@ func TestPiIntegration_RealPi_ForkTransition(t *testing.T) {
 	assert.Equal(t, stateSessions["START.md"], stateSessions["JOIN.md"],
 		"JOIN must resume the caller's session (caller advances past <fork> with its session preserved)")
 }
+
+// TestPiIntegration_RealPi_ServeDashboardAwareness exercises the full daemon
+// HTTP surface with a real pi workflow. It guards the dashboard plumbing the
+// pi spec promised: workflow listings expose `backend`, run details expose
+// `backend` and per-agent `session_id`. Prior to this test, the wiring was
+// only covered by unit tests against stubbed events — this is the only
+// end-to-end check that the JSON shape matches what the dashboard reads.
+//
+// Cost: one short pi turn, typically well under $0.01.
+func TestPiIntegration_RealPi_ServeDashboardAwareness(t *testing.T) {
+	if !piAvailable() {
+		t.Skip("pi CLI not found in PATH; skipping serve+pi dashboard test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("pi cwd-mangling on Windows is unverified; skipping")
+	}
+
+	tempRoot := t.TempDir()
+	// ray serve creates .raymond/serve-state/ under its cwd on first use;
+	// pre-creating it is unnecessary here (no config files to drop into it).
+
+	// Use the repo's workflows/ as the daemon's root so it discovers the
+	// existing pi_smoke workflow without a fresh manifest copy. The daemon's
+	// cwd is tempRoot, so its .raymond/ state lives there; pi's session
+	// files end up under ~/.pi/agent/sessions/<tempRoot-mangled>/ — pi's
+	// own read and the backend's ReadSessionCost both key off the same cwd,
+	// so the read finds the file regardless of the mangled directory name.
+	workflowsDir, err := filepath.Abs(filepath.Join("..", "..", "workflows"))
+	require.NoError(t, err)
+
+	rayBin := buildRayBinary(t)
+	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "pi-smoke")
+	// startServeDaemon registers a t.Cleanup that SIGKILLs the daemon, which
+	// is fine here: the test polls until the run reaches a terminal state, so
+	// no pi child process is in flight at cleanup time.
+
+	// /workflows must expose backend="pi" on the pi-smoke entry.
+	resp, err := p.httpClient.Get(p.baseURL + "/workflows")
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var workflows []struct {
+		ID      string `json:"id"`
+		Backend string `json:"backend"`
+	}
+	require.NoError(t, json.Unmarshal(body, &workflows))
+	var piSmokeBackend string
+	for _, w := range workflows {
+		if w.ID == "pi-smoke" {
+			piSmokeBackend = w.Backend
+			break
+		}
+	}
+	assert.Equal(t, "pi", piSmokeBackend,
+		"GET /workflows must expose backend=\"pi\" so the dashboard can render the badge")
+
+	// Launch the workflow and poll /runs/<id> until completion.
+	runID := p.createRun(t)
+	var final struct {
+		Status  string `json:"status"`
+		Backend string `json:"backend"`
+		Agents  []struct {
+			ID        string `json:"id"`
+			SessionID string `json:"session_id"`
+		} `json:"agents"`
+		CostUSD float64 `json:"cost_usd"`
+	}
+	// 60s deadline is generous: a single pi turn typically completes in a
+	// few seconds, but the cold-start path (npm-installed pi spawning a node
+	// runtime, first-token latency on the provider) can stretch.
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		r, err := p.httpClient.Get(p.baseURL + "/runs/" + runID)
+		require.NoError(t, err)
+		b, _ := io.ReadAll(r.Body)
+		statusCode := r.StatusCode
+		r.Body.Close()
+		// A non-200 here means the run was dropped from the registry, or the
+		// daemon crashed and is returning errors — either way, fail fast
+		// rather than spinning until the 60s deadline.
+		require.Equal(t, http.StatusOK, statusCode,
+			"GET /runs/%s returned %d: %s%s", runID, statusCode, b, p.diagnostics())
+		require.NoError(t, json.Unmarshal(b, &final))
+		if final.Status == "completed" || final.Status == "failed" || final.Status == "cancelled" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run %s did not complete within 60s; last status %q%s",
+				runID, final.Status, p.diagnostics())
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	require.Equal(t, "completed", final.Status,
+		"pi-smoke must complete cleanly%s", p.diagnostics())
+	assert.Equal(t, "pi", final.Backend,
+		"GET /runs/<id> must expose backend=\"pi\" so the run card renders the badge")
+	require.NotEmpty(t, final.Agents, "run must have at least one agent")
+	assert.NotEmpty(t, final.Agents[0].SessionID,
+		"main agent must have a captured pi session id after the turn completes")
+	assert.Greater(t, final.CostUSD, 0.0, "cost must be populated from the session jsonl")
+}

@@ -1,15 +1,16 @@
 # Raymond
 
-Raymond is a workflow orchestrator for AI coding agents like Claude Code. It
-chains multiple prompts into multi-step workflows with intelligent context
-management — controlling what the agent remembers, forgets, and passes between
-steps.
+Raymond is a workflow orchestrator for AI coding agents. It chains multiple
+prompts into multi-step workflows with intelligent context management —
+controlling what the agent remembers, forgets, and passes between steps.
+Workflows run against Claude Code by default, or against `pi` (the
+multi-provider pi coding agent) when declared in the manifest.
 
-Claude Code excels at executing toward a single goal, but isn't built to chain
-tasks, run continuous loops, or manage context across phases. Raymond fills
-that gap by treating workflows as state machines where each state is a markdown
-prompt or shell script, and transitions are declared within the prompts
-themselves.
+Coding agents excel at executing toward a single goal, but aren't built to
+chain tasks, run continuous loops, or manage context across phases. Raymond
+fills that gap by treating workflows as state machines where each state is a
+markdown prompt or shell script, and transitions are declared within the
+prompts themselves.
 
 ## Key features
 
@@ -29,6 +30,9 @@ themselves.
 - **Cross-workflow calls** — Invoke other workflows via `<call-workflow>`,
   `<function-workflow>`, `<fork-workflow>`, and `<reset-workflow>` with shared
   budget and state
+- **Pluggable backend** — Workflows run against Claude Code by default; opt
+  into the pi backend (multi-provider, supports Anthropic, OpenAI, Google,
+  and more) by declaring `backend: pi` in the manifest
 - **Daemon mode** — `ray serve` exposes workflows via HTTP API and MCP
   tools, with a web UI for monitoring runs and delivering human input
 - **Skill packaging** — Bundle workflows as self-contained skills with a

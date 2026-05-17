@@ -5,10 +5,12 @@ package piwrap
 import (
 	"os/exec"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 func setupPiCmd(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NO_WINDOW}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 }
 
 func killPiProcess(cmd *exec.Cmd) error {

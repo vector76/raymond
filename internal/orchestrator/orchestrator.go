@@ -605,16 +605,23 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			WorkflowID:   ws.WorkflowID,
 			TotalCostUSD: ws.TotalCostUSD,
 			BudgetUSD:    ws.BudgetUSD,
-			ScopeDir:     ws.ScopeDir,
+			// ScopeDir reflects the agent's own scope, not the outer ws.ScopeDir:
+			// cross-workflow transitions mutate agent.ScopeDir, and the executor
+			// is expected to operate against the agent's scope.
+			ScopeDir: agentCopy.ScopeDir,
 		}
 		exec := executorFactory(agentCopy.CurrentState)
 
-		// Compute the effective timeout for this state.
+		// Compute the effective timeout for this state. Read from the agent's
+		// own scope, not the outer workflow's: cross-workflow transitions
+		// (fork-workflow, call-workflow, reset-workflow) mutate agent.ScopeDir,
+		// so a worker running in a nested YAML may declare a per-state timeout
+		// that the outer scope knows nothing about.
 		effectiveTimeout := execCtx.Timeout
 		effectiveTimeoutSource := execCtx.TimeoutSource
-		if yamlscope.IsYamlScope(localWS.ScopeDir) {
+		if yamlscope.IsYamlScope(agentCopy.ScopeDir) {
 			stateName := executors.ExtractStateName(agentCopy.CurrentState)
-			perStateTimeout, err := yamlscope.GetStateTimeout(localWS.ScopeDir, stateName)
+			perStateTimeout, err := yamlscope.GetStateTimeout(agentCopy.ScopeDir, stateName)
 			if err != nil {
 				resultCh <- stepResult{
 					agentID: agentCopy.ID,

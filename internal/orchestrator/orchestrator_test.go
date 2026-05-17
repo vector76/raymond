@@ -2441,6 +2441,90 @@ states:
 	assert.Equal(t, 30.0, timeouts[1])
 }
 
+// TestPerStateTimeout_ForkedYamlWorkflow_UsesAgentScope verifies that a worker
+// spawned via <fork-workflow> into a different YAML scope picks up per-state
+// timeouts from its *own* scope, not the outer workflow's. Regression: the
+// orchestrator used to read per-state timeouts via ws.ScopeDir (the outer
+// scope), so a forked worker's `timeout:` field was silently ignored and the
+// global default applied.
+func TestPerStateTimeout_ForkedYamlWorkflow_UsesAgentScope(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Outer YAML: no per-state timeouts. START will return a fork-workflow
+	// transition pointing at inner.yaml with next=DONE; DONE just terminates.
+	outerYaml := filepath.Join(tmp, "outer.yaml")
+	require.NoError(t, os.WriteFile(outerYaml, []byte(`
+states:
+  START:
+    prompt: "outer start"
+  DONE:
+    prompt: "outer done"
+`), 0o644))
+
+	// Inner YAML: START declares an explicit per-state timeout of 120s.
+	innerYaml := filepath.Join(tmp, "inner.yaml")
+	require.NoError(t, os.WriteFile(innerYaml, []byte(`
+states:
+  START:
+    prompt: "inner start"
+    timeout: 120
+`), 0o644))
+
+	stateDir := filepath.Join(tmp, ".raymond", "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	workflowID := "test-fork-yaml-timeout"
+	ws := wfstate.CreateInitialState(workflowID, outerYaml, "START.md", 0, nil, "")
+	require.NoError(t, wfstate.WriteState(workflowID, ws, stateDir))
+
+	// Three executions in call order: outer START (fork), then outer DONE and
+	// inner START in some interleaving (both just terminate).
+	fwTrans := parsing.Transition{
+		Tag:        "fork-workflow",
+		Target:     innerYaml,
+		Attributes: map[string]string{"next": "DONE"},
+	}
+	mock := newMock(
+		executors.ExecutionResult{Transition: fwTrans},
+		resultExecResult("done"),
+		resultExecResult("done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), workflowID, opts))
+
+	// Verify the multiset of timeouts: one per-state (120) for the inner
+	// worker, two global (60) for outer START and outer DONE.
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 3)
+	var perState, global int
+	for _, to := range timeouts {
+		switch to {
+		case 120.0:
+			perState++
+		case 60.0:
+			global++
+		default:
+			t.Errorf("unexpected timeout %v in %v", to, timeouts)
+		}
+	}
+	assert.Equal(t, 1, perState, "inner worker must receive its scope's per-state timeout (120)")
+	assert.Equal(t, 2, global, "outer states must receive the global timeout (60)")
+
+	// And the per-state attribution must reach the executor for the inner state.
+	sources := mock.capturedTimeoutSources()
+	var sawPerState bool
+	for _, s := range sources {
+		if s == "per-state timeout in workflow YAML" {
+			sawPerState = true
+		}
+	}
+	assert.True(t, sawPerState,
+		"TimeoutSource must reflect per-state YAML override for the forked worker; got %v", sources)
+}
+
 func TestPerStateTimeout_NonYamlScope_UsesGlobal(t *testing.T) {
 	stateDir, wfID := setupWorkflow(t, "START.md")
 

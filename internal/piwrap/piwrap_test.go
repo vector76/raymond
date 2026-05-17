@@ -1,6 +1,7 @@
 package piwrap
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,22 +290,32 @@ func TestReadSessionCost_EmptyFile(t *testing.T) {
 	assert.Equal(t, int64(0), cost.InputTokens)
 }
 
-func TestReadSessionCost_SingleUsageRecord(t *testing.T) {
+// piTurnEnd builds a turn_end JSONL line matching pi v0.74's actual shape:
+// nested message.usage.cost.total plus message.usage.{input,cacheRead,cacheWrite}.
+func piTurnEnd(input, cacheRead, cacheWrite int, total float64) string {
+	return fmt.Sprintf(
+		`{"type":"turn_end","message":{"role":"assistant","usage":{"input":%d,"output":50,"cacheRead":%d,"cacheWrite":%d,"totalTokens":%d,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":%g}}}}`,
+		input, cacheRead, cacheWrite, input+cacheRead+cacheWrite+50, total,
+	)
+}
+
+func TestReadSessionCost_SingleTurnEnd(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "sess-1"
-	writeSessionFile(t, dir, sessionID, `{"type":"turn_end","usage":{"cost_usd":0.001234,"input_tokens":100}}`)
+	writeSessionFile(t, dir, sessionID, piTurnEnd(100, 0, 0, 0.001234))
 	cost, err := ReadSessionCost(sessionID, dir, "")
 	require.NoError(t, err)
 	assert.InDelta(t, 0.001234, cost.CostUSD, 1e-9)
 	assert.Equal(t, int64(100), cost.InputTokens)
 }
 
-func TestReadSessionCost_MultipleRecords_Summed(t *testing.T) {
+func TestReadSessionCost_MultipleTurns_Summed(t *testing.T) {
+	// Across turns the per-turn turn_end records sum (e.g. resume loops).
 	dir := t.TempDir()
 	sessionID := "sess-2"
 	lines := strings.Join([]string{
-		`{"type":"turn_end","usage":{"cost_usd":0.001,"input_tokens":50}}`,
-		`{"type":"turn_end","usage":{"cost_usd":0.002,"input_tokens":75}}`,
+		piTurnEnd(50, 0, 0, 0.001),
+		piTurnEnd(75, 0, 0, 0.002),
 		`{"type":"other_event"}`,
 	}, "\n")
 	writeSessionFile(t, dir, sessionID, lines)
@@ -314,24 +325,114 @@ func TestReadSessionCost_MultipleRecords_Summed(t *testing.T) {
 	assert.Equal(t, int64(125), cost.InputTokens)
 }
 
-func TestReadSessionCost_CacheTokensSummed(t *testing.T) {
+func TestReadSessionCost_CacheTokensSummedIntoInputSide(t *testing.T) {
+	// Within a single turn_end record, cacheRead and cacheWrite roll into
+	// the "input-side" token count (mirrors Claude's input_tokens semantics).
 	dir := t.TempDir()
 	sessionID := "sess-3"
-	lines := `{"type":"turn_end","usage":{"cost_usd":0.005,"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":30}}`
-	writeSessionFile(t, dir, sessionID, lines)
+	writeSessionFile(t, dir, sessionID, piTurnEnd(10, 20, 30, 0.005))
 	cost, err := ReadSessionCost(sessionID, dir, "")
 	require.NoError(t, err)
 	assert.InDelta(t, 0.005, cost.CostUSD, 1e-9)
 	assert.Equal(t, int64(60), cost.InputTokens)
 }
 
+func TestReadSessionCost_StreamingSnapshotsIgnored(t *testing.T) {
+	// Within a turn, pi's live stream emits the same usage on every
+	// message_start / message_update / message_end snapshot. Only finalized
+	// per-turn records (turn_end in live form, or {"type":"message"} in
+	// on-disk form) should count — a turn with many in-flight snapshots
+	// plus one turn_end must report the turn_end value once, not summed
+	// across snapshots.
+	dir := t.TempDir()
+	sessionID := "sess-stream"
+	lines := strings.Join([]string{
+		// 3 in-flight snapshots showing the same (or smaller) running cost.
+		`{"type":"message_start","message":{"usage":{"input":100,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.005}}}}`,
+		`{"type":"message_update","message":{"usage":{"input":100,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.005}}}}`,
+		`{"type":"message_end","message":{"usage":{"input":100,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.005}}}}`,
+		// The authoritative per-turn record:
+		piTurnEnd(100, 0, 0, 0.005),
+	}, "\n")
+	writeSessionFile(t, dir, sessionID, lines)
+	cost, err := ReadSessionCost(sessionID, dir, "")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.005, cost.CostUSD, 1e-9)
+	assert.Equal(t, int64(100), cost.InputTokens)
+}
+
+// piOnDiskAssistantMessage builds the persisted on-disk record pi writes for
+// each finalized assistant message: {"type":"message","message":{...}}.
+// This is structurally different from the live-stream "turn_end" event.
+func piOnDiskAssistantMessage(input, cacheRead, cacheWrite int, total float64) string {
+	return fmt.Sprintf(
+		`{"type":"message","message":{"role":"assistant","usage":{"input":%d,"output":40,"cacheRead":%d,"cacheWrite":%d,"totalTokens":%d,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":%g}}}}`,
+		input, cacheRead, cacheWrite, input+cacheRead+cacheWrite+40, total,
+	)
+}
+
+func TestReadSessionCost_OnDiskMessageShape(t *testing.T) {
+	// Pi's on-disk session file persists assistant turns as `message` records,
+	// not `turn_end` (turn_end is live-stream only). Two assistant messages
+	// (e.g. a goto-loop) sum across the session.
+	dir := t.TempDir()
+	sessionID := "ondisk-1"
+	lines := strings.Join([]string{
+		`{"type":"session","id":"ondisk-1"}`,
+		`{"type":"model_change","modelId":"claude-opus-4-7"}`,
+		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}`,
+		piOnDiskAssistantMessage(5, 3200, 0, 0.002),
+		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"next"}]}}`,
+		piOnDiskAssistantMessage(10, 0, 0, 0.003),
+	}, "\n")
+	writeSessionFile(t, dir, sessionID, lines)
+
+	cost, err := ReadSessionCost(sessionID, dir, "")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.005, cost.CostUSD, 1e-9)
+	assert.Equal(t, int64(3215), cost.InputTokens) // (5+3200+0) + (10+0+0)
+}
+
+func TestReadSessionCost_TimestampPrefixedFile(t *testing.T) {
+	// pi names session files "<ISO-timestamp>_<sessionID>.jsonl". Verify
+	// raymond locates the file by suffix.
+	dir := t.TempDir()
+	sessionID := "019e3384-f19e-772a-822f-ce68383c21d6"
+	prefixedName := "2026-05-17T01-20-11-166Z_" + sessionID
+	writeSessionFile(t, dir, prefixedName, piTurnEnd(50, 0, 0, 0.007))
+
+	cost, err := ReadSessionCost(sessionID, dir, "")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.007, cost.CostUSD, 1e-9)
+	assert.Equal(t, int64(50), cost.InputTokens)
+}
+
 func TestReadSessionCost_WithSessionDir(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "explicit-dir-session"
-	writeSessionFile(t, dir, sessionID, `{"type":"t","usage":{"cost_usd":0.01}}`)
+	writeSessionFile(t, dir, sessionID, piTurnEnd(10, 0, 0, 0.01))
 	cost, err := ReadSessionCost(sessionID, dir, "/some/cwd")
 	require.NoError(t, err)
 	assert.InDelta(t, 0.01, cost.CostUSD, 1e-9)
+}
+
+func TestSessionFilePath_HomeDirCwdMangling(t *testing.T) {
+	// Pi stores sessions under ~/.pi/agent/sessions/<mangled-cwd>/<id>.jsonl
+	// where mangled-cwd strips leading/trailing slashes, replaces remaining
+	// slashes with `-`, and wraps in `--`. Verified empirically against
+	// pi v0.74 (see plan record).
+	cases := []struct {
+		cwd  string
+		want string
+	}{
+		{"/home/devuser/work/raymond", "--home-devuser-work-raymond--"},
+		{"/tmp/pi-test-cwd-x", "--tmp-pi-test-cwd-x--"},
+		{"/a/b", "--a-b--"},
+	}
+	for _, tc := range cases {
+		got := piCwdDirName(tc.cwd)
+		assert.Equal(t, tc.want, got, "cwd=%q", tc.cwd)
+	}
 }
 
 func TestReadSessionCost_HomeDirPath_FileNotFound(t *testing.T) {

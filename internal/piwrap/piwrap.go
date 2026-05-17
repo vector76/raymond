@@ -357,19 +357,32 @@ type SessionCost struct {
 }
 
 // ReadSessionCost locates and parses the pi session JSONL file after a turn,
-// summing usage records to derive cost and input token counts.
+// summing per-assistant-message usage records to derive cost and input
+// token counts. See parseSessionCost for the record shape.
 //
-// Path resolution:
-//   - If sessionDir is non-empty: <sessionDir>/<sessionID>.jsonl
-//   - Otherwise: ~/.pi/agent/sessions/<cwd>/<sessionID>.jsonl
+// Directory resolution:
+//   - If sessionDir is non-empty: <sessionDir>/
+//   - Otherwise: ~/.pi/agent/sessions/<mangled-cwd>/
+//
+// Within the directory the session file is named
+// "<ISO-timestamp>_<sessionID>.jsonl"; we glob for the suffix because the
+// timestamp prefix is unknown to raymond.
 //
 // Returns zero-value SessionCost (not an error) when the session file is not
 // found, since pi may not have written it yet for a fresh session or when the
 // turn produced no usage records.
 func ReadSessionCost(sessionID, sessionDir, cwd string) (SessionCost, error) {
-	path, err := sessionFilePath(sessionID, sessionDir, cwd)
+	dir, err := sessionDirPath(sessionDir, cwd)
 	if err != nil {
 		return SessionCost{}, err
+	}
+
+	path, err := findSessionFile(dir, sessionID)
+	if err != nil {
+		return SessionCost{}, err
+	}
+	if path == "" {
+		return SessionCost{}, nil // no file yet — caller treats as zero cost
 	}
 
 	data, err := os.ReadFile(path)
@@ -383,20 +396,95 @@ func ReadSessionCost(sessionID, sessionDir, cwd string) (SessionCost, error) {
 	return parseSessionCost(data), nil
 }
 
-// sessionFilePath returns the path to the pi session JSONL file.
-func sessionFilePath(sessionID, sessionDir, cwd string) (string, error) {
+// sessionDirPath returns the directory pi stores this session in (no filename).
+// When cwd is empty, pi inherits the parent process's cwd, so we resolve via
+// os.Getwd to match — otherwise the lookup would mangle "" to "----" and miss.
+func sessionDirPath(sessionDir, cwd string) (string, error) {
 	if sessionDir != "" {
-		return filepath.Join(sessionDir, sessionID+".jsonl"), nil
+		return sessionDir, nil
+	}
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolving working directory: %w", err)
+		}
+		cwd = wd
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home directory: %w", err)
 	}
-	return filepath.Join(home, ".pi", "agent", "sessions", cwd, sessionID+".jsonl"), nil
+	return filepath.Join(home, ".pi", "agent", "sessions", piCwdDirName(cwd)), nil
 }
 
-// parseSessionCost sums usage records from pi session JSONL content.
-// Each line is a JSON object; we look for lines with a "usage" field.
+// findSessionFile locates the per-session JSONL file inside dir. Pi names
+// session files "<ISO-timestamp>_<sessionID>.jsonl"; we match by suffix.
+// Returns ("", nil) if the directory exists but no file matches yet, or if
+// the directory itself doesn't exist.
+func findSessionFile(dir, sessionID string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading pi session dir %s: %w", dir, err)
+	}
+	suffix := "_" + sessionID + ".jsonl"
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, suffix) || name == sessionID+".jsonl" {
+			return filepath.Join(dir, name), nil
+		}
+	}
+	return "", nil
+}
+
+// piCwdDirName mirrors pi's cwd-to-dirname mangling: strip leading/trailing
+// path separators, replace remaining separators with `-`, and wrap in `--`.
+// e.g. "/home/x/y" -> "--home-x-y--".
+//
+// Verified empirically against pi v0.74 on Linux (see workflows/pi_smoke).
+// On Windows we first normalize backslashes to forward slashes via
+// filepath.ToSlash, but pi's actual Windows mangling is unverified — the
+// drive-letter colon (`C:`) in particular is not handled here. On Windows
+// the cost-reading path will likely miss the session file and silently
+// report $0 per turn (non-fatal; the stream parser still drives the
+// workflow). Verify and tighten when a Windows user reports it.
+func piCwdDirName(cwd string) string {
+	normalized := filepath.ToSlash(cwd)
+	trimmed := strings.Trim(normalized, "/")
+	return "--" + strings.ReplaceAll(trimmed, "/", "-") + "--"
+}
+
+// parseSessionCost sums per-assistant-message usage records from pi session
+// JSONL content.
+//
+// The on-disk session file shape differs from pi's live event stream: each
+// finalized assistant message is persisted as one
+// `{"type":"message","message":{"role":"assistant","usage":{...}}}` record.
+// We sum these (one per assistant turn) to derive total session cost and
+// input-side token count.
+//
+// pi v0.74 usage shape (inside message.usage):
+//
+//	"usage": {
+//	  "input": <int>,
+//	  "output": <int>,
+//	  "cacheRead": <int>,
+//	  "cacheWrite": <int>,
+//	  "totalTokens": <int>,
+//	  "cost": {"input": <float>, "output": <float>,
+//	           "cacheRead": <float>, "cacheWrite": <float>, "total": <float>}
+//	}
+//
+// Input-side tokens mirror Claude's "input_tokens" semantics (excluding the
+// model's output): sum of input + cacheRead + cacheWrite.
+//
+// `turn_end` is recognized too — that's the live-stream-only event shape,
+// and being permissive lets the same parser handle a captured stream.
 func parseSessionCost(data []byte) SessionCost {
 	var result SessionCost
 	for _, line := range bytes.Split(data, []byte("\n")) {
@@ -408,25 +496,71 @@ func parseSessionCost(data []byte) SessionCost {
 		if err := json.Unmarshal(line, &obj); err != nil {
 			continue
 		}
-		usageRaw, ok := obj["usage"]
-		if !ok {
+		if !isAssistantUsageRecord(obj) {
 			continue
 		}
-		usage, ok := usageRaw.(map[string]any)
-		if !ok {
+		usage := findUsage(obj)
+		if usage == nil {
 			continue
 		}
-		if cost, ok := usage["cost_usd"].(float64); ok {
-			result.CostUSD += cost
-		}
-		for _, key := range []string{"input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"} {
-			switch v := usage[key].(type) {
-			case float64:
-				result.InputTokens += int64(v)
-			case int64:
-				result.InputTokens += v
-			}
-		}
+		result.CostUSD += readCostTotal(usage)
+		result.InputTokens += readInputSideTokens(usage)
 	}
 	return result
+}
+
+// isAssistantUsageRecord returns true for record shapes that carry final
+// per-turn usage in pi sessions: a persisted assistant `message` record, or
+// a live-stream `turn_end`. Anything else (user messages, model_change,
+// streaming message_update snapshots, …) is filtered out to avoid
+// over-counting.
+func isAssistantUsageRecord(obj map[string]any) bool {
+	t, _ := obj["type"].(string)
+	switch t {
+	case "turn_end":
+		return true
+	case "message":
+		if msg, ok := obj["message"].(map[string]any); ok {
+			role, _ := msg["role"].(string)
+			return role == "assistant"
+		}
+	}
+	return false
+}
+
+// findUsage returns the "usage" object directly on the record, or on the
+// nested "message" field (pi puts usage inside message on message_start /
+// message_end / turn_end).
+func findUsage(obj map[string]any) map[string]any {
+	if u, ok := obj["usage"].(map[string]any); ok {
+		return u
+	}
+	if msg, ok := obj["message"].(map[string]any); ok {
+		if u, ok := msg["usage"].(map[string]any); ok {
+			return u
+		}
+	}
+	return nil
+}
+
+func readCostTotal(usage map[string]any) float64 {
+	cost, ok := usage["cost"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	total, _ := cost["total"].(float64)
+	return total
+}
+
+func readInputSideTokens(usage map[string]any) int64 {
+	var sum int64
+	for _, key := range []string{"input", "cacheRead", "cacheWrite"} {
+		switch v := usage[key].(type) {
+		case float64:
+			sum += int64(v)
+		case int64:
+			sum += v
+		}
+	}
+	return sum
 }

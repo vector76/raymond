@@ -181,7 +181,12 @@ difference.
   invoking pi with `--fork <caller-session-id>`, which branches a new
   session off the caller's so the callee starts with the caller's history.
   Same shape as Claude (`--fork-session` after `--resume <caller>`); only
-  the flag name changes.
+  the flag name changes. **Important for cost accounting:** pi's `--fork`
+  *copies* the caller's full message history into the new session file
+  (verified empirically on pi v0.74). The pi backend reads the caller's
+  prior cost before invoking pi and subtracts it from the post-turn read
+  so the call only charges the caller for the new turn's spend; otherwise
+  the caller's history would be re-charged on every `<call>`.
 - **`<fork>` (spawn a parallel agent).** Despite the flag name overlap,
   `<fork>` is *not* related to pi's `--fork` (or Claude's `--fork-session`).
   It is a Unix-`fork()`-style operation that launches an additional
@@ -207,9 +212,13 @@ Claude backend (`internal/backend/claude.go`, `emitClaudeStreamEvents`).
 Under the pi backend, a sibling implementation parses pi's `--mode json`
 event stream instead. The event types raymond consumes from pi:
 
-- `agent_start` — once at session begin, exposes the session UUID. Raymond
-  records this id on the agent state so the next turn can pass it to
-  `--session` or `--fork`.
+- `session` — top-of-stream event carrying the session UUID
+  (`{"type":"session","id":"<uuid>", ...}`). Raymond records this id on the
+  agent state so the next turn can pass it to `--session` or `--fork`.
+  (Earlier drafts of this spec expected the id on `agent_start`; pi v0.74
+  emits a bare `agent_start` and puts the id on `session`. The pi backend
+  reads from `session` and falls back to `agent_start.sessionId` for
+  forward-compat.)
 - `message_update` (assistant `text_delta` events) — drives `ProgressMessage`
   events on the bus.
 - `tool_execution_start` (with `toolName`, `args`) — drives `ToolInvocation`
@@ -218,7 +227,9 @@ event stream instead. The event types raymond consumes from pi:
   events when `isError` is true.
 - `agent_end` — terminal event; raymond uses it to know the turn is complete
   and to extract the assistant's final message text (which carries the
-  transition tag raymond is looking for).
+  transition tag raymond is looking for). The text lives at
+  `messages[-1].content[i].text` for assistant role — *not* on a top-level
+  `text` field.
 
 Other pi event types (`turn_start`, `turn_end`, `message_start`,
 `message_end`, `compaction_start`, `compaction_end`, `queue_update`) are
@@ -229,14 +240,19 @@ raymond**: the session id is unchanged across compaction, and the next
 turn's `--session <id>` invocation should work as if compaction had not
 happened.
 
-> **Action item for the implementer:** verify this assumption before relying
-> on it. Force a compaction (e.g. via pi's `/compact` slash command in an
-> interactive session, or by stuffing enough context to trigger
-> auto-compaction) and confirm that the session id reported by `agent_start`
-> on the next turn matches the pre-compaction id and that `--session <id>`
-> resumes correctly. If compaction does change the session id, raymond will
-> need to re-read it from `agent_start` after every turn (a minor change but
-> a real one) and update its persisted agent state accordingly.
+> **Verification status (pi v0.74):** session-id stability across normal
+> multi-turn resume is confirmed (`workflows/pi_smoke_resume` exercises a
+> 2-turn `<goto>` loop; the `session` event reports the same UUID on both
+> turns). Session-id stability across compaction is confirmed by source
+> reading: both `agent-session.js`'s manual `compact()` (line 1306) and
+> the auto-compact path in `_checkCompaction()` (line 1543) funnel through
+> `sessionManager.appendCompaction(...)`, which appends a `compaction`
+> entry to the existing branch and never touches `this.sessionId` or
+> `this.sessionFile`. Triggering compaction at runtime from
+> `--print --mode json` isn't possible (`/compact` is TUI-only) and the
+> auto-compact threshold is far past a smoke test, but the code path is
+> unambiguous. Revisit if a workflow ever reports a session-id mismatch on
+> resume.
 
 The backend abstraction normalizes the consumed events into the same
 orchestrator-facing events the Claude path emits today, so the rest of
@@ -289,11 +305,15 @@ workflow authors.
 
 Pi's `--mode json` event stream does not include per-event cost or token
 counts. After each turn (when pi exits), raymond parses the session JSONL
-file and sums usage records to derive `total_cost_usd` and token counts
-identical in shape to what Claude reports. The session JSONL lives under
-pi's session storage (default `~/.pi/agent/sessions/<cwd>/<id>.jsonl`, or
-under `backend.options.session_dir` if set); raymond locates the file by
-the session id captured from the `agent_start` event.
+file and sums per-assistant-message usage records to derive
+`total_cost_usd` and token counts identical in shape to what Claude
+reports. The session JSONL lives under pi's session storage (default
+`~/.pi/agent/sessions/<mangled-cwd>/<timestamp>_<id>.jsonl`, or under
+`backend.options.session_dir` if set); raymond locates the file by the
+session id captured from the `session` event, matching by suffix because
+pi prepends an ISO-timestamp to the filename. The cwd-to-directory
+mangling pi performs (strip leading/trailing `/`, replace `/` with `-`,
+wrap in `--`) is mirrored in `internal/piwrap/piwrap.go`.
 
 The orchestrator's per-workflow cost budget is enforced from these reads
 exactly as it is for Claude.
@@ -301,18 +321,19 @@ exactly as it is for Claude.
 ### Session storage
 
 By default raymond does **not** pass `--session-dir`; pi stores sessions in
-its normal location (`~/.pi/agent/sessions/<cwd>/`), the same way the
-existing Claude integration relies on Claude's normal session storage under
-`~/.claude/`.
+its normal location (`~/.pi/agent/sessions/<mangled-cwd>/`), the same way
+the existing Claude integration relies on Claude's normal session storage
+under `~/.claude/`.
 
 Pi organizes session files under sub-directories keyed by the working
-directory at session-creation time. This is *not* a new constraint for
-raymond: Claude Code's session storage has the same property, and raymond
-already only allows the working directory to change at points where the
-session is being abandoned anyway (`<reset>`, `<function>`, `<fork>`,
-cross-workflow boundaries). Within a single continuous session — `<goto>`
-loops, `<call>`/return — the cwd stays put, so the cwd-keyed organization
-is invisible.
+directory at session-creation time (with the cwd path mangled into a
+flat dirname — see "Cost and token accounting" above). This is *not* a
+new constraint for raymond: Claude Code's session storage has the same
+property, and raymond already only allows the working directory to change
+at points where the session is being abandoned anyway (`<reset>`,
+`<function>`, `<fork>`, cross-workflow boundaries). Within a single
+continuous session — `<goto>` loops, `<call>`/return — the cwd stays put,
+so the cwd-keyed organization is invisible.
 
 A workflow author may set `backend.options.session_dir` to relocate
 sessions — for example to keep them with the workflow run state for
@@ -502,11 +523,15 @@ override). Remaining items:
 
 ### Action items to validate before implementation
 
-1. **Confirm session id is stable across pi's auto-compaction.** Detail in
-   the "Stream parsing" section above. If the assumption is false, the
-   implementation must re-read the session id from `agent_start` on every
-   turn and persist it; the workflow contract is unaffected but the
-   bookkeeping changes.
+All resolved against pi v0.74. Session-id stability across compaction is
+confirmed by reading pi's source — see the "Stream parsing" section's
+verification-status note. End-to-end behavior of `<call>` (pi's `--fork`,
+including the prior-cost subtraction) and `<fork>` (parallel agents with
+fresh sessions) is covered by `TestPiIntegration_RealPi_CallTransition`
+and `TestPiIntegration_RealPi_ForkTransition`. Windows cwd mangling
+(`piCwdDirName`) remains unverified on a real Windows host; the cost-read
+path degrades to a silent $0/turn there until someone with a Windows box
+ports pi's actual mangling.
 
 ### Genuinely open / forward-looking
 

@@ -77,6 +77,23 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 		DangerouslySkipPermissions: spec.DangerouslySkipPermissions,
 	}
 
+	// Read the session's accumulated cost *before* pi runs so we can return a
+	// per-turn delta (the Backend.RunTurn contract is per-turn cost, not
+	// cumulative). This applies to both resume (--session) AND fork (--fork)
+	// because pi's fork operation *copies* the caller's full message history
+	// into the new session file; without subtracting the caller's prior cost,
+	// every <call> would re-charge the caller's history. Only a truly fresh
+	// session (spec.SessionID empty) has a zero prior.
+	var priorCost piwrap.SessionCost
+	if spec.SessionID != "" {
+		sc, err := piwrap.ReadSessionCost(spec.SessionID, b.opts.SessionDir, spec.Cwd)
+		if err != nil {
+			log.Printf("piwrap: warning: could not read prior session cost for %s: %v", spec.SessionID, err)
+		} else {
+			priorCost = sc
+		}
+	}
+
 	ch := piInvokeStreamFn(ctx, cmdSpec, spec.Cwd, spec.IdleTimeout)
 
 	var sessionID string
@@ -94,7 +111,15 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 
 		eventType, _ := obj["type"].(string)
 		switch eventType {
+		case "session":
+			// pi emits the session id on a top-of-stream "session" event;
+			// agent_start in v0.74+ has no sessionId field.
+			if id, ok := obj["id"].(string); ok && id != "" {
+				sessionID = id
+			}
+
 		case "agent_start":
+			// Fallback for pi versions that put the id on agent_start.
 			if id, ok := obj["sessionId"].(string); ok && id != "" {
 				sessionID = id
 			}
@@ -131,13 +156,14 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 			}
 
 		case "agent_end":
-			if text, ok := obj["text"].(string); ok {
-				outputText = text
-			}
+			// pi v0.74 puts the final assistant turn in messages[]; concatenate
+			// the text parts of the last assistant message.
+			outputText = extractPiAgentEndText(obj)
 		}
 	}
 
-	// Read cost from session JSONL after the turn completes.
+	// Read cost from session JSONL after the turn completes, then subtract the
+	// prior cost (zero only for a fresh session) to return a per-turn delta.
 	var costUSD float64
 	var inputTokens *int64
 	if sessionID != "" {
@@ -145,10 +171,13 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 		if costErr != nil {
 			log.Printf("piwrap: warning: could not read session cost for %s: %v", sessionID, costErr)
 		} else {
-			costUSD = sc.CostUSD
-			if sc.InputTokens > 0 {
-				localCopy := sc.InputTokens
-				inputTokens = &localCopy
+			costUSD = sc.CostUSD - priorCost.CostUSD
+			if costUSD < 0 {
+				costUSD = 0 // defensive: prior > after would mean we read wrong file
+			}
+			turnTokens := sc.InputTokens - priorCost.InputTokens
+			if turnTokens > 0 {
+				inputTokens = &turnTokens
 			}
 		}
 	}
@@ -171,6 +200,47 @@ func mapPiStreamError(err error) error {
 		return &RunError{Msg: fmt.Sprintf("pi execution failed: %v", err)}
 	}
 	return &RunError{Msg: err.Error()}
+}
+
+// extractPiAgentEndText walks the messages[] array on a pi agent_end event,
+// concatenating the text parts of the last assistant message. Returns "" if
+// no assistant text is present.
+func extractPiAgentEndText(obj map[string]any) string {
+	msgs, ok := obj["messages"].([]any)
+	if !ok {
+		return ""
+	}
+	// Walk from the end and use the last assistant message.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg, ok := msgs[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "assistant" {
+			continue
+		}
+		var b strings.Builder
+		switch content := msg["content"].(type) {
+		case string:
+			return content
+		case []any:
+			for _, part := range content {
+				p, ok := part.(map[string]any)
+				if !ok {
+					continue
+				}
+				if t, _ := p["type"].(string); t != "text" {
+					continue
+				}
+				if txt, ok := p["text"].(string); ok {
+					b.WriteString(txt)
+				}
+			}
+		}
+		return b.String()
+	}
+	return ""
 }
 
 // extractPiToolDetail returns a short detail string for a tool invocation,

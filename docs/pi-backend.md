@@ -1,24 +1,78 @@
-# pi Backend (Feature Specification)
+# pi Backend
 
-This document specifies the pi backend for raymond — *what* is to be built,
-not how. The companion document [pi-backend-rationale.md](pi-backend-rationale.md)
-records why **pi is the sole planned non-Claude backend** (codex, gemini,
-cursor, and copilot are postponed indefinitely) and identifies which parts
-of the current Claude-only execution path need to be abstracted to make
-room for pi.
+**Status:** Implemented. This document specifies the pi backend for raymond
+and records the rationale for adding it. **pi is the sole planned non-Claude
+backend** — codex, gemini, cursor, and copilot are postponed indefinitely;
+the reasoning is below under "Why pi, and only pi."
 
 For background on the existing Claude Code integration that this feature
-parallels, see [code-structure.md](code-structure.md) and the
-"Existing Claude Code integration" section of
-[pi-backend-rationale.md](pi-backend-rationale.md).
+parallels, see [code-structure.md](code-structure.md) and "Backend
+abstraction (where pi plugs in)" below.
 
-## Why pi
+## Why pi, and only pi
 
-The strategic rationale (provider coverage via Claude+pi, and pi's
-thin-foundation stability properties) lives in
-[pi-backend-rationale.md](pi-backend-rationale.md). The mechanical reasons
-pi is also a *good fit* for the surface raymond already drives — relevant
-to this feature spec — are:
+Two strategic principles drive the choice — coverage and stability — and a
+third practical observation (mechanical fit with raymond's existing surface)
+seals it.
+
+### Coverage: Claude + pi reaches every provider on favorable terms
+
+Raymond's existing Claude Code path uses subsidized Anthropic tokens via a
+Claude Code subscription — the discounted rate that makes Claude usage
+economical for long-running workflows. Pi covers the rest of the provider
+landscape on equivalently favorable terms:
+
+- **OpenAI** — pi can drive an OpenAI Codex subscription, getting the same
+  discounted-token economics that Codex CLI users enjoy.
+- **Microsoft / enterprise** — pi can drive a GitHub Copilot subscription,
+  which is the path enterprises typically have budget and approval for.
+- **Google and others** — pi's multi-provider selector
+  (`--provider <name>`, `--model <pattern>`, `--thinking <level>`) handles
+  the remaining providers via their own credentials.
+
+Notably, pi driving Claude does *not* use the Claude Code subscription —
+it falls through to retail Anthropic API pricing ("extra usage"). That's
+why raymond keeps its own direct Claude Code integration rather than
+routing Claude through pi: each backend is responsible for the provider
+it serves cheapest.
+
+Between Claude Code (for Anthropic, subsidized) and pi (for everyone
+else, subsidized where the provider offers it), the practical provider
+matrix is covered. Adding codex / gemini / cursor / copilot as
+first-class backends would mostly duplicate routes pi already covers, at
+the cost of more integration surface to maintain.
+
+### Stability: pi is a thin foundation, not an opinionated harness
+
+Model behavior will always drift — that's an unavoidable cost of building
+on LLMs. What raymond *can* avoid is a *second* layer of drift on top:
+the layer introduced by an opinionated harness sitting between raymond
+and the model.
+
+Claude Code, Codex CLI, Gemini CLI, Cursor, and Copilot CLI all have
+their own opinions about prompt shaping, permission flows, tool
+surfaces, and stream-event semantics. Those opinions change. A raymond
+workflow that works today against one of those harnesses can fail
+tomorrow when the harness changes its mind about, say, how `<tool_use>`
+blocks are emitted or which tools auto-approve.
+
+Pi is deliberately bare-bones-but-extensible. Its protocol surface
+(`--mode json`, `--mode rpc`) is small, its prompt handling is
+unopinionated, and its philosophy is to expose the provider's behavior
+rather than reshape it. That makes pi a more stable foundation for
+raymond to build on. Raymond still inherits model drift via pi, but it
+does not inherit a second moving target on top of that.
+
+The historical risk is real: GitHub Copilot CLI removed its `--headless
+--stdio` flags in 2026 (issue #1606) and pushed integrators toward
+`--acp` instead — a breaking change for any wrapper. Pi's smaller
+surface and explicit thin-wrapper framing make that class of disruption
+less likely.
+
+### Mechanical fit with raymond's existing surface
+
+Beyond the strategic case, pi is also a good mechanical fit for the
+surface raymond already drives:
 
 - It exposes a structured machine protocol (`--mode json` for an event stream
   and `--mode rpc` for a bidirectional JSONL channel on stdin/stdout) that is
@@ -40,6 +94,122 @@ than the vendor CLIs, and a few raymond-internal assumptions
 (per-event-cost telemetry on the live stream and Claude's
 `--permission-mode acceptEdits` shape) have no direct equivalent on pi
 and degrade as documented in "Features that are unavailable" below.
+
+## What was considered
+
+Prior versions of this strategy surveyed five candidate backends — Codex
+CLI, Gemini CLI, Cursor CLI, pi, and GitHub Copilot CLI — with a
+capability comparison table covering one-shot mode, stream-JSON, system
+prompts, auto-approve, session resume, continue-and-fork, cost
+reporting, and working-directory handling. That survey is in the git
+history of `docs/pi-backend-rationale.md`; it is not reproduced here
+because the strategy decision above renders it moot. Git history also
+preserves the corresponding (now-deleted) `copilot-backend.md` feature
+spec.
+
+## Scope
+
+What this backend covers:
+
+- pi runs as a second backend behind the `internal/backend` abstraction,
+  alongside the original Claude-only path.
+- Workflow-level `backend:` declaration in the manifest (Claude Code
+  remains the default when absent).
+- Per-state knobs (`model`, `effort`, `allowed_transitions`, timeout) and
+  the tool disallow list are mapped onto pi's equivalents, degrading
+  cleanly where pi has no direct equivalent.
+
+Out of scope, now and for the foreseeable future:
+
+- Per-state backend switching. A workflow that genuinely needs both
+  Claude and pi composes them via cross-workflow invocation
+  (see [cross-workflow-design.md](cross-workflow-design.md)).
+- Any other backend (codex, gemini, cursor, copilot) as a first-class
+  raymond integration. Workflows that want those providers should use
+  pi with the appropriate `--provider` setting.
+
+## Backend abstraction (where pi plugs in)
+
+The Claude Code integration is narrow and well-isolated, and the backend
+abstraction (`internal/backend`) is in place. The pi implementation is a
+sibling of `ClaudeBackend`; the executor, orchestrator, and observers are
+unchanged at the seam.
+
+- **Command construction:** `internal/ccwrap/ccwrap.go` —
+  `BuildClaudeCommand` assembles flags. The binary name `claude` is
+  held in the `claudeExe` package variable (overridable in tests).
+  `BuildClaudeEnv` strips `CLAUDECODE` to prevent nested sessions, and
+  `InvokeStream` / `Invoke` wrap execution. Flags assembled today:
+  `--output-format stream-json`, `-p`, `--permission-mode acceptEdits`
+  or `--dangerously-skip-permissions`, `--model`, `--effort`,
+  `--resume <id>` or `-c --fork-session`, `--disallowed-tools`
+  (hardcoded: `EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`,
+  `NotebookEdit`), and the prompt after `--`.
+
+- **Stream parsing:** `internal/backend/claude.go` —
+  `emitClaudeStreamEvents` translates Claude stream-JSON objects into
+  Sink callbacks. Message types handled: `assistant` (text and
+  `tool_use` items), `user` (tool results, with `is_error` driving
+  ErrorOccurred via Sink.OnToolError), and `result` (final, with
+  `is_error` driving usage-limit detection via `isClaudeLimitResult`).
+  Cost is read from `total_cost_usd` and tokens summed from
+  `usage.cache_creation_input_tokens`, `cache_read_input_tokens`, and
+  `input_tokens` (`extractClaudeCost`, `extractClaudeTokens` in the
+  same file). Session ID is read from `session_id` or
+  `metadata.session_id` via `ccwrap.ExtractSessionID`.
+
+- **Backend interface:** `internal/backend/backend.go` defines
+  `Backend.RunTurn(ctx, TurnSpec, Sink) (TurnResult, error)` plus the
+  neutral error types (`TimeoutError`, `LimitError`, `RunError`). The
+  Claude implementation lives in `internal/backend/claude.go`. A pi
+  implementation goes alongside it (`internal/backend/pi.go`).
+
+- **Per-state agent config:** `internal/policy/policy.go` defines
+  `Policy` with `AllowedTransitions`, `Model`, `Effort`. Per-workflow
+  launch defaults live in `internal/state/state.go` as
+  `LaunchParams` (`DangerouslySkipPermissions`, `Model`, `Effort`,
+  `Timeout`, `ContinueAndFork`, `OnAsk`).
+
+- **Executor abstraction:** `internal/executors/executors.go` defines
+  a `StateExecutor` interface with two implementations
+  (`MarkdownExecutor`, `ScriptExecutor`). Selection is by file
+  extension (`GetExecutor`). The markdown executor now calls
+  `backend.Backend.RunTurn` (defaulting to the Claude backend); the
+  pi-vs-Claude split happens at that call.
+
+- **Manifest:** `internal/manifest/manifest.go` defines the `Manifest`
+  struct. This is where the `backend:` field lands.
+
+## Resolved questions
+
+The original five-candidate design notes left eight open questions.
+Most resolve automatically under the pi-only strategy because pi has
+session resume, fork, system-prompt flags, and stream-JSON. The
+remainder are resolved in the rest of this document:
+
+- **`backend:` shape** — structured block. A workflow writes either the
+  bare string `backend: pi` or a name plus options (`backend:` with
+  `name:` and `options:` children, exposing pi-specific knobs like
+  `session_dir`, `tools`, `extensions`, `skills`). That lets pi's flag
+  surface come through faithfully without inventing a generic
+  cross-backend vocabulary for them.
+- **Model field shape** — opaque pass-through. The workflow author writes
+  Claude vocabulary (`opus`, `sonnet`) when targeting Claude or pi
+  vocabulary (`provider/id`, e.g. `anthropic/claude-sonnet-4-6`) when
+  targeting pi.
+- **Tool disallow list** — Claude-specific scaffolding; no-op on pi.
+  Raymond's hardcoded list (`EnterPlanMode`, `ExitPlanMode`,
+  `AskUserQuestion`, `NotebookEdit`) names tools that don't exist in
+  pi's surface.
+- **MCP** — **not supported under pi.** Pi is not MCP-native; it uses
+  `--extension` and `--skill` instead. Workflows that require an
+  MCP-hosted tool can't run under pi unless the tool also ships as a
+  pi extension or skill. The `ray serve` daemon's own MCP surface
+  (what external clients call) is unaffected — that's separate from
+  the agent-side tool surface.
+- **Availability preflight** — `pi --version` is run once at workflow
+  start (and on resume), failing fast with a clear message if pi
+  isn't installed.
 
 ## User-visible surface
 
@@ -455,9 +625,8 @@ the workflow author should know about.
    pi extension is available. Note this is distinct from raymond's own
    *daemon* MCP surface (the tools `ray serve` exposes to external
    clients): that is a property of the daemon, not the backend, and works
-   regardless of which backend a given workflow uses. (The MCP point is
-   summarized in [pi-backend-rationale.md](pi-backend-rationale.md) under
-   "Resolved questions".)
+   regardless of which backend a given workflow uses. (See "Resolved
+   questions" above for the same point in the context of the strategy.)
 
 8. **The `effort: <Claude-specific level>` vocabulary on per-state policies.**
    Claude's `--effort` accepts a different vocabulary than pi's `--thinking`.
@@ -515,13 +684,13 @@ A workflow that is meant to run portably across both backends should:
 - Not depend on Claude usage-limit detection or live per-event cost.
 - Not use `--continue-and-fork`.
 
-## Open issues and pre-implementation action items
+## Open issues and validation status
 
 Resolved in the body of this spec: protocol mode (`--mode json`), cost data
 path (post-turn JSONL parse), session storage (pi's default with optional
 override). Remaining items:
 
-### Action items to validate before implementation
+### Pre-implementation validation (now complete)
 
 All resolved against pi v0.74. Session-id stability across compaction is
 confirmed by reading pi's source — see the "Stream parsing" section's

@@ -126,6 +126,9 @@ so the agent can see its previous attempts.
 
 ## Documentation
 
+The full audience-keyed index lives at [docs/README.md](docs/README.md). The
+table below highlights the most commonly referenced documents.
+
 | Document | Audience | Description |
 |----------|----------|-------------|
 | [Authoring Guide](docs/authoring-guide.md) | Workflow authors | How to write state files — the complete guide |
@@ -140,7 +143,7 @@ so the agent can see its previous attempts.
 | [Terminal Title Bar](docs/terminal-titlebar.md) | Reference | Terminal title updates during workflow execution |
 | [Orchestration Design](docs/orchestration-design.md) | Raymond developers | Architecture and internal design |
 | [Script States Design](docs/bash-states.md) | Raymond developers | Design rationale for shell script states |
-| [Implementation Assumptions](docs/implementation-assumptions.md) | Raymond developers | Design decision log |
+| [Design Decisions](docs/design-decisions.md) | Raymond developers | Design decision log |
 | [Configuration Design](docs/configuration-file-design.md) | Raymond developers | Configuration system design |
 | [Code Structure](docs/code-structure.md) | Raymond developers | Project structure and development setup |
 | [Sample Workflows](docs/sample-workflows.md) | Both | Test workflows and examples |

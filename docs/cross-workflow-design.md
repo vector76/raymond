@@ -1,5 +1,10 @@
 # Cross-Workflow Calls and Forks
 
+**Status:** Implemented. The `<call-workflow>`, `<function-workflow>`,
+`<fork-workflow>`, and `<reset-workflow>` tags are live. This document records
+the design decisions, tag semantics, and constraints; it is the long-form
+reference, not a proposal.
+
 This document captures the design for cross-workflow invocation in Raymond: the
 ability for a running workflow to invoke other workflows natively, either
 blocking (like a subroutine call) or non-blocking (like spawning independent

@@ -1,5 +1,10 @@
 # Input File Attachments (Design)
 
+**Status:** Implemented. This document records the design — the *what* and
+*why* — of file exchange in `<ask>` steps. The user-facing semantics live in
+[workflow-protocol.md](workflow-protocol.md); the HTTP surface lives in
+[daemon-server.md](daemon-server.md).
+
 This document describes the design for letting workflow input steps exchange
 files with the user through the `ray serve` web interface — both files
 uploaded by the user as part of an input response, and files written by the

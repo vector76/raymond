@@ -1,7 +1,21 @@
-# Implementation Assumptions
+# Design Decisions
 
-This document records assumptions made during implementation where multiple
-reasonable choices existed. These can be revisited if they prove problematic.
+This document is a grab-bag of implementation decisions where multiple
+reasonable choices existed, recorded with their rationale and the alternatives
+considered. Entries can be revisited if the assumption proves problematic.
+
+Several topics that originated here have grown dedicated documents elsewhere.
+When the two diverge, the dedicated document is authoritative; entries below
+that overlap with one of these are kept for historical context:
+
+- **Transition tag format and protocol** — authoritative spec in
+  [workflow-protocol.md](workflow-protocol.md).
+- **Configuration file (`.raymond/config.toml`) discovery and precedence** —
+  full design in [configuration-file-design.md](configuration-file-design.md).
+- **Pool layout (CLI vs. `ray serve` state directories)** — full rationale in
+  [serve-run-pool.md](serve-run-pool.md).
+- **Shell-script states** — design rationale in
+  [bash-states.md](bash-states.md).
 
 ## State File Location
 

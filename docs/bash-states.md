@@ -1,11 +1,12 @@
 # Shell Script States (Design Rationale)
 
+**Status:** Implemented. This document records *why* shell-script states exist
+and the design tradeoffs behind them; it is not a proposal. For how to write
+them, see [authoring-guide.md](authoring-guide.md#shell-script-states).
+
 This document describes the problem of LLM overhead for deterministic operations
 and the design decisions behind shell scripts (`.sh` on Unix, `.bat` or `.ps1` on Windows)
 as an alternative state implementation alongside markdown prompt files.
-
-For how to write shell script states, see
-[authoring-guide.md](authoring-guide.md#shell-script-states).
 
 ## Problem Statement
 

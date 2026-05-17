@@ -79,6 +79,17 @@ func (m *mockExec) capturedTimeouts() []float64 {
 	return timeouts
 }
 
+// capturedTimeoutSources returns the TimeoutSource values from all captured execution contexts.
+func (m *mockExec) capturedTimeoutSources() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var sources []string
+	for _, ctx := range m.capturedCtx {
+		sources = append(sources, ctx.TimeoutSource)
+	}
+	return sources
+}
+
 // newMock returns a mockExec whose calls succeed in order.
 func newMock(results ...executors.ExecutionResult) *mockExec {
 	return &mockExec{results: results}
@@ -2185,6 +2196,57 @@ states:
 	timeouts := mock.capturedTimeouts()
 	require.Len(t, timeouts, 1)
 	assert.Equal(t, 60.0, timeouts[0])
+}
+
+// TestPerStateTimeout_SourceOverride verifies that when a state defines its
+// own timeout, the executor receives a TimeoutSource that names the YAML
+// override (not the orchestrator's incoming source).
+func TestPerStateTimeout_SourceOverride(t *testing.T) {
+	yamlContent := `
+states:
+  WORK:
+    prompt: "Do work"
+    timeout: 120
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "WORK.md")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	opts.TimeoutSource = "--timeout flag"
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	sources := mock.capturedTimeoutSources()
+	require.Len(t, sources, 1)
+	assert.Equal(t, "per-state timeout in workflow YAML", sources[0])
+}
+
+// TestPerStateTimeout_SourcePropagated verifies that when no per-state YAML
+// timeout is set, the incoming TimeoutSource from RunOptions reaches the
+// executor unchanged.
+func TestPerStateTimeout_SourcePropagated(t *testing.T) {
+	yamlContent := `
+states:
+  WORK:
+    prompt: "Do work"
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "WORK.md")
+
+	mock := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	opts.TimeoutSource = "config file /tmp/.raymond/config.toml"
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	sources := mock.capturedTimeoutSources()
+	require.Len(t, sources, 1)
+	assert.Equal(t, "config file /tmp/.raymond/config.toml", sources[0])
 }
 
 // ----------------------------------------------------------------------------

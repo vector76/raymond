@@ -41,6 +41,7 @@ type ExecutionContext struct {
 	DefaultModel               string         // empty = no override; policy takes precedence
 	DefaultEffort              string         // empty = no override
 	Timeout                    float64        // ≤ 0 = no timeout
+	TimeoutSource              string         // human-readable origin of Timeout (e.g. "raymond default", "--timeout flag", "config file /path/.raymond/config.toml", "per-state timeout in workflow YAML")
 	DangerouslySkipPermissions bool
 	Backend                    backend.Backend // nil = use Claude default
 

@@ -197,3 +197,99 @@ func TestScriptExecutor_YamlScope_TaskFolderEnvVar(t *testing.T) {
 		t.Errorf("RAYMOND_TASK_FOLDER = %q, want /output/agent-B_task2", capturedEnv["RAYMOND_TASK_FOLDER"])
 	}
 }
+
+// TestScriptExecutor_TimeoutError_IncludesStateAndSource verifies the timeout
+// error message names the state (not the temp script path) and attributes the
+// timeout to its configured source.
+func TestScriptExecutor_TimeoutError_IncludesStateAndSource(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "CHECK.sh"), []byte("#!/bin/sh\nsleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "NEXT.md"), []byte("next"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name           string
+		source         string
+		wantSubstrings []string
+	}{
+		{
+			name:   "cli flag source",
+			source: "--timeout flag",
+			wantSubstrings: []string{
+				"Script 'CHECK.sh' timed out after",
+				"600 seconds",
+				"(timeout from --timeout flag)",
+			},
+		},
+		{
+			name:   "per-state yaml source",
+			source: "per-state timeout in workflow YAML",
+			wantSubstrings: []string{
+				"Script 'CHECK.sh' timed out after",
+				"(timeout from per-state timeout in workflow YAML)",
+			},
+		},
+		{
+			name:   "empty source falls back to unknown",
+			source: "",
+			wantSubstrings: []string{
+				"Script 'CHECK.sh' timed out after",
+				"(timeout from unknown source)",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := &wfstate.WorkflowState{
+				WorkflowID: "timeout-test",
+				ScopeDir:   dir,
+				BudgetUSD:  10.0,
+				Agents: []wfstate.AgentState{{
+					ID:           "main",
+					CurrentState: "CHECK.sh",
+					ScopeDir:     dir,
+					Stack:        []wfstate.StackFrame{},
+				}},
+			}
+
+			b := newBus()
+			execCtx := &executors.ExecutionContext{
+				Bus:           b,
+				WorkflowID:    ws.WorkflowID,
+				Timeout:       600,
+				TimeoutSource: tc.source,
+			}
+
+			executors.SetRunScriptFn(func(
+				ctx context.Context, scriptPath string, timeout float64,
+				env map[string]string, cwd string,
+			) (*platform.ScriptResult, error) {
+				return nil, &platform.ScriptTimeoutError{ScriptPath: scriptPath, Timeout: timeout}
+			})
+			defer executors.ResetRunScriptFn()
+
+			_, err := executors.NewScriptExecutor().Execute(
+				context.Background(), &ws.Agents[0], ws, execCtx,
+			)
+			if err == nil {
+				t.Fatal("expected timeout error, got nil")
+			}
+			msg := err.Error()
+			for _, want := range tc.wantSubstrings {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error message missing %q\ngot: %s", want, msg)
+				}
+			}
+			// The script path (the temp dir holding CHECK.sh, or any extracted
+			// temp script) should not appear in the user-facing message — the
+			// state name is enough.
+			if strings.Contains(msg, dir) || strings.Contains(msg, "raymond-script-") {
+				t.Errorf("error message should not expose script path\ngot: %s", msg)
+			}
+		})
+	}
+}

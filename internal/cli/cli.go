@@ -247,6 +247,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			}
 
 			// ---- load and merge config file ----
+			configFilePath := config.FindConfigFile("")
 			fileConfig, err := config.LoadConfig("")
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
@@ -298,8 +299,15 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				effectiveBudget = *merged.Budget
 			}
 			effectiveTimeout := defaultTimeoutSec
-			if merged.Timeout != nil {
+			effectiveTimeoutSource := "raymond default"
+			if cmd.Flags().Changed("timeout") {
 				effectiveTimeout = *merged.Timeout
+				effectiveTimeoutSource = "--timeout flag"
+			} else if merged.Timeout != nil {
+				// Reached only when the config file supplied a timeout value;
+				// configFilePath is therefore non-empty.
+				effectiveTimeout = *merged.Timeout
+				effectiveTimeoutSource = fmt.Sprintf("config file %s", configFilePath)
 			}
 			effectiveSkipPerms := defaultDangerouslySkipPermissions
 			if merged.DangerouslySkipPermissions != nil {
@@ -311,6 +319,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 				DefaultModel:               merged.Model,
 				DefaultEffort:              merged.Effort,
 				Timeout:                    effectiveTimeout,
+				TimeoutSource:              effectiveTimeoutSource,
 				DangerouslySkipPermissions: effectiveSkipPerms,
 				Quiet:                      quiet,
 				Debug:                      !merged.NoDebug,

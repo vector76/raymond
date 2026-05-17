@@ -106,6 +106,12 @@ type RunOptions struct {
 	// Timeout is the Claude Code invocation timeout in seconds. ≤ 0 means no limit.
 	Timeout float64
 
+	// TimeoutSource is a human-readable description of where Timeout came from
+	// (e.g. "raymond default", "--timeout flag", "config file <path>"). Used
+	// only for diagnostic error messages. Per-state YAML timeouts override
+	// both Timeout and TimeoutSource at launch time.
+	TimeoutSource string
+
 	// DangerouslySkipPermissions passes --dangerously-skip-permissions to Claude.
 	DangerouslySkipPermissions bool
 
@@ -462,6 +468,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	execCtx.DefaultModel = opts.DefaultModel
 	execCtx.DefaultEffort = opts.DefaultEffort
 	execCtx.Timeout = opts.Timeout
+	execCtx.TimeoutSource = opts.TimeoutSource
 	execCtx.DangerouslySkipPermissions = opts.DangerouslySkipPermissions
 	// execCtx.Backend is set per-state in the launch closure via the
 	// backendResolver, so a cross-workflow transition that lands the agent
@@ -604,6 +611,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 
 		// Compute the effective timeout for this state.
 		effectiveTimeout := execCtx.Timeout
+		effectiveTimeoutSource := execCtx.TimeoutSource
 		if yamlscope.IsYamlScope(localWS.ScopeDir) {
 			stateName := executors.ExtractStateName(agentCopy.CurrentState)
 			perStateTimeout, err := yamlscope.GetStateTimeout(localWS.ScopeDir, stateName)
@@ -616,6 +624,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 			}
 			if perStateTimeout != nil {
 				effectiveTimeout = *perStateTimeout
+				effectiveTimeoutSource = "per-state timeout in workflow YAML"
 			}
 		}
 
@@ -636,6 +645,7 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		// and the per-state backend.
 		launchCtx := *execCtx
 		launchCtx.Timeout = effectiveTimeout
+		launchCtx.TimeoutSource = effectiveTimeoutSource
 		launchCtx.Backend = stateBackend
 
 		go func() {

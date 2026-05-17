@@ -1026,6 +1026,88 @@ func TestResumeCLIExplicitFalseOverridesSavedTrue(t *testing.T) {
 		"explicit --dangerously-skip-permissions=false on CLI should override saved true")
 }
 
+// --------------------------------------------------------------------------
+// TimeoutSource attribution (used by ScriptExecutor in its timeout error
+// message; we cover all three origins end-to-end here).
+// --------------------------------------------------------------------------
+
+func TestTimeoutSource_DefaultWhenUnspecified(t *testing.T) {
+	// Chdir into an empty temp dir so no .raymond/config.toml is found.
+	t.Chdir(t.TempDir())
+
+	stateDir := makeStateDir(t)
+	scope := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
+
+	captured, err := runCapturing(t, filepath.Join(scope, "START.md"), "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, "raymond default", captured[0].TimeoutSource)
+}
+
+func TestTimeoutSource_FromCLIFlag(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	stateDir := makeStateDir(t)
+	scope := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
+
+	captured, err := runCapturing(t,
+		filepath.Join(scope, "START.md"),
+		"--timeout", "123",
+		"--state-dir", stateDir,
+	)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, 123.0, captured[0].Timeout)
+	assert.Equal(t, "--timeout flag", captured[0].TimeoutSource)
+}
+
+func TestTimeoutSource_FromConfigFile(t *testing.T) {
+	// Drop a .raymond/config.toml in a temp project root and chdir there so
+	// LoadConfig picks it up.
+	project := t.TempDir()
+	raymondDir := filepath.Join(project, ".raymond")
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	configPath := filepath.Join(raymondDir, "config.toml")
+	require.NoError(t, os.WriteFile(configPath,
+		[]byte("[raymond]\ntimeout = 42\n"), 0o644))
+	t.Chdir(project)
+
+	stateDir := makeStateDir(t)
+	scope := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
+
+	captured, err := runCapturing(t, filepath.Join(scope, "START.md"), "--state-dir", stateDir)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, 42.0, captured[0].Timeout)
+	assert.Equal(t, fmt.Sprintf("config file %s", configPath), captured[0].TimeoutSource)
+}
+
+func TestTimeoutSource_CLIFlagBeatsConfigFile(t *testing.T) {
+	project := t.TempDir()
+	raymondDir := filepath.Join(project, ".raymond")
+	require.NoError(t, os.MkdirAll(raymondDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(raymondDir, "config.toml"),
+		[]byte("[raymond]\ntimeout = 42\n"), 0o644))
+	t.Chdir(project)
+
+	stateDir := makeStateDir(t)
+	scope := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scope, "START.md"), []byte("start"), 0o644))
+
+	captured, err := runCapturing(t,
+		filepath.Join(scope, "START.md"),
+		"--timeout", "7",
+		"--state-dir", stateDir,
+	)
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	assert.Equal(t, 7.0, captured[0].Timeout)
+	assert.Equal(t, "--timeout flag", captured[0].TimeoutSource)
+}
+
 func TestResumeNoLaunchParamsUsesDefaults(t *testing.T) {
 	// Chdir into an empty temp dir so the resume path's config.LoadConfig
 	// finds no .raymond/config.toml — otherwise the project's own config

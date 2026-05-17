@@ -108,9 +108,16 @@ func (e *ScriptExecutor) Execute(
 	if err != nil {
 		var msg string
 		if tErr, ok := err.(*platform.ScriptTimeoutError); ok {
-			msg = fmt.Sprintf("Script timeout: %v", tErr)
+			source := execCtx.TimeoutSource
+			if source == "" {
+				source = "unknown source"
+			}
+			msg = fmt.Sprintf(
+				"Script '%s' timed out after %.6g seconds (timeout from %s)",
+				currentState, tErr.Timeout, source,
+			)
 		} else {
-			msg = fmt.Sprintf("Script execution error: %v", err)
+			msg = fmt.Sprintf("Script '%s' execution error: %v", currentState, err)
 		}
 		return ExecutionResult{}, &ScriptError{Msg: msg}
 	}

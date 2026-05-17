@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -204,8 +205,47 @@ func TestPiBackend_IdleTimeoutMapsToTimeoutError(t *testing.T) {
 	assert.Equal(t, 30.0, te.Timeout)
 }
 
-func TestPiBackend_ContinueLatestRejected(t *testing.T) {
-	b := NewPiBackend(backendcfg.BackendOptions{})
+func TestPiBackend_ContinueLatest_ResolvesAndForks(t *testing.T) {
+	// ContinueLatest on pi resolves the most-recent session file in the
+	// session dir to a session id, then forks from it (pi has no atomic
+	// continue-and-fork flag, so raymond does the lookup).
+	dir := t.TempDir()
+	// Two sessions; the second has a later mtime and must be selected.
+	// We push older's mtime into the past explicitly so the comparison is
+	// not subject to filesystem mtime granularity (1s on some filesystems).
+	older := filepath.Join(dir, "2025-01-01T00:00:00Z_uuid-older.jsonl")
+	newer := filepath.Join(dir, "2025-01-02T00:00:00Z_uuid-newer.jsonl")
+	require.NoError(t, os.WriteFile(older, []byte("{}\n"), 0o644))
+	require.NoError(t, os.WriteFile(newer, []byte("{}\n"), 0o644))
+	past := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(older, past, past))
+
+	var capturedSpec piwrap.CommandSpec
+	stream := func(_ context.Context, spec piwrap.CommandSpec, _ string, _ float64) <-chan piwrap.StreamItem {
+		capturedSpec = spec
+		ch := make(chan piwrap.StreamItem, 2)
+		ch <- piSessionEvt("forked-session-id")
+		ch <- piAgentEndText("<goto>done</goto>")
+		close(ch)
+		return ch
+	}
+	restore := SetPiInvokeStreamFnForTest(stream)
+	defer restore()
+
+	b := NewPiBackend(backendcfg.BackendOptions{SessionDir: dir})
+	_, err := b.RunTurn(context.Background(), TurnSpec{
+		Prompt:         "p",
+		ContinueLatest: true,
+	}, Sink{})
+	require.NoError(t, err)
+	assert.True(t, capturedSpec.Fork, "ContinueLatest must run pi with Fork=true")
+	assert.Equal(t, "uuid-newer", capturedSpec.SessionID,
+		"ContinueLatest must select the most-recently-modified session file")
+}
+
+func TestPiBackend_ContinueLatest_NoSessionFound(t *testing.T) {
+	dir := t.TempDir() // empty session dir
+	b := NewPiBackend(backendcfg.BackendOptions{SessionDir: dir})
 	_, err := b.RunTurn(context.Background(), TurnSpec{
 		Prompt:         "p",
 		ContinueLatest: true,
@@ -213,7 +253,7 @@ func TestPiBackend_ContinueLatestRejected(t *testing.T) {
 	require.Error(t, err)
 	var re *RunError
 	require.ErrorAs(t, err, &re)
-	assert.Contains(t, re.Msg, "--continue-and-fork")
+	assert.Contains(t, re.Msg, "no pi session found")
 }
 
 func TestPiBackend_ResumeReturnsPerTurnDeltaNotCumulative(t *testing.T) {

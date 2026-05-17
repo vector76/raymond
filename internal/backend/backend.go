@@ -37,9 +37,10 @@ type TurnSpec struct {
 	// Claude backend this maps to --fork-session; for pi to --fork.
 	Fork bool
 
-	// ContinueLatest picks up the user's most-recent interactive session.
-	// Claude-specific (-c); the pi backend rejects this at workflow start
-	// — see docs/pi-backend.md.
+	// ContinueLatest picks up the user's most-recent session in the agent's
+	// working directory. Claude maps this to `-c --fork-session`; the pi
+	// backend resolves the most-recently-modified file in pi's session dir
+	// for this cwd and forks from it (see docs/pi-backend.md).
 	ContinueLatest bool
 
 	// Cwd is the agent's working directory; empty inherits the parent's.

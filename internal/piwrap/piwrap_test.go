@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -449,4 +450,51 @@ func writeSessionFile(t *testing.T, dir, sessionID, content string) {
 	t.Helper()
 	path := filepath.Join(dir, sessionID+".jsonl")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+func TestFindLatestSessionID_EmptyDirReturnsBlank(t *testing.T) {
+	dir := t.TempDir()
+	id, err := FindLatestSessionID(dir, "/some/cwd")
+	require.NoError(t, err)
+	assert.Equal(t, "", id, "empty session dir must return blank id, not an error")
+}
+
+func TestFindLatestSessionID_MissingDirReturnsBlank(t *testing.T) {
+	id, err := FindLatestSessionID(filepath.Join(t.TempDir(), "does-not-exist"), "/some/cwd")
+	require.NoError(t, err)
+	assert.Equal(t, "", id)
+}
+
+func TestFindLatestSessionID_PicksMostRecentByMTime(t *testing.T) {
+	dir := t.TempDir()
+	older := filepath.Join(dir, "2025-01-01T00:00:00Z_uuid-older.jsonl")
+	newer := filepath.Join(dir, "2025-01-02T00:00:00Z_uuid-newer.jsonl")
+	require.NoError(t, os.WriteFile(older, []byte("{}\n"), 0o644))
+	require.NoError(t, os.WriteFile(newer, []byte("{}\n"), 0o644))
+	past := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(older, past, past))
+
+	id, err := FindLatestSessionID(dir, "/some/cwd")
+	require.NoError(t, err)
+	assert.Equal(t, "uuid-newer", id)
+}
+
+func TestFindLatestSessionID_BareIDFilename(t *testing.T) {
+	// A file without the ISO-timestamp prefix (e.g. just "<id>.jsonl") must
+	// still yield the id, since extractSessionIDFromFilename falls back to
+	// the stem when no underscore is present.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bare-id.jsonl"), []byte("{}\n"), 0o644))
+	id, err := FindLatestSessionID(dir, "/cwd")
+	require.NoError(t, err)
+	assert.Equal(t, "bare-id", id)
+}
+
+func TestFindLatestSessionID_NonJSONLFilesIgnored(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "2025-01-01_only-jsonl.jsonl"), []byte("{}"), 0o644))
+	id, err := FindLatestSessionID(dir, "/cwd")
+	require.NoError(t, err)
+	assert.Equal(t, "only-jsonl", id)
 }

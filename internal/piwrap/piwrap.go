@@ -442,6 +442,60 @@ func findSessionFile(dir, sessionID string) (string, error) {
 	return "", nil
 }
 
+// FindLatestSessionID returns the session id of the most-recently-modified pi
+// session file in the directory pi uses for the given cwd. Used to implement
+// `--continue-and-fork` on the pi backend: callers resolve the latest session,
+// then pass it through as a Fork target.
+//
+// Directory resolution mirrors ReadSessionCost (sessionDir overrides cwd-based
+// lookup). Returns ("", nil) when the directory does not exist or contains no
+// session files — the caller decides whether that's an error in their context.
+func FindLatestSessionID(sessionDir, cwd string) (string, error) {
+	dir, err := sessionDirPath(sessionDir, cwd)
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading pi session dir %s: %w", dir, err)
+	}
+	var (
+		latestName string
+		latestTime time.Time
+	)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latestName = e.Name()
+		}
+	}
+	if latestName == "" {
+		return "", nil
+	}
+	return extractSessionIDFromFilename(latestName), nil
+}
+
+// extractSessionIDFromFilename pulls the session id out of pi's
+// `<ISO-timestamp>_<sessionID>.jsonl` filename convention. Falls back to the
+// whole stem if no underscore is present (e.g. a bare `<sessionID>.jsonl`).
+func extractSessionIDFromFilename(name string) string {
+	stem := strings.TrimSuffix(name, ".jsonl")
+	if idx := strings.LastIndex(stem, "_"); idx >= 0 {
+		return stem[idx+1:]
+	}
+	return stem
+}
+
 // piCwdDirName mirrors pi's cwd-to-dirname mangling: strip leading/trailing
 // path separators, replace remaining separators with `-`, and wrap in `--`.
 // e.g. "/home/x/y" -> "--home-x-y--".

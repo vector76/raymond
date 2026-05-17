@@ -370,6 +370,19 @@ difference.
   is no fork flag involved — the previous session is simply abandoned.
   `<reset>` additionally clears the agent's persisted session id so
   subsequent `<goto>` turns continue against the new session.
+- **`--continue-and-fork` (start from the user's most recent session in
+  this cwd).** Claude exposes this as `-c --fork-session`; pi has no atomic
+  equivalent (its `--session` and `--fork` flags both require an explicit
+  session id). The pi backend implements the same behavior by reading the
+  session directory pi uses for this cwd (`~/.pi/agent/sessions/<mangled-cwd>/`
+  by default, or `backend.options.session_dir` if set), selecting the
+  most-recently-modified `*.jsonl` file, extracting the session id from its
+  filename, and passing it to `--fork`. If the directory is empty the run
+  fails at launch with a clear "no pi session found" error — the same
+  shape Claude produces when there is nothing to continue from. Cost
+  accounting works exactly as `<call>` does: the caller's prior cost is
+  subtracted from the post-turn read so the forked turn is charged only
+  for its new spend.
 
 ## What changes (different mechanism, same intent)
 
@@ -569,26 +582,14 @@ These are features that exist for the Claude backend but cannot be supported
 under pi as currently understood, or that have meaningful semantic differences
 the workflow author should know about.
 
-1. **Continue-and-fork from the *user's* most recent interactive session.**
-   Raymond's `--continue-and-fork` flag (`internal/state/state.go` line 127)
-   maps to Claude's `-c --fork-session` and lets a workflow attach to
-   whatever session the user most recently ran in their terminal. Pi has
-   `-c` ("continue most recent session", with sessions organized under
-   `~/.pi/agent/sessions/` keyed by working directory), but the semantics of
-   "most recent" are not directly equivalent to Claude's, and a workflow
-   author who reaches for this flag is almost certainly relying on the
-   Claude-specific behavior. **For the pi backend, the `--continue-and-fork`
-   flag is rejected at workflow start** with an error pointing the user at
-   pi's `--session <id>` if they want explicit resume from a known session.
-
-2. **Per-tool approval prompts (`--permission-mode acceptEdits`).** Pi has no
+1. **Per-tool approval prompts (`--permission-mode acceptEdits`).** Pi has no
    per-call permission prompt model; safety lives in the static `--tools`
    allowlist. Workflows that depended on Claude's mid-call accept-edit prompts
    to gate destructive tool calls have no equivalent under pi. The
    recommended migration is to declare a conservative `backend.options.tools`
    allowlist that omits `bash` (and any other risky tools) for those states.
 
-3. **Claude usage-limit detection.** Raymond detects Claude's "hit your limit"
+2. **Claude usage-limit detection.** Raymond detects Claude's "hit your limit"
    / "out of extra usage" messages from the result stream
    (`internal/backend/claude.go` `claudeLimitPatterns`) and treats them as a
    special class of failure. Pi has no equivalent provider-level message in
@@ -596,14 +597,14 @@ the workflow author should know about.
    errors or `agent_end` errors, and raymond classifies them as generic
    failures.
 
-4. **Per-event cost reporting on the live event stream.** Cost is read
+3. **Per-event cost reporting on the live event stream.** Cost is read
    from the session JSONL after the turn ends, not from each `result`
    message during the turn as Claude does. The end-of-turn cost is
    identical; what is missing is intra-turn cost telemetry that some
    observers display in the dashboard. The dashboard will show `—` for
    in-flight cost on pi states until the turn completes.
 
-5. **Claude-specific `model:` values.** A workflow that hardcodes
+4. **Claude-specific `model:` values.** A workflow that hardcodes
    `model: opus` only makes sense against Claude. Under pi the workflow
    author must either use a value pi recognizes (a model id valid for the
    selected provider, with optional `provider/id` prefix) or omit the field
@@ -611,13 +612,13 @@ the workflow author should know about.
    "anthropic/claude-opus-…" automatically; the field is passed through
    verbatim.
 
-6. **Claude-specific tool names in `disallowed_tools` workflow overrides.**
+5. **Claude-specific tool names in `disallowed_tools` workflow overrides.**
    If a future feature lets workflows extend the hardcoded disallow list with
    their own entries, those entries are interpreted by Claude only. A pi
    workflow expresses the same intent through `backend.options.tools` (an
    allowlist).
 
-7. **Agent-side MCP servers.** Pi does not natively speak MCP. Its tool
+6. **Agent-side MCP servers.** Pi does not natively speak MCP. Its tool
    surface is its built-in tools plus its own extension (`--extension`) and
    skill (`--skill`) mechanisms, which are pi-specific and not
    protocol-compatible with MCP. Workflows that depend on the agent calling
@@ -628,7 +629,7 @@ the workflow author should know about.
    regardless of which backend a given workflow uses. (See "Resolved
    questions" above for the same point in the context of the strategy.)
 
-8. **The `effort: <Claude-specific level>` vocabulary on per-state policies.**
+7. **The `effort: <Claude-specific level>` vocabulary on per-state policies.**
    Claude's `--effort` accepts a different vocabulary than pi's `--thinking`.
    Values that overlap (`low`, `medium`, `high`) translate cleanly; other
    values produce a clear error from pi rather than a silent reinterpretation.
@@ -649,7 +650,7 @@ the workflow author should know about.
 | `ray lint` / `diagram` / `convert` | ✓ | ✓ (orchestrator-level) |
 | `ray serve` daemon + web UI | ✓ | ✓ (UI shows pi session ids) |
 | `--dangerously-skip-permissions` | ✓ (acceptEdits / skip) | ✓ but different mechanism — controls tool allowlist |
-| `--continue-and-fork` | ✓ | **✗ rejected at launch** |
+| `--continue-and-fork` | ✓ (`-c --fork-session`) | ✓ (raymond resolves the most-recently-modified file in the cwd's pi session dir, then `--fork <id>`) |
 | Per-state `model:` portability | Claude vocabulary | pi vocabulary (use `provider/id` for clarity) |
 | Per-state `effort:` portability | Claude vocabulary | pi `--thinking` vocabulary; common values (`low`/`medium`/`high`) overlap |
 | Hardcoded tool disallow list | enforced | no-op (those tools don't exist on pi) |
@@ -667,10 +668,7 @@ A workflow author writing for pi specifically should:
 3. Decide tool safety up front: declare `backend.options.tools` with the
    minimum set the workflow needs. Pi has no per-call permission prompts to
    fall back on — the allowlist is the only gate.
-4. Don't pass `--continue-and-fork` at the CLI — raymond rejects it for pi
-   workflows. Use `--session <id>` explicitly if you need to resume a known
-   session.
-5. If the workflow integrates with external tools, do **not** assume MCP
+4. If the workflow integrates with external tools, do **not** assume MCP
    is available — pi is not MCP-native. Express tool integrations as pi
    extensions (`backend.options.extensions`) or skills
    (`backend.options.skills`). A workflow whose external tools are only
@@ -682,7 +680,6 @@ A workflow that is meant to run portably across both backends should:
   overrides from the launch CLI).
 - Use only `effort:` values in the overlap (`low`, `medium`, `high`).
 - Not depend on Claude usage-limit detection or live per-event cost.
-- Not use `--continue-and-fork`.
 
 ## Open issues and validation status
 

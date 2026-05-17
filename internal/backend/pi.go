@@ -48,14 +48,25 @@ func NewPiBackend(opts backendcfg.BackendOptions) *PiBackend {
 // agent_start and agent_end events. After pi exits, it reads the session JSONL
 // to populate cost and token counts.
 //
-// ContinueLatest (--continue-and-fork) is not supported for pi and returns an
-// error immediately.
+// ContinueLatest (--continue-and-fork) is implemented by resolving the
+// most-recently-modified session file in pi's cwd-keyed session dir to an
+// explicit id and then forking from it — pi has no atomic continue-and-fork
+// flag combination, so raymond does the lookup itself.
 func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (TurnResult, error) {
 	if spec.ContinueLatest {
-		return TurnResult{}, &RunError{
-			Msg: "--continue-and-fork is not supported for the pi backend; " +
-				"use --session <id> if you need to resume a specific session",
+		latest, err := piwrap.FindLatestSessionID(b.opts.SessionDir, spec.Cwd)
+		if err != nil {
+			return TurnResult{}, &RunError{
+				Msg: fmt.Sprintf("--continue-and-fork: looking up latest pi session: %v", err),
+			}
 		}
+		if latest == "" {
+			return TurnResult{}, &RunError{
+				Msg: "--continue-and-fork: no pi session found in this working directory to continue from",
+			}
+		}
+		spec.SessionID = latest
+		spec.Fork = true
 	}
 
 	cmdSpec := piwrap.CommandSpec{

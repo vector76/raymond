@@ -100,10 +100,6 @@ own manifest declares.
 - **No MCP server support.** Pi exposes tools via its own `--extension` and
   `--skill` mechanisms. Workflows that depend on Claude's MCP integrations
   do not run under pi.
-- **`--continue-and-fork` is rejected** at workflow start for pi workflows
-  (it relies on Claude-specific session semantics). Use `--session <id>`
-  if you need to resume a specific pi session.
-
 For the full feature comparison and rationale, see
 [pi-backend.md](pi-backend.md).
 

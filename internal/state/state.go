@@ -88,9 +88,12 @@ type AgentState struct {
 	RetryCount int    `json:"retry_count,omitempty"` // transient error retry counter
 	Error      string `json:"error,omitempty"`       // last error message when paused/failed
 
-	// ContinueAndFork, when true, tells the executor to use `-c --fork-session`
-	// on the very first invocation (continuing from the user's most recent
-	// interactive Claude session). Cleared after first successful use.
+	// ContinueAndFork, when true, tells the executor to continue from the
+	// user's most-recent session in the agent's working directory and fork
+	// off it on the very first invocation. On Claude this is `-c
+	// --fork-session`; on pi the backend resolves the most-recently-modified
+	// file in pi's cwd-keyed session dir and passes it to `--fork`. Cleared
+	// after first successful use.
 	ContinueAndFork bool `json:"continue_and_fork,omitempty"`
 
 	TaskFolder string `json:"task_folder,omitempty"` // output folder for this agent's tasks

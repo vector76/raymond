@@ -86,9 +86,12 @@ func TestPiBackend_PreflightRerunOnResume(t *testing.T) {
 	assert.Equal(t, 2, calls, "preflight should run on every RunAllAgents call")
 }
 
-// TestPiBackend_ContinueAndForkRejected verifies that a pi workflow rejects
-// the --continue-and-fork flag at launch time.
-func TestPiBackend_ContinueAndForkRejected(t *testing.T) {
+// TestPiBackend_ContinueAndForkAccepted verifies that a pi workflow no longer
+// rejects --continue-and-fork at launch time. The pi backend resolves the
+// most-recent session in its session dir and forks from it (see
+// internal/backend/pi.go and TestPiBackend_ContinueLatest_ResolvesAndForks for
+// the unit-level coverage of the resolve-and-fork behavior).
+func TestPiBackend_ContinueAndForkAccepted(t *testing.T) {
 	stateDir, wfID := setupPiWorkflow(t, "start.md")
 
 	// Preflight succeeds.
@@ -101,9 +104,15 @@ func TestPiBackend_ContinueAndForkRejected(t *testing.T) {
 	ws.Agents[0].ContinueAndFork = true
 	require.NoError(t, wfstate.WriteState(wfID, ws, stateDir))
 
+	// Mock executor so we don't actually invoke pi; the test is that
+	// RunAllAgents does not reject the flag at launch.
+	exec := newMock(resultExecResult("done"))
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return exec })
+	defer orchestrator.ResetExecutorFactory()
+
 	runErr := orchestrator.RunAllAgents(context.Background(), wfID, defaultOpts(stateDir))
-	require.Error(t, runErr)
-	assert.Contains(t, runErr.Error(), "--continue-and-fork")
+	require.NoError(t, runErr,
+		"pi workflow must accept --continue-and-fork now that the backend resolves it via session-dir lookup")
 }
 
 // TestNoBackend_UsesClaudeBackend verifies that a workflow with no backend

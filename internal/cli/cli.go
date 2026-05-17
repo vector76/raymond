@@ -378,7 +378,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 
 	f.StringVar(&name, "name", "", "prefix label for the terminal title bar")
 	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
-	f.BoolVar(&continueSession, "continue-session", false, "continue from the most recent interactive Claude session")
+	f.BoolVar(&continueSession, "continue-session", false, "continue from the most recent agent session in the working directory (forks off it)")
 	f.StringVar(&onAsk, "on-ask", "reject", "behaviour when workflow uses <ask> (reject|pause)")
 
 	// Hidden flag: allows tests to control the CLI-pool state directory

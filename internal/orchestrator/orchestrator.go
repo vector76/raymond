@@ -356,27 +356,17 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 	}
 	resolver := newBackendResolver()
 
-	// Pi-specific startup checks: preflight (binary reachable) and flag
-	// rejection (--continue-and-fork relies on Claude's -c session
-	// semantics). The preflight runs upfront when the outer workflow
-	// declares pi so a missing binary is reported at launch rather than
-	// mid-run; the resolver memoizes this so a later nested pi resolution
-	// doesn't preflight again. When the outer is non-pi and a nested
-	// workflow declares pi, the resolver runs the preflight at first
-	// resolution.
+	// Pi-specific startup check: preflight (binary reachable). Runs upfront
+	// when the outer workflow declares pi so a missing binary is reported at
+	// launch rather than mid-run; the resolver memoizes this so a later
+	// nested pi resolution doesn't preflight again. When the outer is non-pi
+	// and a nested workflow declares pi, the resolver runs the preflight at
+	// first resolution.
 	if backendSpec.Name == "pi" {
 		if err := piPreflightFn(ctx); err != nil {
 			return err
 		}
 		resolver.markPiPreflightDone()
-		for _, a := range ws.Agents {
-			if a.ContinueAndFork {
-				return fmt.Errorf(
-					"--continue-and-fork is not supported for pi backend workflows; " +
-						"use --session <id> (pi's explicit session resume) instead",
-				)
-			}
-		}
 	}
 
 	// Launch-time check: if OnAsk is "reject" (or empty, which defaults to

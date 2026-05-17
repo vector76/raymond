@@ -1495,9 +1495,12 @@ func TestPiIntegration_PreflightFailure(t *testing.T) {
 	assert.Contains(t, runErr.Error(), "pi")
 }
 
-// TestPiIntegration_ContinueAndForkRejected verifies that a pi workflow
-// rejects --continue-and-fork at launch with a clear, user-facing error.
-func TestPiIntegration_ContinueAndForkRejected(t *testing.T) {
+// TestPiIntegration_ContinueAndForkAccepted verifies that a pi workflow no
+// longer rejects --continue-and-fork at launch. Unit tests in
+// internal/backend/pi_test.go (TestPiBackend_ContinueLatest_ResolvesAndForks)
+// cover the resolve-and-fork code path; this integration test confirms the
+// launch-time gate is gone end-to-end.
+func TestPiIntegration_ContinueAndForkAccepted(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pi stub script requires a Unix shell; skipping on Windows")
 	}
@@ -1507,7 +1510,7 @@ func TestPiIntegration_ContinueAndForkRejected(t *testing.T) {
 	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+origPath)
 
 	stateDir := t.TempDir()
-	workflowID := "pi-cf-reject"
+	workflowID := "pi-cf-accept"
 	ws := wfstate.CreateInitialState(workflowID, piFixtureDir(), "START.sh", 0, nil, "")
 	ws.Agents[0].ContinueAndFork = true
 	require.NoError(t, wfstate.WriteState(workflowID, ws, stateDir))
@@ -1515,8 +1518,8 @@ func TestPiIntegration_ContinueAndForkRejected(t *testing.T) {
 	runErr := orchestrator.RunAllAgents(context.Background(), workflowID,
 		orchestrator.RunOptions{StateDir: stateDir, Quiet: true, NoWait: true},
 	)
-	require.Error(t, runErr)
-	assert.Contains(t, runErr.Error(), "--continue-and-fork")
+	require.NoError(t, runErr,
+		"pi workflow must accept --continue-and-fork now that the backend resolves it via session-dir lookup")
 }
 
 // TestPiIntegration_ScriptOnlyWorkflowWithStub verifies the full plumbing

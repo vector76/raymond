@@ -29,6 +29,84 @@ filenames only — no paths, no `/` or `\` characters. The workflow's scope is
 the directory containing all state files, or the zip archive when one is used
 as input.
 
+## Choosing a Backend
+
+Raymond runs markdown states against an **agent backend** — the CLI tool that
+actually invokes an LLM and executes tool calls. Two backends are supported:
+
+- **Claude** (default) — runs against `claude` (Claude Code). Uses Anthropic
+  models via Claude's own account/auth.
+- **pi** — runs against `pi` (the pi coding agent). Pi is multi-provider:
+  one workflow can target Anthropic, OpenAI, Google, or other providers via
+  pi's `--provider` / `--model` selectors.
+
+Shell-script states do not use any backend — they execute directly.
+
+### Declaring the backend
+
+A workflow opts into the pi backend in its manifest. Without a `backend:`
+declaration, the workflow uses Claude.
+
+```yaml
+# workflow.yaml
+id: my-workflow
+backend: pi
+```
+
+For pi-specific options, use the structured form:
+
+```yaml
+backend:
+  name: pi
+  options:
+    provider: anthropic              # --provider
+    thinking: medium                 # --thinking <off|low|medium|high|xhigh>
+    tools: [read, edit, write, grep, find, ls]  # --tools allowlist
+    extensions:                      # --extension (repeatable)
+      - <npm-package-or-path>
+    skills:                          # --skill (repeatable)
+      - ./skills/<dir>
+```
+
+All `options` fields are optional. When you omit `tools`, raymond passes a
+conservative default allowlist (`read, edit, write, grep, find, ls` — pi's
+built-in tools minus `bash`) so destructive shell commands require an
+explicit opt-in. The `--dangerously-skip-permissions` CLI flag drops this
+default and falls back to pi's full built-in surface.
+
+### Tool safety
+
+Claude prompts the user before destructive tool calls (unless
+`--dangerously-skip-permissions` is set). Pi has no per-call permission
+prompts — its safety boundary is the static `--tools` allowlist. For pi
+workflows that need a tight surface, declare `backend.options.tools` with
+just what the workflow needs. To opt out of tools entirely, use
+`backend.options.no_tools: true`.
+
+### Cross-workflow with different backends
+
+A `<call-workflow>`, `<function-workflow>`, `<fork-workflow>`, or
+`<reset-workflow>` may target a workflow that declares a different backend.
+Raymond switches backends per nested workflow — a Claude workflow can call
+a pi workflow and vice versa. Each workflow runs on whatever backend its
+own manifest declares.
+
+### What's different about pi
+
+- **No usage-limit detection.** Provider rate limits surface as generic
+  failures (Claude has special handling for "hit your limit" messages).
+- **No live per-event cost.** The dashboard shows `—` for in-flight cost on
+  pi states; the per-turn cost lands after the turn completes.
+- **No MCP server support.** Pi exposes tools via its own `--extension` and
+  `--skill` mechanisms. Workflows that depend on Claude's MCP integrations
+  do not run under pi.
+- **`--continue-and-fork` is rejected** at workflow start for pi workflows
+  (it relies on Claude-specific session semantics). Use `--session <id>`
+  if you need to resume a specific pi session.
+
+For the full feature comparison and rationale, see
+[pi-backend.md](pi-backend.md).
+
 ## Markdown States
 
 Markdown states are prompts interpreted by Claude Code. Write them as you would
@@ -166,7 +244,7 @@ cannot recover from missing or invalid tags — failures are fatal.
 
 ### Model Selection
 
-Frontmatter can specify which Claude model to use:
+Frontmatter can specify which model to use for a state:
 
 ```yaml
 ---
@@ -177,12 +255,19 @@ allowed_transitions:
 Is this task complete? Reply with <result>YES</result> or <result>NO</result>
 ```
 
-Valid values: `opus`, `sonnet`, `haiku`. This overrides the `--model` CLI flag.
+For Claude workflows, valid values are `opus`, `sonnet`, `haiku`.
 
-Precedence: frontmatter `model` > CLI `--model` > Claude Code default.
+For pi workflows, the value is passed through to pi's `--model` flag
+verbatim; use a pi-recognized model id, optionally with a `provider/id`
+prefix to disambiguate (e.g. `anthropic/claude-sonnet-4-6`,
+`openai/gpt-5`). Pi's default provider/model is used when `model:` is
+omitted.
 
-Use this to run cheap evaluators on `haiku` while keeping complex reasoning
-on `sonnet` or `opus`.
+This overrides the `--model` CLI flag. Precedence: frontmatter `model` >
+CLI `--model` > backend default.
+
+Use this to run cheap evaluators on `haiku` (or the equivalent for your pi
+provider) while keeping complex reasoning on a stronger model.
 
 ### Effort Level
 
@@ -199,7 +284,12 @@ Analyze this complex problem carefully...
 
 Valid values: `low`, `medium`, `high`. This overrides the `--effort` CLI flag.
 
-Precedence: frontmatter `effort` > CLI `--effort` > Claude Code default.
+Precedence: frontmatter `effort` > CLI `--effort` > backend default.
+
+For pi workflows, `effort:` maps to pi's `--thinking` flag. The common
+values (`low`, `medium`, `high`) translate cleanly; pi also accepts `off`
+and `xhigh`, which can be set via frontmatter and are passed through
+verbatim.
 
 Use `high` effort for complex reasoning tasks, `medium` for balanced performance,
 or `low` for simple tasks where speed is preferred over depth.
@@ -989,5 +1079,77 @@ Attach up to 5 supporting screenshots (PNG or JPEG).
 
 In bucket mode, the agent discovers the actual filenames by listing
 `{{task_folder}}/asks/{{ask_id}}/` in the next state.
+
+### Pattern: Pi Workflow with Constrained Tools
+
+A pi workflow that audits a directory using a tight read-only tool surface.
+The `tools` allowlist omits `bash`, `write`, and `edit` so the audit cannot
+modify anything even if the agent tries.
+
+```
+workflows/audit/
+  workflow.yaml
+  START.md
+  REPORT.md
+```
+
+**workflow.yaml:**
+```yaml
+id: audit
+name: Read-only directory audit
+backend:
+  name: pi
+  options:
+    tools: [read, grep, find, ls]
+    thinking: medium
+default_budget: 0.50
+input:
+  mode: required
+  label: Path to audit
+```
+
+**START.md:**
+```markdown
+---
+allowed_transitions:
+  - { tag: goto, target: REPORT.md }
+---
+You are auditing the directory at `{{input}}`.
+
+Use `find`, `ls`, `read`, and `grep` to survey the layout. Catalogue:
+- top-level structure
+- any files larger than 1 MB
+- any files matching `*.env`, `*.key`, or `*.pem`
+
+STOP after gathering the data. Do not write any files or attempt edits —
+the tool surface is read-only. After surveying, emit:
+<goto>REPORT.md</goto>
+```
+
+**REPORT.md:**
+```markdown
+---
+allowed_transitions:
+  - { tag: result }
+---
+Summarise the audit findings as a short markdown report covering:
+- directory layout (one paragraph)
+- large files (bullet list, sizes in MB)
+- sensitive-looking files (bullet list, with the path and a brief note)
+
+Reply with the report wrapped in a single <result>...</result> tag.
+```
+
+Run it from the CLI:
+```
+ray run ./workflows/audit --input /path/to/audit
+```
+
+Or via the daemon (the dashboard will show a "pi" badge on the workflow
+card and the per-state pi session id in the live log so you can resume
+the session manually with `pi --session <id>` if needed):
+```
+ray serve --root ./workflows
+```
 
 For more complete examples, see [sample-workflows.md](sample-workflows.md).

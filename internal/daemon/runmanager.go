@@ -36,6 +36,11 @@ type AgentInfo struct {
 	ID           string
 	CurrentState string
 	Status       string
+	// SessionID is the backend-specific session id captured from the most
+	// recent StateCompleted event for this agent (pi UUID for the pi
+	// backend, Claude session id for the Claude backend). Empty until the
+	// first non-script state turn completes.
+	SessionID string
 }
 
 // RunInfo holds a snapshot of a run's current state.
@@ -422,12 +427,21 @@ func (rm *RunManager) subscribeEvents(b *bus.Bus, re *runEntry) {
 		recomputeRunStatus(&re.info)
 	})
 
-	// Track cost updates.
+	// Track cost updates and capture the per-agent session id (pi UUID or
+	// Claude session id) so the dashboard can surface it.
 	bus.Subscribe(b, func(e events.StateCompleted) {
 		re.mu.Lock()
 		defer re.mu.Unlock()
 		re.info.CostUSD = e.TotalCostUSD
 		re.info.ElapsedDuration = time.Since(re.info.StartedAt)
+		if e.SessionID != "" {
+			for i := range re.info.Agents {
+				if re.info.Agents[i].ID == e.AgentID {
+					re.info.Agents[i].SessionID = e.SessionID
+					break
+				}
+			}
+		}
 	})
 
 	// Track new agents from fork transitions.
@@ -1133,10 +1147,15 @@ func classifyRecoveredStatus(agents []wfstate.AgentState) string {
 func agentInfosFromState(states []wfstate.AgentState) []AgentInfo {
 	agents := make([]AgentInfo, len(states))
 	for i, a := range states {
+		sid := ""
+		if a.SessionID != nil {
+			sid = *a.SessionID
+		}
 		agents[i] = AgentInfo{
 			ID:           a.ID,
 			CurrentState: a.CurrentState,
 			Status:       a.Status,
+			SessionID:    sid,
 		}
 	}
 	return agents

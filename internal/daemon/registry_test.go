@@ -94,6 +94,32 @@ requires_human_input: "true"
 	assert.Equal(t, manifest.InputSpec{Mode: "optional"}, entries[0].Input)
 }
 
+func TestNewRegistry_CapturesBackendField(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowDir(t, root, "wf-claude", `
+id: claude-default
+name: Claude Workflow
+`)
+	makeWorkflowDir(t, root, "wf-pi", `
+id: pi-explicit
+name: Pi Workflow
+backend: pi
+`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entries := reg.ListWorkflows()
+	require.Len(t, entries, 2)
+
+	// Sorted by ID: claude-default comes first.
+	assert.Equal(t, "claude-default", entries[0].ID)
+	assert.Equal(t, "", entries[0].Backend, "absent backend field stays empty (implicit Claude default)")
+
+	assert.Equal(t, "pi-explicit", entries[1].ID)
+	assert.Equal(t, "pi", entries[1].Backend, "manifest backend: pi must surface on the registry entry")
+}
+
 func TestNewRegistry_SkipsWorkflowWithoutManifest(t *testing.T) {
 	root := t.TempDir()
 

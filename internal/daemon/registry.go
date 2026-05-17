@@ -23,8 +23,12 @@ type WorkflowEntry struct {
 	Input              manifest.InputSpec
 	DefaultBudget      float64
 	RequiresHumanInput bool
-	ScopeDir           string
-	ManifestPath       string
+	// Backend is the manifest's declared backend name ("" = default Claude,
+	// "pi" = pi backend). Surfaced through the HTTP API so the dashboard can
+	// show which backend a workflow uses.
+	Backend      string
+	ScopeDir     string
+	ManifestPath string
 }
 
 // Registry holds an index of available workflows discovered by scanning
@@ -136,6 +140,7 @@ func (r *Registry) tryIndexDir(dir string) {
 		Input:              m.Input,
 		DefaultBudget:      m.DefaultBudget,
 		RequiresHumanInput: humanInput,
+		Backend:            m.Backend.Name,
 		ScopeDir:           dir,
 		ManifestPath:       manifestPath,
 	}
@@ -165,6 +170,7 @@ func (r *Registry) tryIndexZip(zipPath string) {
 		Input:              m.Input,
 		DefaultBudget:      m.DefaultBudget,
 		RequiresHumanInput: humanInput,
+		Backend:            m.Backend.Name,
 		ScopeDir:           zipPath,
 		ManifestPath:       zipPath,
 	}
@@ -190,6 +196,7 @@ func (r *Registry) tryIndexYaml(yamlPath string) {
 		Input:              m.Input,
 		DefaultBudget:      m.DefaultBudget,
 		RequiresHumanInput: humanInput,
+		Backend:            m.Backend.Name,
 		ScopeDir:           yamlPath,
 		ManifestPath:       yamlPath,
 	}

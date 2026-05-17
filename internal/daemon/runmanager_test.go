@@ -546,6 +546,58 @@ func TestStateStarted_FlipsRunBackToRunning(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStateCompleted_CapturesSessionIDOnAgent(t *testing.T) {
+	// The dashboard surfaces each agent's backend session id (pi UUID or
+	// Claude session id) so users can identify which session belongs to which
+	// agent at a glance. The runManager populates AgentInfo.SessionID from
+	// each StateCompleted event for that agent.
+	stateDir := ensureStateDir(t)
+	scopeDir := t.TempDir()
+
+	fake := &fakeOrchestrator{
+		behaviour: func(ctx context.Context, workflowID string, opts orchestrator.RunOptions) error {
+			b := bus.New()
+			opts.ObserverSetup(b)
+
+			b.Emit(events.StateStarted{AgentID: "main", StateName: "S1", StateType: "markdown", Timestamp: time.Now()})
+			b.Emit(events.StateCompleted{
+				AgentID: "main", StateName: "S1",
+				SessionID: "first-session-uuid", CostUSD: 0.01, TotalCostUSD: 0.01,
+				Timestamp: time.Now(),
+			})
+			// A second completed event for the same agent (e.g. a <goto> loop)
+			// must replace the session id, not append.
+			b.Emit(events.StateCompleted{
+				AgentID: "main", StateName: "S2",
+				SessionID: "second-session-uuid", CostUSD: 0.01, TotalCostUSD: 0.02,
+				Timestamp: time.Now(),
+			})
+			// Script states emit StateCompleted with empty SessionID; the
+			// agent's existing session id must not be wiped.
+			b.Emit(events.StateCompleted{
+				AgentID: "main", StateName: "S3-script",
+				SessionID: "", CostUSD: 0, TotalCostUSD: 0.02,
+				Timestamp: time.Now(),
+			})
+			b.Emit(events.AgentTerminated{AgentID: "main", Timestamp: time.Now()})
+			b.Emit(events.WorkflowCompleted{WorkflowID: workflowID, TotalCostUSD: 0.02, Timestamp: time.Now()})
+			return nil
+		},
+	}
+
+	rm, err := NewRunManagerWithOrchestrator(stateDir, "/tmp", fake)
+	require.NoError(t, err)
+
+	runID, err := rm.LaunchRun(context.Background(), testWorkflowEntry(t, scopeDir), "go", 5.0, "", false, "", nil)
+	require.NoError(t, err)
+
+	info, err := rm.WaitForCompletion(runID, 5*time.Second)
+	require.NoError(t, err)
+	require.Len(t, info.Agents, 1)
+	assert.Equal(t, "second-session-uuid", info.Agents[0].SessionID,
+		"latest non-empty session id wins; script-state empty SessionID must not clobber it")
+}
+
 func TestWaitForCompletion_BlocksUntilDone(t *testing.T) {
 	stateDir := ensureStateDir(t)
 	scopeDir := t.TempDir()

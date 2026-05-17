@@ -496,12 +496,14 @@ type workflowResponse struct {
 	Input              manifest.InputSpec `json:"input"`
 	DefaultBudget      float64            `json:"default_budget"`
 	RequiresHumanInput bool               `json:"requires_human_input"`
+	Backend            string             `json:"backend,omitempty"`
 }
 
 type agentResponse struct {
 	ID           string `json:"id"`
 	CurrentState string `json:"current_state"`
 	Status       string `json:"status"`
+	SessionID    string `json:"session_id,omitempty"`
 }
 
 type runResponse struct {
@@ -514,6 +516,7 @@ type runResponse struct {
 	StartedAt    time.Time       `json:"started_at"`
 	ElapsedSecs  float64         `json:"elapsed_seconds"`
 	Result       string          `json:"result,omitempty"`
+	Backend      string          `json:"backend,omitempty"`
 }
 
 type createRunRequest struct {
@@ -705,7 +708,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	runs := s.runManager.ListRuns()
 	resp := make([]runResponse, len(runs))
 	for i, ri := range runs {
-		resp[i] = runInfoToResponse(ri)
+		resp[i] = s.runInfoToResponse(ri)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -717,7 +720,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("run %q not found", id)})
 		return
 	}
-	writeJSON(w, http.StatusOK, runInfoToResponse(*info))
+	writeJSON(w, http.StatusOK, s.runInfoToResponse(*info))
 }
 
 func (s *Server) handleRunOutput(w http.ResponseWriter, r *http.Request) {
@@ -1479,17 +1482,28 @@ func workflowToResponse(e WorkflowEntry) workflowResponse {
 		Input:              e.Input,
 		DefaultBudget:      e.DefaultBudget,
 		RequiresHumanInput: e.RequiresHumanInput,
+		Backend:            e.Backend,
 	}
 }
 
-func runInfoToResponse(ri RunInfo) runResponse {
+// runInfoToResponse converts a RunInfo snapshot to its JSON shape. The
+// registry lookup populates the workflow-level backend so the dashboard can
+// render a backend badge on run cards even after a daemon restart (RunInfo
+// itself doesn't persist the backend; it's a property of the workflow, not
+// the run).
+func (s *Server) runInfoToResponse(ri RunInfo) runResponse {
 	agents := make([]agentResponse, len(ri.Agents))
 	for i, a := range ri.Agents {
 		agents[i] = agentResponse{
 			ID:           a.ID,
 			CurrentState: a.CurrentState,
 			Status:       a.Status,
+			SessionID:    a.SessionID,
 		}
+	}
+	backend := ""
+	if entry, ok := s.registry.GetWorkflow(ri.WorkflowID); ok {
+		backend = entry.Backend
 	}
 	return runResponse{
 		RunID:        ri.RunID,
@@ -1501,6 +1515,7 @@ func runInfoToResponse(ri RunInfo) runResponse {
 		StartedAt:    ri.StartedAt,
 		ElapsedSecs:  ri.ElapsedDuration.Seconds(),
 		Result:       ri.Result,
+		Backend:      backend,
 	}
 }
 

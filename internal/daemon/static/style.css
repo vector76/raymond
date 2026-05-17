@@ -383,6 +383,23 @@ section h2 {
 .badge-cancelled { background: var(--warning); }
 .badge-failed { background: var(--danger); }
 
+/* Backend badge — only rendered when the workflow declares a non-default
+   backend, so existing Claude workflows show no chrome. */
+.backend-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 8px;
+  background: var(--text-secondary);
+  color: #fff;
+  vertical-align: middle;
+}
+.backend-pi { background: #6b46c1; }
+
 .empty-state {
   color: var(--text-secondary);
   font-size: 13px;

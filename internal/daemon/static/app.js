@@ -183,11 +183,19 @@
                 : '') +
             '</div>';
 
+      // Only render a backend badge when the workflow declares a non-default
+      // backend. Claude is the implicit default; surfacing it would just add
+      // noise to every existing workflow card.
+      var backendBadge = wf.backend
+        ? '<span class="backend-badge backend-' + escapeHTML(wf.backend) + '">' + escapeHTML(wf.backend) + '</span>'
+        : '';
+
       card.innerHTML =
         '<div class="workflow-card-header">' +
           '<button class="workflow-toggle" type="button" aria-expanded="false">' +
             '<span class="workflow-chevron" aria-hidden="true">&#9656;</span>' +
             '<span class="workflow-name">' + escapeHTML(wf.name || wf.id) + '</span>' +
+            backendBadge +
           '</button>' +
           '<button class="btn btn-primary workflow-launch">Launch</button>' +
         '</div>' +
@@ -266,6 +274,10 @@
     var label = formatLaunchTime(run);
     var active = isActive(run.status);
 
+    var runBackendBadge = run.backend
+      ? '<span class="backend-badge backend-' + escapeHTML(run.backend) + '">' + escapeHTML(run.backend) + '</span>'
+      : '';
+
     card.innerHTML =
       '<div class="run-card-header">' +
         '<span class="run-id" title="' + escapeHTML(run.run_id || "") + '">' + escapeHTML(label) + '</span>' +
@@ -274,7 +286,7 @@
           ? ''
           : '<button class="run-delete" type="button" title="Delete run" aria-label="Delete run">×</button>') +
       '</div>' +
-      '<div class="run-workflow">' + escapeHTML(run.workflow_id || "unknown") + '</div>' +
+      '<div class="run-workflow">' + escapeHTML(run.workflow_id || "unknown") + runBackendBadge + '</div>' +
       '<div class="run-meta">' +
         '<span>' + formatCost(run.cost_usd) + '</span>' +
         '<span>' + formatElapsed(run.elapsed_seconds) + '</span>' +
@@ -1027,7 +1039,11 @@
         line = "--- State: " + (evt.StateName || "?") + " [" + (evt.StateType || "") + "] ---";
         break;
       case "state_completed":
-        line = "--- State completed: " + (evt.StateName || "?") + " ($" + (evt.CostUSD || 0).toFixed(4) + ") ---";
+        line = "--- State completed: " + (evt.StateName || "?") + " ($" + (evt.CostUSD || 0).toFixed(4) + ")";
+        if (evt.SessionID) {
+          line += " [session " + evt.SessionID + "]";
+        }
+        line += " ---";
         break;
       case "tool_invocation":
         line = "[tool] " + (evt.ToolName || "?") + (evt.Detail ? " — " + evt.Detail : "");

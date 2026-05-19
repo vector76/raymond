@@ -92,6 +92,10 @@ type Sink struct {
 	// for the debug-JSONL observer. Callers leave this nil when debug
 	// logging is disabled.
 	OnRaw func(obj map[string]any)
+
+	// OnPrint is called for each complete <print>...</print> tag payload
+	// extracted from the assistant's streaming text.
+	OnPrint func(text string)
 }
 
 // Backend runs one agent turn.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/vector76/raymond/internal/ccwrap"
+	"github.com/vector76/raymond/internal/parsing"
 )
 
 // claudeInvokeStreamFn is the launcher actually used by ClaudeBackend.
@@ -70,6 +71,7 @@ func (b *ClaudeBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (
 
 	var results []map[string]any
 	var sessionID string
+	var printBuf string
 
 	for item := range ch {
 		if item.Err != nil {
@@ -94,6 +96,30 @@ func (b *ClaudeBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (
 			sink.OnRaw(obj)
 		}
 		emitClaudeStreamEvents(obj, sink)
+
+		if t, _ := obj["type"].(string); t == "assistant" {
+			if message, ok := obj["message"].(map[string]any); ok {
+				if content, ok := message["content"].([]any); ok {
+					for _, rawItem := range content {
+						if ci, ok := rawItem.(map[string]any); ok {
+							if ci["type"] == "text" {
+								if text, _ := ci["text"].(string); text != "" {
+									printBuf += text
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		payloads, remainder := parsing.ExtractPrintTags(printBuf)
+		for _, payload := range payloads {
+			if sink.OnPrint != nil {
+				sink.OnPrint(payload)
+			}
+		}
+		printBuf = remainder
 	}
 
 	return TurnResult{

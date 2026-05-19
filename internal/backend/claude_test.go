@@ -328,6 +328,149 @@ func TestClaudeBackend_NilSinkCallbacksSafe(t *testing.T) {
 	}
 }
 
+// TestClaudeBackend_OnPrint_CompleteTag verifies that a complete <print> tag
+// in an assistant text item fires OnPrint with the tag's content.
+func TestClaudeBackend_OnPrint_CompleteTag(t *testing.T) {
+	installStream(t, func() <-chan ccwrap.StreamItem {
+		return fakeStream(ccwrap.StreamItem{Object: map[string]any{
+			"type": "assistant",
+			"message": map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": "Hello <print>world</print> done"},
+				},
+			},
+		}})
+	})
+
+	var printed []string
+	sink := Sink{OnPrint: func(s string) { printed = append(printed, s) }}
+	_, err := NewClaudeBackend().RunTurn(context.Background(), TurnSpec{}, sink)
+	if err != nil {
+		t.Fatalf("RunTurn error: %v", err)
+	}
+	if len(printed) != 1 || printed[0] != "world" {
+		t.Errorf("printed = %v, want [world]", printed)
+	}
+}
+
+// TestClaudeBackend_OnPrint_IncompleteTag verifies that an incomplete <print>
+// tag (no closing tag) produces no OnPrint call.
+func TestClaudeBackend_OnPrint_IncompleteTag(t *testing.T) {
+	installStream(t, func() <-chan ccwrap.StreamItem {
+		return fakeStream(ccwrap.StreamItem{Object: map[string]any{
+			"type": "assistant",
+			"message": map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": "<print>no close"},
+				},
+			},
+		}})
+	})
+
+	called := false
+	sink := Sink{OnPrint: func(s string) { called = true }}
+	_, err := NewClaudeBackend().RunTurn(context.Background(), TurnSpec{}, sink)
+	if err != nil {
+		t.Fatalf("RunTurn error: %v", err)
+	}
+	if called {
+		t.Error("OnPrint should not be called for incomplete tag")
+	}
+}
+
+// TestClaudeBackend_OnPrint_MultipleTags verifies that multiple <print> tags
+// in a single turn each fire in order.
+func TestClaudeBackend_OnPrint_MultipleTags(t *testing.T) {
+	installStream(t, func() <-chan ccwrap.StreamItem {
+		return fakeStream(ccwrap.StreamItem{Object: map[string]any{
+			"type": "assistant",
+			"message": map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": "<print>first</print><print>second</print>"},
+				},
+			},
+		}})
+	})
+
+	var printed []string
+	sink := Sink{OnPrint: func(s string) { printed = append(printed, s) }}
+	_, err := NewClaudeBackend().RunTurn(context.Background(), TurnSpec{}, sink)
+	if err != nil {
+		t.Fatalf("RunTurn error: %v", err)
+	}
+	if len(printed) != 2 || printed[0] != "first" || printed[1] != "second" {
+		t.Errorf("printed = %v, want [first second]", printed)
+	}
+}
+
+// TestClaudeBackend_OnPrint_SplitAcrossItems verifies that a <print> tag
+// split across two stream items is reassembled correctly.
+func TestClaudeBackend_OnPrint_SplitAcrossItems(t *testing.T) {
+	installStream(t, func() <-chan ccwrap.StreamItem {
+		return fakeStream(
+			ccwrap.StreamItem{Object: map[string]any{
+				"type": "assistant",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{"type": "text", "text": "<print>hel"},
+					},
+				},
+			}},
+			ccwrap.StreamItem{Object: map[string]any{
+				"type": "assistant",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{"type": "text", "text": "lo</print>"},
+					},
+				},
+			}},
+		)
+	})
+
+	var printed []string
+	sink := Sink{OnPrint: func(s string) { printed = append(printed, s) }}
+	_, err := NewClaudeBackend().RunTurn(context.Background(), TurnSpec{}, sink)
+	if err != nil {
+		t.Fatalf("RunTurn error: %v", err)
+	}
+	if len(printed) != 1 || printed[0] != "hello" {
+		t.Errorf("printed = %v, want [hello]", printed)
+	}
+}
+
+// TestClaudeBackend_OnPrint_OutputTextUnaffected verifies that the presence of
+// <print> tags does not affect TurnResult.OutputText.
+func TestClaudeBackend_OnPrint_OutputTextUnaffected(t *testing.T) {
+	installStream(t, func() <-chan ccwrap.StreamItem {
+		return fakeStream(
+			ccwrap.StreamItem{Object: map[string]any{
+				"type": "assistant",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{"type": "text", "text": "<print>output</print>"},
+					},
+				},
+			}},
+			ccwrap.StreamItem{Object: map[string]any{
+				"type": "result", "result": "<goto>NEXT.md</goto>",
+			}},
+		)
+	})
+
+	var printed []string
+	sink := Sink{OnPrint: func(s string) { printed = append(printed, s) }}
+	tr, err := NewClaudeBackend().RunTurn(context.Background(), TurnSpec{}, sink)
+	if err != nil {
+		t.Fatalf("RunTurn error: %v", err)
+	}
+	if len(printed) != 1 || printed[0] != "output" {
+		t.Errorf("printed = %v, want [output]", printed)
+	}
+	if tr.OutputText != "<goto>NEXT.md</goto>" {
+		t.Errorf("OutputText = %q, want <goto>NEXT.md</goto>", tr.OutputText)
+	}
+}
+
 // TestIsClaudeLimitMessage_PatternMatches exercises the case-insensitive
 // substring match used to detect provider-side limit messages.
 func TestIsClaudeLimitMessage_PatternMatches(t *testing.T) {

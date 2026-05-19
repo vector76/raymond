@@ -102,7 +102,7 @@ func (e *ScriptExecutor) Execute(
 
 	// Execute script and measure time.
 	start := time.Now()
-	sr, err := runScriptFn(ctx, scriptPath, execCtx.Timeout, env, agent.Cwd)
+	sr, err := runScriptFn(ctx, scriptPath, execCtx.Timeout, env, agent.Cwd, nil)
 	executionTimeMS := float64(time.Since(start).Milliseconds())
 
 	if err != nil {
@@ -113,7 +113,7 @@ func (e *ScriptExecutor) Execute(
 				source = "unknown source"
 			}
 			msg = fmt.Sprintf(
-				"Script '%s' timed out after %.6g seconds (timeout from %s)",
+				"Script '%s' produced no output for %.6g seconds (timeout from %s)",
 				currentState, tErr.Timeout, source,
 			)
 		} else {

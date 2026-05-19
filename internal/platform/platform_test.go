@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,7 +66,7 @@ func TestScriptTimeoutErrorMessage(t *testing.T) {
 	err := &platform.ScriptTimeoutError{ScriptPath: "test.sh", Timeout: 5.0}
 	msg := err.Error()
 	assert.Contains(t, msg, "test.sh")
-	assert.Contains(t, strings.ToLower(msg), "timeout")
+	assert.Contains(t, msg, "no output")
 	assert.Contains(t, msg, "5")
 }
 
@@ -212,7 +213,7 @@ func TestBuildScriptEnvStateVarsNotPresent(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestRunScriptMissingFileError(t *testing.T) {
-	_, err := platform.RunScript(context.Background(), filepath.Join(t.TempDir(), "no_such_file.sh"), 0, nil, "")
+	_, err := platform.RunScript(context.Background(), filepath.Join(t.TempDir(), "no_such_file.sh"), 0, nil, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Script not found")
 	assert.True(t, errors.Is(err, os.ErrNotExist))
@@ -221,7 +222,7 @@ func TestRunScriptMissingFileError(t *testing.T) {
 func TestRunScriptUnsupportedExtensionError(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.py", "print('hello')\n")
-	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "unsupported")
 }
@@ -229,7 +230,7 @@ func TestRunScriptUnsupportedExtensionError(t *testing.T) {
 func TestRunScriptTxtExtensionError(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.txt", "hello\n")
-	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "unsupported")
 }
@@ -243,7 +244,7 @@ func TestRunScriptShCapturesStdout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'Hello from bash'\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "Hello from bash")
 }
@@ -253,7 +254,7 @@ func TestRunScriptShMultilineStdout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'Line 1'\necho 'Line 2'\necho 'Line 3'\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "Line 1")
 	assert.Contains(t, result.Stdout, "Line 2")
@@ -266,7 +267,7 @@ func TestRunScriptShCapturesStderrSeparately(t *testing.T) {
 	script := writeScript(t, dir, "test.sh",
 		"#!/bin/bash\necho 'stdout message'\necho 'stderr message' >&2\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "stdout message")
 	assert.Contains(t, result.Stderr, "stderr message")
@@ -278,7 +279,7 @@ func TestRunScriptShExitCodeZero(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nexit 0\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode)
 }
@@ -288,7 +289,7 @@ func TestRunScriptShExitCodeNonZero(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nexit 42\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 42, result.ExitCode)
 }
@@ -298,7 +299,7 @@ func TestRunScriptShCompletesWithinTimeout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'fast'\n")
 
-	result, err := platform.RunScript(context.Background(), script, 10.0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 10.0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "fast")
 	assert.Equal(t, 0, result.ExitCode)
@@ -309,7 +310,7 @@ func TestRunScriptShTimeoutError(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nsleep 30\necho 'done'\n")
 
-	_, err := platform.RunScript(context.Background(), script, 0.3, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0.3, nil, "", nil)
 	require.Error(t, err)
 	var timeoutErr *platform.ScriptTimeoutError
 	assert.True(t, errors.As(err, &timeoutErr), "expected ScriptTimeoutError, got %T: %v", err, err)
@@ -320,7 +321,7 @@ func TestRunScriptBatRaisesOnUnix(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.bat", "@echo off\necho test\n")
 
-	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.Error(t, err)
 	msg := strings.ToLower(err.Error())
 	assert.True(t,
@@ -336,7 +337,7 @@ func TestRunScriptShReceivesWorkflowIDEnv(t *testing.T) {
 echo "WORKFLOW_ID=$RAYMOND_WORKFLOW_ID"
 `)
 	env := platform.BuildScriptEnv("test-workflow-123", "main", "", nil, nil)
-	result, err := platform.RunScript(context.Background(), script, 0, env, "")
+	result, err := platform.RunScript(context.Background(), script, 0, env, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "WORKFLOW_ID=test-workflow-123")
 }
@@ -348,7 +349,7 @@ func TestRunScriptShReceivesAgentIDEnv(t *testing.T) {
 echo "AGENT_ID=$RAYMOND_AGENT_ID"
 `)
 	env := platform.BuildScriptEnv("wf-1", "worker_7", "", nil, nil)
-	result, err := platform.RunScript(context.Background(), script, 0, env, "")
+	result, err := platform.RunScript(context.Background(), script, 0, env, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "AGENT_ID=worker_7")
 }
@@ -361,7 +362,7 @@ echo "INPUT=$RAYMOND_INPUT"
 `)
 	res := "child task completed"
 	env := platform.BuildScriptEnv("wf-1", "main", "", &res, nil)
-	result, err := platform.RunScript(context.Background(), script, 0, env, "")
+	result, err := platform.RunScript(context.Background(), script, 0, env, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "INPUT=child task completed")
 }
@@ -376,7 +377,7 @@ echo "IDX=$index"
 `)
 	env := platform.BuildScriptEnv("wf-1", "w", "", nil,
 		map[string]string{"item": "task1", "priority": "high", "index": "5"})
-	result, err := platform.RunScript(context.Background(), script, 0, env, "")
+	result, err := platform.RunScript(context.Background(), script, 0, env, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "ITEM=task1")
 	assert.Contains(t, result.Stdout, "PRIO=high")
@@ -393,7 +394,7 @@ func TestRunScriptShRunsInOrchestratorDirectory(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, cwd)
 }
@@ -405,7 +406,7 @@ func TestRunScriptShWithCwdRunsInSpecifiedDirectory(t *testing.T) {
 	require.NoError(t, os.Mkdir(workdir, 0o755))
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\npwd\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, workdir)
+	result, err := platform.RunScript(context.Background(), script, 0, nil, workdir, nil)
 	require.NoError(t, err)
 	// Resolve symlinks so /var/... vs /private/var/... don't cause false failures.
 	realWorkdir, _ := filepath.EvalSymlinks(workdir)
@@ -424,7 +425,7 @@ func TestRunScriptShCwdDoesNotChangeCallerDirectory(t *testing.T) {
 	originalCwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	_, err = platform.RunScript(context.Background(), script, 0, nil, workdir)
+	_, err = platform.RunScript(context.Background(), script, 0, nil, workdir, nil)
 	require.NoError(t, err)
 	assert.Equal(t, originalCwd, func() string { d, _ := os.Getwd(); return d }())
 }
@@ -438,7 +439,7 @@ func TestRunScriptBatCapturesStdout(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.bat", "@echo off\necho Hello from batch\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, result.Stdout, "Hello from batch")
 }
@@ -448,7 +449,7 @@ func TestRunScriptBatExitCodeNonZero(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.bat", "@echo off\nexit /b 42\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 42, result.ExitCode)
 }
@@ -458,7 +459,7 @@ func TestRunScriptShRaisesOnWindows(t *testing.T) {
 	dir := t.TempDir()
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho test\n")
 
-	_, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	_, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.Error(t, err)
 	msg := strings.ToLower(err.Error())
 	assert.True(t,
@@ -484,9 +485,145 @@ func TestRunScriptStripsClaudeCodeFromEnv(t *testing.T) {
 	// Print the value of CLAUDECODE; if stripped it will be empty.
 	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho \"CC=${CLAUDECODE}\"\n")
 
-	result, err := platform.RunScript(context.Background(), script, 0, nil, "")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
 	require.NoError(t, err)
 	// CLAUDECODE must not appear in the child environment.
 	assert.Equal(t, "CC=\n", result.Stdout,
 		"CLAUDECODE should be stripped from the child process environment")
+}
+
+// ----------------------------------------------------------------------------
+// RunScript — inactivity timeout and streaming
+// ----------------------------------------------------------------------------
+
+func TestRunScriptShStreamingResetsInactivityTimer(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	// Script outputs every 0.1s for 5 iterations; inactivity timeout is 0.3s.
+	// Timer should reset on each chunk, so the script completes without timing out.
+	script := writeScript(t, dir, "test.sh", `#!/bin/bash
+for i in 1 2 3 4 5; do
+    echo "ping $i"
+    sleep 0.1
+done
+`)
+	result, err := platform.RunScript(context.Background(), script, 0.3, nil, "", nil)
+	require.NoError(t, err)
+	assert.Contains(t, result.Stdout, "ping 5")
+}
+
+func TestRunScriptShInactivityTimeoutAfterInitialOutput(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	// Script outputs once, then goes silent for 2s; inactivity timeout is 0.3s.
+	script := writeScript(t, dir, "test.sh", `#!/bin/bash
+echo "started"
+sleep 2
+echo "done"
+`)
+	_, err := platform.RunScript(context.Background(), script, 0.3, nil, "", nil)
+	require.Error(t, err)
+	var timeoutErr *platform.ScriptTimeoutError
+	assert.True(t, errors.As(err, &timeoutErr), "expected ScriptTimeoutError, got %T: %v", err, err)
+}
+
+func TestRunScriptShNoOutputTimesOut(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nsleep 10\n")
+	_, err := platform.RunScript(context.Background(), script, 0.3, nil, "", nil)
+	require.Error(t, err)
+	var timeoutErr *platform.ScriptTimeoutError
+	assert.True(t, errors.As(err, &timeoutErr), "expected ScriptTimeoutError, got %T: %v", err, err)
+}
+
+func TestRunScriptShNoTimeoutWhenZero(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	// Script sleeps briefly (no output) then exits; timeout=0 means no inactivity timer.
+	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nsleep 0.2\necho 'done'\n")
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", nil)
+	require.NoError(t, err)
+	assert.Contains(t, result.Stdout, "done")
+}
+
+func TestRunScriptShOnChunkStdoutLabel(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'hello stdout'\n")
+
+	var pipes []string
+	var combined string
+	onChunk := func(pipe string, data []byte) {
+		pipes = append(pipes, pipe)
+		combined += string(data)
+	}
+
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", onChunk)
+	require.NoError(t, err)
+	assert.Contains(t, result.Stdout, "hello stdout")
+	assert.Contains(t, combined, "hello stdout")
+	for _, p := range pipes {
+		assert.Equal(t, "stdout", p, "onChunk pipe label should be 'stdout'")
+	}
+}
+
+func TestRunScriptShOnChunkStderrLabel(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	script := writeScript(t, dir, "test.sh", "#!/bin/bash\necho 'hello stderr' >&2\n")
+
+	var pipes []string
+	var combined string
+	onChunk := func(pipe string, data []byte) {
+		pipes = append(pipes, pipe)
+		combined += string(data)
+	}
+
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", onChunk)
+	require.NoError(t, err)
+	assert.Contains(t, result.Stderr, "hello stderr")
+	assert.Contains(t, combined, "hello stderr")
+	for _, p := range pipes {
+		assert.Equal(t, "stderr", p, "onChunk pipe label should be 'stderr'")
+	}
+}
+
+func TestRunScriptShAccumulatedOutputMatchesStreamed(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	script := writeScript(t, dir, "test.sh", `#!/bin/bash
+for i in $(seq 1 10); do
+    echo "line $i"
+done
+`)
+	var streamedStdout string
+	onChunk := func(pipe string, data []byte) {
+		if pipe == "stdout" {
+			streamedStdout += string(data)
+		}
+	}
+
+	result, err := platform.RunScript(context.Background(), script, 0, nil, "", onChunk)
+	require.NoError(t, err)
+	assert.Equal(t, result.Stdout, streamedStdout,
+		"accumulated ScriptResult.Stdout must equal the concatenation of streamed stdout chunks")
+	assert.Contains(t, result.Stdout, "line 1")
+	assert.Contains(t, result.Stdout, "line 10")
+}
+
+func TestRunScriptShContextCancellation(t *testing.T) {
+	skipUnix(t)
+	dir := t.TempDir()
+	script := writeScript(t, dir, "test.sh", "#!/bin/bash\nsleep 30\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	_, err := platform.RunScript(ctx, script, 0, nil, "", nil)
+	require.Error(t, err)
+	// Must not be an inactivity ScriptTimeoutError — this was external cancellation.
+	var timeoutErr *platform.ScriptTimeoutError
+	assert.False(t, errors.As(err, &timeoutErr),
+		"context cancellation should not return ScriptTimeoutError, got: %v", err)
 }

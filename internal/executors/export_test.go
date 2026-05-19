@@ -24,7 +24,7 @@ var claudeInvokeRestore func()
 
 // SetRunScriptFn replaces the platform.RunScript implementation used by
 // ScriptExecutor. Call ResetRunScriptFn in a defer to restore the original.
-func SetRunScriptFn(fn func(context.Context, string, float64, map[string]string, string) (*platform.ScriptResult, error)) {
+func SetRunScriptFn(fn func(context.Context, string, float64, map[string]string, string, func(string, []byte)) (*platform.ScriptResult, error)) {
 	runScriptFn = fn
 }
 

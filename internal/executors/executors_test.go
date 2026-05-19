@@ -76,8 +76,8 @@ func makeMockStream(objects []map[string]any) <-chan ccwrap.StreamItem {
 }
 
 // makeMockRunScript returns a runScriptFn replacement that always returns sr.
-func makeMockRunScript(sr *platform.ScriptResult, err error) func(context.Context, string, float64, map[string]string, string) (*platform.ScriptResult, error) {
-	return func(context.Context, string, float64, map[string]string, string) (*platform.ScriptResult, error) {
+func makeMockRunScript(sr *platform.ScriptResult, err error) func(context.Context, string, float64, map[string]string, string, func(string, []byte)) (*platform.ScriptResult, error) {
+	return func(context.Context, string, float64, map[string]string, string, func(string, []byte)) (*platform.ScriptResult, error) {
 		return sr, err
 	}
 }

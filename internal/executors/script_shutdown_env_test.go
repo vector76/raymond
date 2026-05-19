@@ -40,7 +40,7 @@ func captureScriptEnv(t *testing.T, execCtx *executors.ExecutionContext, ws *wfs
 	var captured map[string]string
 	executors.SetRunScriptFn(func(
 		ctx context.Context, scriptPath string, timeout float64,
-		env map[string]string, cwd string,
+		env map[string]string, cwd string, onChunk func(string, []byte),
 	) (*platform.ScriptResult, error) {
 		captured = env
 		return &platform.ScriptResult{

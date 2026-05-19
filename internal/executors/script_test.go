@@ -58,7 +58,7 @@ func TestScriptExecutor_YamlScope_ExtractsAndExecutes(t *testing.T) {
 
 	executors.SetRunScriptFn(func(
 		ctx context.Context, scriptPath string, timeout float64,
-		env map[string]string, cwd string,
+		env map[string]string, cwd string, onChunk func(string, []byte),
 	) (*platform.ScriptResult, error) {
 		// Verify the script was extracted to a temp file.
 		data, err := os.ReadFile(scriptPath)
@@ -119,7 +119,7 @@ func TestScriptExecutor_YamlScope_EnvVars(t *testing.T) {
 	var capturedEnv map[string]string
 	executors.SetRunScriptFn(func(
 		ctx context.Context, scriptPath string, timeout float64,
-		env map[string]string, cwd string,
+		env map[string]string, cwd string, onChunk func(string, []byte),
 	) (*platform.ScriptResult, error) {
 		capturedEnv = env
 		return &platform.ScriptResult{
@@ -176,7 +176,7 @@ func TestScriptExecutor_YamlScope_TaskFolderEnvVar(t *testing.T) {
 	var capturedEnv map[string]string
 	executors.SetRunScriptFn(func(
 		ctx context.Context, scriptPath string, timeout float64,
-		env map[string]string, cwd string,
+		env map[string]string, cwd string, onChunk func(string, []byte),
 	) (*platform.ScriptResult, error) {
 		capturedEnv = env
 		return &platform.ScriptResult{
@@ -219,7 +219,7 @@ func TestScriptExecutor_TimeoutError_IncludesStateAndSource(t *testing.T) {
 			name:   "cli flag source",
 			source: "--timeout flag",
 			wantSubstrings: []string{
-				"Script 'CHECK.sh' timed out after",
+				"Script 'CHECK.sh' produced no output for",
 				"600 seconds",
 				"(timeout from --timeout flag)",
 			},
@@ -228,7 +228,7 @@ func TestScriptExecutor_TimeoutError_IncludesStateAndSource(t *testing.T) {
 			name:   "per-state yaml source",
 			source: "per-state timeout in workflow YAML",
 			wantSubstrings: []string{
-				"Script 'CHECK.sh' timed out after",
+				"Script 'CHECK.sh' produced no output for",
 				"(timeout from per-state timeout in workflow YAML)",
 			},
 		},
@@ -236,7 +236,7 @@ func TestScriptExecutor_TimeoutError_IncludesStateAndSource(t *testing.T) {
 			name:   "empty source falls back to unknown",
 			source: "",
 			wantSubstrings: []string{
-				"Script 'CHECK.sh' timed out after",
+				"Script 'CHECK.sh' produced no output for",
 				"(timeout from unknown source)",
 			},
 		},
@@ -266,7 +266,7 @@ func TestScriptExecutor_TimeoutError_IncludesStateAndSource(t *testing.T) {
 
 			executors.SetRunScriptFn(func(
 				ctx context.Context, scriptPath string, timeout float64,
-				env map[string]string, cwd string,
+				env map[string]string, cwd string, onChunk func(string, []byte),
 			) (*platform.ScriptResult, error) {
 				return nil, &platform.ScriptTimeoutError{ScriptPath: scriptPath, Timeout: timeout}
 			})

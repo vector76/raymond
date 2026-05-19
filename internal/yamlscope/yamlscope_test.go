@@ -144,6 +144,70 @@ states:
 	assert.Equal(t, "high", st.Effort)
 }
 
+func TestParse_ForceImplicit(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: goto
+        target: NEXT
+    force_implicit: true
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	st := wf.States["step"]
+	assert.True(t, st.ForceImplicit)
+}
+
+func TestParse_ForceImplicitDefaultsFalse(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: goto
+        target: NEXT
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	assert.False(t, wf.States["step"].ForceImplicit)
+}
+
+func TestParse_ScriptWithForceImplicit(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  build:
+    sh: "make"
+    force_implicit: true
+`)
+	_, err := Parse(p)
+	require.Error(t, err)
+	var ve *YamlValidationError
+	assert.ErrorAs(t, err, &ve)
+	assert.Contains(t, err.Error(), "must not have 'force_implicit'")
+}
+
+func TestReadText_MarkdownWithForceImplicit(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: goto
+        target: NEXT
+    force_implicit: true
+`)
+	content, err := ReadText(p, "step.md")
+	require.NoError(t, err)
+
+	pol, body, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, pol)
+	assert.Equal(t, "Do the thing.", body)
+	assert.True(t, pol.ForceImplicit)
+}
+
 func TestParse_ScriptMultiplePlatforms(t *testing.T) {
 	p := writeTempYAML(t, `
 states:

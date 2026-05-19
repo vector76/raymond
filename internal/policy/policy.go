@@ -32,6 +32,11 @@ type Policy struct {
 	AllowedTransitions []map[string]string // each entry has at least "tag"
 	Model              string              // empty if not specified
 	Effort             string              // empty if not specified
+	// ForceImplicit, when true, instructs the executor to dispatch the
+	// implicit transition without parsing the agent's output for transition
+	// tags. Only meaningful when the policy is implicit-eligible
+	// (CanUseImplicitTransition returns true).
+	ForceImplicit bool
 }
 
 // PolicyViolationError is returned when a transition violates the state's policy.
@@ -82,6 +87,7 @@ type yamlFrontmatter struct {
 	AllowedTransitions []map[string]string `yaml:"allowed_transitions"`
 	Model              string              `yaml:"model"`
 	Effort             string              `yaml:"effort"`
+	ForceImplicit      bool                `yaml:"force_implicit"`
 }
 
 // parseYAML converts a YAML string into a Policy, or nil if the document is empty.
@@ -121,6 +127,7 @@ func parseYAML(yamlContent string) (*Policy, error) {
 		AllowedTransitions: valid,
 		Model:              model,
 		Effort:             effort,
+		ForceImplicit:      data.ForceImplicit,
 	}, nil
 }
 

@@ -125,6 +125,7 @@ severity appear in the array.
 | `missing-ask-next` | An `allowed_transitions` entry with `tag: ask` is missing the required `next` attribute. |
 | `unsupported-cd-attribute` | An `<ask>` tag uses the `cd` attribute, which is not supported on `<ask>`. |
 | `no-entry-point` | No entry point file (`1_START` or `START`, with `.md`, `.sh`, `.bat`, or `.ps1` extension) was found in the workflow. |
+| `force-implicit-invalid` | A state's frontmatter sets `force_implicit: true` but the policy is not implicit-eligible. `force_implicit` requires exactly one allowed transition, which must be neither `<ask>` nor a bare `<result>` (a `<result>` with a fixed `payload:` is fine). |
 
 ### Warnings
 
@@ -140,7 +141,7 @@ severity appear in the array.
 
 | Check ID | What triggers it |
 |----------|-----------------|
-| `implicit-transition` | A state has exactly one `allowed_transitions` entry with a concrete target (or, for `<result>`, a fixed payload). The agent does not need to emit the tag explicitly — the runtime applies it automatically. This is informational: the workflow is correct as-is. |
+| `implicit-transition` | A state has exactly one `allowed_transitions` entry with a concrete target (or, for `<result>`, a fixed payload). The agent does not need to emit the tag explicitly — the runtime applies it automatically. This is informational: the workflow is correct as-is. Suppressed when `force_implicit: true` is set, since the author has already opted in. |
 | `script-state-no-static-analysis` | The state is a script file (`.sh`, `.bat`, `.ps1`). Its transitions are determined at runtime by the script's exit value or output, so lint cannot fully validate them statically. |
 
 ---

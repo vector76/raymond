@@ -69,6 +69,7 @@ states:
 | `model` | string | no | Model override (`opus`, `sonnet`, `haiku`) |
 | `effort` | string | no | Extended thinking level (`low`, `medium`, `high`) |
 | `timeout` | number | no | Per-state timeout in seconds; overrides the global `--timeout` flag for this state. `0` means no timeout. Negative values are a validation error. |
+| `force_implicit` | bool | no | When `true`, the orchestrator dispatches the (single) allowed transition without parsing the model's output for tags. Requires the policy to be implicit-eligible. See [workflow-protocol.md](workflow-protocol.md#implicit-transitions-optimization). |
 
 Each entry in `allowed_transitions` is a mapping with a `tag` key and optional
 attributes like `target`, `payload`, `return`, etc. — the same attributes used
@@ -102,7 +103,8 @@ At least one platform key must be present:
 | `timeout` | number | Per-state timeout in seconds (same semantics as on markdown states) |
 
 **Restrictions:** Script states must not have `allowed_transitions`, `model`,
-or `effort` — these policy fields apply only to markdown states.
+`effort`, or `force_implicit` — these policy fields apply only to markdown
+states.
 
 ### Mutual exclusivity
 

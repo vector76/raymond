@@ -326,6 +326,29 @@ func mapBackendError(err error) error {
 	return &ClaudeCodeError{Msg: err.Error()}
 }
 
+// dispatchImplicit builds the implicit transition for pol, renders any
+// templated input attribute, and resolves abstract state targets.
+func dispatchImplicit(pol *policy.Policy, scopeDir string, variables map[string]any) (parsing.Transition, error) {
+	implicit, err := policy.GetImplicitTransition(pol)
+	if err != nil {
+		return parsing.Transition{}, err
+	}
+	// Render the "input" attribute as a template so that {{input}} and fork
+	// attributes are substituted before the transition is dispatched.
+	if input, ok := implicit.Attributes["input"]; ok && input != "" {
+		rendered := prompts.RenderPrompt(input, variables)
+		if rendered != input {
+			attrs := make(map[string]string, len(implicit.Attributes))
+			for k, v := range implicit.Attributes {
+				attrs[k] = v
+			}
+			attrs["input"] = rendered
+			implicit.Attributes = attrs
+		}
+	}
+	return ResolveTransitionTargets(implicit, scopeDir)
+}
+
 // isMultiFork reports whether a transition list should be dispatched via the
 // multi-fork path: multiple fork-family tags, or fork-family + goto together.
 func isMultiFork(trs []parsing.Transition) bool {
@@ -359,6 +382,19 @@ func (e *MarkdownExecutor) parseAndValidate(
 	reminderAttempt int,
 	variables map[string]any,
 ) (all []parsing.Transition, single *parsing.Transition, retry bool, err error) {
+	// Force-implicit: dispatch the implicit transition without parsing the
+	// agent's output for tags. The agent still ran (so side effects such as
+	// tool use and <print> output are preserved) — only its transition tags
+	// are ignored. The yamlscope/lint layers guarantee CanUseImplicitTransition
+	// here; the runtime guard is defensive.
+	if pol != nil && pol.ForceImplicit && policy.CanUseImplicitTransition(pol) {
+		resolved, dispatchErr := dispatchImplicit(pol, scopeDir, variables)
+		if dispatchErr != nil {
+			return nil, nil, false, dispatchErr
+		}
+		return nil, &resolved, false, nil
+	}
+
 	transitions, parseErr := parsing.ParseTransitions(outputText)
 	if parseErr != nil {
 		return nil, nil, false, fmt.Errorf("transition parse error: %w", parseErr)
@@ -371,26 +407,9 @@ func (e *MarkdownExecutor) parseAndValidate(
 
 	// Implicit transition (no tag, policy has exactly one allowed transition with a target or a fixed-payload result).
 	if len(transitions) == 0 && policy.CanUseImplicitTransition(pol) {
-		implicit, implicitErr := policy.GetImplicitTransition(pol)
-		if implicitErr != nil {
-			return nil, nil, false, implicitErr
-		}
-		// Render the "input" attribute as a template so that {{input}} and
-		// fork attributes are substituted before the transition is dispatched.
-		if input, ok := implicit.Attributes["input"]; ok && input != "" {
-			rendered := prompts.RenderPrompt(input, variables)
-			if rendered != input {
-				attrs := make(map[string]string, len(implicit.Attributes))
-				for k, v := range implicit.Attributes {
-					attrs[k] = v
-				}
-				attrs["input"] = rendered
-				implicit.Attributes = attrs
-			}
-		}
-		resolved, resolveErr := ResolveTransitionTargets(implicit, scopeDir)
-		if resolveErr != nil {
-			return nil, nil, false, resolveErr
+		resolved, dispatchErr := dispatchImplicit(pol, scopeDir, variables)
+		if dispatchErr != nil {
+			return nil, nil, false, dispatchErr
 		}
 		return nil, &resolved, false, nil
 	}

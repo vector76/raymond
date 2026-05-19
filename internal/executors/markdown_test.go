@@ -630,3 +630,128 @@ func TestMarkdownExecutor_AskIDUnsubstitutedWhenNotPending(t *testing.T) {
 		t.Errorf("prompt = %q, want literal {{ask_id}} to remain", capturedPrompt)
 	}
 }
+
+// TestMarkdownExecutor_ForceImplicit_IgnoresDifferentTag verifies that when
+// force_implicit is set, the LLM emitting a tag that doesn't match the policy
+// (which would normally be a policy violation) is ignored — the implicit
+// transition fires from the policy.
+func TestMarkdownExecutor_ForceImplicit_IgnoresDifferentTag(t *testing.T) {
+	dir := t.TempDir()
+
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\nforce_implicit: true\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Discuss workflows.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-force-implicit",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		// LLM emits a reset tag with a different target — would normally be a
+		// policy violation. force_implicit suppresses parsing entirely.
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "Here's an example: <reset>SOMEWHERE_ELSE</reset>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if result.Transition.Tag != "goto" {
+		t.Fatalf("transition tag = %q, want goto", result.Transition.Tag)
+	}
+	if result.Transition.Target != "NEXT.md" {
+		t.Errorf("target = %q, want NEXT.md", result.Transition.Target)
+	}
+}
+
+// TestMarkdownExecutor_ForceImplicit_IgnoresMultipleTags verifies that
+// multiple competing tags in the LLM output don't cause a "multiple
+// transitions" retry — force_implicit dispatches the policy transition
+// without parsing.
+func TestMarkdownExecutor_ForceImplicit_IgnoresMultipleTags(t *testing.T) {
+	dir := t.TempDir()
+
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\nforce_implicit: true\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Discuss workflows.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-force-implicit-multi",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	var calls int32
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		atomic.AddInt32(&calls, 1)
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "Examples: <goto>A</goto> and <goto>B</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if result.Transition.Target != "NEXT.md" {
+		t.Errorf("target = %q, want NEXT.md", result.Transition.Target)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("LLM invoked %d times, want 1 (no reminder retries)", got)
+	}
+}
+
+// TestMarkdownExecutor_ForceImplicit_TemplatesInputAttribute verifies that
+// {{input}} substitution in the implicit transition's input attribute still
+// works when force_implicit is set.
+func TestMarkdownExecutor_ForceImplicit_TemplatesInputAttribute(t *testing.T) {
+	dir := t.TempDir()
+
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md, input: \"wrapped:{{input}}\" }\nforce_implicit: true\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Process.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	pending := "payload-value"
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-force-implicit-tmpl",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID:            "main",
+			CurrentState:  "START.md",
+			ScopeDir:      dir,
+			Stack:         []wfstate.StackFrame{},
+			PendingResult: &pending,
+		}},
+	}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		// LLM emits a stray <goto> tag; force_implicit causes it to be ignored.
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>STRAY</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := result.Transition.Attributes["input"]; got != "wrapped:payload-value" {
+		t.Errorf("input attribute = %q, want %q", got, "wrapped:payload-value")
+	}
+}

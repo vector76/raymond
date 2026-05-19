@@ -67,6 +67,7 @@ type yamlState struct {
 	Model              string              `yaml:"model"`
 	Effort             string              `yaml:"effort"`
 	Timeout            *float64            `yaml:"timeout"`
+	ForceImplicit      bool                `yaml:"force_implicit"`
 }
 
 // YamlWorkflow is the validated, parsed representation of a YAML workflow file.
@@ -237,6 +238,11 @@ func Parse(yamlPath string) (*YamlWorkflow, error) {
 					msg: fmt.Sprintf("script state %q in %s must not have 'effort'", name, yamlPath),
 				}
 			}
+			if st.ForceImplicit {
+				return nil, &YamlValidationError{
+					msg: fmt.Sprintf("script state %q in %s must not have 'force_implicit'", name, yamlPath),
+				}
+			}
 		}
 
 		// Timeout must not be negative if set.
@@ -292,7 +298,7 @@ func ListFiles(yamlPath string) ([]string, error) {
 // fields. Only includes fields that are present. Returns empty string if no
 // policy fields are set.
 func synthesizeFrontmatter(st *yamlState) string {
-	if len(st.AllowedTransitions) == 0 && st.Model == "" && st.Effort == "" {
+	if len(st.AllowedTransitions) == 0 && st.Model == "" && st.Effort == "" && !st.ForceImplicit {
 		return ""
 	}
 
@@ -318,6 +324,9 @@ func synthesizeFrontmatter(st *yamlState) string {
 			"effort": st.Effort,
 		})
 		parts = append(parts, strings.TrimSpace(string(data)))
+	}
+	if st.ForceImplicit {
+		parts = append(parts, "force_implicit: true")
 	}
 
 	return strings.Join(parts, "\n")

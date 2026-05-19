@@ -763,3 +763,53 @@ func TestZipScopeAskValid(t *testing.T) {
 		}
 	}
 }
+
+func TestForceImplicitValid(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("force_implicit_ok"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "force-implicit-invalid" {
+			assert.Fail(t, "unexpected force-implicit-invalid diagnostic for valid fixture", d)
+		}
+		if d.Check == "implicit-transition" {
+			assert.Fail(t, "implicit-transition info should be suppressed when force_implicit is set", d)
+		}
+	}
+}
+
+func TestForceImplicitMultipleTransitionsErrors(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("force_implicit_bad_multi"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "force-implicit-invalid" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"force-implicit-invalid\" and Severity==Error, got", diags)
+}
+
+func TestForceImplicitAskErrors(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("force_implicit_bad_ask"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "force-implicit-invalid" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"force-implicit-invalid\" and Severity==Error, got", diags)
+}
+
+func TestForceImplicitBareResultErrors(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("force_implicit_bad_bare_result"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "force-implicit-invalid" && d.Severity == lint.Error {
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"force-implicit-invalid\" and Severity==Error, got", diags)
+}

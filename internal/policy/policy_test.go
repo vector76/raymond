@@ -148,6 +148,33 @@ func TestParseFrontmatterEmptyModelTreatedAsEmpty(t *testing.T) {
 	assert.Equal(t, "", p.Model)
 }
 
+func TestParseFrontmatterWithForceImplicit(t *testing.T) {
+	content := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\nforce_implicit: true\n---\n# Prompt"
+
+	p, _, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	assert.True(t, p.ForceImplicit)
+}
+
+func TestParseFrontmatterForceImplicitDefaultsFalse(t *testing.T) {
+	content := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\n---\n# Prompt"
+
+	p, _, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	assert.False(t, p.ForceImplicit)
+}
+
+func TestParseFrontmatterForceImplicitExplicitFalse(t *testing.T) {
+	content := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\nforce_implicit: false\n---\n# Prompt"
+
+	p, _, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	assert.False(t, p.ForceImplicit)
+}
+
 func TestParseFrontmatterCRLFLineEndings(t *testing.T) {
 	// Files checked out on Windows have \r\n line endings. The parser must
 	// normalize them so the frontmatter regex matches correctly.

@@ -737,3 +737,25 @@ If the model emits any other tag or a mismatched tag, it's an error.
 **Result tags are always explicit:**
 Even if a policy allows only `<result>`, the model must still emit the tag
 because the payload content is variable and cannot be predetermined.
+
+**Forcing implicit dispatch:**
+Setting `force_implicit: true` on an implicit-eligible state causes the
+orchestrator to dispatch the implicit transition **without parsing the model's
+output for tags at all**. The model still runs — side effects like tool use
+and `<print>` output are preserved — but anything that looks like a
+transition tag in its output is ignored. Use this when a state's prompt
+involves discussing transition tags as subject matter (workflows about
+workflows, raymond meta-tooling) or when the model tends to inject
+over-eager / inferred tags that trigger spurious reminder retries.
+
+`force_implicit: true` requires the policy to be implicit-eligible (exactly
+one allowed transition, not `<ask>`, with a concrete target or fixed-payload
+`<result>`). The linter rejects the combination otherwise.
+
+```yaml
+---
+allowed_transitions:
+  - { tag: goto, target: NEXT }
+force_implicit: true
+---
+```

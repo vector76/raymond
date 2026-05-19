@@ -235,6 +235,28 @@ Process the data. No need to emit a transition tag.
 A `{ tag: result }` entry without `payload` still allows any payload and
 cannot be implicit.
 
+**3. Forced implicit dispatch (`force_implicit: true`)**: an implicit-eligible
+state can opt out of transition parsing entirely. The agent still runs and
+side effects (tool use, `<print>`) are preserved, but any transition-looking
+tags in its output are ignored — the policy's transition fires
+unconditionally.
+
+```yaml
+---
+allowed_transitions:
+  - { tag: goto, target: NEXT.md }
+force_implicit: true
+---
+Explain how <goto> tags interact with the return stack. Tag examples in
+your answer will not trigger a transition.
+```
+
+Reach for this when (a) the prompt itself discusses transition-tag syntax as
+subject matter, or (b) the model is "over-eager" and emits inferred tags
+that disagree with the policy, causing spurious reminder retries. The
+linter requires the policy to be implicit-eligible — multiple transitions,
+`<ask>`, or bare `<result>` with `force_implicit` are flagged as errors.
+
 **Without frontmatter**, all transitions are allowed but the orchestrator
 cannot recover from missing or invalid tags — failures are fatal.
 

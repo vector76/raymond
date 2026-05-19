@@ -346,9 +346,22 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 			}
 		}
 
+		// force-implicit-invalid check: force_implicit requires an implicit-
+		// eligible policy (exactly one allowed transition, not ask, with a
+		// concrete target or a fixed-payload result).
+		if pf.pol != nil && pf.pol.ForceImplicit && !policy.CanUseImplicitTransition(pf.pol) {
+			diags = append(diags, Diagnostic{
+				Severity: Error,
+				File:     filename,
+				Message:  fmt.Sprintf("%s sets force_implicit: true but the policy is not implicit-eligible (need exactly one allowed transition that is neither <ask> nor a bare <result>)", filename),
+				Check:    "force-implicit-invalid",
+			})
+		}
+
 		// implicit-transition check: single allowed transition that could be
-		// applied without an explicit tag.
-		if pf.pol != nil && len(pf.pol.AllowedTransitions) > 0 {
+		// applied without an explicit tag. Suppressed when force_implicit is
+		// set — the author has already opted in deliberately.
+		if pf.pol != nil && len(pf.pol.AllowedTransitions) > 0 && !pf.pol.ForceImplicit {
 			if policy.CanUseImplicitTransition(pf.pol) {
 				t, _ := policy.GetImplicitTransition(pf.pol)
 				display := t.Target

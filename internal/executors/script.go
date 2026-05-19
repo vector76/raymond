@@ -102,7 +102,27 @@ func (e *ScriptExecutor) Execute(
 
 	// Execute script and measure time.
 	start := time.Now()
-	sr, err := runScriptFn(ctx, scriptPath, execCtx.Timeout, env, agent.Cwd, nil)
+	var stdoutPrintBuf, stderrPrintBuf string
+	sr, err := runScriptFn(ctx, scriptPath, execCtx.Timeout, env, agent.Cwd,
+		func(pipe string, data []byte) {
+			var buf *string
+			if pipe == "stdout" {
+				buf = &stdoutPrintBuf
+			} else {
+				buf = &stderrPrintBuf
+			}
+			*buf += string(data)
+			payloads, remainder := parsing.ExtractPrintTags(*buf)
+			*buf = remainder
+			for _, p := range payloads {
+				execCtx.Bus.Emit(events.PrintOutput{
+					AgentID:   agentID,
+					Content:   p,
+					Timestamp: time.Now(),
+				})
+			}
+		},
+	)
 	executionTimeMS := float64(time.Since(start).Milliseconds())
 
 	if err != nil {

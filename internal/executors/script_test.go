@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/executors"
 	"github.com/vector76/raymond/internal/platform"
 	wfstate "github.com/vector76/raymond/internal/state"
@@ -291,5 +292,188 @@ func TestScriptExecutor_TimeoutError_IncludesStateAndSource(t *testing.T) {
 				t.Errorf("error message should not expose script path\ngot: %s", msg)
 			}
 		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// ScriptExecutor — PrintOutput wiring tests
+// --------------------------------------------------------------------------
+
+func TestScriptExecutor_PrintOutput_Stdout(t *testing.T) {
+	dir, wfState := makeScriptWorkflow(t)
+	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
+
+	b := newBus()
+	printEvents, cancel := collectEvents[events.PrintOutput](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
+
+	executors.SetRunScriptFn(func(
+		ctx context.Context, _ string, _ float64,
+		_ map[string]string, _ string, onChunk func(string, []byte),
+	) (*platform.ScriptResult, error) {
+		onChunk("stdout", []byte("before <print>hello world</print> after"))
+		return &platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>\n", ExitCode: 0}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	_, err := executors.NewScriptExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*printEvents) != 1 {
+		t.Fatalf("got %d PrintOutput events, want 1", len(*printEvents))
+	}
+	ev := (*printEvents)[0]
+	if ev.AgentID != "main" {
+		t.Errorf("AgentID = %q, want main", ev.AgentID)
+	}
+	if ev.Content != "hello world" {
+		t.Errorf("Content = %q, want \"hello world\"", ev.Content)
+	}
+}
+
+func TestScriptExecutor_PrintOutput_Stderr(t *testing.T) {
+	dir, wfState := makeScriptWorkflow(t)
+	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
+
+	b := newBus()
+	printEvents, cancel := collectEvents[events.PrintOutput](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
+
+	executors.SetRunScriptFn(func(
+		ctx context.Context, _ string, _ float64,
+		_ map[string]string, _ string, onChunk func(string, []byte),
+	) (*platform.ScriptResult, error) {
+		onChunk("stderr", []byte("<print>from stderr</print>"))
+		return &platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>\n", ExitCode: 0}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	_, err := executors.NewScriptExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*printEvents) != 1 {
+		t.Fatalf("got %d PrintOutput events, want 1", len(*printEvents))
+	}
+	if (*printEvents)[0].Content != "from stderr" {
+		t.Errorf("Content = %q, want \"from stderr\"", (*printEvents)[0].Content)
+	}
+}
+
+func TestScriptExecutor_PrintOutput_MultipleTagsOneEventEach(t *testing.T) {
+	dir, wfState := makeScriptWorkflow(t)
+	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
+
+	b := newBus()
+	printEvents, cancel := collectEvents[events.PrintOutput](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
+
+	executors.SetRunScriptFn(func(
+		ctx context.Context, _ string, _ float64,
+		_ map[string]string, _ string, onChunk func(string, []byte),
+	) (*platform.ScriptResult, error) {
+		onChunk("stdout", []byte("<print>first</print><print>second</print><print>third</print>"))
+		return &platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>\n", ExitCode: 0}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	_, err := executors.NewScriptExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*printEvents) != 3 {
+		t.Fatalf("got %d PrintOutput events, want 3", len(*printEvents))
+	}
+	want := []string{"first", "second", "third"}
+	for i, ev := range *printEvents {
+		if ev.Content != want[i] {
+			t.Errorf("event[%d].Content = %q, want %q", i, ev.Content, want[i])
+		}
+	}
+}
+
+func TestScriptExecutor_PrintOutput_IncompleteTagProducesNoEvent(t *testing.T) {
+	dir, wfState := makeScriptWorkflow(t)
+	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
+
+	b := newBus()
+	printEvents, cancel := collectEvents[events.PrintOutput](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
+
+	executors.SetRunScriptFn(func(
+		ctx context.Context, _ string, _ float64,
+		_ map[string]string, _ string, onChunk func(string, []byte),
+	) (*platform.ScriptResult, error) {
+		// Complete tag then an incomplete one at the end.
+		onChunk("stdout", []byte("<print>complete</print> trailing <print>incomplete"))
+		return &platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>\n", ExitCode: 0}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	_, err := executors.NewScriptExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// Only the complete tag fires; the incomplete one is silently discarded.
+	if len(*printEvents) != 1 {
+		t.Fatalf("got %d PrintOutput events, want 1", len(*printEvents))
+	}
+	if (*printEvents)[0].Content != "complete" {
+		t.Errorf("Content = %q, want \"complete\"", (*printEvents)[0].Content)
+	}
+}
+
+func TestScriptExecutor_PrintOutput_CoexistsWithTransitionTag(t *testing.T) {
+	dir, wfState := makeScriptWorkflow(t)
+	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
+
+	b := newBus()
+	printEvents, cancel := collectEvents[events.PrintOutput](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
+
+	executors.SetRunScriptFn(func(
+		ctx context.Context, _ string, _ float64,
+		_ map[string]string, _ string, onChunk func(string, []byte),
+	) (*platform.ScriptResult, error) {
+		onChunk("stdout", []byte("<print>status update</print>"))
+		// ScriptResult.Stdout contains both the print tag and a transition tag.
+		return &platform.ScriptResult{
+			Stdout:   "<print>status update</print>\n<goto>NEXT.md</goto>\n",
+			ExitCode: 0,
+		}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	result, err := executors.NewScriptExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// Transition parsing must still find the goto tag.
+	if result.Transition.Tag != "goto" || result.Transition.Target != "NEXT.md" {
+		t.Errorf("unexpected transition: %+v", result.Transition)
+	}
+
+	// PrintOutput event must have been emitted from the streaming chunk.
+	if len(*printEvents) != 1 {
+		t.Fatalf("got %d PrintOutput events, want 1", len(*printEvents))
+	}
+	if (*printEvents)[0].Content != "status update" {
+		t.Errorf("Content = %q, want \"status update\"", (*printEvents)[0].Content)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/vector76/raymond/internal/backendcfg"
+	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/piwrap"
 )
 
@@ -109,6 +110,7 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 
 	var sessionID string
 	var outputText string
+	var printBuf string
 
 	for item := range ch {
 		if item.Err != nil {
@@ -146,6 +148,14 @@ func (b *PiBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (Turn
 					if sink.OnProgress != nil && firstLine != "" {
 						sink.OnProgress(firstLine)
 					}
+					printBuf += text
+					payloads, remainder := parsing.ExtractPrintTags(printBuf)
+					for _, payload := range payloads {
+						if sink.OnPrint != nil {
+							sink.OnPrint(payload)
+						}
+					}
+					printBuf = remainder
 				}
 			}
 

@@ -351,6 +351,86 @@ func TestPiBackend_ZeroCostWhenNoSessionFile(t *testing.T) {
 	assert.Nil(t, result.InputTokens)
 }
 
+// piTextDelta returns a stream item matching a text_delta message_update event.
+func piTextDelta(text string) piwrap.StreamItem {
+	return piwrap.StreamItem{Object: map[string]any{
+		"type": "message_update", "updateType": "text_delta", "text": text,
+	}}
+}
+
+func TestPiBackend_OnPrint_CompletePrintTagFiresCallback(t *testing.T) {
+	var calls []string
+	sink := Sink{
+		OnPrint: func(text string) { calls = append(calls, text) },
+	}
+
+	restore := SetPiInvokeStreamFnForTest(makePiStream(
+		piTextDelta("<print>hello world</print>"),
+		piAgentEndText("<goto>done</goto>"),
+	))
+	defer restore()
+
+	b := NewPiBackend(backendcfg.BackendOptions{})
+	_, err := b.RunTurn(context.Background(), TurnSpec{Prompt: "p"}, sink)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hello world"}, calls)
+}
+
+func TestPiBackend_OnPrint_IncompletePrintTagProducesNoCall(t *testing.T) {
+	var calls []string
+	sink := Sink{
+		OnPrint: func(text string) { calls = append(calls, text) },
+	}
+
+	restore := SetPiInvokeStreamFnForTest(makePiStream(
+		piTextDelta("<print>no close tag"),
+		piAgentEndText("<goto>done</goto>"),
+	))
+	defer restore()
+
+	b := NewPiBackend(backendcfg.BackendOptions{})
+	_, err := b.RunTurn(context.Background(), TurnSpec{Prompt: "p"}, sink)
+	require.NoError(t, err)
+	assert.Empty(t, calls)
+}
+
+func TestPiBackend_OnPrint_MultipleTagsFireInOrder(t *testing.T) {
+	var calls []string
+	sink := Sink{
+		OnPrint: func(text string) { calls = append(calls, text) },
+	}
+
+	restore := SetPiInvokeStreamFnForTest(makePiStream(
+		piTextDelta("<print>first</print><print>second</print>"),
+		piAgentEndText("<goto>done</goto>"),
+	))
+	defer restore()
+
+	b := NewPiBackend(backendcfg.BackendOptions{})
+	_, err := b.RunTurn(context.Background(), TurnSpec{Prompt: "p"}, sink)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, calls)
+}
+
+func TestPiBackend_OnPrint_TagSplitAcrossTwoDeltas(t *testing.T) {
+	var calls []string
+	sink := Sink{
+		OnPrint: func(text string) { calls = append(calls, text) },
+	}
+
+	restore := SetPiInvokeStreamFnForTest(makePiStream(
+		piTextDelta("<print>hel"),
+		piTextDelta("lo</print>"),
+		piAgentEndText("<goto>done</goto>"),
+	))
+	defer restore()
+
+	b := NewPiBackend(backendcfg.BackendOptions{})
+	_, err := b.RunTurn(context.Background(), TurnSpec{Prompt: "p"}, sink)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hello"}, calls)
+}
+
 func TestPiBackend_ProgressFromTextDelta(t *testing.T) {
 	var got []string
 	sink := Sink{

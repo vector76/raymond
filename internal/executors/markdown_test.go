@@ -476,6 +476,82 @@ func TestMarkdownExecutor_AskIDSubstitutedInImmediatelyFollowingState(t *testing
 	}
 }
 
+// TestMarkdownExecutor_PrintOutputEventEmitted verifies that a <print> tag in
+// the assistant stream causes a PrintOutput event to be emitted on the bus with
+// the correct content and agent ID, and that the real transition is unaffected.
+func TestMarkdownExecutor_PrintOutputEventEmitted(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	b := newBus()
+	printOutputs, cancel := collectEvents[events.PrintOutput](b)
+	defer cancel()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: wfState.WorkflowID}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "assistant", "message": map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": "<print>hello from print</print><goto>NEXT.md</goto>"},
+				},
+			}},
+			{"session_id": "sess-print", "total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if len(*printOutputs) != 1 {
+		t.Fatalf("got %d PrintOutput events, want 1", len(*printOutputs))
+	}
+	ev := (*printOutputs)[0]
+	if ev.Content != "hello from print" {
+		t.Errorf("Content = %q, want %q", ev.Content, "hello from print")
+	}
+	if ev.AgentID != "main" {
+		t.Errorf("AgentID = %q, want main", ev.AgentID)
+	}
+	if result.Transition.Tag != "goto" || result.Transition.Target != "NEXT.md" {
+		t.Errorf("unexpected transition: %+v", result.Transition)
+	}
+}
+
+// TestMarkdownExecutor_PrintTagsInvisibleToTransitionParser verifies that
+// <print> tags in the output text are not parsed as transitions — the
+// ExecutionResult.Transition reflects only the real transition tag.
+func TestMarkdownExecutor_PrintTagsInvisibleToTransitionParser(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "assistant", "message": map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": "<print>side channel output</print><goto>NEXT.md</goto>"},
+				},
+			}},
+			{"session_id": "sess-print2", "total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if result.Transition.Tag != "goto" {
+		t.Errorf("print tag must not appear as a transition; got tag=%q", result.Transition.Tag)
+	}
+	if result.Transition.Target != "NEXT.md" {
+		t.Errorf("transition target = %q, want NEXT.md", result.Transition.Target)
+	}
+}
+
 // TestMarkdownExecutor_CustomBackendIsUsed verifies that when execCtx.Backend
 // is non-nil, MarkdownExecutor calls that backend's RunTurn rather than
 // constructing a default Claude backend.

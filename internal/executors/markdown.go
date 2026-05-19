@@ -179,6 +179,13 @@ func (e *MarkdownExecutor) Execute(
 					Timestamp:    time.Now(),
 				})
 			},
+			OnPrint: func(text string) {
+				execCtx.Bus.Emit(events.PrintOutput{
+					AgentID:   agentID,
+					Content:   text,
+					Timestamp: time.Now(),
+				})
+			},
 		}
 		if stepNumber > 0 {
 			// stepNumber is declared with := inside the loop body, so each

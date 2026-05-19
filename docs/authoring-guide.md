@@ -359,6 +359,29 @@ else
 fi
 ```
 
+### Streaming Intermediate Output (`<print>`)
+
+Scripts can emit `<print>` tags to surface status messages before the state
+terminates. Each tag fires a `PrintOutput` event that the console observer
+writes to the terminal in real time:
+
+```bash
+#!/bin/bash
+echo "<print>Cloning repository…</print>"
+git clone "$REPO_URL" repo/
+echo "<print>Running tests…</print>"
+cd repo && go test ./...
+echo "<result>tests passed</result>"
+```
+
+`<print>` is **not a transition tag** — it never appears in
+`allowed_transitions` and does not count toward the "exactly one tag"
+requirement. Each `<print>` also resets the per-state inactivity timer, so a
+script that regularly emits progress messages will not trigger a timeout even
+if individual steps take longer than the configured window.
+
+LLM states (markdown prompts) support `<print>` with identical semantics.
+
 ### Error Handling
 
 Script errors are **fatal** — no retries, no re-prompting. If a script exits

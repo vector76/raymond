@@ -213,7 +213,70 @@ expected to be deterministic and correct; if they fail, it's a bug.
 | Script exits with code 0, no transition tag | Error: missing transition |
 | Script exits with non-zero code | Error: script failed |
 | Script outputs multiple transition tags | Error: ambiguous transition |
-| Script times out | Error: timeout (configurable per-state) |
+| Script produces no output for longer than the timeout window | Error: inactivity timeout (configurable per-state) |
+
+### Inactivity Timeout
+
+The per-state `timeout` field (available in YAML workflows and the global
+`--timeout` flag) measures **inactivity** — time elapsed since the script last
+produced any stdout or stderr output — not the total wall-clock runtime of the
+script. Each chunk of output resets the inactivity timer.
+
+This design allows long-running scripts to execute safely as long as they
+produce output at reasonable intervals:
+
+```bash
+#!/bin/bash
+# Runs for 30 minutes, but produces output every few seconds.
+# A 10-second inactivity timeout will not fire.
+while true; do
+    process_next_item   # produces output
+    [ $? -ne 0 ] && break
+done
+echo "<result>done</result>"
+```
+
+A script that goes completely silent — producing no output — will trigger the
+timeout after the configured window. This catches hung processes while
+permitting legitimately long operations that remain active.
+
+**Configuring timeout per-state (YAML scope):**
+
+```yaml
+states:
+  BUILD:
+    sh: |
+      #!/bin/bash
+      make all 2>&1
+      echo "<result>built</result>"
+    timeout: 300   # 5-minute inactivity window; resets on each line of make output
+```
+
+### Streaming Output with `<print>`
+
+Script states can emit `<print>` tags to surface intermediate results to
+observers (console, daemon event stream) before the state terminates:
+
+```bash
+#!/bin/bash
+echo "<print>Starting phase 1…</print>"
+phase_1
+echo "<print>Phase 1 complete; starting phase 2…</print>"
+phase_2
+echo "<result>all phases done</result>"
+```
+
+`<print>` is **not a transition tag** — it does not affect control flow, is
+never listed in `allowed_transitions`, and is invisible to the policy system.
+`<print>` is not in the `openTagRe` pattern used by `ParseTransitions`, so
+it is ignored entirely by the transition parser. Each `<print>` tag fires a
+`PrintOutput` event on the bus (extracted from the streaming output as it
+arrives), which the console observer writes to the terminal and the daemon
+delivers over its event stream.
+
+LLM states (markdown prompts) also support `<print>` with the same semantics —
+the model can emit `<print>…</print>` at any point in its response to surface
+intermediate work before the transition tag.
 
 ### No Frontmatter Policy
 
@@ -299,7 +362,5 @@ Script states should support the same debug mode as markdown states:
 
 ### Future Extensions
 
-- **Timeout configuration**: Per-state timeout via frontmatter or naming convention
 - **Retry logic**: Configurable retry for transient failures
-- **Output streaming**: Stream script output to logs in real-time
 - **Cross-platform scripts**: Support for Python/Node scripts that work everywhere

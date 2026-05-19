@@ -1,0 +1,10 @@
+states:
+  1_START:
+    sh: |
+      #!/bin/bash
+      printf '<print>hello from script</print>\n'
+      sleep 1.5
+      printf '<print>world from script</print>\n'
+      sleep 1.5
+      printf '<result>done</result>\n'
+    timeout: 2

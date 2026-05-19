@@ -48,6 +48,36 @@ invoking an LLM, making them efficient for deterministic operations.
 `<goto>POLL</goto>`), the orchestrator resolves it to the appropriate file
 type based on platform and what exists. See `docs/bash-states.md` for details.
 
+## The `<print>` Tag (Streaming Intermediate Output)
+
+Both markdown and script states may emit `<print>` tags to surface intermediate
+results to observers before the state terminates:
+
+```
+<print>Phase 1 complete, starting phase 2…</print>
+```
+
+**`<print>` is not a transition tag.** It does not affect control flow, is
+never listed in `allowed_transitions`, and is invisible to the transition
+policy system. `print` is absent from `openTagRe` in
+`internal/parsing/parsing.go`, so `<print>` tags are never matched by
+`ParseTransitions` and do not count toward the "exactly one tag" requirement.
+
+**Semantics:**
+
+- Each `<print>` tag fires a `PrintOutput` event on the bus.
+- The console observer writes the content to the terminal in real time.
+- The daemon delivers `PrintOutput` events over its SSE event stream.
+- Tags may appear mid-stream; the runtime handles partial tags spanning
+  chunk boundaries in streaming contexts.
+
+**Script states — inactivity timeout interaction:** Each `<print>` tag
+(indeed any stdout/stderr output) resets the per-state inactivity timer.
+A script that emits `<print>` periodically can run for an arbitrarily long
+time without triggering the inactivity timeout, as long as output arrives
+within the configured window. See `docs/bash-states.md` for details on the
+inactivity timeout model.
+
 ## Initial Input (`--input`)
 
 When starting a workflow, you can pass an initial input value that will be

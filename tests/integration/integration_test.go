@@ -188,6 +188,56 @@ func TestZIPScopeScriptWorkflow(t *testing.T) {
 	assert.True(t, completed, "ZIP-scope SCRIPT_RESULT workflow should complete cleanly")
 }
 
+// TestScriptPrintOutputWorkflow verifies that <print> tags emitted by a script
+// state are delivered as PrintOutput events on the bus in order, and that the
+// workflow completes cleanly without a timeout error even though the total
+// script runtime (~3 s) exceeds the per-state inactivity timeout (2 s). Each
+// individual sleep between prints is 1.5 s, which is less than the 2 s window,
+// so the inactivity timer resets on every print and never fires. This confirms
+// the timeout measures silence since last output, not wall-clock elapsed time.
+func TestScriptPrintOutputWorkflow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("print_output fixture uses a .sh script; skipping on Windows")
+	}
+
+	scopeDir := filepath.Join(testCasesDir(), "print_output.yaml")
+	stateDir := t.TempDir()
+	id := "integration-print-output"
+
+	ws := wfstate.CreateInitialState(id, scopeDir, "1_START.sh", 10.0, nil, "")
+	require.NoError(t, wfstate.WriteState(id, ws, stateDir))
+
+	var printEvents []events.PrintOutput
+	var resultPayload string
+
+	opts := orchestrator.RunOptions{
+		StateDir: stateDir,
+		Quiet:    true,
+		Timeout:  120.0,
+		NoWait:   true,
+		ObserverSetup: func(b *bus.Bus) {
+			bus.Subscribe(b, func(ev events.PrintOutput) {
+				printEvents = append(printEvents, ev)
+			})
+			bus.Subscribe(b, func(ev events.AgentTerminated) {
+				resultPayload = ev.ResultPayload
+			})
+		},
+	}
+
+	runErr := orchestrator.RunAllAgents(context.Background(), id, opts)
+	require.NoError(t, runErr, "workflow should complete without error")
+
+	_, statErr := wfstate.ReadState(id, stateDir)
+	assert.Error(t, statErr, "state file should be deleted after clean completion")
+
+	assert.Equal(t, "done", resultPayload, "result payload should be 'done'")
+
+	require.Len(t, printEvents, 2, "expected exactly two PrintOutput events")
+	assert.Equal(t, "hello from script", printEvents[0].Content)
+	assert.Equal(t, "world from script", printEvents[1].Content)
+}
+
 // --------------------------------------------------------------------------
 // Build verification (no Claude required)
 // --------------------------------------------------------------------------

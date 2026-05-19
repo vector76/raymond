@@ -344,6 +344,16 @@ func (r *ConsoleReporter) onScriptOutput(e events.ScriptOutput) {
 	r.lastExitCode[e.AgentID] = e.ExitCode
 }
 
+func (r *ConsoleReporter) onPrintOutput(e events.PrintOutput) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	content := e.Content
+	if len(content) == 0 || content[len(content)-1] != '\n' {
+		content += "\n"
+	}
+	fmt.Fprint(r.w, content)
+}
+
 func (r *ConsoleReporter) onTransitionOccurred(e events.TransitionOccurred) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -517,6 +527,7 @@ func NewWithWriter(b *bus.Bus, quiet bool, width int, w io.Writer, unicode, colo
 		bus.Subscribe(b, r.onAgentPaused),
 		bus.Subscribe(b, r.onAgentAskStarted),
 		bus.Subscribe(b, r.onAgentAskResumed),
+		bus.Subscribe(b, r.onPrintOutput),
 	}
 	return o
 }

@@ -1295,3 +1295,62 @@ func TestConsoleColorTerminationReleasesColor(t *testing.T) {
 	// Contrast with TestConsoleColorSkipsAtRotationWrap: here cyan is freed, so g takes it.
 	assert.Contains(t, out, "\x1b[36m[g]\x1b[0m")
 }
+
+// ----------------------------------------------------------------------------
+// PrintOutput
+// ----------------------------------------------------------------------------
+
+func TestConsolePrintOutputExactBytes(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.PrintOutput{AgentID: "main", Content: "hello\n"})
+
+	assert.Equal(t, "hello\n", buf.String())
+}
+
+func TestConsolePrintOutputAddsTrailingNewline(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.PrintOutput{AgentID: "main", Content: "no newline"})
+
+	assert.Equal(t, "no newline\n", buf.String())
+}
+
+func TestConsolePrintOutputNoDoubleNewline(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.PrintOutput{AgentID: "main", Content: "already\n"})
+
+	assert.Equal(t, "already\n", buf.String())
+}
+
+func TestConsolePrintOutputMultiLineUnmodified(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, false)
+	defer obs.Close()
+
+	b.Emit(events.PrintOutput{AgentID: "main", Content: "line1\nline2\nline3\n"})
+
+	assert.Equal(t, "line1\nline2\nline3\n", buf.String())
+}
+
+func TestConsolePrintOutputVisibleInQuietMode(t *testing.T) {
+	b := bus.New()
+	var buf bytes.Buffer
+	obs := newObs(b, &buf, true) // quiet=true
+	defer obs.Close()
+
+	b.Emit(events.PrintOutput{AgentID: "main", Content: "quiet output"})
+
+	assert.Contains(t, buf.String(), "quiet output")
+}

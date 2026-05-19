@@ -188,6 +188,13 @@ type ProgressMessage struct {
 	Timestamp time.Time
 }
 
+// PrintOutput is emitted when a workflow wants to write directly to the console.
+type PrintOutput struct {
+	AgentID   string
+	Content   string
+	Timestamp time.Time
+}
+
 // ErrorOccurred is emitted when an error occurs during execution.
 // CurrentState is empty for workflow-level errors not tied to a specific state.
 type ErrorOccurred struct {

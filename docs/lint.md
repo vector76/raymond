@@ -136,6 +136,7 @@ severity appear in the array.
 | `unreachable-state` | No transition path from the entry point leads to this state. The state can never be visited during a workflow run. |
 | `dead-end-state` | A `.md` state file contains no outgoing transitions at all (no `<goto>`, `<result>`, `<call>`, `<ask>`, etc.). An agent running this state would have no valid move. Script states (`.sh`, `.bat`, `.ps1`) are excluded because their transitions are determined at runtime. |
 | `call-without-result-path` | A `<call>` or `<function>` tag references a callee state that is present in this workflow, but no state reachable from the callee (via `<goto>`/`<reset>` edges) emits `<result>`. The call would therefore never return. |
+| `unknown-field` | A state definition (YAML scope) or `.md` frontmatter contains a key that is not a recognized state/policy field — typically a typo such as `force_implcit`. This is a warning rather than an error because the runtime tolerates it (the key is ignored and the workflow still runs, emitting a non-fatal warning). A *recognized* field in the wrong place (e.g. `model` on a script state) is a hard error instead. |
 
 ### Info
 

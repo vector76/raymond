@@ -329,6 +329,133 @@ states:
 	assert.Contains(t, err.Error(), "must not have 'effort'")
 }
 
+func TestParse_UnknownStateFieldIsLenient(t *testing.T) {
+	// A misspelled field (force_implcit) must NOT abort parsing — it is
+	// captured for callers to surface as a warning/lint diagnostic, and the
+	// workflow still parses.
+	p := writeTempYAML(t, `
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: goto
+        target: NEXT
+    force_implcit: true
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	require.Contains(t, wf.States, "step")
+
+	unknown, err := StateUnknownFields(p)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"force_implcit"}, unknown["step"])
+}
+
+func TestParse_UnknownStateFieldOnScriptIsLenient(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  build:
+    sh: "make"
+    timoeut: 10
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	require.Contains(t, wf.States, "build")
+
+	unknown, err := StateUnknownFields(p)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"timoeut"}, unknown["build"])
+}
+
+func TestStateUnknownFields_NoneWhenAllKnown(t *testing.T) {
+	p := writeTempYAML(t, `
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: result
+        payload: done
+    force_implicit: true
+`)
+	unknown, err := StateUnknownFields(p)
+	require.NoError(t, err)
+	assert.Empty(t, unknown)
+}
+
+func TestReadText_UnknownFieldRoundTrips(t *testing.T) {
+	// Faithful synthesis: an unknown md-state field must survive into the
+	// synthesized frontmatter so the policy parser records it. This is what
+	// lets the runtime emit a warning for yaml-scope workflows.
+	p := writeTempYAML(t, `
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: goto
+        target: NEXT
+    force_implcit: true
+`)
+	content, err := ReadText(p, "step.md")
+	require.NoError(t, err)
+
+	pol, _, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, pol)
+	assert.Equal(t, []string{"force_implcit"}, pol.UnknownFields)
+}
+
+func TestReadText_UnknownComplexValueRoundTrips(t *testing.T) {
+	// A non-scalar unknown value must still re-marshal into valid frontmatter
+	// so the runtime stays tolerant (a broken round-trip would abort the run
+	// via LoadPrompt rather than warn).
+	p := writeTempYAML(t, `
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: goto
+        target: NEXT
+    bogus_list:
+      - a
+      - b
+    nested_typo:
+      k: v
+`)
+	content, err := ReadText(p, "step.md")
+	require.NoError(t, err)
+
+	pol, body, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err, "synthesized frontmatter with complex unknown values must stay parseable")
+	require.NotNil(t, pol)
+	assert.Equal(t, []string{"bogus_list", "nested_typo"}, pol.UnknownFields)
+	assert.Equal(t, "Do the thing.", body)
+	// The recognized policy still parses.
+	assert.Len(t, pol.AllowedTransitions, 1)
+}
+
+func TestParse_TopLevelManifestKeysAllowed(t *testing.T) {
+	// Single-file yamlscope workflows may carry top-level manifest keys
+	// alongside states. Strict field-checking applies to per-state keys
+	// only, never the top level.
+	p := writeTempYAML(t, `
+id: my-workflow
+name: My Workflow
+description: A test
+input: { mode: optional, label: "Input" }
+backend: pi
+default_budget: 5.0
+states:
+  step:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - tag: result
+        payload: done
+`)
+	wf, err := Parse(p)
+	require.NoError(t, err)
+	assert.Contains(t, wf.States, "step")
+}
+
 func TestParse_EmptyStateName(t *testing.T) {
 	// Use a YAML key that is an empty string.
 	p := writeTempYAML(t, `

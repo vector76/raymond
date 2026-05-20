@@ -10,6 +10,7 @@ import (
 	"github.com/vector76/raymond/internal/policy"
 	"github.com/vector76/raymond/internal/specifier"
 	"github.com/vector76/raymond/internal/workflow"
+	"github.com/vector76/raymond/internal/yamlscope"
 )
 
 // Severity represents the severity level of a diagnostic.
@@ -451,6 +452,52 @@ func Lint(scopeDir string, opts Options) ([]Diagnostic, error) {
 					File:     filename,
 					Message:  fmt.Sprintf("<ask> in %s does not support the \"cd\" attribute", filename),
 					Check:    "unsupported-cd-attribute",
+				})
+			}
+		}
+	}
+
+	// unknown-field check: keys that aren't recognized state/frontmatter
+	// fields. Warning severity — the runtime ignores them and keeps going, so
+	// this flags a likely typo (e.g. "force_implcit") without implying failure.
+	if yamlscope.IsYamlScope(scopeDir) {
+		// For YAML scopes, inspect the raw state definitions (covers both
+		// markdown and script states; synthesized frontmatter would otherwise
+		// reproduce only markdown unknowns).
+		if unknownByState, err := yamlscope.StateUnknownFields(scopeDir); err == nil {
+			fileForState := make(map[string]string, len(files))
+			for _, filename := range files {
+				fileForState[parsing.ExtractStateName(filename)] = filename
+			}
+			for state, keys := range unknownByState {
+				file := fileForState[state]
+				if file == "" {
+					file = state
+				}
+				for _, k := range keys {
+					diags = append(diags, Diagnostic{
+						Severity: Warning,
+						File:     file,
+						Message:  fmt.Sprintf("%s: unrecognized field %q (ignored at runtime)", file, k),
+						Check:    "unknown-field",
+					})
+				}
+			}
+		}
+	} else {
+		// Directory/zip scopes: unknown keys live in .md frontmatter, captured
+		// on the parsed policy.
+		for _, filename := range files {
+			pf := parsed[filename]
+			if pf.pol == nil {
+				continue
+			}
+			for _, k := range pf.pol.UnknownFields {
+				diags = append(diags, Diagnostic{
+					Severity: Warning,
+					File:     filename,
+					Message:  fmt.Sprintf("%s: unrecognized field %q (ignored at runtime)", filename, k),
+					Check:    "unknown-field",
 				})
 			}
 		}

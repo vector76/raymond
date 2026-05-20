@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -37,7 +38,30 @@ type Policy struct {
 	// tags. Only meaningful when the policy is implicit-eligible
 	// (CanUseImplicitTransition returns true).
 	ForceImplicit bool
+	// UnknownFields lists frontmatter keys that are not recognized policy
+	// fields. Parsing stays lenient (the keys are otherwise ignored) so a
+	// typo never aborts a run; callers surface these as warnings (runtime) or
+	// lint diagnostics. Sorted for determinism.
+	UnknownFields []string
 }
+
+// knownFrontmatterFields is the set of recognized frontmatter keys, derived by
+// reflection from yamlFrontmatter's yaml tags so it cannot drift from the
+// struct.
+var knownFrontmatterFields = func() map[string]bool {
+	fields := make(map[string]bool)
+	t := reflect.TypeOf(yamlFrontmatter{})
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("yaml")
+		if tag == "" {
+			continue
+		}
+		if name := strings.Split(tag, ",")[0]; name != "" && name != "-" {
+			fields[name] = true
+		}
+	}
+	return fields
+}()
 
 // PolicyViolationError is returned when a transition violates the state's policy.
 type PolicyViolationError struct {
@@ -109,6 +133,19 @@ func parseYAML(yamlContent string) (*Policy, error) {
 		return nil, fmt.Errorf("Invalid YAML frontmatter: %w", err)
 	}
 
+	// Collect unrecognized keys. Parsing stays lenient — unknown keys are
+	// otherwise ignored — so a typo never aborts a run. Callers report these
+	// as warnings (runtime) or lint diagnostics instead.
+	var unknown []string
+	if m, ok := raw.(map[string]interface{}); ok {
+		for k := range m {
+			if !knownFrontmatterFields[k] {
+				unknown = append(unknown, k)
+			}
+		}
+		sort.Strings(unknown)
+	}
+
 	// Filter: only keep entries that have a "tag" key.
 	var valid []map[string]string
 	for _, entry := range data.AllowedTransitions {
@@ -128,6 +165,7 @@ func parseYAML(yamlContent string) (*Policy, error) {
 		Model:              model,
 		Effort:             effort,
 		ForceImplicit:      data.ForceImplicit,
+		UnknownFields:      unknown,
 	}, nil
 }
 

@@ -62,6 +62,20 @@ func (e *MarkdownExecutor) Execute(
 		}
 	}
 
+	// Unrecognized frontmatter keys (e.g. a typo'd "force_implcit") don't abort
+	// the run, but we surface them as a non-fatal warning so they're visible to
+	// anyone watching — the workflow proceeds ignoring the key.
+	if pol != nil && len(pol.UnknownFields) > 0 {
+		execCtx.Bus.Emit(events.ErrorOccurred{
+			AgentID:      agentID,
+			ErrorType:    "UnknownField",
+			ErrorMessage: fmt.Sprintf("%s: ignoring unrecognized frontmatter field(s): %s", currentState, strings.Join(pol.UnknownFields, ", ")),
+			CurrentState: currentState,
+			IsRetryable:  false,
+			Timestamp:    time.Now(),
+		})
+	}
+
 	// Build template variables.
 	variables := make(map[string]any)
 	if agent.PendingResult != nil {

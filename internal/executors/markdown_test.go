@@ -755,3 +755,59 @@ func TestMarkdownExecutor_ForceImplicit_TemplatesInputAttribute(t *testing.T) {
 		t.Errorf("input attribute = %q, want %q", got, "wrapped:payload-value")
 	}
 }
+
+// TestMarkdownExecutor_UnknownFrontmatterFieldWarns verifies that an
+// unrecognized frontmatter key does not abort the run: the executor emits a
+// non-fatal UnknownField warning and still dispatches the transition.
+func TestMarkdownExecutor_UnknownFrontmatterFieldWarns(t *testing.T) {
+	dir := t.TempDir()
+
+	// "force_implcit" is a typo; the real field is force_implicit.
+	frontmatter := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\nforce_implcit: true\n---\n"
+	write(t, filepath.Join(dir, "START.md"), frontmatter+"Do the thing.")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "test-unknown-field",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	b := newBus()
+	errs, cancel := collectEvents[events.ErrorOccurred](b)
+	defer cancel()
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: b, WorkflowID: ws.WorkflowID}
+	result, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v (unknown field must not abort the run)", err)
+	}
+	if result.Transition.Target != "NEXT.md" {
+		t.Errorf("target = %q, want NEXT.md", result.Transition.Target)
+	}
+
+	var found bool
+	for _, e := range *errs {
+		if e.ErrorType == "UnknownField" {
+			found = true
+			if !strings.Contains(e.ErrorMessage, "force_implcit") {
+				t.Errorf("warning message %q should name the unknown field", e.ErrorMessage)
+			}
+			if e.IsRetryable {
+				t.Error("UnknownField warning should not be retryable")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected an ErrorOccurred event with ErrorType UnknownField")
+	}
+}

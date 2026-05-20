@@ -112,6 +112,21 @@ Each state must be exactly one type — markdown or script. A state with both
 `prompt` and a script key (e.g. `sh`) is a validation error. A state with
 neither is also an error.
 
+### Unknown fields
+
+Unrecognized state keys (e.g. a misspelled `force_implcit`) are **tolerated at
+runtime** so a typo never aborts a run — the key is ignored and the workflow
+continues, but a non-fatal warning is emitted to the event stream so it's
+visible to anyone watching. `ray lint` reports the same keys as a
+`unknown-field` warning, which is the intended place to catch them before a
+run. The same behavior applies to `---` frontmatter in directory-based `.md`
+state files. Top-level manifest keys (`id`, `name`, `description`, `input`,
+`backend`, etc.) are not treated as state fields.
+
+Note this is distinct from a *recognized* field used in the wrong place — e.g.
+`model` or `force_implicit` on a script state — which remains a hard
+validation error, since that's a structural mistake rather than a typo.
+
 ## Virtual files
 
 YAML workflows present states as virtual files so the rest of the system

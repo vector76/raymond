@@ -813,3 +813,77 @@ func TestForceImplicitBareResultErrors(t *testing.T) {
 	}
 	assert.Fail(t, "expected diagnostic with Check==\"force-implicit-invalid\" and Severity==Error, got", diags)
 }
+
+func TestUnknownFieldDirectoryScope(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("unknown_field"), lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "unknown-field" && d.Severity == lint.Warning {
+			assert.Contains(t, d.Message, "force_implcit")
+			return
+		}
+	}
+	assert.Fail(t, "expected diagnostic with Check==\"unknown-field\" and Severity==Warning, got", diags)
+}
+
+func TestUnknownFieldYamlScope(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "wf.yaml")
+	content := `states:
+  1_START:
+    prompt: "Do the thing."
+    allowed_transitions:
+      - { tag: goto, target: DONE }
+    force_implcit: true
+  DONE:
+    prompt: "End."
+    allowed_transitions:
+      - { tag: result, payload: ok }
+`
+	require.NoError(t, os.WriteFile(yamlPath, []byte(content), 0o644))
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "unknown-field" && d.Severity == lint.Warning {
+			assert.Contains(t, d.Message, "force_implcit")
+			return
+		}
+	}
+	assert.Fail(t, "expected unknown-field warning for yaml scope, got", diags)
+}
+
+func TestUnknownFieldYamlScriptState(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "wf.yaml")
+	content := `states:
+  1_START:
+    sh: |
+      echo hi
+    timoeut: 5
+`
+	require.NoError(t, os.WriteFile(yamlPath, []byte(content), 0o644))
+
+	diags, err := lint.Lint(yamlPath, lint.Options{})
+	require.NoError(t, err)
+
+	for _, d := range diags {
+		if d.Check == "unknown-field" && d.Severity == lint.Warning {
+			assert.Contains(t, d.Message, "timoeut")
+			return
+		}
+	}
+	assert.Fail(t, "expected unknown-field warning for yaml script state, got", diags)
+}
+
+func TestNoUnknownFieldForValidWorkflow(t *testing.T) {
+	diags, err := lint.Lint(fixtureDir("force_implicit_ok"), lint.Options{})
+	require.NoError(t, err)
+	for _, d := range diags {
+		if d.Check == "unknown-field" {
+			assert.Fail(t, "valid workflow should not produce unknown-field diagnostic", d)
+		}
+	}
+}

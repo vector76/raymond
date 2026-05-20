@@ -175,6 +175,29 @@ func TestParseFrontmatterForceImplicitExplicitFalse(t *testing.T) {
 	assert.False(t, p.ForceImplicit)
 }
 
+func TestParseFrontmatterUnknownFieldIsLenient(t *testing.T) {
+	// A misspelled frontmatter key must NOT abort parsing — it is recorded in
+	// UnknownFields for callers to surface as a warning/lint diagnostic, while
+	// the rest of the policy parses normally.
+	content := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\nforce_implcit: true\n---\n# Prompt"
+
+	p, _, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	assert.Equal(t, []string{"force_implcit"}, p.UnknownFields)
+	// The recognized fields still parse.
+	assert.Len(t, p.AllowedTransitions, 1)
+}
+
+func TestParseFrontmatterNoUnknownFields(t *testing.T) {
+	content := "---\nallowed_transitions:\n  - { tag: goto, target: NEXT.md }\nforce_implicit: true\n---\n# Prompt"
+
+	p, _, err := policy.ParseFrontmatter(content)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	assert.Empty(t, p.UnknownFields)
+}
+
 func TestParseFrontmatterCRLFLineEndings(t *testing.T) {
 	// Files checked out on Windows have \r\n line endings. The parser must
 	// normalize them so the frontmatter regex matches correctly.

@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/vector76/raymond/internal/backendcfg"
@@ -57,6 +59,14 @@ func (e *YamlFileNotFoundError) Error() string {
 // order they appear in virtual file listings.
 var scriptExtensions = []string{"sh", "ps1", "bat"}
 
+// unknownField records a state key that is not a recognized state field,
+// preserving its value node so synthesizeFrontmatter can reproduce it
+// faithfully (which lets the downstream policy parser surface it uniformly).
+type unknownField struct {
+	key   string
+	value *yaml.Node
+}
+
 // yamlState represents a single state definition in the YAML file.
 type yamlState struct {
 	Prompt             string              `yaml:"prompt"`
@@ -68,6 +78,33 @@ type yamlState struct {
 	Effort             string              `yaml:"effort"`
 	Timeout            *float64            `yaml:"timeout"`
 	ForceImplicit      bool                `yaml:"force_implicit"`
+
+	// unknownFields holds keys not recognized as state fields. Populated
+	// manually after decode (yaml.v3 silently drops them). Not a fatal error
+	// — recorded so callers can warn (runtime) or lint, while the workflow
+	// still runs.
+	unknownFields []unknownField
+}
+
+// knownStateFields is the set of YAML keys a state mapping may contain,
+// derived by reflection from yamlState's yaml tags so it can never drift out
+// of sync with the struct.
+var knownStateFields = buildKnownStateFields()
+
+func buildKnownStateFields() map[string]bool {
+	fields := make(map[string]bool)
+	t := reflect.TypeOf(yamlState{})
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("yaml")
+		if tag == "" {
+			continue
+		}
+		name := strings.Split(tag, ",")[0]
+		if name != "" && name != "-" {
+			fields[name] = true
+		}
+	}
+	return fields
 }
 
 // YamlWorkflow is the validated, parsed representation of a YAML workflow file.
@@ -206,6 +243,19 @@ func Parse(yamlPath string) (*YamlWorkflow, error) {
 			return nil, &YamlParseError{msg: fmt.Sprintf("failed to parse state %q in %s: %v", name, yamlPath, err)}
 		}
 
+		// Capture unknown keys. yaml.v3 silently drops keys with no matching
+		// struct field, which would turn a typo like "force_implcit" into an
+		// invisible no-op. Parsing stays lenient (the workflow still runs);
+		// callers surface these as warnings or lint diagnostics.
+		if valNode.Kind == yaml.MappingNode {
+			for j := 0; j < len(valNode.Content)-1; j += 2 {
+				key := valNode.Content[j].Value
+				if !knownStateFields[key] {
+					st.unknownFields = append(st.unknownFields, unknownField{key: key, value: valNode.Content[j+1]})
+				}
+			}
+		}
+
 		// Validate state type: must be markdown (prompt) XOR script (sh/ps1/bat).
 		hasPrompt := st.Prompt != ""
 		hasScript := st.Sh != "" || st.Ps1 != "" || st.Bat != ""
@@ -296,9 +346,11 @@ func ListFiles(yamlPath string) ([]string, error) {
 
 // synthesizeFrontmatter builds a YAML frontmatter string from a state's policy
 // fields. Only includes fields that are present. Returns empty string if no
-// policy fields are set.
+// policy fields are set. Unknown fields are reproduced faithfully so that
+// downstream policy parsing sees them and can report them uniformly (the same
+// way it would for a directory-based .md file).
 func synthesizeFrontmatter(st *yamlState) string {
-	if len(st.AllowedTransitions) == 0 && st.Model == "" && st.Effort == "" && !st.ForceImplicit {
+	if len(st.AllowedTransitions) == 0 && st.Model == "" && st.Effort == "" && !st.ForceImplicit && len(st.unknownFields) == 0 {
 		return ""
 	}
 
@@ -328,8 +380,40 @@ func synthesizeFrontmatter(st *yamlState) string {
 	if st.ForceImplicit {
 		parts = append(parts, "force_implicit: true")
 	}
+	if len(st.unknownFields) > 0 {
+		m := &yaml.Node{Kind: yaml.MappingNode}
+		for _, uf := range st.unknownFields {
+			m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: uf.key}, uf.value)
+		}
+		if data, err := yaml.Marshal(m); err == nil {
+			parts = append(parts, strings.TrimSpace(string(data)))
+		}
+	}
 
 	return strings.Join(parts, "\n")
+}
+
+// StateUnknownFields returns, per state name, the list of unrecognized field
+// keys found in that state's definition. Used by the linter to report typo'd
+// or misplaced keys without aborting a run. The slice for each state is sorted.
+func StateUnknownFields(yamlPath string) (map[string][]string, error) {
+	wf, err := Parse(yamlPath)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]string)
+	for name, st := range wf.States {
+		if len(st.unknownFields) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(st.unknownFields))
+		for _, uf := range st.unknownFields {
+			keys = append(keys, uf.key)
+		}
+		sort.Strings(keys)
+		result[name] = keys
+	}
+	return result, nil
 }
 
 // ReadText reads a virtual file from the YAML workflow. For markdown states,

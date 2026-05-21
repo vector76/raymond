@@ -297,6 +297,25 @@ func TestRescan_RemovesDeletedWorkflows(t *testing.T) {
 	assert.Equal(t, "keep", entries[0].ID)
 }
 
+func TestRescan_PreservesIndexOnError(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowDir(t, root, "keep", `id: keep`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+	require.Len(t, reg.ListWorkflows(), 1)
+
+	// Make the root unreadable by removing it so scan() errors out.
+	require.NoError(t, os.RemoveAll(root))
+
+	require.Error(t, reg.Rescan())
+
+	// The last good index must survive a failed rescan.
+	entries := reg.ListWorkflows()
+	require.Len(t, entries, 1)
+	assert.Equal(t, "keep", entries[0].ID)
+}
+
 func TestNewRegistry_EmptyRoot(t *testing.T) {
 	root := t.TempDir()
 

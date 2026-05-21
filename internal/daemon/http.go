@@ -202,6 +202,7 @@ func NewServer(reg *Registry, rm *RunManager, port int) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /workflows", s.handleListWorkflows)
+	mux.HandleFunc("POST /workflows/rescan", s.handleRescanWorkflows)
 	mux.HandleFunc("GET /workflows/{id}", s.handleGetWorkflow)
 	mux.HandleFunc("POST /runs", s.handleCreateRun)
 	mux.HandleFunc("GET /runs", s.handleListRuns)
@@ -632,6 +633,17 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		resp[i] = workflowToResponse(e)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleRescanWorkflows re-scans the configured roots so newly added, removed,
+// or renamed workflows are reflected in the index, then returns the refreshed
+// list (same shape as GET /workflows).
+func (s *Server) handleRescanWorkflows(w http.ResponseWriter, r *http.Request) {
+	if err := s.registry.Rescan(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "rescan failed: " + err.Error()})
+		return
+	}
+	s.handleListWorkflows(w, r)
 }
 
 func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {

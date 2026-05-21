@@ -36,6 +36,7 @@
   var themeToggle = document.getElementById("theme-toggle");
   var workflowsSection = document.getElementById("workflows-section");
   var workflowsToggle = document.getElementById("workflows-toggle");
+  var workflowsRefresh = document.getElementById("workflows-refresh");
 
   // --- Helpers ---
   function formatElapsed(secs) {
@@ -160,7 +161,9 @@
       return;
     }
 
-    workflows.forEach(function (wf) {
+    workflows.slice().sort(function (a, b) {
+      return (a.name || a.id || "").localeCompare(b.name || b.id || "", undefined, { sensitivity: "base", numeric: true });
+    }).forEach(function (wf) {
       var card = document.createElement("div");
       // Cards start collapsed: only the name and (when launchable without
       // input) the Launch button show until the user expands. data-mode lets
@@ -1230,8 +1233,8 @@
   }
 
   function startPolling() {
-    // Workflows are discovered once at registry startup and don't change
-    // while the daemon runs, so fetch once rather than on every poll tick.
+    // Workflows rarely change, so fetch once at startup rather than on every
+    // poll tick; the Workflows refresh button triggers a rescan on demand.
     refreshWorkflows();
     refreshAll();
     pollTimer = setInterval(refreshAll, POLL_INTERVAL);
@@ -1301,6 +1304,21 @@
       workflowsToggle.click();
     }
   });
+
+  if (workflowsRefresh) {
+    workflowsRefresh.addEventListener("click", function () {
+      workflowsRefresh.disabled = true;
+      workflowsRefresh.classList.add("spinning");
+      apiPost("/workflows/rescan", {}).then(function (workflows) {
+        renderWorkflows(workflows);
+      }).catch(function (err) {
+        connStatus.textContent = "Rescan failed: " + err.message;
+      }).then(function () {
+        workflowsRefresh.disabled = false;
+        workflowsRefresh.classList.remove("spinning");
+      });
+    });
+  }
 
   (function () {
     var saved = null;

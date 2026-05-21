@@ -28,10 +28,13 @@
 
   <main>
     <section id="workflows-section">
-      <h2 class="section-toggle" id="workflows-toggle" role="button" tabindex="0" aria-expanded="true">
-        <span class="section-chevron" aria-hidden="true">&#9656;</span>
-        <span>Workflows</span>
-      </h2>
+      <div class="section-header">
+        <h2 class="section-toggle" id="workflows-toggle" role="button" tabindex="0" aria-expanded="true">
+          <span class="section-chevron" aria-hidden="true">&#9656;</span>
+          <span>Workflows</span>
+        </h2>
+        <button class="refresh-btn" id="workflows-refresh" type="button" title="Rescan workflow roots" aria-label="Refresh workflows">&#10227;</button>
+      </div>
       <div id="workflows"></div>
     </section>
 

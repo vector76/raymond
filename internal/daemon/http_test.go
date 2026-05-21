@@ -114,6 +114,67 @@ func TestHTTPGetWorkflow_NotFound(t *testing.T) {
 	assert.Contains(t, errResp.Error, "not found")
 }
 
+// writeWorkflowDir creates a workflow directory with a minimal manifest under
+// root, so rescan tests can add workflows after the registry is built.
+func writeWorkflowDir(t *testing.T, root, dir, id, name string) {
+	t.Helper()
+	scopeDir := filepath.Join(root, dir)
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "START.md"),
+		[]byte("# Start\nDo something."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(scopeDir, "workflow.yaml"),
+		[]byte("id: "+id+"\nname: "+name+"\ndescription: A test workflow\ndefault_budget: 5.0\n"),
+		0o644,
+	))
+}
+
+func rescanWorkflows(t *testing.T, ts *httptest.Server) []workflowResponse {
+	t.Helper()
+	resp, err := http.Post(ts.URL+"/workflows/rescan", "application/json", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+	var workflows []workflowResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&workflows))
+	return workflows
+}
+
+func TestRescanWorkflows(t *testing.T) {
+	root := t.TempDir()
+	writeWorkflowDir(t, root, "wf-a", "test-workflow", "Test Workflow")
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	rm, err := NewRunManagerWithOrchestrator(ensureStateDir(t), "/tmp", &fakeOrchestrator{})
+	require.NoError(t, err)
+	ts := httptest.NewServer(NewServer(reg, rm, 0).Handler())
+	t.Cleanup(ts.Close)
+
+	// Baseline: rescan reflects the single discovered workflow.
+	got := rescanWorkflows(t, ts)
+	require.Len(t, got, 1)
+	assert.Equal(t, "test-workflow", got[0].ID)
+
+	// Added workflow shows up after rescan.
+	writeWorkflowDir(t, root, "wf-b", "second-workflow", "Second Workflow")
+	got = rescanWorkflows(t, ts)
+	require.Len(t, got, 2)
+
+	// Removed workflow drops out after rescan.
+	require.NoError(t, os.RemoveAll(filepath.Join(root, "wf-a")))
+	got = rescanWorkflows(t, ts)
+	require.Len(t, got, 1)
+	assert.Equal(t, "second-workflow", got[0].ID)
+}
+
 func TestCreateRun(t *testing.T) {
 	_, ts, _ := newTestServer(t)
 

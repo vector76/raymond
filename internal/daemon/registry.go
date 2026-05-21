@@ -83,13 +83,21 @@ func (r *Registry) GetWorkflow(id string) (*WorkflowEntry, bool) {
 }
 
 // Rescan re-scans all configured roots, rebuilding the workflow index from
-// scratch. This picks up newly added or removed workflows.
+// scratch. This picks up newly added or removed workflows. The rebuild is
+// atomic: if scanning fails (e.g. a root became unreadable), the previous
+// index is left intact rather than wiped, so a transient error can't blank
+// out the workflow list.
 func (r *Registry) Rescan() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	prev := r.index
 	r.index = make(map[string]WorkflowEntry)
-	return r.scan()
+	if err := r.scan(); err != nil {
+		r.index = prev
+		return err
+	}
+	return nil
 }
 
 // scan walks the configured roots and populates the index. Caller must hold

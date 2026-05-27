@@ -1,4 +1,3 @@
-id: pi-smoke
 name: Pi Backend Smoke Test
 description: >
   Minimal real-pi smoke workflow. One prompt state, one terminal result.

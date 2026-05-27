@@ -120,7 +120,7 @@ continues, but a non-fatal warning is emitted to the event stream so it's
 visible to anyone watching. `ray lint` reports the same keys as a
 `unknown-field` warning, which is the intended place to catch them before a
 run. The same behavior applies to `---` frontmatter in directory-based `.md`
-state files. Top-level manifest keys (`id`, `name`, `description`, `input`,
+state files. Top-level manifest keys (`name`, `description`, `input`,
 `backend`, etc.) are not treated as state fields.
 
 Note this is distinct from a *recognized* field used in the wrong place — e.g.
@@ -223,19 +223,18 @@ parser detects common state-like keys and suggests adding the wrapper.
 ## Manifest Metadata for Daemon Discovery
 
 A YAML workflow may carry manifest metadata as top-level keys alongside
-`states`. When present, the daemon (`ray serve`) discovers the file as a
-runnable workflow and exposes it through the HTTP API and web UI.
-This makes the YAML file truly self-describing: definition, metadata, and
-discoverability in one file.
+`states`. Every well-formed YAML scope file in a configured serve root is
+discovered by the daemon (`ray serve`) — there is no opt-in field. The
+workflow id is derived from the filename (including extension), so
+`vendor-approval.yaml` is registered as `vendor-approval.yaml`.
 
-The following top-level keys are recognized as manifest metadata. All are
-optional except `id`, which is required for daemon discovery. Omitting `id` is
-valid — the workflow simply won't be indexed by the daemon, but the file is
-still usable via direct CLI invocation.
+> The explicit `id:` field is no longer supported. The workflow id is
+> always derived from the on-disk filename (for yaml-scope and zip
+> archives) or the directory name (for directory-scope workflows). If a
+> manifest declares an `id:` field, the parser hard-rejects it.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `id` | string | (none) | Unique identifier. Required for daemon discovery; used as the workflow ID in the HTTP API. |
 | `name` | string | `""` | Human-readable display name. |
 | `description` | string | `""` | Description shown in tool/endpoint documentation. |
 | `input` | object | `{mode: optional}` | Describes the single optional string passed to the first state as `{{input}}`. See [Input block](#input-block). |
@@ -260,14 +259,16 @@ required.
 The entire `input` block is optional. Omitting it is equivalent to `input: {mode: optional}` with no label or description.
 
 Adding manifest fields has **no effect on CLI behavior**. `ray
-workflow.yaml` runs the workflow identically whether or not `id` and its
-siblings are present — the CLI ignores manifest fields. They are consumed only
-by the daemon registry.
+workflow.yaml` runs the workflow identically whether or not the manifest
+fields are present — the CLI ignores them. They are consumed only by the
+daemon registry.
 
 ### Example: self-describing YAML workflow
 
+The workflow id is the filename. Save the example below as
+`vendor-approval.yaml` and the daemon registers it as `vendor-approval.yaml`.
+
 ```yaml
-id: vendor-approval
 name: Vendor Approval
 description: Evaluates a vendor proposal and routes through human approval
 default_budget: 5.0

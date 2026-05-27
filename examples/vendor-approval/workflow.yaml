@@ -1,4 +1,3 @@
-id: vendor-approval
 name: Vendor Approval Workflow
 description: >
   Evaluates a vendor against company policy, pauses for human approval,

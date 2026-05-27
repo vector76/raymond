@@ -23,7 +23,6 @@ func writeTempManifest(t *testing.T, content string) string {
 
 func TestParseManifest_AllFields(t *testing.T) {
 	yaml := `
-id: my-workflow
 name: My Workflow
 description: A test workflow
 input:
@@ -41,7 +40,8 @@ requires_human_input: "true"
 	m, err := ParseManifest(path)
 	require.NoError(t, err)
 
-	assert.Equal(t, "my-workflow", m.ID)
+	// ID is not parsed from YAML; the registry derives it from the on-disk name.
+	assert.Equal(t, "", m.ID)
 	assert.Equal(t, "My Workflow", m.Name)
 	assert.Equal(t, "A test workflow", m.Description)
 	assert.Equal(t, InputSpec{Mode: "required", Label: "Query", Description: "A search query to run"}, m.Input)
@@ -51,16 +51,16 @@ requires_human_input: "true"
 	assert.Equal(t, "true", m.RequiresHumanInput)
 }
 
-func TestParseManifest_MinimalIDOnly(t *testing.T) {
-	yaml := `id: minimal`
-	path := writeTempManifest(t, yaml)
+func TestParseManifest_MinimalEmpty(t *testing.T) {
+	// An empty manifest is legal — every field is optional. The registry will
+	// supply the id from the on-disk name.
+	path := writeTempManifest(t, ``)
 	m, err := ParseManifest(path)
 	require.NoError(t, err)
 
-	assert.Equal(t, "minimal", m.ID)
+	assert.Equal(t, "", m.ID)
 	assert.Equal(t, "", m.Name)
 	assert.Equal(t, "", m.Description)
-	// Absent input block defaults to optional mode with empty label/description.
 	assert.Equal(t, InputSpec{Mode: "optional"}, m.Input)
 	assert.Equal(t, 0.0, m.DefaultBudget)
 	assert.Equal(t, "", m.WorkingDirectory)
@@ -71,7 +71,6 @@ func TestParseManifest_MinimalIDOnly(t *testing.T) {
 func TestParseManifest_InputModeDefaultsToOptional(t *testing.T) {
 	// input block present but mode omitted → defaults to optional.
 	yaml := `
-id: labeled
 input:
   label: Topic
 `
@@ -84,7 +83,7 @@ input:
 func TestParseManifest_ValidInputModes(t *testing.T) {
 	for _, mode := range []string{"required", "optional", "none"} {
 		t.Run(mode, func(t *testing.T) {
-			yaml := "id: test\ninput:\n  mode: " + mode + "\n"
+			yaml := "input:\n  mode: " + mode + "\n"
 			path := writeTempManifest(t, yaml)
 			m, err := ParseManifest(path)
 			require.NoError(t, err)
@@ -95,7 +94,6 @@ func TestParseManifest_ValidInputModes(t *testing.T) {
 
 func TestParseManifest_InvalidInputMode(t *testing.T) {
 	yaml := `
-id: bad-input-mode
 input:
   mode: maybe
 `
@@ -105,20 +103,30 @@ input:
 	assert.Contains(t, err.Error(), "input.mode")
 }
 
-func TestParseManifest_MissingID(t *testing.T) {
-	yaml := `
-name: No ID Workflow
-description: Missing the required id field
-`
-	path := writeTempManifest(t, yaml)
-	_, err := ParseManifest(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "id")
+// TestParseManifest_RejectsExplicitID verifies that the deprecated `id` field
+// is hard-rejected (with any value, including empty / null).
+func TestParseManifest_RejectsExplicitID(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{"non-empty", "id: my-workflow\nname: foo\n"},
+		{"empty-string", `id: ""` + "\n"},
+		{"null", "id:\n"},
+		{"numeric-looking", "id: 42\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempManifest(t, tc.yaml)
+			_, err := ParseManifest(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "`id` field is no longer supported")
+		})
+	}
 }
 
 func TestParseManifest_InvalidRequiresHumanInput(t *testing.T) {
 	yaml := `
-id: bad-human-input
 requires_human_input: maybe
 `
 	path := writeTempManifest(t, yaml)
@@ -130,7 +138,7 @@ requires_human_input: maybe
 func TestParseManifest_ValidRequiresHumanInputValues(t *testing.T) {
 	for _, val := range []string{"auto", "true", "false"} {
 		t.Run(val, func(t *testing.T) {
-			yaml := "id: test\nrequires_human_input: " + val + "\n"
+			yaml := "requires_human_input: " + val + "\n"
 			path := writeTempManifest(t, yaml)
 			m, err := ParseManifest(path)
 			require.NoError(t, err)
@@ -172,10 +180,10 @@ func TestParseManifest_NonexistentFile(t *testing.T) {
 // TestParseManifestData_YAMLScope_ReturnsErrNotManifest guards the contract of
 // ParseManifestData against the embedded-manifest work: adding
 // ExtractEmbeddedManifest must not widen ParseManifestData to start accepting
-// YAML scope files.
+// YAML scope files. (The states key wins over the id-rejection check so the
+// error is ErrNotManifest, not the id-deprecation error.)
 func TestParseManifestData_YAMLScope_ReturnsErrNotManifest(t *testing.T) {
 	yaml := `
-id: embedded-id
 name: Would-Be Manifest
 states:
   START:
@@ -192,7 +200,7 @@ states:
 func TestFindManifest_Exists(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("id: test\n"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("name: test\n"), 0o644))
 
 	found, ok := FindManifest(dir)
 	assert.True(t, ok)
@@ -256,29 +264,28 @@ func TestInterpolateEnv_EmptyMap(t *testing.T) {
 // --- BackendSpec parsing ---
 
 func TestParseManifestData_BackendAbsent(t *testing.T) {
-	data := []byte("id: no-backend\n")
+	data := []byte("name: no-backend\n")
 	m, err := ParseManifestData(data)
 	require.NoError(t, err)
 	assert.Equal(t, "", m.Backend.Name)
 }
 
 func TestParseManifestData_BackendBareString(t *testing.T) {
-	data := []byte("id: pi-workflow\nbackend: pi\n")
+	data := []byte("backend: pi\n")
 	m, err := ParseManifestData(data)
 	require.NoError(t, err)
 	assert.Equal(t, "pi", m.Backend.Name)
 }
 
 func TestParseManifestData_BackendStructuredNameOnly(t *testing.T) {
-	data := []byte("id: pi-workflow\nbackend:\n  name: pi\n")
+	data := []byte("backend:\n  name: pi\n")
 	m, err := ParseManifestData(data)
 	require.NoError(t, err)
 	assert.Equal(t, "pi", m.Backend.Name)
 }
 
 func TestParseManifestData_BackendStructuredWithOptions(t *testing.T) {
-	data := []byte(`id: pi-full
-backend:
+	data := []byte(`backend:
   name: pi
   options:
     provider: anthropic
@@ -310,7 +317,7 @@ backend:
 }
 
 func TestParseManifestData_BackendUnknownName(t *testing.T) {
-	data := []byte("id: bad-backend\nbackend: codex\n")
+	data := []byte("backend: codex\n")
 	_, err := ParseManifestData(data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "backend.name")

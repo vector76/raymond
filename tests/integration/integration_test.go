@@ -1903,12 +1903,12 @@ func TestPiIntegration_RealPi_ServeDashboardAwareness(t *testing.T) {
 	require.NoError(t, err)
 
 	rayBin := buildRayBinary(t)
-	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "pi-smoke")
+	p := startServeDaemon(t, rayBin, tempRoot, workflowsDir, "pi_smoke")
 	// startServeDaemon registers a t.Cleanup that SIGKILLs the daemon, which
 	// is fine here: the test polls until the run reaches a terminal state, so
 	// no pi child process is in flight at cleanup time.
 
-	// /workflows must expose backend="pi" on the pi-smoke entry.
+	// /workflows must expose backend="pi" on the pi_smoke entry.
 	resp, err := p.httpClient.Get(p.baseURL + "/workflows")
 	require.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
@@ -1922,7 +1922,7 @@ func TestPiIntegration_RealPi_ServeDashboardAwareness(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &workflows))
 	var piSmokeBackend string
 	for _, w := range workflows {
-		if w.ID == "pi-smoke" {
+		if w.ID == "pi_smoke" {
 			piSmokeBackend = w.Backend
 			break
 		}
@@ -1968,7 +1968,7 @@ func TestPiIntegration_RealPi_ServeDashboardAwareness(t *testing.T) {
 	}
 
 	require.Equal(t, "completed", final.Status,
-		"pi-smoke must complete cleanly%s", p.diagnostics())
+		"pi_smoke must complete cleanly%s", p.diagnostics())
 	assert.Equal(t, "pi", final.Backend,
 		"GET /runs/<id> must expose backend=\"pi\" so the run card renders the badge")
 	require.NotEmpty(t, final.Agents, "run must have at least one agent")

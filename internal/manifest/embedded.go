@@ -7,15 +7,16 @@ import (
 )
 
 // ExtractEmbeddedManifest parses a YAML scope file and returns its embedded
-// manifest metadata, if any. Returns (nil, nil) when the file is not a
-// discoverable YAML workflow (either no "states" key, or states present but
-// no "id" field). Returns a non-nil error when a manifest is clearly intended
-// but malformed (id present-but-empty, invalid requires_human_input,
-// malformed YAML). Returns (*Manifest, nil) when a valid embedded manifest
-// is present.
+// manifest metadata. Returns (nil, nil) when the file is not a YAML scope
+// (no "states" key) — callers should treat that as "not a workflow." Returns
+// a non-nil error when the file declares the deprecated `id` field, has an
+// invalid requires_human_input value, or is malformed YAML. Returns
+// (*Manifest, nil) for any well-formed YAML scope; defaults are applied for
+// omitted fields. The ID field on the returned Manifest is left empty — the
+// registry derives the workflow id from the on-disk filename.
 func ExtractEmbeddedManifest(data []byte) (*Manifest, error) {
-	// Unmarshal into a raw map first so we can distinguish "key absent" from
-	// "key present but empty" — struct unmarshaling would conflate these.
+	// Unmarshal into a raw map first so we can detect a present-but-deprecated
+	// `id` key (struct unmarshaling would conflate "absent" with "present-empty").
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing embedded manifest: %w", err)
@@ -27,9 +28,10 @@ func ExtractEmbeddedManifest(data []byte) (*Manifest, error) {
 		return nil, nil
 	}
 
-	// Valid YAML workflow not opting into daemon discovery.
-	if _, hasID := raw["id"]; !hasID {
-		return nil, nil
+	// Reject the deprecated `id` field. Workflow ids are derived from the
+	// on-disk filename by the registry.
+	if _, hasID := raw["id"]; hasID {
+		return nil, fmt.Errorf("embedded manifest validation: the `id` field is no longer supported; the workflow id is derived from the filename. Remove the `id:` line.")
 	}
 
 	// Unmarshal the manifest fields from the same data. The Manifest struct has
@@ -38,11 +40,6 @@ func ExtractEmbeddedManifest(data []byte) (*Manifest, error) {
 	m := &Manifest{}
 	if err := yaml.Unmarshal(data, m); err != nil {
 		return nil, fmt.Errorf("parsing embedded manifest: %w", err)
-	}
-
-	// id key present but empty string (or null) → validation error.
-	if m.ID == "" {
-		return nil, fmt.Errorf("embedded manifest validation: id must be non-empty when present")
 	}
 
 	// Default requires_human_input to "auto" when absent, matching standalone

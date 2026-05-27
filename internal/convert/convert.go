@@ -372,9 +372,6 @@ func appendManifestFields(rootMapping *yaml.Node, mani *manifest.Manifest) error
 	if mani == nil {
 		return nil
 	}
-	if mani.ID != "" {
-		addScalar(rootMapping, "id", mani.ID)
-	}
 	if mani.Name != "" {
 		addScalar(rootMapping, "name", mani.Name)
 	}

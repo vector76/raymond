@@ -34,8 +34,11 @@ import (
 func newTestServer(t *testing.T) (*Server, *httptest.Server, *fakeOrchestrator) {
 	t.Helper()
 
-	// Create a workflow directory with a manifest.
-	scopeDir := t.TempDir()
+	// Create a workflow directory with a manifest. The directory name is the
+	// workflow id under the derived-id scheme.
+	rootDir := t.TempDir()
+	scopeDir := filepath.Join(rootDir, "test-workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "START.md"),
 		[]byte("# Start\nDo something."),
@@ -43,11 +46,10 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server, *fakeOrchestrator) 
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "workflow.yaml"),
-		[]byte("id: test-workflow\nname: Test Workflow\ndescription: A test workflow\ndefault_budget: 5.0\n"),
+		[]byte("name: Test Workflow\ndescription: A test workflow\ndefault_budget: 5.0\n"),
 		0o644,
 	))
 
-	rootDir := filepath.Dir(scopeDir)
 	reg, err := NewRegistry([]string{rootDir})
 	require.NoError(t, err)
 
@@ -114,11 +116,12 @@ func TestHTTPGetWorkflow_NotFound(t *testing.T) {
 	assert.Contains(t, errResp.Error, "not found")
 }
 
-// writeWorkflowDir creates a workflow directory with a minimal manifest under
-// root, so rescan tests can add workflows after the registry is built.
-func writeWorkflowDir(t *testing.T, root, dir, id, name string) {
+// writeWorkflowDir creates a workflow directory under root whose name is `id`
+// (which becomes the workflow id under the derived-id scheme). Used by rescan
+// tests that add workflows after the registry is built.
+func writeWorkflowDir(t *testing.T, root, id, name string) {
 	t.Helper()
-	scopeDir := filepath.Join(root, dir)
+	scopeDir := filepath.Join(root, id)
 	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "START.md"),
@@ -127,7 +130,7 @@ func writeWorkflowDir(t *testing.T, root, dir, id, name string) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "workflow.yaml"),
-		[]byte("id: "+id+"\nname: "+name+"\ndescription: A test workflow\ndefault_budget: 5.0\n"),
+		[]byte("name: "+name+"\ndescription: A test workflow\ndefault_budget: 5.0\n"),
 		0o644,
 	))
 }
@@ -148,7 +151,7 @@ func rescanWorkflows(t *testing.T, ts *httptest.Server) []workflowResponse {
 
 func TestRescanWorkflows(t *testing.T) {
 	root := t.TempDir()
-	writeWorkflowDir(t, root, "wf-a", "test-workflow", "Test Workflow")
+	writeWorkflowDir(t, root, "test-workflow", "Test Workflow")
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -164,12 +167,12 @@ func TestRescanWorkflows(t *testing.T) {
 	assert.Equal(t, "test-workflow", got[0].ID)
 
 	// Added workflow shows up after rescan.
-	writeWorkflowDir(t, root, "wf-b", "second-workflow", "Second Workflow")
+	writeWorkflowDir(t, root, "second-workflow", "Second Workflow")
 	got = rescanWorkflows(t, ts)
 	require.Len(t, got, 2)
 
 	// Removed workflow drops out after rescan.
-	require.NoError(t, os.RemoveAll(filepath.Join(root, "wf-a")))
+	require.NoError(t, os.RemoveAll(filepath.Join(root, "test-workflow")))
 	got = rescanWorkflows(t, ts)
 	require.Len(t, got, 1)
 	assert.Equal(t, "second-workflow", got[0].ID)
@@ -317,7 +320,9 @@ func TestCreateRun_AppliesServerDefaultBudgetWhenUnspecified(t *testing.T) {
 	// the daemon must fall back to the server-wide default that serve.go
 	// loads from config.toml. This is what the CLI does when --budget and
 	// the workflow manifest are both silent.
-	scopeDir := t.TempDir()
+	rootDir := t.TempDir()
+	scopeDir := filepath.Join(rootDir, "no-budget-workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "START.md"),
 		[]byte("# Start\nDo something."),
@@ -325,11 +330,11 @@ func TestCreateRun_AppliesServerDefaultBudgetWhenUnspecified(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "workflow.yaml"),
-		[]byte("id: no-budget-workflow\nname: No Budget\ndescription: Has no default_budget\n"),
+		[]byte("name: No Budget\ndescription: Has no default_budget\n"),
 		0o644,
 	))
 
-	reg, err := NewRegistry([]string{filepath.Dir(scopeDir)})
+	reg, err := NewRegistry([]string{rootDir})
 	require.NoError(t, err)
 
 	stateDir := ensureStateDir(t)
@@ -367,7 +372,9 @@ func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
 	// executor's budget-exceeded guard is gated on BudgetUSD > 0, so a
 	// fall-through default of zero correctly produces an unbounded run rather
 	// than terminating on the first Claude call.
-	scopeDir := t.TempDir()
+	rootDir := t.TempDir()
+	scopeDir := filepath.Join(rootDir, "no-budget-workflow")
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "START.md"),
 		[]byte("# Start\nDo something."),
@@ -375,11 +382,11 @@ func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "workflow.yaml"),
-		[]byte("id: no-budget-workflow\nname: No Budget\ndescription: Has no default_budget\n"),
+		[]byte("name: No Budget\ndescription: Has no default_budget\n"),
 		0o644,
 	))
 
-	reg, err := NewRegistry([]string{filepath.Dir(scopeDir)})
+	reg, err := NewRegistry([]string{rootDir})
 	require.NoError(t, err)
 
 	stateDir := ensureStateDir(t)
@@ -486,10 +493,13 @@ func TestCreateRun_UnknownWorkflow(t *testing.T) {
 }
 
 // newTestServerWithManifest builds a server backed by a registry with one
-// workflow whose workflow.yaml is the given yaml. Used by input-mode tests.
-func newTestServerWithManifest(t *testing.T, manifestYAML string) *httptest.Server {
+// workflow named `id` (which becomes the workflow id under the derived-id
+// scheme) whose workflow.yaml is the given yaml. Used by input-mode tests.
+func newTestServerWithManifest(t *testing.T, id, manifestYAML string) *httptest.Server {
 	t.Helper()
-	scopeDir := t.TempDir()
+	rootDir := t.TempDir()
+	scopeDir := filepath.Join(rootDir, id)
+	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(scopeDir, "START.md"),
 		[]byte("# Start\nDo something."),
@@ -500,7 +510,7 @@ func newTestServerWithManifest(t *testing.T, manifestYAML string) *httptest.Serv
 		[]byte(manifestYAML),
 		0o644,
 	))
-	reg, err := NewRegistry([]string{filepath.Dir(scopeDir)})
+	reg, err := NewRegistry([]string{rootDir})
 	require.NoError(t, err)
 	stateDir := ensureStateDir(t)
 	fake := &fakeOrchestrator{}
@@ -513,7 +523,7 @@ func newTestServerWithManifest(t *testing.T, manifestYAML string) *httptest.Serv
 }
 
 func TestCreateRun_InputModeRequired_RejectsEmpty(t *testing.T) {
-	ts := newTestServerWithManifest(t, "id: req-wf\ninput:\n  mode: required\n")
+	ts := newTestServerWithManifest(t, "req-wf", "input:\n  mode: required\n")
 
 	body := `{"workflow_id": "req-wf"}`
 	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
@@ -527,7 +537,7 @@ func TestCreateRun_InputModeRequired_RejectsEmpty(t *testing.T) {
 }
 
 func TestCreateRun_InputModeRequired_AcceptsNonEmpty(t *testing.T) {
-	ts := newTestServerWithManifest(t, "id: req-wf\ninput:\n  mode: required\n")
+	ts := newTestServerWithManifest(t, "req-wf", "input:\n  mode: required\n")
 
 	body := `{"workflow_id": "req-wf", "input": "hello"}`
 	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
@@ -538,7 +548,7 @@ func TestCreateRun_InputModeRequired_AcceptsNonEmpty(t *testing.T) {
 }
 
 func TestCreateRun_InputModeNone_RejectsNonEmpty(t *testing.T) {
-	ts := newTestServerWithManifest(t, "id: none-wf\ninput:\n  mode: none\n")
+	ts := newTestServerWithManifest(t, "none-wf", "input:\n  mode: none\n")
 
 	body := `{"workflow_id": "none-wf", "input": "should not be here"}`
 	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
@@ -552,7 +562,7 @@ func TestCreateRun_InputModeNone_RejectsNonEmpty(t *testing.T) {
 }
 
 func TestCreateRun_InputModeNone_AcceptsEmpty(t *testing.T) {
-	ts := newTestServerWithManifest(t, "id: none-wf\ninput:\n  mode: none\n")
+	ts := newTestServerWithManifest(t, "none-wf", "input:\n  mode: none\n")
 
 	body := `{"workflow_id": "none-wf"}`
 	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
@@ -563,8 +573,7 @@ func TestCreateRun_InputModeNone_AcceptsEmpty(t *testing.T) {
 }
 
 func TestListWorkflows_ExposesInputSpec(t *testing.T) {
-	ts := newTestServerWithManifest(t, `
-id: labeled-wf
+	ts := newTestServerWithManifest(t, "labeled-wf", `
 input:
   mode: required
   label: Vendor name

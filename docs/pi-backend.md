@@ -219,13 +219,12 @@ A workflow opts into the pi backend in its manifest:
 
 ```yaml
 # workflow.yaml
-id: my-workflow
 backend: pi
 ```
 
 For YAML scope (single-file) workflows, the same `backend:` key sits at the
-top of the YAML alongside `id`, `name`, `description`. For multi-file or
-zipped workflows it sits in `workflow.yaml`.
+top of the YAML alongside `name`, `description`. For multi-file or zipped
+workflows it sits in `workflow.yaml`.
 
 When `backend:` is absent, raymond uses the existing Claude Code default. The
 backend cannot vary between states within a single workflow; mixed-backend

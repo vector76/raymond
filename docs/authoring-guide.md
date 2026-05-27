@@ -49,7 +49,6 @@ declaration, the workflow uses Claude.
 
 ```yaml
 # workflow.yaml
-id: my-workflow
 backend: pi
 ```
 
@@ -1136,7 +1135,6 @@ workflows/audit/
 
 **workflow.yaml:**
 ```yaml
-id: audit
 name: Read-only directory audit
 backend:
   name: pi

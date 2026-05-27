@@ -1810,8 +1810,7 @@ func writeTestYaml(t *testing.T, dir, content string) string {
 // --------------------------------------------------------------------------
 
 func TestLintYamlValid(t *testing.T) {
-	yamlPath := writeTestYaml(t, t.TempDir(), `id: test-lint-yaml
-name: Test Lint YAML
+	yamlPath := writeTestYaml(t, t.TempDir(), `name: Test Lint YAML
 description: Regression fixture - embedded manifest fields must not affect CLI behavior.
 
 states:

@@ -1,4 +1,3 @@
-id: pi-test-fixture
 name: Pi Backend Test Fixture
 description: >
   A minimal workflow that declares backend: pi but uses script states only.

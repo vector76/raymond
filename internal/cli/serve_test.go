@@ -62,14 +62,15 @@ func chdirIsolated(t *testing.T) {
 // writeServeWorkflow creates <root>/<id>/ with the minimal files
 // (workflow.yaml manifest + START.md entry point) required for
 // daemon.NewRegistry to discover the workflow and for LaunchRun to
-// resolve an entry point.
+// resolve an entry point. The directory name becomes the workflow id
+// under the derived-id scheme.
 func writeServeWorkflow(t *testing.T, root, id string) {
 	t.Helper()
 	dir := filepath.Join(root, id)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "workflow.yaml"),
-		[]byte("id: "+id+"\nname: "+id+"\n"),
+		[]byte("name: "+id+"\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(

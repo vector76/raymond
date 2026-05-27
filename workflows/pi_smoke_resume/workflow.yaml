@@ -1,4 +1,3 @@
-id: pi-smoke-resume
 name: Pi Backend Resume Smoke Test
 description: >
   Two-state pi workflow used to verify that turn 2 carries --session <id>

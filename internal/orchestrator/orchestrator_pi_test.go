@@ -31,7 +31,7 @@ func setupPiWorkflow(t *testing.T, initialState string) (stateDir, workflowID st
 	// Write a scope directory with workflow.yaml declaring pi backend.
 	scopeDir := filepath.Join(tmpDir, "workflow")
 	require.NoError(t, os.MkdirAll(scopeDir, 0o755))
-	manifestContent := "id: pi-test\nbackend: pi\n"
+	manifestContent := "backend: pi\n"
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "workflow.yaml"), []byte(manifestContent), 0o644))
 
 	workflowID = "pi-test-wf"
@@ -243,7 +243,7 @@ func TestCrossWorkflow_NestedBackendResolvedFromNestedScope(t *testing.T) {
 	outerDir := filepath.Join(tmpDir, "outer")
 	require.NoError(t, os.MkdirAll(outerDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "workflow.yaml"),
-		[]byte("id: outer-wf\n"), 0o644))
+		[]byte(""), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "START.md"),
 		[]byte("# outer start"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "DONE.md"),
@@ -253,7 +253,7 @@ func TestCrossWorkflow_NestedBackendResolvedFromNestedScope(t *testing.T) {
 	innerDir := filepath.Join(tmpDir, "inner")
 	require.NoError(t, os.MkdirAll(innerDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(innerDir, "workflow.yaml"),
-		[]byte("id: inner-wf\nbackend: pi\n"), 0o644))
+		[]byte("backend: pi\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(innerDir, "START.md"),
 		[]byte("# inner start"), 0o644))
 
@@ -317,7 +317,7 @@ func TestCrossWorkflow_NestedBackendResolvedFromNestedScope_PiToClaude(t *testin
 	outerDir := filepath.Join(tmpDir, "outer")
 	require.NoError(t, os.MkdirAll(outerDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "workflow.yaml"),
-		[]byte("id: outer-pi\nbackend: pi\n"), 0o644))
+		[]byte("backend: pi\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "START.md"),
 		[]byte("# outer start"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "DONE.md"),
@@ -326,7 +326,7 @@ func TestCrossWorkflow_NestedBackendResolvedFromNestedScope_PiToClaude(t *testin
 	innerDir := filepath.Join(tmpDir, "inner")
 	require.NoError(t, os.MkdirAll(innerDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(innerDir, "workflow.yaml"),
-		[]byte("id: inner-claude\n"), 0o644))
+		[]byte(""), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(innerDir, "START.md"),
 		[]byte("# inner start"), 0o644))
 
@@ -380,14 +380,14 @@ func TestCrossWorkflow_NestedPiPreflightFiresLazily(t *testing.T) {
 	outerDir := filepath.Join(tmpDir, "outer")
 	require.NoError(t, os.MkdirAll(outerDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "workflow.yaml"),
-		[]byte("id: outer-claude\n"), 0o644))
+		[]byte(""), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(outerDir, "START.md"),
 		[]byte("# outer start"), 0o644))
 
 	innerDir := filepath.Join(tmpDir, "inner")
 	require.NoError(t, os.MkdirAll(innerDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(innerDir, "workflow.yaml"),
-		[]byte("id: inner-pi\nbackend: pi\n"), 0o644))
+		[]byte("backend: pi\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(innerDir, "START.md"),
 		[]byte("# inner start"), 0o644))
 

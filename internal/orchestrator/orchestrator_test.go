@@ -2745,7 +2745,6 @@ func TestManifestRequiresHumanInputTrue_RejectsAtLaunch(t *testing.T) {
 
 	// Write manifest with requires_human_input: true.
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "workflow.yaml"), []byte(`
-id: manifest-true-test
 requires_human_input: "true"
 `), 0o644))
 
@@ -2786,7 +2785,6 @@ func TestManifestRequiresHumanInputFalse_NoRejection(t *testing.T) {
 
 	// Write manifest with requires_human_input: false.
 	require.NoError(t, os.WriteFile(filepath.Join(scopeDir, "workflow.yaml"), []byte(`
-id: manifest-false-test
 requires_human_input: "false"
 `), 0o644))
 

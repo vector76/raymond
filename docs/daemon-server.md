@@ -100,26 +100,31 @@ startup (and on rescan). The discovery process:
 
 1. Iterates over each configured `--root` directory.
 2. For each immediate child entry:
-   - **Directories**: checks for a `workflow.yaml` manifest file inside the directory.
-   - **Zip archives** (`.zip` files): checks for a `workflow.yaml` entry inside the archive.
-   - **YAML files** (`.yaml` / `.yml`): checks for embedded manifest metadata (top-level `id` alongside `states`). See [yaml-workflows.md](yaml-workflows.md#manifest-metadata-for-daemon-discovery).
-3. Parses the manifest and extracts metadata (ID, name, description, input schema, default budget, human-input requirements).
-4. Entries without a valid manifest source are silently skipped. For YAML files, this means the file either lacks `states`, lacks `id`, or fails to parse.
+   - **Directories**: checks for a `workflow.yaml` manifest file inside the directory; the directory name becomes the workflow id.
+   - **Zip archives** (`.zip` files): checks for a `workflow.yaml` entry inside the archive; the zip filename (extension included) becomes the workflow id.
+   - **YAML files** (`.yaml` / `.yml`): any well-formed YAML scope (file with a top-level `states:` key) is discovered; the filename (extension included) becomes the workflow id. See [yaml-workflows.md](yaml-workflows.md#manifest-metadata-for-daemon-discovery).
+3. Parses any manifest fields present (name, description, input schema, default budget, human-input requirements).
+4. Entries that don't match a valid scope shape are silently skipped. The basename must also be a valid identifier (matching `^[A-Za-z0-9_][A-Za-z0-9._-]*$`); files (`.yaml` / `.zip`) with non-conforming basenames are skipped with a log line, and directories with non-conforming names (e.g. `.git`) are silently skipped.
+
+The explicit `id:` field is no longer supported in manifests; the parser
+hard-rejects it. The workflow id is always derived from the on-disk name
+of the discovery unit. Renaming the file or directory renames the
+workflow id.
 
 The registry supports rescanning at runtime to pick up newly added or removed
 workflows without restarting the daemon.
 
-### Manifest requirements
+### Manifest sources
 
-For a workflow to be discoverable by the daemon, it must provide manifest
-metadata with at least an `id` field. There are three valid manifest sources:
+A workflow becomes discoverable by the daemon when it falls into one of
+three categories:
 
-- A `workflow.yaml` file inside a directory scope.
-- A `workflow.yaml` entry inside a zip archive.
-- A YAML workflow file (`.yaml` / `.yml`) with top-level manifest fields
-  embedded alongside `states`. See
+- A directory containing a `workflow.yaml` file.
+- A zip archive containing a `workflow.yaml` entry.
+- A standalone YAML workflow file (`.yaml` / `.yml`) with a top-level
+  `states:` key. See
   [yaml-workflows.md](yaml-workflows.md#manifest-metadata-for-daemon-discovery)
-  for the recognized fields.
+  for the recognized manifest fields.
 
 See the `internal/manifest` package for the full schema and
 [skill-packaging.md](skill-packaging.md) for the packaging conventions.

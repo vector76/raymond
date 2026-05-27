@@ -34,7 +34,8 @@ func (f *fakeOrch) RunAllAgents(ctx context.Context, workflowID string, opts orc
 
 // writeWorkflowDir creates <root>/<dirName>/ containing a workflow.yaml
 // manifest and a START.md entry point so the registry indexes it and
-// LaunchRun's ResolveEntryPoint succeeds.
+// LaunchRun's ResolveEntryPoint succeeds. The directory name becomes the
+// workflow id under the derived-id scheme.
 func writeWorkflowDir(t *testing.T, root, dirName, manifestYAML string) {
 	t.Helper()
 	dir := filepath.Join(root, dirName)
@@ -71,7 +72,7 @@ func TestLaunchStartupRuns_Empty(t *testing.T) {
 
 func TestLaunchStartupRuns_SingleValidID(t *testing.T) {
 	root := t.TempDir()
-	writeWorkflowDir(t, root, "wf-foo", "id: foo\nname: Foo\n")
+	writeWorkflowDir(t, root, "foo", "name: Foo\n")
 
 	reg, rm := newTestEnv(t, root)
 
@@ -91,9 +92,9 @@ func TestLaunchStartupRuns_SingleValidID(t *testing.T) {
 
 func TestLaunchStartupRuns_MultipleDistinctIDs(t *testing.T) {
 	root := t.TempDir()
-	writeWorkflowDir(t, root, "wf-a", "id: a\n")
-	writeWorkflowDir(t, root, "wf-b", "id: b\n")
-	writeWorkflowDir(t, root, "wf-c", "id: c\n")
+	writeWorkflowDir(t, root, "a", "")
+	writeWorkflowDir(t, root, "b", "")
+	writeWorkflowDir(t, root, "c", "")
 
 	reg, rm := newTestEnv(t, root)
 
@@ -118,7 +119,7 @@ func TestLaunchStartupRuns_MultipleDistinctIDs(t *testing.T) {
 
 func TestLaunchStartupRuns_DuplicateIDs(t *testing.T) {
 	root := t.TempDir()
-	writeWorkflowDir(t, root, "wf-foo", "id: foo\n")
+	writeWorkflowDir(t, root, "foo", "")
 
 	reg, rm := newTestEnv(t, root)
 
@@ -163,7 +164,7 @@ func TestLaunchStartupRuns_EmptyStringID(t *testing.T) {
 
 func TestLaunchStartupRuns_InputRequired(t *testing.T) {
 	root := t.TempDir()
-	writeWorkflowDir(t, root, "wf-needs-input", "id: needs-input\ninput:\n  mode: required\n")
+	writeWorkflowDir(t, root, "needs-input", "input:\n  mode: required\n")
 
 	reg, rm := newTestEnv(t, root)
 
@@ -180,7 +181,7 @@ func TestLaunchStartupRuns_InputRequired(t *testing.T) {
 
 func TestLaunchStartupRuns_MixedValidAndUnknown(t *testing.T) {
 	root := t.TempDir()
-	writeWorkflowDir(t, root, "wf-good", "id: good\n")
+	writeWorkflowDir(t, root, "good", "")
 
 	reg, rm := newTestEnv(t, root)
 
@@ -202,9 +203,9 @@ func TestLaunchStartupRuns_ConcurrentLogIntegrity(t *testing.T) {
 	root := t.TempDir()
 	// Mix successes and failures to exercise both log-line shapes under
 	// concurrent fan-out.
-	writeWorkflowDir(t, root, "wf-a", "id: a\n")
-	writeWorkflowDir(t, root, "wf-b", "id: b\n")
-	writeWorkflowDir(t, root, "wf-c", "id: c\n")
+	writeWorkflowDir(t, root, "a", "")
+	writeWorkflowDir(t, root, "b", "")
+	writeWorkflowDir(t, root, "c", "")
 
 	reg, rm := newTestEnv(t, root)
 

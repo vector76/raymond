@@ -206,7 +206,6 @@ The manifest provides metadata for `ray serve` and other tooling that
 discovers and indexes skills.
 
 ```yaml
-id: vendor-approval
 name: Vendor Approval Workflow
 description: Evaluates a vendor and routes through human approval before generating a recommendation report.
 input:
@@ -217,11 +216,14 @@ default_budget: 5.0
 requires_human_input: auto
 ```
 
+The workflow id is derived from the directory name. The example above
+lives at `vendor-approval/workflow.yaml`, so the daemon registers it as
+`vendor-approval`.
+
 **Key fields for skill packaging:**
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique identifier — used as the endpoint name in the HTTP API. |
 | `name` | Human-readable display name. |
 | `description` | Shown in endpoint documentation. |
 | `input` | Describes the single optional input string passed to the first state as `{{input}}`. `mode` is `required`, `optional`, or `none`; `label` and `description` are UI hints. |

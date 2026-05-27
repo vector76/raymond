@@ -11,7 +11,6 @@ import (
 
 func TestExtractEmbeddedManifest_FullManifestAlongsideStates(t *testing.T) {
 	yaml := `
-id: my-workflow
 name: My Workflow
 description: A test workflow
 input:
@@ -31,7 +30,9 @@ states:
 	m, err := ExtractEmbeddedManifest([]byte(yaml))
 	require.NoError(t, err)
 	require.NotNil(t, m)
-	assert.Equal(t, "my-workflow", m.ID)
+	// ID is not parsed from YAML; the registry derives it from the on-disk
+	// filename.
+	assert.Equal(t, "", m.ID)
 	assert.Equal(t, "My Workflow", m.Name)
 	assert.Equal(t, "A test workflow", m.Description)
 	assert.Equal(t, InputSpec{Mode: "required", Label: "Query", Description: "A search query"}, m.Input)
@@ -43,7 +44,6 @@ states:
 
 func TestExtractEmbeddedManifest_InvalidInputMode_ReturnsError(t *testing.T) {
 	yaml := `
-id: bad-input-mode
 input:
   mode: maybe
 states:
@@ -58,7 +58,6 @@ states:
 
 func TestExtractEmbeddedManifest_InputModeDefaultsToOptional(t *testing.T) {
 	yaml := `
-id: default-mode
 states:
   START:
     prompt: Hello
@@ -69,7 +68,11 @@ states:
 	assert.Equal(t, "optional", m.Input.Mode)
 }
 
-func TestExtractEmbeddedManifest_StatesWithoutID_ReturnsNilNil(t *testing.T) {
+// TestExtractEmbeddedManifest_StatesOnly_ReturnsManifest verifies that every
+// well-formed yaml-scope file is registrable. Previously the manifest was
+// returned only when an explicit `id:` field was present; now the registry
+// derives the id from the filename so any states-bearing file qualifies.
+func TestExtractEmbeddedManifest_StatesOnly_ReturnsManifest(t *testing.T) {
 	yaml := `
 states:
   START:
@@ -77,12 +80,15 @@ states:
 `
 	m, err := ExtractEmbeddedManifest([]byte(yaml))
 	require.NoError(t, err)
-	assert.Nil(t, m)
+	require.NotNil(t, m)
+	assert.Equal(t, "", m.ID)
+	assert.Equal(t, "", m.Name)
+	assert.Equal(t, "optional", m.Input.Mode)
+	assert.Equal(t, "auto", m.RequiresHumanInput)
 }
 
 func TestExtractEmbeddedManifest_NoStatesKey_ReturnsNilNil(t *testing.T) {
 	yaml := `
-id: standalone
 name: Standalone Manifest
 `
 	m, err := ExtractEmbeddedManifest([]byte(yaml))
@@ -90,37 +96,29 @@ name: Standalone Manifest
 	assert.Nil(t, m)
 }
 
-func TestExtractEmbeddedManifest_IDPresentButEmpty_ReturnsError(t *testing.T) {
-	yaml := `
-id: ""
-states:
-  START:
-    prompt: Hello
-`
-	m, err := ExtractEmbeddedManifest([]byte(yaml))
-	require.Error(t, err)
-	assert.Nil(t, m)
-	assert.Contains(t, err.Error(), "id")
-}
-
-func TestExtractEmbeddedManifest_IDPresentButNull_ReturnsError(t *testing.T) {
-	// `id:` with no value parses to nil, which should be distinguishable from
-	// the absent-key case and treated as an empty-id validation error.
-	yaml := `
-id:
-states:
-  START:
-    prompt: Hello
-`
-	m, err := ExtractEmbeddedManifest([]byte(yaml))
-	require.Error(t, err)
-	assert.Nil(t, m)
-	assert.Contains(t, err.Error(), "id")
+// TestExtractEmbeddedManifest_RejectsExplicitID covers every shape of the
+// deprecated `id:` field. Each must hard-reject, regardless of value.
+func TestExtractEmbeddedManifest_RejectsExplicitID(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{"non-empty", "id: my-workflow\nstates:\n  START:\n    prompt: Hello\n"},
+		{"empty-string", `id: ""` + "\nstates:\n  START:\n    prompt: Hello\n"},
+		{"null", "id:\nstates:\n  START:\n    prompt: Hello\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := ExtractEmbeddedManifest([]byte(tc.yaml))
+			require.Error(t, err)
+			assert.Nil(t, m)
+			assert.Contains(t, err.Error(), "`id` field is no longer supported")
+		})
+	}
 }
 
 func TestExtractEmbeddedManifest_InvalidRequiresHumanInput_ReturnsError(t *testing.T) {
 	yaml := `
-id: bad-human-input
 requires_human_input: maybe
 states:
   START:
@@ -134,7 +132,6 @@ states:
 
 func TestExtractEmbeddedManifest_DefaultsRequiresHumanInputToAuto(t *testing.T) {
 	yaml := `
-id: defaulted
 states:
   START:
     prompt: Hello
@@ -148,7 +145,7 @@ states:
 func TestExtractEmbeddedManifest_ValidRequiresHumanInputValues(t *testing.T) {
 	for _, val := range []string{"auto", "true", "false"} {
 		t.Run(val, func(t *testing.T) {
-			yaml := "id: test\nrequires_human_input: " + val + "\nstates:\n  START:\n    prompt: Hello\n"
+			yaml := "requires_human_input: " + val + "\nstates:\n  START:\n    prompt: Hello\n"
 			m, err := ExtractEmbeddedManifest([]byte(yaml))
 			require.NoError(t, err)
 			require.NotNil(t, m)
@@ -159,7 +156,6 @@ func TestExtractEmbeddedManifest_ValidRequiresHumanInputValues(t *testing.T) {
 
 func TestExtractEmbeddedManifest_MalformedYAML_ReturnsError(t *testing.T) {
 	yaml := `
-id: broken
 states:
   START:
     prompt: "unterminated
@@ -171,7 +167,6 @@ states:
 
 func TestExtractEmbeddedManifest_UnknownTopLevelKeysIgnored(t *testing.T) {
 	yaml := `
-id: extras
 name: Has Extras
 some_future_field: ignored
 author: anonymous
@@ -182,13 +177,11 @@ states:
 	m, err := ExtractEmbeddedManifest([]byte(yaml))
 	require.NoError(t, err)
 	require.NotNil(t, m)
-	assert.Equal(t, "extras", m.ID)
 	assert.Equal(t, "Has Extras", m.Name)
 }
 
 func TestExtractEmbeddedManifest_MinimalValid(t *testing.T) {
 	yaml := `
-id: minimal
 states:
   START:
     prompt: Hello
@@ -196,7 +189,7 @@ states:
 	m, err := ExtractEmbeddedManifest([]byte(yaml))
 	require.NoError(t, err)
 	require.NotNil(t, m)
-	assert.Equal(t, "minimal", m.ID)
+	assert.Equal(t, "", m.ID)
 	assert.Equal(t, "", m.Name)
 	assert.Equal(t, "", m.Description)
 	assert.Equal(t, InputSpec{Mode: "optional"}, m.Input)
@@ -210,37 +203,4 @@ func TestExtractEmbeddedManifest_EmptyData_ReturnsNilNil(t *testing.T) {
 	m, err := ExtractEmbeddedManifest(nil)
 	require.NoError(t, err)
 	assert.Nil(t, m)
-}
-
-// TestExtractEmbeddedManifest_DistinguishesIDAbsentFromIDEmpty asserts that
-// "id key absent" and "id key present but empty" are observably different
-// return values. A future refactor that collapsed the two cases (e.g. by
-// struct-only unmarshaling) would regress here.
-func TestExtractEmbeddedManifest_DistinguishesIDAbsentFromIDEmpty(t *testing.T) {
-	absentYAML := `
-states:
-  START:
-    prompt: Hello
-`
-	emptyYAML := `
-id: ""
-states:
-  START:
-    prompt: Hello
-`
-
-	mAbsent, errAbsent := ExtractEmbeddedManifest([]byte(absentYAML))
-	mEmpty, errEmpty := ExtractEmbeddedManifest([]byte(emptyYAML))
-
-	// Absent: no error, nil manifest (opt-out signal).
-	require.NoError(t, errAbsent)
-	assert.Nil(t, mAbsent)
-
-	// Empty: non-nil error, nil manifest (validation failure).
-	require.Error(t, errEmpty)
-	assert.Nil(t, mEmpty)
-
-	// Observable distinction: the error outcomes differ.
-	assert.NotEqual(t, errAbsent == nil, errEmpty == nil,
-		"id-absent and id-empty must produce observably different error results")
 }

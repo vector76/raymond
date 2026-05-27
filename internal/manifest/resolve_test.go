@@ -114,7 +114,7 @@ func TestResolveRequiresHumanInput_TransitiveChildHasManifestTrue(t *testing.T) 
 	require.NoError(t, os.Mkdir(child, 0o755))
 
 	// Child has manifest with requires_human_input: true (no ask in states needed).
-	makeManifest(t, child, "id: child-wf\nrequires_human_input: \"true\"\n")
+	makeManifest(t, child, "requires_human_input: \"true\"\n")
 	makeStateFile(t, child, "1_START.md", "No ask here\n")
 
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: call-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")
@@ -133,7 +133,7 @@ func TestResolveRequiresHumanInput_TransitiveChildHasManifestFalse(t *testing.T)
 
 	// Child has manifest with requires_human_input: false — even though its
 	// state declares ask, the manifest takes precedence.
-	makeManifest(t, child, "id: child-wf\nrequires_human_input: \"false\"\n")
+	makeManifest(t, child, "requires_human_input: \"false\"\n")
 	makeStateFile(t, child, "1_START.md", "---\nallowed_transitions:\n  - {tag: ask}\n---\nWaiting\n")
 
 	makeStateFile(t, parent, "1_START.md", "---\nallowed_transitions:\n  - {tag: call-workflow, target: ./child/, return: DONE.md}\n---\nCalling child\n")

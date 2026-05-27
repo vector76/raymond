@@ -191,7 +191,6 @@ Sketch (`drop-stop-file.yaml`), using the project's single-file yaml
 workflow shape (see `docs/yaml-workflows.md`):
 
 ```yaml
-id: drop-stop-file
 states:
   DROP:
     sh: |

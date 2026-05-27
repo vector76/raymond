@@ -1,4 +1,3 @@
-id: pi-smoke-fork
 name: Pi Backend Fork Smoke Test
 description: >
   Three-state pi workflow exercising the intra-workflow <fork> transition,

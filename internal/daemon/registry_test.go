@@ -13,7 +13,8 @@ import (
 )
 
 // makeWorkflowDir creates a workflow directory with a workflow.yaml manifest
-// inside the given root. Returns the workflow directory path.
+// inside the given root. Returns the workflow directory path. The directory
+// name is the workflow id under the derived-id scheme.
 func makeWorkflowDir(t *testing.T, root, dirName, manifestYAML string) string {
 	t.Helper()
 	dir := filepath.Join(root, dirName)
@@ -23,7 +24,8 @@ func makeWorkflowDir(t *testing.T, root, dirName, manifestYAML string) string {
 }
 
 // makeWorkflowYaml writes yamlContent to <root>/<filename> and returns the
-// absolute file path. Used for YAML workflow files with embedded manifests.
+// absolute file path. Used for YAML workflow files; the filename (with
+// extension) becomes the workflow id.
 func makeWorkflowYaml(t *testing.T, root, filename, yamlContent string) string {
 	t.Helper()
 	path := filepath.Join(root, filename)
@@ -32,7 +34,8 @@ func makeWorkflowYaml(t *testing.T, root, filename, yamlContent string) string {
 }
 
 // makeWorkflowZip creates a flat zip archive containing workflow.yaml at the
-// root level inside the given root directory. Returns the zip file path.
+// root level inside the given root directory. Returns the zip file path. The
+// zip filename (with .zip extension) becomes the workflow id.
 func makeWorkflowZip(t *testing.T, root, zipName, manifestYAML string) string {
 	t.Helper()
 	zipPath := filepath.Join(root, zipName)
@@ -55,14 +58,12 @@ func makeWorkflowZip(t *testing.T, root, zipName, manifestYAML string) string {
 
 func TestNewRegistry_ScansDirectoryWorkflows(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "wf-alpha", `
-id: alpha
+	makeWorkflowDir(t, root, "alpha", `
 name: Alpha Workflow
 description: First workflow
 default_budget: 10.0
 `)
-	makeWorkflowDir(t, root, "wf-beta", `
-id: beta
+	makeWorkflowDir(t, root, "beta", `
 name: Beta Workflow
 description: Second workflow
 input:
@@ -82,8 +83,8 @@ requires_human_input: "true"
 	assert.Equal(t, "First workflow", entries[0].Description)
 	assert.Equal(t, 10.0, entries[0].DefaultBudget)
 	assert.False(t, entries[0].RequiresHumanInput)
-	assert.Equal(t, filepath.Join(root, "wf-alpha"), entries[0].ScopeDir)
-	assert.Equal(t, filepath.Join(root, "wf-alpha", "workflow.yaml"), entries[0].ManifestPath)
+	assert.Equal(t, filepath.Join(root, "alpha"), entries[0].ScopeDir)
+	assert.Equal(t, filepath.Join(root, "alpha", "workflow.yaml"), entries[0].ManifestPath)
 
 	assert.Equal(t, "beta", entries[1].ID)
 	assert.Equal(t, "Beta Workflow", entries[1].Name)
@@ -96,12 +97,10 @@ requires_human_input: "true"
 
 func TestNewRegistry_CapturesBackendField(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "wf-claude", `
-id: claude-default
+	makeWorkflowDir(t, root, "claude-default", `
 name: Claude Workflow
 `)
-	makeWorkflowDir(t, root, "wf-pi", `
-id: pi-explicit
+	makeWorkflowDir(t, root, "pi-explicit", `
 name: Pi Workflow
 backend: pi
 `)
@@ -124,7 +123,7 @@ func TestNewRegistry_SkipsWorkflowWithoutManifest(t *testing.T) {
 	root := t.TempDir()
 
 	// Directory with manifest.
-	makeWorkflowDir(t, root, "with-manifest", `id: has-manifest`)
+	makeWorkflowDir(t, root, "has-manifest", `name: Has Manifest`)
 
 	// Directory without workflow.yaml (just a random file).
 	noManifest := filepath.Join(root, "no-manifest")
@@ -143,10 +142,10 @@ func TestNewRegistry_SkipsInvalidManifest(t *testing.T) {
 	root := t.TempDir()
 
 	// Valid workflow.
-	makeWorkflowDir(t, root, "valid", `id: valid-wf`)
+	makeWorkflowDir(t, root, "valid-wf", `name: Valid`)
 
-	// Invalid manifest (missing required id field).
-	makeWorkflowDir(t, root, "invalid", `name: No ID`)
+	// Invalid manifest (rejects with the deprecated id field).
+	makeWorkflowDir(t, root, "invalid", "id: should-not-be-here\n")
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -156,13 +155,14 @@ func TestNewRegistry_SkipsInvalidManifest(t *testing.T) {
 	assert.Equal(t, "valid-wf", entries[0].ID)
 }
 
-func TestNewRegistry_SkipsYAMLScopeFile(t *testing.T) {
+func TestNewRegistry_SkipsYAMLScopeDirectory(t *testing.T) {
 	root := t.TempDir()
 
 	// Valid workflow.
-	makeWorkflowDir(t, root, "valid", `id: valid-wf`)
+	makeWorkflowDir(t, root, "valid-wf", `name: Valid`)
 
-	// Directory with a YAML scope (has "states" key) instead of a manifest.
+	// Directory with a YAML scope (has "states" key) as its workflow.yaml
+	// instead of a manifest — that's not a discoverable manifest.
 	makeWorkflowDir(t, root, "yaml-scope", `
 states:
   START:
@@ -180,7 +180,6 @@ states:
 func TestNewRegistry_ScansZipArchives(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowZip(t, root, "packed.zip", `
-id: packed
 name: Packed Workflow
 description: A zipped workflow
 default_budget: 25.0
@@ -191,7 +190,8 @@ default_budget: 25.0
 
 	entries := reg.ListWorkflows()
 	require.Len(t, entries, 1)
-	assert.Equal(t, "packed", entries[0].ID)
+	// The zip's filename (extension included) is the workflow id.
+	assert.Equal(t, "packed.zip", entries[0].ID)
 	assert.Equal(t, "Packed Workflow", entries[0].Name)
 	assert.Equal(t, 25.0, entries[0].DefaultBudget)
 	assert.Equal(t, filepath.Join(root, "packed.zip"), entries[0].ScopeDir)
@@ -200,8 +200,8 @@ default_budget: 25.0
 func TestNewRegistry_MultipleRoots(t *testing.T) {
 	root1 := t.TempDir()
 	root2 := t.TempDir()
-	makeWorkflowDir(t, root1, "wf-a", `id: a`)
-	makeWorkflowDir(t, root2, "wf-b", `id: b`)
+	makeWorkflowDir(t, root1, "a", `name: A`)
+	makeWorkflowDir(t, root2, "b", `name: B`)
 
 	reg, err := NewRegistry([]string{root1, root2})
 	require.NoError(t, err)
@@ -214,9 +214,9 @@ func TestNewRegistry_MultipleRoots(t *testing.T) {
 
 func TestListWorkflows_SortedByID(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "wf-z", `id: zulu`)
-	makeWorkflowDir(t, root, "wf-a", `id: alpha`)
-	makeWorkflowDir(t, root, "wf-m", `id: mike`)
+	makeWorkflowDir(t, root, "zulu", `name: Z`)
+	makeWorkflowDir(t, root, "alpha", `name: A`)
+	makeWorkflowDir(t, root, "mike", `name: M`)
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -231,7 +231,6 @@ func TestListWorkflows_SortedByID(t *testing.T) {
 func TestGetWorkflow_Found(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowDir(t, root, "my-wf", `
-id: my-wf
 name: My Workflow
 description: Test get
 `)
@@ -239,7 +238,7 @@ description: Test get
 	require.NoError(t, err)
 
 	entry, ok := reg.GetWorkflow("my-wf")
-	assert.True(t, ok)
+	require.True(t, ok)
 	assert.Equal(t, "my-wf", entry.ID)
 	assert.Equal(t, "My Workflow", entry.Name)
 	assert.Equal(t, "Test get", entry.Description)
@@ -247,7 +246,7 @@ description: Test get
 
 func TestGetWorkflow_NotFound(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "existing", `id: existing`)
+	makeWorkflowDir(t, root, "existing", `name: Exists`)
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -259,7 +258,7 @@ func TestGetWorkflow_NotFound(t *testing.T) {
 
 func TestRescan_PicksUpNewWorkflows(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "first", `id: first`)
+	makeWorkflowDir(t, root, "first", `name: F`)
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -269,7 +268,7 @@ func TestRescan_PicksUpNewWorkflows(t *testing.T) {
 	assert.Equal(t, "first", entries[0].ID)
 
 	// Add a new workflow after initial scan.
-	makeWorkflowDir(t, root, "second", `id: second`)
+	makeWorkflowDir(t, root, "second", `name: S`)
 
 	require.NoError(t, reg.Rescan())
 
@@ -281,8 +280,8 @@ func TestRescan_PicksUpNewWorkflows(t *testing.T) {
 
 func TestRescan_RemovesDeletedWorkflows(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "keep", `id: keep`)
-	dir := makeWorkflowDir(t, root, "remove", `id: remove`)
+	makeWorkflowDir(t, root, "keep", `name: K`)
+	dir := makeWorkflowDir(t, root, "remove", `name: R`)
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -299,7 +298,7 @@ func TestRescan_RemovesDeletedWorkflows(t *testing.T) {
 
 func TestRescan_PreservesIndexOnError(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "keep", `id: keep`)
+	makeWorkflowDir(t, root, "keep", `name: K`)
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -333,8 +332,7 @@ func TestNewRegistry_NonexistentRoot(t *testing.T) {
 
 func TestNewRegistry_RequiresHumanInput_False(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "wf", `
-id: no-human
+	makeWorkflowDir(t, root, "no-human", `
 requires_human_input: "false"
 `)
 	reg, err := NewRegistry([]string{root})
@@ -347,7 +345,7 @@ requires_human_input: "false"
 
 func TestNewRegistry_RequiresHumanInput_Auto(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "wf", `id: auto-human`)
+	makeWorkflowDir(t, root, "auto-human", ``)
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -360,7 +358,7 @@ func TestNewRegistry_RequiresHumanInput_Auto(t *testing.T) {
 
 func TestNewRegistry_SkipsZipWithoutManifest(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "valid", `id: valid`)
+	makeWorkflowDir(t, root, "valid", `name: Valid`)
 
 	// Create a zip with no workflow.yaml — just a state file.
 	zipPath := filepath.Join(root, "no-manifest.zip")
@@ -384,9 +382,9 @@ func TestNewRegistry_SkipsZipWithoutManifest(t *testing.T) {
 
 func TestNewRegistry_SkipsRegularFiles(t *testing.T) {
 	root := t.TempDir()
-	// A plain file (not a dir, not a .zip) should be ignored.
+	// A plain file (not a dir, not a .zip, not a .yaml) should be ignored.
 	require.NoError(t, os.WriteFile(filepath.Join(root, "readme.txt"), []byte("hello"), 0o644))
-	makeWorkflowDir(t, root, "valid", `id: valid`)
+	makeWorkflowDir(t, root, "valid", `name: Valid`)
 
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
@@ -399,7 +397,6 @@ func TestNewRegistry_SkipsRegularFiles(t *testing.T) {
 func TestNewRegistry_ScansYamlWorkflows(t *testing.T) {
 	root := t.TempDir()
 	yamlPath := makeWorkflowYaml(t, root, "review.yaml", `
-id: review
 name: Review Workflow
 description: Embedded review workflow
 input:
@@ -419,7 +416,8 @@ states:
 	require.Len(t, entries, 1)
 
 	e := entries[0]
-	assert.Equal(t, "review", e.ID)
+	// The yaml filename (extension included) is the workflow id.
+	assert.Equal(t, "review.yaml", e.ID)
 	assert.Equal(t, "Review Workflow", e.Name)
 	assert.Equal(t, "Embedded review workflow", e.Description)
 	assert.Equal(t, manifest.InputSpec{Mode: "required", Label: "Query"}, e.Input)
@@ -431,14 +429,9 @@ states:
 
 func TestNewRegistry_ScansMixedScopeTypes(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowDir(t, root, "wf-dir", `id: dir-wf
-name: Dir WF
-`)
-	makeWorkflowZip(t, root, "packed.zip", `id: zip-wf
-name: Zip WF
-`)
+	makeWorkflowDir(t, root, "dir-wf", `name: Dir WF`)
+	makeWorkflowZip(t, root, "packed.zip", `name: Zip WF`)
 	makeWorkflowYaml(t, root, "embedded.yaml", `
-id: yaml-wf
 name: Yaml WF
 states:
   START:
@@ -453,15 +446,18 @@ states:
 
 	_, ok := reg.GetWorkflow("dir-wf")
 	assert.True(t, ok)
-	_, ok = reg.GetWorkflow("zip-wf")
+	_, ok = reg.GetWorkflow("packed.zip")
 	assert.True(t, ok)
-	_, ok = reg.GetWorkflow("yaml-wf")
+	_, ok = reg.GetWorkflow("embedded.yaml")
 	assert.True(t, ok)
 }
 
-func TestNewRegistry_SkipsYamlWithoutId(t *testing.T) {
+// TestNewRegistry_RegistersYamlWithoutOptIn asserts every well-formed
+// yaml-scope file in a serve root is discoverable — there is no manifest-field
+// opt-in (previously the `id:` field served as both id and opt-in signal).
+func TestNewRegistry_RegistersYamlWithoutOptIn(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowYaml(t, root, "no-id.yaml", `
+	makeWorkflowYaml(t, root, "no-meta.yaml", `
 states:
   START:
     prompt: Hello
@@ -470,13 +466,14 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	assert.Empty(t, reg.ListWorkflows())
+	entries := reg.ListWorkflows()
+	require.Len(t, entries, 1)
+	assert.Equal(t, "no-meta.yaml", entries[0].ID)
 }
 
 func TestNewRegistry_SkipsYamlWithoutStates(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "no-states.yaml", `
-id: looks-like-manifest
 name: No States Here
 description: Not a YAML workflow
 `)
@@ -487,10 +484,10 @@ description: Not a YAML workflow
 	assert.Empty(t, reg.ListWorkflows())
 }
 
-func TestNewRegistry_SkipsYamlWithEmptyId(t *testing.T) {
+func TestNewRegistry_SkipsYamlWithExplicitID(t *testing.T) {
 	root := t.TempDir()
-	makeWorkflowYaml(t, root, "empty-id.yaml", `
-id: ""
+	makeWorkflowYaml(t, root, "bad.yaml", `
+id: deprecated
 states:
   START:
     prompt: Hello
@@ -499,13 +496,14 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
+	// The deprecated `id:` field is hard-rejected; the file is logged and
+	// skipped.
 	assert.Empty(t, reg.ListWorkflows())
 }
 
 func TestNewRegistry_SkipsYamlWithInvalidHumanInput(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "bad-human.yaml", `
-id: bad-human
 requires_human_input: "maybe"
 states:
   START:
@@ -521,7 +519,6 @@ states:
 func TestNewRegistry_YamlExtensionYml(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "flow.yml", `
-id: yml-ext
 states:
   START:
     prompt: Hello
@@ -530,15 +527,14 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	entry, ok := reg.GetWorkflow("yml-ext")
+	entry, ok := reg.GetWorkflow("flow.yml")
 	require.True(t, ok)
-	assert.Equal(t, "yml-ext", entry.ID)
+	assert.Equal(t, "flow.yml", entry.ID)
 }
 
 func TestNewRegistry_YamlExtensionCaseInsensitive(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "Flow.YAML", `
-id: case-ext
 states:
   START:
     prompt: Hello
@@ -547,15 +543,14 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	entry, ok := reg.GetWorkflow("case-ext")
+	entry, ok := reg.GetWorkflow("Flow.YAML")
 	require.True(t, ok)
-	assert.Equal(t, "case-ext", entry.ID)
+	assert.Equal(t, "Flow.YAML", entry.ID)
 }
 
 func TestNewRegistry_YamlRequiresHumanInput_True(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "wf.yaml", `
-id: yaml-human-true
 requires_human_input: "true"
 states:
   START:
@@ -565,7 +560,7 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	entry, ok := reg.GetWorkflow("yaml-human-true")
+	entry, ok := reg.GetWorkflow("wf.yaml")
 	require.True(t, ok)
 	assert.True(t, entry.RequiresHumanInput)
 }
@@ -573,7 +568,6 @@ states:
 func TestNewRegistry_YamlRequiresHumanInput_False(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "wf.yaml", `
-id: yaml-human-false
 requires_human_input: "false"
 states:
   START:
@@ -583,7 +577,7 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	entry, ok := reg.GetWorkflow("yaml-human-false")
+	entry, ok := reg.GetWorkflow("wf.yaml")
 	require.True(t, ok)
 	assert.False(t, entry.RequiresHumanInput)
 }
@@ -591,7 +585,6 @@ states:
 func TestNewRegistry_YamlRequiresHumanInput_AutoResolvesToFalse(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "wf.yaml", `
-id: yaml-human-auto
 requires_human_input: "auto"
 states:
   START:
@@ -601,7 +594,7 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	entry, ok := reg.GetWorkflow("yaml-human-auto")
+	entry, ok := reg.GetWorkflow("wf.yaml")
 	require.True(t, ok)
 	assert.False(t, entry.RequiresHumanInput)
 }
@@ -609,7 +602,6 @@ states:
 func TestNewRegistry_YamlRequiresHumanInput_OmittedResolvesToFalse(t *testing.T) {
 	root := t.TempDir()
 	makeWorkflowYaml(t, root, "wf.yaml", `
-id: yaml-human-omitted
 states:
   START:
     prompt: Hello
@@ -618,7 +610,7 @@ states:
 	reg, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	entry, ok := reg.GetWorkflow("yaml-human-omitted")
+	entry, ok := reg.GetWorkflow("wf.yaml")
 	require.True(t, ok)
 	assert.False(t, entry.RequiresHumanInput)
 }
@@ -627,17 +619,14 @@ func TestNewRegistry_YamlAlongsideDirectoryAndZipWorkflows(t *testing.T) {
 	root := t.TempDir()
 
 	dirPath := makeWorkflowDir(t, root, "dirflow", `
-id: dir-flow
 name: Dir Flow
 `)
 
 	zipPath := makeWorkflowZip(t, root, "packed.zip", `
-id: zip-flow
 name: Zip Flow
 `)
 
 	yamlPath := makeWorkflowYaml(t, root, "review.yaml", `
-id: yaml-flow
 name: YAML Flow
 states:
   START:
@@ -649,15 +638,15 @@ states:
 
 	require.Len(t, reg.ListWorkflows(), 3)
 
-	dirEntry, ok := reg.GetWorkflow("dir-flow")
+	dirEntry, ok := reg.GetWorkflow("dirflow")
 	require.True(t, ok)
 	assert.Equal(t, dirPath, dirEntry.ScopeDir)
 
-	zipEntry, ok := reg.GetWorkflow("zip-flow")
+	zipEntry, ok := reg.GetWorkflow("packed.zip")
 	require.True(t, ok)
 	assert.Equal(t, zipPath, zipEntry.ScopeDir)
 
-	yamlEntry, ok := reg.GetWorkflow("yaml-flow")
+	yamlEntry, ok := reg.GetWorkflow("review.yaml")
 	require.True(t, ok)
 	assert.Equal(t, yamlPath, yamlEntry.ScopeDir)
 
@@ -666,11 +655,35 @@ states:
 	assert.NotEqual(t, dirEntry.ScopeDir, zipEntry.ScopeDir)
 }
 
+// TestNewRegistry_DirAndZipWithSameBaseNameCoexist verifies the rationale
+// behind keeping the extension on file-based ids: a working `foo/` directory
+// and a release-snapshot `foo.zip` can register under distinct ids in the
+// same root.
+func TestNewRegistry_DirAndZipWithSameBaseNameCoexist(t *testing.T) {
+	root := t.TempDir()
+	makeWorkflowDir(t, root, "foo", `name: Dir Version`)
+	makeWorkflowZip(t, root, "foo.zip", `name: Zip Version`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	dirEntry, ok := reg.GetWorkflow("foo")
+	require.True(t, ok)
+	assert.Equal(t, "Dir Version", dirEntry.Name)
+
+	zipEntry, ok := reg.GetWorkflow("foo.zip")
+	require.True(t, ok)
+	assert.Equal(t, "Zip Version", zipEntry.Name)
+}
+
 func TestNewRegistry_YamlScopeNamedWorkflowYaml(t *testing.T) {
 	root := t.TempDir()
 
+	// A yaml scope file literally named workflow.yaml inside a serve root is
+	// indistinguishable from a directory-style manifest at the filesystem
+	// level — but here the root *is* the serve root, so the file is treated
+	// as a yaml-scope workflow whose id is its filename.
 	yamlPath := makeWorkflowYaml(t, root, "workflow.yaml", `
-id: named-workflow
 name: Named Like A Manifest
 states:
   START:
@@ -682,40 +695,9 @@ states:
 
 	entries := reg.ListWorkflows()
 	require.Len(t, entries, 1)
-	assert.Equal(t, "named-workflow", entries[0].ID)
+	assert.Equal(t, "workflow.yaml", entries[0].ID)
 	assert.Equal(t, yamlPath, entries[0].ScopeDir)
 	assert.Equal(t, yamlPath, entries[0].ManifestPath)
-}
-
-func TestNewRegistry_YamlIdCollision_LastWins(t *testing.T) {
-	root := t.TempDir()
-
-	makeWorkflowDir(t, root, "dir-shared", `
-id: shared
-name: Dir Version
-`)
-	makeWorkflowYaml(t, root, "yaml-shared.yaml", `
-id: shared
-name: YAML Version
-states:
-  START:
-    prompt: Hi
-`)
-
-	reg, err := NewRegistry([]string{root})
-	require.NoError(t, err)
-
-	entries := reg.ListWorkflows()
-	count := 0
-	for _, e := range entries {
-		if e.ID == "shared" {
-			count++
-		}
-	}
-	assert.Equal(t, 1, count)
-
-	_, ok := reg.GetWorkflow("shared")
-	assert.True(t, ok)
 }
 
 func TestNewRegistry_YamlScopeInSubdirectoryIsNotDiscovered(t *testing.T) {
@@ -726,7 +708,6 @@ func TestNewRegistry_YamlScopeInSubdirectoryIsNotDiscovered(t *testing.T) {
 	subdir := filepath.Join(root, "nested")
 	require.NoError(t, os.MkdirAll(subdir, 0o755))
 	makeWorkflowYaml(t, subdir, "hidden.yaml", `
-id: hidden-yaml
 states:
   START:
     prompt: Hi
@@ -736,6 +717,23 @@ states:
 	require.NoError(t, err)
 
 	assert.Empty(t, reg.ListWorkflows())
-	_, ok := reg.GetWorkflow("hidden-yaml")
+	_, ok := reg.GetWorkflow("hidden.yaml")
 	assert.False(t, ok)
+}
+
+// TestNewRegistry_SkipsDirectoryWithInvalidName covers basenames that don't
+// match the legal-id pattern (e.g. starting with a dot, or containing
+// spaces). They're silently skipped rather than erroring the whole scan.
+func TestNewRegistry_SkipsDirectoryWithInvalidName(t *testing.T) {
+	root := t.TempDir()
+	// Hidden dir (leading dot) — also covers the .git case.
+	makeWorkflowDir(t, root, ".hidden", `name: Hidden`)
+	makeWorkflowDir(t, root, "good", `name: Good`)
+
+	reg, err := NewRegistry([]string{root})
+	require.NoError(t, err)
+
+	entries := reg.ListWorkflows()
+	require.Len(t, entries, 1)
+	assert.Equal(t, "good", entries[0].ID)
 }

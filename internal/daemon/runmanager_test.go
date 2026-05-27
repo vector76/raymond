@@ -1083,8 +1083,7 @@ func TestLaunchRun_EventsUpdateAgentInfo(t *testing.T) {
 func TestLaunchRun_YamlScopeFromRegistry(t *testing.T) {
 	root := t.TempDir()
 	yamlPath := filepath.Join(root, "review.yaml")
-	yamlContent := `id: smoke-yaml
-name: Smoke YAML
+	yamlContent := `name: Smoke YAML
 description: End-to-end smoke test workflow
 
 states:
@@ -1099,7 +1098,8 @@ states:
 	registry, err := NewRegistry([]string{root})
 	require.NoError(t, err)
 
-	entry, ok := registry.GetWorkflow("smoke-yaml")
+	// The yaml filename (extension included) is the derived workflow id.
+	entry, ok := registry.GetWorkflow("review.yaml")
 	require.True(t, ok, "registry should discover YAML workflow with embedded manifest")
 	assert.Equal(t, yamlPath, entry.ScopeDir)
 	assert.Equal(t, yamlPath, entry.ManifestPath)

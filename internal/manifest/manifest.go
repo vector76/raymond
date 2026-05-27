@@ -21,9 +21,12 @@ var ErrNotManifest = errors.New("file is a YAML scope, not a workflow manifest")
 // manifestFileName is the expected name for manifest files.
 const manifestFileName = "workflow.yaml"
 
-// Manifest holds the parsed contents of a workflow manifest file.
+// Manifest holds the parsed contents of a workflow manifest file. The ID
+// field is not unmarshalled from YAML — workflow ids are derived from the
+// on-disk name of the discovery unit (file basename or directory name) and
+// injected by the registry. An explicit `id:` field in YAML is rejected.
 type Manifest struct {
-	ID                 string                 `yaml:"id"`
+	ID                 string                 `yaml:"-"`
 	Name               string                 `yaml:"name"`
 	Description        string                 `yaml:"description"`
 	Input              InputSpec              `yaml:"input"`
@@ -66,6 +69,19 @@ type rawManifest struct {
 	Manifest     `yaml:",inline"`
 }
 
+// hasIDKey reports whether the YAML document has an `id` key at the top level,
+// regardless of its value (including empty string and null). Used to enforce
+// the deprecation of explicit ids — a key/value lookup on a struct can't
+// distinguish "key absent" from "key present with zero value."
+func hasIDKey(data []byte) (bool, error) {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false, err
+	}
+	_, ok := raw["id"]
+	return ok, nil
+}
+
 // validHumanInput lists the accepted values for RequiresHumanInput.
 var validHumanInput = map[string]bool{
 	"auto":  true,
@@ -102,6 +118,18 @@ func ParseManifestData(data []byte) (*Manifest, error) {
 		return nil, ErrNotManifest
 	}
 
+	// Reject the deprecated `id` field. Workflow ids are derived from the
+	// on-disk name of the discovery unit (file basename or directory name)
+	// by the registry; an explicit id can drift from the filename and is no
+	// longer accepted in any form (including empty / null).
+	hasID, err := hasIDKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing manifest: %w", err)
+	}
+	if hasID {
+		return nil, fmt.Errorf("manifest validation: the `id` field is no longer supported; the workflow id is derived from the filename or directory name. Remove the `id:` line.")
+	}
+
 	m := &raw.Manifest
 
 	// Apply defaults.
@@ -110,11 +138,6 @@ func ParseManifestData(data []byte) (*Manifest, error) {
 	}
 	if m.Input.Mode == "" {
 		m.Input.Mode = InputModeOptional
-	}
-
-	// Validate required fields.
-	if m.ID == "" {
-		return nil, fmt.Errorf("manifest validation: id is required")
 	}
 
 	// Validate requires_human_input.

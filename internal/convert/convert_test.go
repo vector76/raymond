@@ -740,16 +740,16 @@ func TestConvert_NonStateFileWarnings(t *testing.T) {
 }
 
 // TestConvert_PreservesManifestFields verifies that every top-level field from
-// workflow.yaml (id, name, description, default_budget, input,
+// workflow.yaml (name, description, default_budget, input,
 // requires_human_input, working_directory, environment, backend) round-trips
 // into the converted YAML scope. Before the fix, workflow.yaml was treated as
 // a "non-state file" and its contents — including backend: pi declarations —
-// were silently dropped, so a converted pi workflow ran on Claude.
+// were silently dropped, so a converted pi workflow ran on Claude. The `id`
+// field is no longer part of the manifest schema, so it is not preserved.
 func TestConvert_PreservesManifestFields(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "START.md", "do work\n<result>done</result>")
-	writeFile(t, dir, "workflow.yaml", `id: round-trip
-name: Round-trip workflow
+	writeFile(t, dir, "workflow.yaml", `name: Round-trip workflow
 description: Verifies manifest fields survive the convert tool.
 default_budget: 1.25
 requires_human_input: "false"
@@ -781,7 +781,10 @@ backend:
 	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &got),
 		"converter output must be valid YAML")
 
-	assert.Equal(t, "round-trip", got["id"])
+	// `id` is deprecated and must not be emitted, even from the input
+	// manifest's perspective (the input doesn't carry one either).
+	_, hasID := got["id"]
+	assert.False(t, hasID, "convert must not emit the deprecated id field")
 	assert.Equal(t, "Round-trip workflow", got["name"])
 	assert.Equal(t, "Verifies manifest fields survive the convert tool.", got["description"])
 	assert.Equal(t, 1.25, got["default_budget"])
@@ -821,7 +824,7 @@ backend:
 func TestConvert_PreservesBackendString(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "START.md", "<result>done</result>")
-	writeFile(t, dir, "workflow.yaml", "id: short-form\nbackend: pi\n")
+	writeFile(t, dir, "workflow.yaml", "backend: pi\n")
 
 	yamlStr, _, err := Convert(dir)
 	require.NoError(t, err)
@@ -838,6 +841,40 @@ func TestConvert_PreservesBackendString(t *testing.T) {
 	default:
 		t.Fatalf("backend must be a string or map; got %T = %v", got["backend"], got["backend"])
 	}
+}
+
+// TestConvert_WarnsOnDeprecatedID verifies that when the input workflow.yaml
+// declares the deprecated `id:` field, convert surfaces a warning, drops the
+// manifest fields (since the manifest can't be parsed), and still produces a
+// valid YAML scope from the state files. The id field is not the user's
+// problem here — convert just reflects what the parser tells it.
+func TestConvert_WarnsOnDeprecatedID(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "START.md", "<result>done</result>")
+	writeFile(t, dir, "workflow.yaml", "id: legacy\nname: Has ID\n")
+
+	yamlStr, warnings, err := Convert(dir)
+	require.NoError(t, err, "convert must not abort on a manifest with deprecated id; just warn")
+
+	// Warning surfaces the parser's `id` deprecation message.
+	require.NotEmpty(t, warnings, "expected a warning about the deprecated id field")
+	var foundIDWarning bool
+	for _, w := range warnings {
+		if strings.Contains(w, "`id` field is no longer supported") {
+			foundIDWarning = true
+		}
+	}
+	assert.True(t, foundIDWarning, "warning must explain the id rejection; got %v", warnings)
+
+	// States survive — convert still produces a usable YAML scope.
+	assert.Contains(t, yamlStr, "states:")
+	// Manifest fields are dropped (the manifest couldn't be parsed).
+	var got map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &got))
+	_, hasID := got["id"]
+	assert.False(t, hasID)
+	_, hasName := got["name"]
+	assert.False(t, hasName, "manifest fields are dropped when parsing fails")
 }
 
 // TestConvert_NoManifest verifies a directory without workflow.yaml still
@@ -861,7 +898,7 @@ func TestConvert_NoManifest(t *testing.T) {
 func TestConvert_PreservesManifestFieldsInZip(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := writeTestZip(t, dir, map[string]string{
-		"workflow.yaml": "id: zipped-pi\nname: Zipped Pi Workflow\nbackend: pi\n",
+		"workflow.yaml": "name: Zipped Pi Workflow\nbackend: pi\n",
 		"START.md":      "<result>done</result>",
 	})
 
@@ -874,7 +911,8 @@ func TestConvert_PreservesManifestFieldsInZip(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &got))
-	assert.Equal(t, "zipped-pi", got["id"])
+	_, hasID := got["id"]
+	assert.False(t, hasID, "convert must not emit the deprecated id field")
 	assert.Equal(t, "Zipped Pi Workflow", got["name"])
 
 	backendMap, ok := got["backend"].(map[string]any)

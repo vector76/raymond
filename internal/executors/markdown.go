@@ -90,6 +90,10 @@ func (e *MarkdownExecutor) Execute(
 	variables["workflow_id"] = wfState.WorkflowID
 	variables["agent_id"] = agentID
 	variables["task_folder"] = agent.TaskFolder
+	// Context size as of the end of the previous turn in this session (0 on a
+	// fresh session). Rendered before this turn runs, so it does not include
+	// the prompt about to be sent.
+	variables["context_tokens"] = agent.ContextTokens
 	basePrompt := prompts.RenderPrompt(body, variables)
 
 	// Determine model and effort (frontmatter takes precedence over defaults).
@@ -126,6 +130,7 @@ func (e *MarkdownExecutor) Execute(
 	reminderAttempt := 0
 	var stateTotalCost float64
 	var lastInvocationTokens *int64
+	var lastContextTokens *int64
 	startTime := time.Now()
 
 	for transition == nil {
@@ -241,6 +246,7 @@ func (e *MarkdownExecutor) Execute(
 
 		// Extract and accumulate cost.
 		lastInvocationTokens = turnResult.InputTokens
+		lastContextTokens = turnResult.ContextTokens
 		if turnResult.CostUSD > 0 {
 			stateTotalCost += turnResult.CostUSD
 			wfState.TotalCostUSD += turnResult.CostUSD
@@ -287,9 +293,10 @@ func (e *MarkdownExecutor) Execute(
 			// Multi-fork: return full list without selecting a single transition.
 			agent.ContinueAndFork = false
 			return ExecutionResult{
-				Transitions: allTrs,
-				SessionID:   newSessionID,
-				CostUSD:     stateTotalCost,
+				Transitions:   allTrs,
+				SessionID:     newSessionID,
+				CostUSD:       stateTotalCost,
+				ContextTokens: lastContextTokens,
 			}, nil
 		}
 		transition = singleTr
@@ -312,9 +319,10 @@ func (e *MarkdownExecutor) Execute(
 	})
 
 	return ExecutionResult{
-		Transition: *transition,
-		SessionID:  newSessionID,
-		CostUSD:    stateTotalCost,
+		Transition:    *transition,
+		SessionID:     newSessionID,
+		CostUSD:       stateTotalCost,
+		ContextTokens: lastContextTokens,
 	}, nil
 }
 

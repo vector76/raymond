@@ -234,13 +234,14 @@ func deepCopyAgent(a wfstate.AgentState) wfstate.AgentState {
 				session = &s
 			}
 			newStack[i] = wfstate.StackFrame{
-				Session:      session,
-				State:        frame.State,
-				ScopeDir:     frame.ScopeDir,
-				Cwd:          frame.Cwd,
-				NestingDepth: frame.NestingDepth,
-				ScopeURL:     frame.ScopeURL,
-				TaskFolder:   frame.TaskFolder,
+				Session:       session,
+				State:         frame.State,
+				ScopeDir:      frame.ScopeDir,
+				Cwd:           frame.Cwd,
+				NestingDepth:  frame.NestingDepth,
+				ScopeURL:      frame.ScopeURL,
+				TaskFolder:    frame.TaskFolder,
+				ContextTokens: frame.ContextTokens,
 			}
 		}
 	}
@@ -320,6 +321,7 @@ func HandleGoto(agent wfstate.AgentState, transition parsing.Transition) Transit
 func HandleReset(agent wfstate.AgentState, transition parsing.Transition, wfState *wfstate.WorkflowState) TransitionResult {
 	agent.CurrentState = transition.Target
 	agent.SessionID = nil
+	agent.ContextTokens = 0 // fresh session
 
 	if cd, ok := transition.Attributes["cd"]; ok {
 		agent.Cwd = ResolveCd(cd, agent.Cwd)
@@ -353,6 +355,7 @@ func HandleReset(agent wfstate.AgentState, transition parsing.Transition, wfStat
 func HandleResetWorkflow(agent wfstate.AgentState, tr parsing.Transition, wfState *wfstate.WorkflowState, resolution specifier.Resolution) TransitionResult {
 	agent.CurrentState = resolution.EntryPoint
 	agent.SessionID = nil
+	agent.ContextTokens = 0 // fresh session
 	agent.Stack = nil
 	agent.NestingDepth = 0
 	agent.ScopeDir = resolution.ScopeDir
@@ -396,16 +399,18 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 	}
 
 	frame := wfstate.StackFrame{
-		Session:      agent.SessionID,
-		State:        returnState,
-		ScopeDir:     agent.ScopeDir,
-		ScopeURL:     agent.ScopeURL,
-		Cwd:          agent.Cwd,
-		NestingDepth: agent.NestingDepth,
-		TaskFolder:   agent.TaskFolder,
+		Session:       agent.SessionID,
+		State:         returnState,
+		ScopeDir:      agent.ScopeDir,
+		ScopeURL:      agent.ScopeURL,
+		Cwd:           agent.Cwd,
+		NestingDepth:  agent.NestingDepth,
+		TaskFolder:    agent.TaskFolder,
+		ContextTokens: agent.ContextTokens,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.SessionID = nil
+	agent.ContextTokens = 0 // fresh session for the function body
 	agent.CurrentState = transition.Target
 	if input, ok := transition.Attributes["input"]; ok && input != "" {
 		agent.PendingResult = &input
@@ -434,16 +439,19 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 	callerSession := agent.SessionID
 
 	frame := wfstate.StackFrame{
-		Session:      callerSession,
-		State:        returnState,
-		ScopeDir:     agent.ScopeDir,
-		ScopeURL:     agent.ScopeURL,
-		Cwd:          agent.Cwd,
-		NestingDepth: agent.NestingDepth,
-		TaskFolder:   agent.TaskFolder,
+		Session:       callerSession,
+		State:         returnState,
+		ScopeDir:      agent.ScopeDir,
+		ScopeURL:      agent.ScopeURL,
+		Cwd:           agent.Cwd,
+		NestingDepth:  agent.NestingDepth,
+		TaskFolder:    agent.TaskFolder,
+		ContextTokens: agent.ContextTokens,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.ForkSessionID = callerSession
+	// ContextTokens carries forward unchanged: <call> forks the caller's
+	// session, so the callee inherits the caller's context.
 	agent.CurrentState = transition.Target
 	if input, ok := transition.Attributes["input"]; ok && input != "" {
 		agent.PendingResult = &input
@@ -705,18 +713,21 @@ func HandleCallWorkflow(
 	callerSession := agent.SessionID
 
 	frame := wfstate.StackFrame{
-		Session:      callerSession,
-		State:        returnState,
-		ScopeDir:     agent.ScopeDir,
-		ScopeURL:     agent.ScopeURL,
-		Cwd:          agent.Cwd,
-		NestingDepth: agent.NestingDepth,
-		TaskFolder:   agent.TaskFolder,
+		Session:       callerSession,
+		State:         returnState,
+		ScopeDir:      agent.ScopeDir,
+		ScopeURL:      agent.ScopeURL,
+		Cwd:           agent.Cwd,
+		NestingDepth:  agent.NestingDepth,
+		TaskFolder:    agent.TaskFolder,
+		ContextTokens: agent.ContextTokens,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.NestingDepth = agent.NestingDepth + 1
 	agent.ForkSessionID = callerSession
 	agent.SessionID = nil
+	// ContextTokens carries forward unchanged: call-workflow forks the
+	// caller's session, so the sub-workflow inherits the caller's context.
 	agent.ScopeDir = resolution.ScopeDir
 	agent.ScopeURL = resolution.ScopeURL
 	agent.CurrentState = resolution.EntryPoint
@@ -761,17 +772,19 @@ func HandleFunctionWorkflow(
 	}
 
 	frame := wfstate.StackFrame{
-		Session:      agent.SessionID,
-		State:        returnState,
-		ScopeDir:     agent.ScopeDir,
-		ScopeURL:     agent.ScopeURL,
-		Cwd:          agent.Cwd,
-		NestingDepth: agent.NestingDepth,
-		TaskFolder:   agent.TaskFolder,
+		Session:       agent.SessionID,
+		State:         returnState,
+		ScopeDir:      agent.ScopeDir,
+		ScopeURL:      agent.ScopeURL,
+		Cwd:           agent.Cwd,
+		NestingDepth:  agent.NestingDepth,
+		TaskFolder:    agent.TaskFolder,
+		ContextTokens: agent.ContextTokens,
 	}
 	agent.Stack = append(agent.Stack, frame)
 	agent.NestingDepth = agent.NestingDepth + 1
 	agent.SessionID = nil
+	agent.ContextTokens = 0 // fresh session (no context inheritance)
 	agent.ScopeDir = resolution.ScopeDir
 	agent.ScopeURL = resolution.ScopeURL
 	agent.CurrentState = resolution.EntryPoint
@@ -814,6 +827,7 @@ func HandleResult(
 	agent.Stack = agent.Stack[:len(agent.Stack)-1]
 
 	agent.SessionID = frame.Session
+	agent.ContextTokens = frame.ContextTokens // restore caller's context size
 	agent.CurrentState = frame.State
 	payload := transition.Payload
 	agent.PendingResult = &payload

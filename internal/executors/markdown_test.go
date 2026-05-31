@@ -157,6 +157,82 @@ func TestMarkdownExecutor_StateCompleted_InputTokens_LastInvocationOnly(t *testi
 	}
 }
 
+// TestMarkdownExecutor_ContextTokensSubstitutedInBody verifies that
+// {{context_tokens}} renders the agent's carried-forward context size (the
+// value as of the end of the previous turn).
+func TestMarkdownExecutor_ContextTokensSubstitutedInBody(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "Context so far: {{context_tokens}} tokens")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-ctx",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents: []wfstate.AgentState{{
+			ID: "main", CurrentState: "START.md", ScopeDir: dir,
+			Stack: []wfstate.StackFrame{}, ContextTokens: 12345,
+		}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !strings.Contains(capturedPrompt, "Context so far: 12345 tokens") {
+		t.Errorf("prompt = %q, want it to contain rendered context tokens", capturedPrompt)
+	}
+	if strings.Contains(capturedPrompt, "{{context_tokens}}") {
+		t.Errorf("prompt still contains literal {{context_tokens}}: %q", capturedPrompt)
+	}
+}
+
+// TestMarkdownExecutor_ReportsContextTokens verifies that the executor returns
+// the context size (input side + output) measured from the turn's usage.
+func TestMarkdownExecutor_ReportsContextTokens(t *testing.T) {
+	_, wfState := makeWorkflow(t)
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
+
+	executors.SetInvokeStreamFn(func(context.Context, string, string, string, string, float64, bool, bool, string, bool) <-chan ccwrap.StreamItem {
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "Output\n<goto>NEXT.md</goto>"},
+			{
+				"total_cost_usd": 0.05,
+				"usage": map[string]any{
+					"input_tokens":                float64(100),
+					"cache_read_input_tokens":     float64(50),
+					"cache_creation_input_tokens": float64(25),
+					"output_tokens":               float64(40),
+				},
+			},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	res, err := executors.NewMarkdownExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if res.ContextTokens == nil {
+		t.Fatal("ContextTokens is nil, want non-nil")
+	}
+	// 100 + 50 + 25 input side + 40 output = 215.
+	if *res.ContextTokens != 215 {
+		t.Errorf("ContextTokens = %d, want 215", *res.ContextTokens)
+	}
+}
+
 // TestMarkdownExecutor_WorkflowIDSubstitutedInBody verifies that {{workflow_id}}
 // in the prompt body is replaced with the WorkflowState's WorkflowID.
 func TestMarkdownExecutor_WorkflowIDSubstitutedInBody(t *testing.T) {

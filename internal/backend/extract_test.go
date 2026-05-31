@@ -136,3 +136,61 @@ func TestExtractClaudeTokens(t *testing.T) {
 		}
 	})
 }
+
+// --------------------------------------------------------------------------
+// extractClaudeContextTokens edge cases
+// --------------------------------------------------------------------------
+
+func TestExtractClaudeContextTokens(t *testing.T) {
+	t.Run("includes output tokens", func(t *testing.T) {
+		results := []map[string]any{{
+			"usage": map[string]any{
+				"cache_creation_input_tokens": float64(100),
+				"cache_read_input_tokens":     float64(200),
+				"input_tokens":                float64(300),
+				"output_tokens":               float64(40),
+			},
+		}}
+		got := extractClaudeContextTokens(results)
+		if got == nil {
+			t.Fatal("expected non-nil pointer")
+		}
+		if *got != 640 {
+			t.Errorf("got %d, want 640 (input side 600 + output 40)", *got)
+		}
+	})
+
+	t.Run("differs from input-only extractor by output", func(t *testing.T) {
+		usage := map[string]any{
+			"input_tokens":  float64(1000),
+			"output_tokens": float64(250),
+		}
+		results := []map[string]any{{"usage": usage}}
+		input := extractClaudeTokens(results)
+		ctx := extractClaudeContextTokens(results)
+		if input == nil || ctx == nil {
+			t.Fatal("expected non-nil pointers")
+		}
+		if *ctx-*input != 250 {
+			t.Errorf("context - input = %d, want 250 (the output tokens)", *ctx-*input)
+		}
+	})
+
+	t.Run("last usage wins", func(t *testing.T) {
+		results := []map[string]any{
+			{"usage": map[string]any{"input_tokens": float64(999), "output_tokens": float64(1)}},
+			{"usage": map[string]any{"input_tokens": float64(42), "output_tokens": float64(8)}},
+		}
+		got := extractClaudeContextTokens(results)
+		if got == nil || *got != 50 {
+			t.Errorf("got %v, want 50", got)
+		}
+	})
+
+	t.Run("no usage returns nil", func(t *testing.T) {
+		results := []map[string]any{{"type": "assistant"}}
+		if got := extractClaudeContextTokens(results); got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+}

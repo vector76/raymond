@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/vector76/raymond/internal/bus"
+	"github.com/vector76/raymond/internal/ccsession"
 	"github.com/vector76/raymond/internal/config"
 	"github.com/vector76/raymond/internal/diagram"
 	"github.com/vector76/raymond/internal/observers/console"
@@ -173,6 +174,7 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 		workflowID                 string
 		continueSession            bool
 		onAsk                    string
+		claudeContextSession       string
 	)
 
 	root := &cobra.Command{
@@ -195,6 +197,9 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 			}
 			if statusID != "" {
 				return c.cmdStatus(cmd, statusID, stateDir, serveStateDir)
+			}
+			if claudeContextSession != "" {
+				return c.cmdClaudeContext(cmd, claudeContextSession)
 			}
 
 			// dspExplicit is true when the effective DangerouslySkipPermissions
@@ -384,6 +389,8 @@ func (c *CLI) NewRootCmd() *cobra.Command {
 	f.StringVar(&statusID, "status", "", "show status of workflow by ID")
 	f.BoolVar(&recover, "recover", false, "list in-progress (non-completed) workflows")
 	f.BoolVar(&initCfg, "init-config", false, "create a template .raymond/config.toml")
+	f.StringVar(&claudeContextSession, "claude_context_for_session", "",
+		"print the current context-window token count for a Claude session id and exit")
 
 	f.StringVar(&name, "name", "", "prefix label for the terminal title bar")
 	f.StringVar(&workflowID, "workflow-id", "", "custom workflow identifier (auto-generated if not provided)")
@@ -612,6 +619,20 @@ func (c *CLI) cmdRecover(cmd *cobra.Command, stateDir string) error {
 	for _, id := range ids {
 		fmt.Fprintln(cmd.OutOrStdout(), id)
 	}
+	return nil
+}
+
+// cmdClaudeContext prints the current context-window token count for a Claude
+// session id and exits. The session is located by globbing every Claude Code
+// project directory; zero or multiple matches are errors (there is no
+// folder-based disambiguation). Output is a bare integer on stdout so it can be
+// captured directly in a shell (`$(ray --claude_context_for_session=ID)`).
+func (c *CLI) cmdClaudeContext(cmd *cobra.Command, sessionID string) error {
+	tokens, err := ccsession.ContextTokensForSession(sessionID)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), tokens)
 	return nil
 }
 

@@ -352,7 +352,10 @@ Scripts receive workflow context via environment variables:
 |----------|-------------|---------|
 | `RAYMOND_WORKFLOW_ID` | Workflow run identifier | `wf-2026-01-15-abc123` |
 | `RAYMOND_AGENT_ID` | Current agent identifier | `main`, `main_worker1` |
+| `RAYMOND_TASK_FOLDER` | Agent's task folder (see [`{{task_folder}}`](#template-variables)) | `.raymond/tasks/wf-.../main` |
 | `RAYMOND_INPUT` | Inbound payload — same channel as `{{input}}` for markdown states (see [Template Variables](#template-variables)) | (unset when empty) |
+| `RAYMOND_CONTEXT_TOKENS` | Context-window fullness of this agent's session, as of the end of the previous turn (same value as `{{context_tokens}}`); `0` on a fresh session | `45072` |
+| `RAYMOND_SESSION_ID` | This agent's current backend session id (empty before the first turn); usable with `ray --claude_context_for_session=$RAYMOND_SESSION_ID` | `00038246-4d48-...` |
 
 ### Persisting Data Between Script Runs
 
@@ -811,6 +814,44 @@ The variable is cleared before the next state runs (one transition deep). If
 a workflow needs the ID further along, plumb it forward explicitly through
 the transition `input` attribute or by writing it to a file in the post-ask
 state.
+
+### `{{context_tokens}}` — Context-Window Fullness
+
+`{{context_tokens}}` is the number of tokens in this agent's session as of the
+end of the **previous** turn — every input-side token (prompt plus cached
+prefix) plus that turn's output. Because it is rendered before the current turn
+runs, it does not include the prompt about to be sent.
+
+It is a property of the session, so it tracks session identity:
+
+- `<goto>` (same session) — carries forward.
+- `<reset>`, `<function>`, fresh-session forks — `0` (the session starts empty).
+- `<call>` — the callee **inherits** the caller's value (a call forks the
+  caller's session).
+- `<result>` — restored to the caller's value at the time of the call, so a
+  state that returns from a heavy `<call>` sees the caller's own (smaller)
+  context, not the callee's.
+
+It is `0` until the first turn of a session completes — including when the
+first state of a workflow is a script. Use it to branch on how full the context
+is getting (e.g. summarize-and-`<reset>` for compaction, or `<result>` to
+return from a call before the window fills):
+
+```markdown
+Context so far: {{context_tokens}} tokens.
+
+If this is over ~150000, write a concise summary of progress to
+`{{task_folder}}/summary.md` and emit `<reset input="resume from summary">`.
+Otherwise continue and emit `<goto>NEXT.md</goto>`.
+```
+
+The same number is available to script states as `RAYMOND_CONTEXT_TOKENS`. A
+script can also read the on-disk count for any session — including its own via
+`RAYMOND_SESSION_ID` — with `ray --claude_context_for_session=<session-id>`,
+which prints the current context-token count as a bare integer.
+
+> **Backend note:** populated for the Claude Code backend. Under the `pi`
+> backend it is currently always `0`.
 
 ### Fork Attributes
 

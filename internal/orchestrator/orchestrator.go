@@ -931,6 +931,16 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 					ws.Agents[agentIdx].SessionID = result.execResult.SessionID
 				}
 
+				// Apply the measured context size BEFORE the transition, for the
+				// same reason as SessionID: transition handlers manage context
+				// tokens per session identity (reset to 0, inherit on fork,
+				// restore from frame on result) and must see the post-turn value.
+				// nil means the state ran no LLM turn (script states) — leave the
+				// agent's existing value untouched so it carries forward.
+				if result.execResult.ContextTokens != nil {
+					ws.Agents[agentIdx].ContextTokens = *result.execResult.ContextTokens
+				}
+
 				// Clear ContinueAndFork: the executor consumed it in its copy;
 				// we must clear it in persistent state so it does not fire again
 				// on resume.

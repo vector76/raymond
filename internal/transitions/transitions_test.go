@@ -3438,3 +3438,79 @@ func TestApplyTransitionAskClearsPendingResult(t *testing.T) {
 	assert.Nil(t, result.Agent.PendingResult)
 }
 
+// --------------------------------------------------------------------------
+// ContextTokens follows session identity
+// --------------------------------------------------------------------------
+
+func TestHandleGotoCarriesContextTokens(t *testing.T) {
+	// Same session → context size carries forward unchanged.
+	agent := makeAgent("main", "A.md", strPtr("s1"))
+	agent.ContextTokens = 1234
+	result := transitions.HandleGoto(agent, parsing.Transition{Tag: "goto", Target: "B.md"})
+	assert.Equal(t, int64(1234), result.Agent.ContextTokens)
+}
+
+func TestHandleResetZerosContextTokens(t *testing.T) {
+	// Fresh session → context size resets to 0.
+	agent := makeAgent("main", "A.md", strPtr("s1"))
+	agent.ContextTokens = 5000
+	result := transitions.HandleReset(agent, parsing.Transition{Tag: "reset", Target: "B.md"}, &wfstate.WorkflowState{})
+	assert.Equal(t, int64(0), result.Agent.ContextTokens)
+}
+
+func TestHandleFunctionSavesFrameAndZeros(t *testing.T) {
+	// <function> runs a fresh session: caller's size saved to the frame, the
+	// function body starts at 0.
+	agent := makeAgent("main", "A.md", strPtr("s1"))
+	agent.ContextTokens = 8000
+	tr := parsing.Transition{Tag: "function", Target: "EVAL.md", Attributes: map[string]string{"return": "NEXT.md"}}
+
+	result, err := transitions.HandleFunction(agent, tr)
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, int64(8000), result.Agent.Stack[0].ContextTokens, "caller size saved to frame")
+	assert.Equal(t, int64(0), result.Agent.ContextTokens, "function body starts fresh")
+}
+
+func TestHandleCallSavesFrameAndInherits(t *testing.T) {
+	// <call> forks the caller's session: caller's size saved to the frame AND
+	// inherited by the callee (it is a fork, not a fresh session).
+	agent := makeAgent("main", "A.md", strPtr("s1"))
+	agent.ContextTokens = 8000
+	tr := parsing.Transition{Tag: "call", Target: "CHILD.md", Attributes: map[string]string{"return": "NEXT.md"}}
+
+	result, err := transitions.HandleCall(agent, tr)
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, int64(8000), result.Agent.Stack[0].ContextTokens, "caller size saved to frame")
+	assert.Equal(t, int64(8000), result.Agent.ContextTokens, "callee inherits forked context")
+}
+
+func TestHandleResultRestoresContextTokensFromFrame(t *testing.T) {
+	// On return, the caller's context size is restored — NOT zeroed — so the
+	// returned-to state reports the caller's own (smaller) context.
+	agent := makeAgent("main", "EVAL.md", strPtr("s_sub"))
+	agent.ContextTokens = 99000 // the heavy callee's size
+	agent.Stack = []wfstate.StackFrame{
+		{Session: strPtr("s_caller"), State: "NEXT.md", ContextTokens: 8000},
+	}
+	tr := parsing.Transition{Tag: "result", Payload: "done", Attributes: map[string]string{}}
+
+	result := transitions.HandleResult(agent, tr, &wfstate.WorkflowState{})
+	require.NotNil(t, result.Agent)
+	assert.Equal(t, int64(8000), result.Agent.ContextTokens, "caller's size restored from frame")
+}
+
+func TestApplyTransitionPreservesFrameContextTokens(t *testing.T) {
+	// The deep copy in ApplyTransition must carry StackFrame.ContextTokens
+	// across the call boundary, or <result> would restore 0.
+	agent := makeAgent("main", "A.md", strPtr("s1"))
+	agent.ContextTokens = 4242
+	tr := parsing.Transition{Tag: "call", Target: "CHILD.md", Attributes: map[string]string{"return": "NEXT.md"}}
+
+	result, err := transitions.ApplyTransition(&agent, tr, &wfstate.WorkflowState{}, nil)
+	require.NoError(t, err)
+	require.Len(t, result.Agent.Stack, 1)
+	assert.Equal(t, int64(4242), result.Agent.Stack[0].ContextTokens)
+}
+

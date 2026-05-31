@@ -65,6 +65,12 @@ type StackFrame struct {
 	NestingDepth int     `json:"nesting_depth,omitempty"` // caller's cross-workflow nesting depth at the time of the call
 	ScopeURL     string  `json:"scope_url,omitempty"`     // original URL when scope was fetched from a remote URL
 	TaskFolder   string  `json:"task_folder,omitempty"`   // output folder assigned to this call frame
+
+	// ContextTokens is the caller's context-window size at the moment of the
+	// call, restored by <result> so the returned-to state reports the caller's
+	// own context rather than the callee's. Context tokens follow session
+	// identity; this carries that property across the call boundary.
+	ContextTokens int64 `json:"context_tokens,omitempty"`
 }
 
 // AgentState holds the persisted state of a single agent within a workflow.
@@ -82,6 +88,16 @@ type AgentState struct {
 	// Cross-workflow nesting depth. Incremented by call-workflow/function-workflow,
 	// restored by result. Capped at 4 to prevent runaway recursion.
 	NestingDepth int `json:"nesting_depth,omitempty"`
+
+	// ContextTokens is how full this agent's current Claude session is, as of
+	// the end of its most recent completed LLM turn (input side + output; see
+	// internal/ctxtokens). It is a property of the session: carried forward
+	// across same-session transitions (<goto>), reset to 0 when a fresh session
+	// begins (<reset>, <function>, fresh-session forks), inherited when a
+	// session is forked (<call>), and restored from the stack frame on
+	// <result>. Zero until the first turn completes. Surfaced to states as
+	// {{context_tokens}} and to scripts as RAYMOND_CONTEXT_TOKENS.
+	ContextTokens int64 `json:"context_tokens,omitempty"`
 
 	// Orchestrator-managed lifecycle fields.
 	Status     string `json:"status,omitempty"`      // "paused", "failed", "asking", or "" (active)

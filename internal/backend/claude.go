@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/vector76/raymond/internal/ccwrap"
+	"github.com/vector76/raymond/internal/ctxtokens"
 	"github.com/vector76/raymond/internal/parsing"
 )
 
@@ -123,10 +124,11 @@ func (b *ClaudeBackend) RunTurn(ctx context.Context, spec TurnSpec, sink Sink) (
 	}
 
 	return TurnResult{
-		OutputText:  extractClaudeOutputText(results),
-		SessionID:   sessionID,
-		CostUSD:     extractClaudeCost(results),
-		InputTokens: extractClaudeTokens(results),
+		OutputText:    extractClaudeOutputText(results),
+		SessionID:     sessionID,
+		CostUSD:       extractClaudeCost(results),
+		InputTokens:   extractClaudeTokens(results),
+		ContextTokens: extractClaudeContextTokens(results),
 	}, nil
 }
 
@@ -377,6 +379,27 @@ func extractClaudeTokens(results []map[string]any) *int64 {
 			}
 		}
 		return &sum
+	}
+	return nil
+}
+
+// extractClaudeContextTokens returns the context-window size implied by the
+// last result object that carries a usage field, or nil when none does. Unlike
+// extractClaudeTokens (input side only, used for the per-turn observer count),
+// this includes output tokens via ctxtokens.FromUsage so the value matches the
+// on-disk reader in internal/ccsession.
+func extractClaudeContextTokens(results []map[string]any) *int64 {
+	for i := len(results) - 1; i >= 0; i-- {
+		usageRaw, ok := results[i]["usage"]
+		if !ok {
+			continue
+		}
+		usage, ok := usageRaw.(map[string]any)
+		if !ok {
+			return nil
+		}
+		v := ctxtokens.FromUsage(usage)
+		return &v
 	}
 	return nil
 }

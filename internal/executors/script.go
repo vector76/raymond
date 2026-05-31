@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/vector76/raymond/internal/events"
@@ -91,6 +92,15 @@ func (e *ScriptExecutor) Execute(
 	pendingResult := agent.PendingResult
 	forkAttributes := agent.ForkAttributes
 	env := platform.BuildScriptEnv(workflowID, agentID, agent.TaskFolder, pendingResult, forkAttributes)
+
+	// Surface the agent's context fullness and current session so scripts can
+	// branch on how full the context is (e.g. trigger compaction) or shell out
+	// to `ray --claude_context_for_session=$RAYMOND_SESSION_ID`. ContextTokens
+	// is the size as of the previous turn (0 on a fresh session); both are set
+	// deterministically so a script never inherits a stale value from an outer
+	// ray process.
+	env["RAYMOND_CONTEXT_TOKENS"] = strconv.FormatInt(agent.ContextTokens, 10)
+	env["RAYMOND_SESSION_ID"] = sessionIDStr(sessionID)
 
 	// Emit StateStarted.
 	execCtx.Bus.Emit(events.StateStarted{

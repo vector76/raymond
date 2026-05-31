@@ -22,6 +22,11 @@ type ExecutionResult struct {
 	Transitions []parsing.Transition // full list for multi-fork outputs; nil for single-transition outputs
 	SessionID   *string              // nil for script states (session preserved externally)
 	CostUSD     float64              // 0.0 for script states
+	// ContextTokens is the context-window size measured after this state's
+	// last LLM turn (input side + output). nil when the state ran no turn
+	// (script states, or a markdown state that produced no usage) — the
+	// orchestrator then leaves the agent's existing ContextTokens unchanged.
+	ContextTokens *int64
 }
 
 // sharedStepState holds the shared mutable step counter state that must be

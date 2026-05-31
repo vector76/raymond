@@ -2242,3 +2242,40 @@ func TestPendingAskErrorPendingCountReflectsQueueLength(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &parsed))
 	assert.Equal(t, float64(3), parsed["pending_count"])
 }
+
+// --------------------------------------------------------------------------
+// --claude_context_for_session
+// --------------------------------------------------------------------------
+
+// writeClaudeSession sets CLAUDE_CONFIG_DIR to a temp dir and writes one
+// transcript at <root>/projects/<project>/<id>.jsonl.
+func writeClaudeSession(t *testing.T, project, id string, lines ...string) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", root)
+	dir := filepath.Join(root, "projects", project)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	content := ""
+	for _, l := range lines {
+		content += l + "\n"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(content), 0o644))
+}
+
+func TestClaudeContextForSessionPrintsTokens(t *testing.T) {
+	writeClaudeSession(t, "-home-user-proj", "sess-1",
+		`{"type":"assistant","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":50,"cache_creation_input_tokens":25,"output_tokens":40}}}`,
+	)
+	out, _, err := run(t, "--claude_context_for_session=sess-1")
+	require.NoError(t, err)
+	// 100 + 50 + 25 + 40 = 215, bare integer + newline.
+	assert.Equal(t, "215\n", out)
+}
+
+func TestClaudeContextForSessionNotFound(t *testing.T) {
+	writeClaudeSession(t, "proj", "other",
+		`{"type":"assistant","message":{"usage":{"input_tokens":1}}}`,
+	)
+	_, _, err := run(t, "--claude_context_for_session=missing")
+	require.Error(t, err)
+}

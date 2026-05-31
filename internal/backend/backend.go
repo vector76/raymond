@@ -70,8 +70,16 @@ type TurnResult struct {
 	CostUSD float64
 
 	// InputTokens is the prompt-token count for this turn, or nil when
-	// the backend did not report usage.
+	// the backend did not report usage. This is the input side only
+	// (prompt + cache); it is what observers display per turn.
 	InputTokens *int64
+
+	// ContextTokens is how full the context window is as of this turn:
+	// every input-side token plus this turn's output (see ctxtokens.FromUsage).
+	// nil when the backend did not report usage. This is the number surfaced
+	// to workflows as {{context_tokens}} / RAYMOND_CONTEXT_TOKENS, and it
+	// matches what ccsession reads back off the on-disk transcript.
+	ContextTokens *int64
 }
 
 // Sink receives normalized events during a turn. Any nil function is

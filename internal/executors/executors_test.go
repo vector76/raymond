@@ -652,6 +652,65 @@ func TestScriptExecutor_PreservesSessionID(t *testing.T) {
 	}
 }
 
+func TestScriptExecutor_SetsContextAndSessionEnv(t *testing.T) {
+	dir, wfState := makeScriptWorkflow(t)
+	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
+
+	sid := "sess-xyz"
+	wfState.Agents[0].SessionID = &sid
+	wfState.Agents[0].ContextTokens = 54321
+
+	var capturedEnv map[string]string
+	executors.SetRunScriptFn(func(_ context.Context, _ string, _ float64, env map[string]string, _ string, _ func(string, []byte)) (*platform.ScriptResult, error) {
+		capturedEnv = env
+		return &platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>\n", ExitCode: 0}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
+	_, err := executors.NewScriptExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := capturedEnv["RAYMOND_CONTEXT_TOKENS"]; got != "54321" {
+		t.Errorf("RAYMOND_CONTEXT_TOKENS = %q, want %q", got, "54321")
+	}
+	if got := capturedEnv["RAYMOND_SESSION_ID"]; got != "sess-xyz" {
+		t.Errorf("RAYMOND_SESSION_ID = %q, want %q", got, "sess-xyz")
+	}
+}
+
+func TestScriptExecutor_ContextEnvZeroWhenFreshSession(t *testing.T) {
+	dir, wfState := makeScriptWorkflow(t)
+	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")
+	// Fresh agent: no session, no prior turn.
+	wfState.Agents[0].SessionID = nil
+	wfState.Agents[0].ContextTokens = 0
+
+	var capturedEnv map[string]string
+	executors.SetRunScriptFn(func(_ context.Context, _ string, _ float64, env map[string]string, _ string, _ func(string, []byte)) (*platform.ScriptResult, error) {
+		capturedEnv = env
+		return &platform.ScriptResult{Stdout: "<goto>NEXT.md</goto>\n", ExitCode: 0}, nil
+	})
+	defer executors.ResetRunScriptFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: wfState.WorkflowID}
+	_, err := executors.NewScriptExecutor().Execute(context.Background(), &wfState.Agents[0], wfState, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	// Deterministically set so a script never inherits a stale outer value.
+	if got := capturedEnv["RAYMOND_CONTEXT_TOKENS"]; got != "0" {
+		t.Errorf("RAYMOND_CONTEXT_TOKENS = %q, want %q", got, "0")
+	}
+	if _, ok := capturedEnv["RAYMOND_SESSION_ID"]; !ok {
+		t.Error("RAYMOND_SESSION_ID should be present (empty) on a fresh session")
+	}
+	if got := capturedEnv["RAYMOND_SESSION_ID"]; got != "" {
+		t.Errorf("RAYMOND_SESSION_ID = %q, want empty", got)
+	}
+}
+
 func TestScriptExecutor_ReturnsZeroCost(t *testing.T) {
 	dir, wfState := makeScriptWorkflow(t)
 	write(t, filepath.Join(dir, "CHECK.sh"), "#!/bin/sh")

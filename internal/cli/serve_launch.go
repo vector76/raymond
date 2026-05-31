@@ -18,7 +18,7 @@ import (
 //
 // Errors per id are logged to logOut and swallowed; the helper itself only
 // returns an error for impossible internal conditions (nil reg or nil rm).
-func launchStartupRuns(ctx context.Context, reg *daemon.Registry, rm *daemon.RunManager, serverBudget float64, serverDSP bool, ids []string, logOut io.Writer) error {
+func launchStartupRuns(ctx context.Context, reg *daemon.Registry, rm *daemon.RunManager, serverBudget float64, serverTimeout float64, serverDSP bool, ids []string, logOut io.Writer) error {
 	if reg == nil {
 		return fmt.Errorf("launchStartupRuns: nil registry")
 	}
@@ -58,7 +58,7 @@ func launchStartupRuns(ctx context.Context, reg *daemon.Registry, rm *daemon.Run
 
 			budget := daemon.ResolveBudget(0, entry.DefaultBudget, serverBudget)
 
-			runID, err := rm.LaunchRun(ctx, *entry, "", budget, "", serverDSP, "", nil)
+			runID, err := rm.LaunchRun(ctx, *entry, "", budget, serverTimeout, "", serverDSP, "", nil)
 			if err != nil {
 				logf("Failed to launch %s: %v\n", id, err)
 				return

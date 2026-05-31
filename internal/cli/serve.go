@@ -211,6 +211,20 @@ docs/graceful-shutdown.md for the full contract.`,
 				}
 			}
 
+			// Resolve the per-invocation timeout the same way `ray run` does:
+			// [raymond] timeout when set, otherwise the shared built-in default
+			// (defaultTimeoutSec). Forwarding it to the daemon keeps serve and
+			// CLI behaviour identical — without it, daemon-launched runs got no
+			// timeout at all, so a workflow that runs fine under the CLI could
+			// behave differently under serve. A workflow-level or per-state
+			// timeout: still overrides this.
+			configTimeout := defaultTimeoutSec
+			if v, ok := raymondCfg["timeout"]; ok {
+				if f, ok := v.(float64); ok {
+					configTimeout = f
+				}
+			}
+
 			// Resolve the effective dangerously_skip_permissions for the
 			// server: CLI flag wins; else config file value if present;
 			// else the global default (true). Mirrors the CLI launcher's
@@ -226,6 +240,7 @@ docs/graceful-shutdown.md for the full contract.`,
 			srv := daemon.NewServer(reg, rm, merged.Port)
 			srv.SetPendingRegistry(pr)
 			srv.SetDefaultBudget(configBudget)
+			srv.SetDefaultTimeout(configTimeout)
 			srv.SetDefaultDangerouslySkipPermissions(effectiveServerDSP)
 			srv.SetDefaultUploadCaps(merged.MaxFileSize, merged.MaxTotalSize, merged.MaxFileCount)
 
@@ -260,7 +275,7 @@ docs/graceful-shutdown.md for the full contract.`,
 				srv.Shutdown(shutdownCtx)
 			}()
 
-			if err := launchStartupRuns(cmd.Context(), reg, rm, configBudget, effectiveServerDSP, launches, logOut); err != nil {
+			if err := launchStartupRuns(cmd.Context(), reg, rm, configBudget, configTimeout, effectiveServerDSP, launches, logOut); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "startup launches aborted: %v\n", err)
 			}
 

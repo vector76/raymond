@@ -2198,6 +2198,108 @@ states:
 	assert.Equal(t, 60.0, timeouts[0])
 }
 
+// --- Workflow-level (top-level) timeout tests ---
+
+func TestWorkflowTimeout_YamlScope_AppliesWhenStateHasNone(t *testing.T) {
+	// A top-level (workflow-wide) timeout overrides the run-level default
+	// (CLI --timeout / config.toml) for every state that doesn't set its own.
+	yamlContent := `timeout: 300
+states:
+  START:
+    prompt: "Do work"
+    allowed_transitions:
+      - { tag: result }
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "START.md")
+
+	mock := newMock(
+		resultExecResult("done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	opts.TimeoutSource = "--timeout flag"
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	// Executor should receive the workflow-level timeout (300), not the
+	// run-level default (60).
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 1)
+	assert.Equal(t, 300.0, timeouts[0])
+
+	sources := mock.capturedTimeoutSources()
+	require.Len(t, sources, 1)
+	assert.Equal(t, "workflow-level timeout in workflow YAML", sources[0])
+}
+
+func TestWorkflowTimeout_PerStateOverridesWorkflowLevel(t *testing.T) {
+	// Precedence: per-state timeout (most specific) wins over the
+	// workflow-level timeout, which in turn wins over the run-level default.
+	yamlContent := `timeout: 300
+states:
+  START:
+    prompt: "Do work"
+    allowed_transitions:
+      - { tag: result }
+    timeout: 120
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "START.md")
+
+	mock := newMock(
+		resultExecResult("done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 1)
+	assert.Equal(t, 120.0, timeouts[0])
+
+	sources := mock.capturedTimeoutSources()
+	require.Len(t, sources, 1)
+	assert.Equal(t, "per-state timeout in workflow YAML", sources[0])
+}
+
+func TestWorkflowTimeout_MixedStates(t *testing.T) {
+	// With a workflow-level timeout, a state without its own uses the
+	// workflow-level value while a state with its own uses that instead.
+	yamlContent := `timeout: 300
+states:
+  START:
+    prompt: "Do work"
+    allowed_transitions:
+      - { tag: goto, target: NEXT }
+  NEXT:
+    prompt: "More work"
+    allowed_transitions:
+      - { tag: result }
+    timeout: 120
+`
+	stateDir, wfID := setupYamlWorkflow(t, yamlContent, "START.md")
+
+	mock := newMock(
+		gotoResult("NEXT.md"),
+		resultExecResult("done"),
+	)
+	orchestrator.SetExecutorFactory(func(_ string) executors.StateExecutor { return mock })
+	defer orchestrator.ResetExecutorFactory()
+
+	opts := defaultOpts(stateDir)
+	opts.Timeout = 60
+	require.NoError(t, orchestrator.RunAllAgents(context.Background(), wfID, opts))
+
+	timeouts := mock.capturedTimeouts()
+	require.Len(t, timeouts, 2)
+	assert.Equal(t, 300.0, timeouts[0], "START inherits the workflow-level timeout")
+	assert.Equal(t, 120.0, timeouts[1], "NEXT uses its own per-state timeout")
+}
+
 // TestPerStateTimeout_SourceOverride verifies that when a state defines its
 // own timeout, the executor receives a TimeoutSource that names the YAML
 // override (not the orchestrator's incoming source).

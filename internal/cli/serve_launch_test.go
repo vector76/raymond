@@ -64,7 +64,7 @@ func TestLaunchStartupRuns_Empty(t *testing.T) {
 	reg, rm := newTestEnv(t, t.TempDir())
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, nil, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, nil, &buf)
 	require.NoError(t, err)
 	assert.Empty(t, buf.String())
 	assert.Empty(t, rm.ListRuns())
@@ -77,7 +77,7 @@ func TestLaunchStartupRuns_SingleValidID(t *testing.T) {
 	reg, rm := newTestEnv(t, root)
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, []string{"foo"}, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, []string{"foo"}, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -99,7 +99,7 @@ func TestLaunchStartupRuns_MultipleDistinctIDs(t *testing.T) {
 	reg, rm := newTestEnv(t, root)
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, []string{"a", "b", "c"}, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, []string{"a", "b", "c"}, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -124,7 +124,7 @@ func TestLaunchStartupRuns_DuplicateIDs(t *testing.T) {
 	reg, rm := newTestEnv(t, root)
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, []string{"foo", "foo"}, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, []string{"foo", "foo"}, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -140,7 +140,7 @@ func TestLaunchStartupRuns_UnknownID(t *testing.T) {
 	reg, rm := newTestEnv(t, t.TempDir())
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, []string{"does-not-exist"}, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, []string{"does-not-exist"}, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -153,7 +153,7 @@ func TestLaunchStartupRuns_EmptyStringID(t *testing.T) {
 	reg, rm := newTestEnv(t, t.TempDir())
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, []string{""}, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, []string{""}, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -169,7 +169,7 @@ func TestLaunchStartupRuns_InputRequired(t *testing.T) {
 	reg, rm := newTestEnv(t, root)
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, []string{"needs-input"}, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, []string{"needs-input"}, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -186,7 +186,7 @@ func TestLaunchStartupRuns_MixedValidAndUnknown(t *testing.T) {
 	reg, rm := newTestEnv(t, root)
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, []string{"good", "missing"}, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, []string{"good", "missing"}, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -212,7 +212,7 @@ func TestLaunchStartupRuns_ConcurrentLogIntegrity(t *testing.T) {
 	ids := []string{"a", "b", "c", "missing-1", "a", "missing-2", "b", "c"}
 
 	var buf bytes.Buffer
-	err := launchStartupRuns(context.Background(), reg, rm, 0, false, ids, &buf)
+	err := launchStartupRuns(context.Background(), reg, rm, 0, 0, false, ids, &buf)
 	require.NoError(t, err)
 
 	successRe := regexp.MustCompile(`^Launched run \S+ for workflow \S+$`)

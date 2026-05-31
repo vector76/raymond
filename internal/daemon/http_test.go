@@ -418,6 +418,33 @@ func TestCreateRun_AppliesDefaultBudgetWhenUnspecified(t *testing.T) {
 	assert.Equal(t, daemonDefaultBudgetUSD, ws.BudgetUSD)
 }
 
+func TestCreateRun_PropagatesServerTimeout(t *testing.T) {
+	// SetDefaultTimeout must reach the run's RunOptions so the daemon applies
+	// the same per-invocation timeout `ray run` resolves from config.toml,
+	// keeping serve and CLI behaviour consistent.
+	srv, ts, fake := newTestServer(t)
+	srv.SetDefaultTimeout(42.5)
+
+	body := `{"workflow_id": "test-workflow"}`
+	resp, err := http.Post(ts.URL+"/runs", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var cr createRunResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cr))
+
+	require.Eventually(t, func() bool {
+		return fake.callCount() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	fake.mu.Lock()
+	gotOpts := fake.calls[0].Opts
+	fake.mu.Unlock()
+	assert.Equal(t, 42.5, gotOpts.Timeout,
+		"server-wide timeout must propagate into RunOptions")
+}
+
 func TestCreateRun_PropagatesServerDangerouslySkipPermissions(t *testing.T) {
 	// SetDefaultDangerouslySkipPermissions must reach the run's RunOptions
 	// and be persisted into LaunchParams. Run with both true and false to
@@ -920,7 +947,7 @@ func TestListPendingInputs(t *testing.T) {
 
 		b.Emit(events.AgentAskStarted{
 			AgentID:   "main",
-			AskID:   "test-input-1",
+			AskID:     "test-input-1",
 			Prompt:    "What should I do?",
 			NextState: "NEXT.md",
 			Timestamp: time.Now(),
@@ -984,7 +1011,7 @@ func TestDeliverInput(t *testing.T) {
 
 		b.Emit(events.AgentAskStarted{
 			AgentID:   "main",
-			AskID:   "test-input-1",
+			AskID:     "test-input-1",
 			Prompt:    "What should I do?",
 			NextState: "NEXT.md",
 			Timestamp: time.Now(),
@@ -1156,7 +1183,7 @@ func TestListInputFiles_PendingReturnsStaged(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:       runID,
 		AgentID:     "main",
-		AskID:     "inp-1",
+		AskID:       "inp-1",
 		Prompt:      "review",
 		CreatedAt:   time.Now(),
 		StagedFiles: staged,
@@ -1189,7 +1216,7 @@ func TestListInputFiles_ResolvedReturnsStagedPlusUploaded(t *testing.T) {
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		AskID:      "inp-resolved",
+		AskID:        "inp-resolved",
 		AgentID:      "main",
 		Prompt:       "upload",
 		ResponseText: "done",
@@ -1236,7 +1263,7 @@ func TestListInputFiles_ResolvedAfterPendingCleared(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:       runID,
 		AgentID:     "main",
-		AskID:     "inp-cleared",
+		AskID:       "inp-cleared",
 		Prompt:      "review and reply",
 		CreatedAt:   time.Now(),
 		StagedFiles: staged,
@@ -1250,7 +1277,7 @@ func TestListInputFiles_ResolvedAfterPendingCleared(t *testing.T) {
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		AskID:      "inp-cleared",
+		AskID:        "inp-cleared",
 		AgentID:      "main",
 		Prompt:       "review and reply",
 		ResponseText: "ok",
@@ -1287,7 +1314,7 @@ func TestListInputFiles_EmptyReturnsArrayNotNull(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-empty",
+		AskID:     "inp-empty",
 		Prompt:    "no files yet",
 		CreatedAt: time.Now(),
 	}))
@@ -1339,7 +1366,7 @@ func TestListResolvedInputs_ReturnsPromptResponseAndFiles(t *testing.T) {
 	resolved := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
 	ws.ResolvedInputs = append(ws.ResolvedInputs,
 		wfstate.ResolvedInput{
-			AskID:      "inp-1",
+			AskID:        "inp-1",
 			AgentID:      "main",
 			Prompt:       "review the chart",
 			NextState:    "step-2.md",
@@ -1351,7 +1378,7 @@ func TestListResolvedInputs_ReturnsPromptResponseAndFiles(t *testing.T) {
 			ResolvedAt: resolved,
 		},
 		wfstate.ResolvedInput{
-			AskID:      "inp-2",
+			AskID:        "inp-2",
 			AgentID:      "main",
 			Prompt:       "upload corrections",
 			ResponseText: "see attached",
@@ -1412,7 +1439,7 @@ func TestListResolvedInputs_OmitsZeroTimestampsAndEmptyFileFields(t *testing.T) 
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		AskID:      "inp-text",
+		AskID:        "inp-text",
 		AgentID:      "main",
 		Prompt:       "yes or no?",
 		ResponseText: "yes",
@@ -1459,7 +1486,7 @@ func TestListPendingInputs_BucketModeReturnsBucketObject(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:          runID,
 		AgentID:        "main",
-		AskID:        "inp-bucket",
+		AskID:          "inp-bucket",
 		Prompt:         "attach images",
 		CreatedAt:      time.Now(),
 		FileAffordance: affordance,
@@ -1507,7 +1534,7 @@ func TestListPendingInputs_TextOnlyHasNoFileFields(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-text",
+		AskID:     "inp-text",
 		Prompt:    "yes or no?",
 		CreatedAt: time.Now(),
 	}))
@@ -1550,7 +1577,7 @@ func TestListPendingInputs_SlotModeReturnsSlots(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:          runID,
 		AgentID:        "main",
-		AskID:        "inp-slot",
+		AskID:          "inp-slot",
 		Prompt:         "upload your application",
 		CreatedAt:      time.Now(),
 		FileAffordance: affordance,
@@ -1591,7 +1618,7 @@ func TestListPendingInputs_DisplayOnlyReturnsStagedFiles(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:          runID,
 		AgentID:        "main",
-		AskID:        "inp-display",
+		AskID:          "inp-display",
 		Prompt:         "review the report",
 		CreatedAt:      time.Now(),
 		FileAffordance: affordance,
@@ -1668,7 +1695,7 @@ func TestGetInputFile_ServesStagedDisplayFileForPendingAsk(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-pending",
+		AskID:     "inp-pending",
 		Prompt:    "review",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
@@ -1702,7 +1729,7 @@ func TestGetInputFile_ServesUploadedFileForResolvedInput(t *testing.T) {
 	var ws wfstate.WorkflowState
 	require.NoError(t, json.Unmarshal(raw, &ws))
 	ws.ResolvedInputs = append(ws.ResolvedInputs, wfstate.ResolvedInput{
-		AskID: "inp-resolved",
+		AskID:   "inp-resolved",
 		AgentID: "main",
 		UploadedFiles: []wfstate.FileRecord{
 			{Name: "data.csv", Size: int64(len(content)), ContentType: "text/csv", Source: "upload"},
@@ -1733,7 +1760,7 @@ func TestGetInputFile_RejectsPathTraversal(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-trav",
+		AskID:     "inp-trav",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "ok.txt", Size: 0, ContentType: "text/plain", Source: "display"},
@@ -1772,7 +1799,7 @@ func TestGetInputFile_DefaultDispositionIsAttachment(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-disp",
+		AskID:     "inp-disp",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "report.pdf", Size: 13, ContentType: "application/pdf", Source: "display"},
@@ -1799,7 +1826,7 @@ func TestGetInputFile_InlineHonoredForAllowlistedMime(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-inline",
+		AskID:     "inp-inline",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "preview.png", Size: 9, ContentType: "image/png", Source: "display"},
@@ -1837,7 +1864,7 @@ func TestGetInputFile_InlineDeniedForNonAllowlistedMime(t *testing.T) {
 			require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 				RunID:     runID,
 				AgentID:   "main",
-				AskID:   askID,
+				AskID:     askID,
 				CreatedAt: time.Now(),
 				StagedFiles: []wfstate.FileRecord{
 					{Name: tc.recordName, Size: 1, ContentType: tc.contentType, Source: "display"},
@@ -1867,7 +1894,7 @@ func TestGetInputFile_DefenseHeadersAlwaysPresent(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-headers",
+		AskID:     "inp-headers",
 		CreatedAt: time.Now(),
 		StagedFiles: []wfstate.FileRecord{
 			{Name: "img.png", Size: 3, ContentType: "image/png", Source: "display"},
@@ -1918,7 +1945,7 @@ func TestGetInputFile_UnknownFileInCatalog(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-cat",
+		AskID:     "inp-cat",
 		CreatedAt: time.Now(),
 	}))
 
@@ -1982,7 +2009,7 @@ func TestDeliverInput_Multipart_SlotMode_Success(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-slot",
+		AskID:     "inp-slot",
 		Prompt:    "upload your application",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
@@ -2032,7 +2059,7 @@ func TestDeliverInput_Multipart_SlotMode_MissingSlot(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-miss",
+		AskID:     "inp-miss",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeSlot,
@@ -2062,7 +2089,7 @@ func TestDeliverInput_Multipart_SlotMode_ExtraSlot(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-extra",
+		AskID:     "inp-extra",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeSlot,
@@ -2095,7 +2122,7 @@ func TestDeliverInput_Multipart_SlotMode_DuplicatePartForSameSlot(t *testing.T) 
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-dup-slot",
+		AskID:     "inp-dup-slot",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeSlot,
@@ -2125,7 +2152,7 @@ func TestDeliverInput_Multipart_BucketMode_Success(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-bucket",
+		AskID:     "inp-bucket",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2161,7 +2188,7 @@ func TestDeliverInput_Multipart_BucketMode_PerFileSizeExceeded(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-pf",
+		AskID:     "inp-pf",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2191,7 +2218,7 @@ func TestDeliverInput_Multipart_BucketMode_TotalSizeExceeded(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-total",
+		AskID:     "inp-total",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2228,7 +2255,7 @@ func TestDeliverInput_Multipart_BucketMode_CountExceeded(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-count",
+		AskID:     "inp-count",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2257,7 +2284,7 @@ func TestDeliverInput_Multipart_BucketMode_MIMEAllowlist(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-mime",
+		AskID:     "inp-mime",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2285,7 +2312,7 @@ func TestDeliverInput_Multipart_FilenameNormalizationRejection(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-name",
+		AskID:     "inp-name",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2314,7 +2341,7 @@ func TestDeliverInput_Multipart_DuplicateFilenameInSubmission(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-dup",
+		AskID:     "inp-dup",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode:   parsing.ModeBucket,
@@ -2341,7 +2368,7 @@ func TestDeliverInput_Multipart_CollisionWithStagedFile(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-coll",
+		AskID:     "inp-coll",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode:   parsing.ModeBucket,
@@ -2398,7 +2425,7 @@ func TestDeliverInput_Multipart_FailedValidationLeavesInputClaimable(t *testing.
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-recover",
+		AskID:     "inp-recover",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode: parsing.ModeBucket,
@@ -2456,7 +2483,7 @@ func TestDeliverInput_Multipart_ConcurrentSecondSubmissionInputNotPending(t *tes
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-race",
+		AskID:     "inp-race",
 		CreatedAt: time.Now(),
 		FileAffordance: &parsing.FileAffordance{
 			Mode:   parsing.ModeBucket,
@@ -2490,7 +2517,7 @@ func TestDeliverInput_JSON_TextOnlyAskStillWorks(t *testing.T) {
 	require.NoError(t, srv.pendingRegistry.Register(PendingAsk{
 		RunID:     runID,
 		AgentID:   "main",
-		AskID:   "inp-json",
+		AskID:     "inp-json",
 		Prompt:    "yes or no",
 		CreatedAt: time.Now(),
 	}))
@@ -3114,4 +3141,3 @@ func TestCreateRun_NoShutdownDriverUnchanged(t *testing.T) {
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	assert.Equal(t, 1, fake.callCount())
 }
-

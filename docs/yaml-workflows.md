@@ -68,7 +68,7 @@ states:
 | `allowed_transitions` | list | no | Constrains which transitions the model may use |
 | `model` | string | no | Model override (`opus`, `sonnet`, `haiku`) |
 | `effort` | string | no | Extended thinking level (`low`, `medium`, `high`) |
-| `timeout` | number | no | Per-state timeout in seconds; overrides the global `--timeout` flag for this state. `0` means no timeout. Negative values are a validation error. |
+| `timeout` | number | no | Per-state timeout in seconds. Overrides the workflow-level `timeout` and the run-level default (`--timeout` / config) for this state. `0` means no timeout. Negative values are a validation error. |
 | `force_implicit` | bool | no | When `true`, the orchestrator dispatches the (single) allowed transition without parsing the model's output for tags. Requires the policy to be implicit-eligible. See [workflow-protocol.md](workflow-protocol.md#implicit-transitions-optimization). |
 
 Each entry in `allowed_transitions` is a mapping with a `tag` key and optional
@@ -111,6 +111,35 @@ states.
 Each state must be exactly one type — markdown or script. A state with both
 `prompt` and a script key (e.g. `sh`) is a validation error. A state with
 neither is also an error.
+
+### Workflow-level timeout
+
+A top-level `timeout` key sets a workflow-wide idle timeout (seconds) applied to
+every state that does not declare its own. Unlike the daemon manifest keys
+below, it is honoured by both `ray <file>` (CLI) and `ray serve`:
+
+```yaml
+timeout: 300        # workflow-wide default for all states
+states:
+  START:
+    prompt: ...
+```
+
+`0` disables the timeout; a negative value is a validation error.
+
+**Timeout precedence** (most specific wins):
+
+1. A state's own `timeout:`.
+2. The top-level workflow `timeout:`.
+3. The run-level default — `--timeout` (CLI) or `[raymond] timeout` in
+   `.raymond/config.toml`.
+4. The built-in default (600s).
+
+An author's `timeout:` (state or workflow level) therefore always beats the
+run-level default; `--timeout` / config act as the fallback for workflows that
+don't set one. `ray serve` resolves that run-level default from the same
+`[raymond] timeout` (or the 600s built-in) as the CLI, so a workflow's effective
+timeout is identical whether run via `ray <file>` or the daemon.
 
 ### Unknown fields
 

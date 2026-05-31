@@ -88,6 +88,7 @@ func TestNestedRayLaunchRoutesToCLIPool(t *testing.T) {
 		},
 		"",    // input
 		0,     // budget
+		0,     // timeout
 		"",    // model
 		false, // dangerouslySkipPermissions
 		"",    // workDir

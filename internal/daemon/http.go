@@ -139,6 +139,11 @@ type Server struct {
 	// default_budget. Configured by SetDefaultBudget; defaults to 0
 	// (meaning the handler falls through to daemonDefaultBudgetUSD).
 	defaultBudget float64
+	// defaultTimeout is the server-wide per-invocation idle timeout (seconds)
+	// applied to daemon-launched runs, mirroring the CLI's resolved timeout so
+	// serve and `ray run` behave the same. Configured by SetDefaultTimeout; a
+	// workflow-level or per-state timeout: still overrides it at run time.
+	defaultTimeout float64
 	// defaultDangerouslySkipPermissions is the server-wide skip-permissions
 	// value applied to every run launched through this server. Configured
 	// by SetDefaultDangerouslySkipPermissions; defaults to false (Go zero)
@@ -242,6 +247,15 @@ func (s *Server) SetPendingRegistry(pr *PendingRegistry) {
 // after loading .raymond/config.toml.
 func (s *Server) SetDefaultBudget(budget float64) {
 	s.defaultBudget = budget
+}
+
+// SetDefaultTimeout sets the server-wide per-invocation idle timeout (seconds)
+// applied to daemon-launched runs, mirroring the CLI's resolved --timeout /
+// config.toml [raymond] timeout / built-in default so serve and `ray run`
+// behave the same. A workflow-level or per-state timeout: still overrides it.
+// Safe to call during server setup before any requests are served.
+func (s *Server) SetDefaultTimeout(timeout float64) {
+	s.defaultTimeout = timeout
 }
 
 // SetDefaultDangerouslySkipPermissions configures the server-wide skip-perms
@@ -542,7 +556,7 @@ type cancelRunResponse struct {
 
 type pendingInputResponse struct {
 	RunID          string                  `json:"run_id"`
-	AskID        string                  `json:"ask_id"`
+	AskID          string                  `json:"ask_id"`
 	Prompt         string                  `json:"prompt"`
 	CreatedAt      string                  `json:"created_at"`
 	TimeoutAt      *string                 `json:"timeout_at,omitempty"`
@@ -590,7 +604,7 @@ type fileAffordanceResponse struct {
 // the dashboard can reuse the same file-row helper for pending and
 // historical views.
 type resolvedInputResponse struct {
-	AskID       string              `json:"ask_id"`
+	AskID         string              `json:"ask_id"`
 	AgentID       string              `json:"agent_id"`
 	Prompt        string              `json:"prompt,omitempty"`
 	NextState     string              `json:"next_state,omitempty"`
@@ -606,9 +620,9 @@ type deliverInputRequest struct {
 }
 
 type deliverInputResponse struct {
-	RunID   string `json:"run_id"`
-	AskID string `json:"ask_id"`
-	Status  string `json:"status"`
+	RunID  string `json:"run_id"`
+	AskID  string `json:"ask_id"`
+	Status string `json:"status"`
 }
 
 type errorResponse struct {
@@ -697,6 +711,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		*entry,
 		req.Input,
 		budget,
+		s.defaultTimeout,
 		req.Model,
 		s.defaultDangerouslySkipPermissions,
 		req.WorkingDirectory,
@@ -836,7 +851,7 @@ func (s *Server) handleListPendingInputs(w http.ResponseWriter, r *http.Request)
 	for i, pi := range inputs {
 		resp[i] = pendingInputResponse{
 			RunID:          pi.RunID,
-			AskID:        pi.AskID,
+			AskID:          pi.AskID,
 			Prompt:         pi.Prompt,
 			CreatedAt:      pi.CreatedAt.Format(time.RFC3339),
 			FileAffordance: fileAffordanceToResponse(pi.FileAffordance),
@@ -875,7 +890,7 @@ func (s *Server) handleListResolvedInputs(w http.ResponseWriter, r *http.Request
 	resp := make([]resolvedInputResponse, len(resolved))
 	for i, ri := range resolved {
 		entry := resolvedInputResponse{
-			AskID:       ri.AskID,
+			AskID:         ri.AskID,
 			AgentID:       ri.AgentID,
 			Prompt:        ri.Prompt,
 			NextState:     ri.NextState,
@@ -1124,9 +1139,9 @@ func (s *Server) handleDeliverInput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, deliverInputResponse{
-		RunID:   runID,
-		AskID: askID,
-		Status:  "resumed",
+		RunID:  runID,
+		AskID:  askID,
+		Status: "resumed",
 	})
 }
 
@@ -1445,9 +1460,9 @@ func (s *Server) handleDeliverInputMultipart(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, deliverInputResponse{
-		RunID:   runID,
-		AskID: askID,
-		Status:  "resumed",
+		RunID:  runID,
+		AskID:  askID,
+		Status: "resumed",
 	})
 }
 

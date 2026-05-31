@@ -603,3 +603,37 @@ func GetStateTimeout(yamlPath, stateName string) (*float64, error) {
 	v := *st.Timeout
 	return &v, nil
 }
+
+// GetWorkflowTimeout returns the top-level (workflow-wide) timeout declared in
+// the YAML scope file if explicitly set, or nil if the field was omitted. The
+// value serves as the default timeout for every state in the workflow unless a
+// state declares its own timeout: (which takes precedence). It is read directly
+// from the file's top-level mapping, mirroring GetBackend.
+//
+// Returns a *YamlValidationError if the value is negative and a *YamlParseError
+// if the file cannot be read or parsed.
+func GetWorkflowTimeout(yamlPath string) (*float64, error) {
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return nil, &YamlParseError{msg: fmt.Sprintf("failed to read yaml file: %s: %v", yamlPath, err)}
+	}
+
+	var raw struct {
+		Timeout *float64 `yaml:"timeout"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, &YamlParseError{msg: fmt.Sprintf("invalid YAML syntax in %s: %v", yamlPath, err)}
+	}
+
+	if raw.Timeout != nil && *raw.Timeout < 0 {
+		return nil, &YamlValidationError{
+			msg: fmt.Sprintf("workflow-level timeout must not be negative in %s", yamlPath),
+		}
+	}
+
+	if raw.Timeout == nil {
+		return nil, nil
+	}
+	v := *raw.Timeout
+	return &v, nil
+}

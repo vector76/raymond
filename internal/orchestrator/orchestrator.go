@@ -620,6 +620,23 @@ func RunAllAgents(ctx context.Context, workflowID string, opts RunOptions) error
 		effectiveTimeout := execCtx.Timeout
 		effectiveTimeoutSource := execCtx.TimeoutSource
 		if yamlscope.IsYamlScope(agentCopy.ScopeDir) {
+			// Workflow-level timeout applies to every state unless the state
+			// declares its own. It overrides the run-level default (CLI
+			// --timeout / config.toml / built-in) and is in turn overridden by
+			// the per-state timeout resolved below.
+			wfTimeout, err := yamlscope.GetWorkflowTimeout(agentCopy.ScopeDir)
+			if err != nil {
+				resultCh <- stepResult{
+					agentID: agentCopy.ID,
+					err:     err,
+				}
+				return
+			}
+			if wfTimeout != nil {
+				effectiveTimeout = *wfTimeout
+				effectiveTimeoutSource = "workflow-level timeout in workflow YAML"
+			}
+
 			stateName := executors.ExtractStateName(agentCopy.CurrentState)
 			perStateTimeout, err := yamlscope.GetStateTimeout(agentCopy.ScopeDir, stateName)
 			if err != nil {

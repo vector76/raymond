@@ -27,7 +27,7 @@ Based on `internal/config/config.go`, the following options are supported in con
 - `dangerously_skip_permissions` (bool, default: true)
 - `effort` (str: "low"|"medium"|"high", default: none)
 - `model` (str: "opus"|"sonnet"|"haiku", default: none)
-- `timeout` (float, default: 600, 0=none)
+- `timeout` (float, default: 600, 0=none) - Resolved identically for `ray run` and `ray serve`: the daemon applies the same `[raymond] timeout` (or 600s built-in) as the CLI as each run's default idle timeout. A workflow-level or per-state `timeout:` in the workflow file still overrides this default (see [yaml-workflows.md](yaml-workflows.md)).
 - `no_debug` (bool, default: false) - Matches CLI `--no-debug` semantics (default: false means debug mode is enabled)
 - `no_wait` (bool, default: false) - Do not auto-wait when usage limit is reached; exit immediately instead
 - `verbose` (bool, default: false)

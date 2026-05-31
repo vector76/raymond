@@ -24,11 +24,11 @@ import (
 
 // Run status constants.
 const (
-	RunStatusRunning       = "running"
-	RunStatusCompleted     = "completed"
-	RunStatusFailed        = "failed"
-	RunStatusCancelled     = "cancelled"
-	RunStatusAsking = "asking"
+	RunStatusRunning   = "running"
+	RunStatusCompleted = "completed"
+	RunStatusFailed    = "failed"
+	RunStatusCancelled = "cancelled"
+	RunStatusAsking    = "asking"
 )
 
 // AgentInfo holds a snapshot of an agent's state within a run.
@@ -69,19 +69,19 @@ const subscriberHeadroom = 1024
 // Sentinel errors returned (wrapped) by RunManager methods. Callers should
 // match these via errors.Is rather than inspecting the error message text.
 var (
-	ErrRunNotFound           = errors.New("run not found")
-	ErrPendingAskNotFound  = errors.New("pending input not found")
-	ErrPendingAskMismatch  = errors.New("pending input does not belong to run")
+	ErrRunNotFound        = errors.New("run not found")
+	ErrPendingAskNotFound = errors.New("pending input not found")
+	ErrPendingAskMismatch = errors.New("pending input does not belong to run")
 )
 
 // runEntry is the internal bookkeeping for a tracked run.
 type runEntry struct {
-	mu           sync.Mutex
-	info         RunInfo
-	cancel       context.CancelFunc                // nil only for recovered terminal entries (history-only)
-	doneCh       chan struct{}                      // closed when the run reaches a terminal state
-	eventBus     *bus.Bus                           // set by ObserverSetup; nil for recovered terminal entries
-	busReady     chan struct{}                      // closed when eventBus is set
+	mu         sync.Mutex
+	info       RunInfo
+	cancel     context.CancelFunc         // nil only for recovered terminal entries (history-only)
+	doneCh     chan struct{}              // closed when the run reaches a terminal state
+	eventBus   *bus.Bus                   // set by ObserverSetup; nil for recovered terminal entries
+	busReady   chan struct{}              // closed when eventBus is set
 	askInputCh chan orchestrator.AskInput // delivers responses to pending asks
 
 	// stopSignalCh is closed by QuiesceAll to ask the orchestrator to
@@ -95,8 +95,8 @@ type runEntry struct {
 	// new event (append to eventLog + fan-out to subscribers) and when adding
 	// or removing a subscriber.
 	logMu       sync.Mutex
-	eventLog    []any       // ring buffer of recent events for replay
-	subscribers []chan any  // live subscribers; each receives a copy of every new event
+	eventLog    []any      // ring buffer of recent events for replay
+	subscribers []chan any // live subscribers; each receives a copy of every new event
 }
 
 // Orchestrator is the interface for launching workflow runs. It exists so
@@ -246,6 +246,7 @@ func (rm *RunManager) LaunchRun(
 	entry WorkflowEntry,
 	input string,
 	budget float64,
+	timeout float64,
 	model string,
 	dangerouslySkipPermissions bool,
 	workDir string,
@@ -278,7 +279,7 @@ func (rm *RunManager) LaunchRun(
 	lp := &wfstate.LaunchParams{
 		DangerouslySkipPermissions: dangerouslySkipPermissions,
 		Model:                      model,
-		OnAsk:                    "pause", // daemon always allows ask
+		OnAsk:                      "pause", // daemon always allows ask
 	}
 
 	ws := wfstate.CreateInitialState(runID, entry.ScopeDir, initialState, budget, inputPtr, "", lp)
@@ -317,9 +318,11 @@ func (rm *RunManager) LaunchRun(
 	opts := orchestrator.RunOptions{
 		StateDir:                   stateDir,
 		DefaultModel:               model,
+		Timeout:                    timeout,
+		TimeoutSource:              "serve config/default timeout",
 		DangerouslySkipPermissions: dangerouslySkipPermissions,
 		Quiet:                      true,
-		OnAsk:                    "pause",
+		OnAsk:                      "pause",
 		StopSignalCh:               stopSignalCh,
 		// Match the CLI's default behavior so raw Claude stream output
 		// lands on disk (.raymond/debug/<run_id>/*.jsonl). Without this,
@@ -348,7 +351,7 @@ func (rm *RunManager) LaunchRun(
 			pi := PendingAsk{
 				RunID:          runID,
 				AgentID:        agentID,
-				AskID:        askID,
+				AskID:          askID,
 				WorkflowID:     entry.ID,
 				Prompt:         prompt,
 				NextState:      nextState,

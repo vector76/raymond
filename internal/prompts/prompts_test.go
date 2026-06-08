@@ -250,6 +250,49 @@ func TestRenderPrompt_NonStringValue(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// WorkflowParentDir
+// --------------------------------------------------------------------------
+
+func TestWorkflowParentDir(t *testing.T) {
+	cases := []struct {
+		name     string
+		scopeDir string
+		want     string
+	}{
+		{"yaml file", "/a/b/my_wf.yaml", "/a/b"},
+		{"zip file", "/a/b/my_wf.zip", "/a/b"},
+		{"directory", "/a/b/my_wf", "/a/b"},
+		{"directory trailing slash", "/a/b/my_wf/", "/a/b"},
+		{"redundant separators", "/a//b/my_wf.yaml", "/a/b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			skipWindows(t) // absolute-path literals are POSIX-shaped
+			if got := WorkflowParentDir(tc.scopeDir); got != tc.want {
+				t.Errorf("WorkflowParentDir(%q) = %q, want %q", tc.scopeDir, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowParentDir_Empty(t *testing.T) {
+	if got := WorkflowParentDir(""); got != "" {
+		t.Errorf("WorkflowParentDir(\"\") = %q, want empty string", got)
+	}
+}
+
+func TestWorkflowParentDir_RelativeBecomesAbsolute(t *testing.T) {
+	skipWindows(t)
+	got := WorkflowParentDir("rel/my_wf.yaml")
+	if !filepath.IsAbs(got) {
+		t.Errorf("WorkflowParentDir(relative) = %q, want an absolute path", got)
+	}
+	if !strings.HasSuffix(got, "/rel") {
+		t.Errorf("WorkflowParentDir(\"rel/my_wf.yaml\") = %q, want it to end in /rel", got)
+	}
+}
+
+// --------------------------------------------------------------------------
 // ResolveState — cross-platform
 // --------------------------------------------------------------------------
 

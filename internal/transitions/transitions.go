@@ -113,7 +113,7 @@ func ApplyTransition(
 	case "ask":
 		return HandleAsk(copy, transition, wfState)
 	case "reset-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder, copy.ScopeDir)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -128,7 +128,7 @@ func ApplyTransition(
 		}
 		return HandleResetWorkflow(copy, tr, wfState, res), nil
 	case "fork-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder, copy.ScopeDir)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -149,7 +149,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "call-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder, copy.ScopeDir)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -170,7 +170,7 @@ func ApplyTransition(
 		}
 		return result, nil
 	case "function-workflow":
-		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder)
+		tr := withRenderedInput(transition, origPendingResult, origForkAttributes, wfState.WorkflowID, copy.ID, copy.TaskFolder, copy.ScopeDir)
 		var res specifier.Resolution
 		var err error
 		if copy.ScopeURL != "" {
@@ -263,6 +263,7 @@ func withRenderedInput(
 	workflowID string,
 	agentID string,
 	taskFolder string,
+	scopeDir string,
 ) parsing.Transition {
 	input, ok := transition.Attributes["input"]
 	if !ok || input == "" {
@@ -279,6 +280,7 @@ func withRenderedInput(
 	variables["workflow_id"] = workflowID
 	variables["agent_id"] = agentID
 	variables["task_folder"] = taskFolder
+	variables["wf_parent"] = prompts.WorkflowParentDir(scopeDir)
 
 	rendered := prompts.RenderPrompt(input, variables)
 	if rendered == input {
@@ -393,7 +395,7 @@ func HandleFunction(agent wfstate.AgentState, transition parsing.Transition) (Tr
 	returnState, ok := transition.Attributes["return"]
 	if !ok {
 		return TransitionResult{}, fmt.Errorf(
-			"<function> tag requires 'return' attribute. "+
+			"<function> tag requires 'return' attribute. " +
 				"Example: <function return=\"NEXT.md\">EVAL.md</function>",
 		)
 	}
@@ -431,7 +433,7 @@ func HandleCall(agent wfstate.AgentState, transition parsing.Transition) (Transi
 	returnState, ok := transition.Attributes["return"]
 	if !ok {
 		return TransitionResult{}, fmt.Errorf(
-			"<call> tag requires 'return' attribute. "+
+			"<call> tag requires 'return' attribute. " +
 				"Example: <call return=\"NEXT.md\">CHILD.md</call>",
 		)
 	}
@@ -554,7 +556,7 @@ func HandleFork(
 	nextState, ok := transition.Attributes["next"]
 	if !ok {
 		return TransitionResult{}, fmt.Errorf(
-			"<fork> tag requires 'next' attribute. "+
+			"<fork> tag requires 'next' attribute. " +
 				"Example: <fork next=\"NEXT.md\">WORKER.md</fork>",
 		)
 	}

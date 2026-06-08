@@ -356,6 +356,7 @@ Scripts receive workflow context via environment variables:
 | `RAYMOND_INPUT` | Inbound payload — same channel as `{{input}}` for markdown states (see [Template Variables](#template-variables)) | (unset when empty) |
 | `RAYMOND_CONTEXT_TOKENS` | Context-window fullness of this agent's session, as of the end of the previous turn (same value as `{{context_tokens}}`); `0` on a fresh session | `45072` |
 | `RAYMOND_SESSION_ID` | This agent's current backend session id (empty before the first turn); usable with `ray --claude_context_for_session=$RAYMOND_SESSION_ID` | `00038246-4d48-...` |
+| `RAYMOND_WF_PARENT` | Absolute path of the directory containing this workflow (same value as `{{wf_parent}}`); use it to reach shipped guidance docs, e.g. `"$RAYMOND_WF_PARENT/docs/my_tool.md"` | `/srv/workflows` |
 
 ### Persisting Data Between Script Runs
 
@@ -852,6 +853,41 @@ which prints the current context-token count as a bare integer.
 
 > **Backend note:** populated for the Claude Code backend. Under the `pi`
 > backend it is currently always `0`.
+
+### `{{wf_parent}}` — Workflow's Containing Directory
+
+`{{wf_parent}}` is the absolute path of the directory that **contains** the
+workflow. For all local scope types this is the directory holding the workflow
+file or folder:
+
+| Workflow source | `{{wf_parent}}` |
+|-----------------|-----------------|
+| `/srv/wf/my_wf.yaml` (single-file YAML) | `/srv/wf` |
+| `/srv/wf/my_wf.zip` (zip archive) | `/srv/wf` |
+| `/srv/wf/my_wf/` (folder of state files) | `/srv/wf` |
+
+Use it to reference guidance documents that ship *alongside* the workflow,
+without hard-coding a path or "installing" anything into the agent — a
+lightweight, workflow-local alternative to skills:
+
+```markdown
+Before using the deploy tool, read the usage notes at
+`{{wf_parent}}/docs/deploy_tool.md`, then proceed.
+```
+
+Lay the files out as siblings of the workflow so the reference resolves:
+
+```
+/srv/wf/
+  my_wf.yaml          (or my_wf/ folder of state files)
+  docs/
+    deploy_tool.md
+```
+
+The same path is available to script states as `RAYMOND_WF_PARENT`.
+
+> **Note:** remote (URL-fetched) workflows are out of scope — there the value
+> points into the local cache and is not guaranteed to be meaningful.
 
 ### Fork Attributes
 

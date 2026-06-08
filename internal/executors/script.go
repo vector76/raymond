@@ -13,6 +13,7 @@ import (
 	"github.com/vector76/raymond/internal/events"
 	"github.com/vector76/raymond/internal/parsing"
 	"github.com/vector76/raymond/internal/platform"
+	"github.com/vector76/raymond/internal/prompts"
 	wfstate "github.com/vector76/raymond/internal/state"
 	"github.com/vector76/raymond/internal/yamlscope"
 	"github.com/vector76/raymond/internal/zipscope"
@@ -101,6 +102,9 @@ func (e *ScriptExecutor) Execute(
 	// ray process.
 	env["RAYMOND_CONTEXT_TOKENS"] = strconv.FormatInt(agent.ContextTokens, 10)
 	env["RAYMOND_SESSION_ID"] = sessionIDStr(sessionID)
+	// Directory containing this workflow, so scripts can reference sibling
+	// guidance documents with a stable path, e.g. "$RAYMOND_WF_PARENT/docs/x.md".
+	env["RAYMOND_WF_PARENT"] = prompts.WorkflowParentDir(scopeDir)
 
 	// Emit StateStarted.
 	execCtx.Bus.Emit(events.StateStarted{

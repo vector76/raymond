@@ -122,6 +122,38 @@ func RenderPrompt(template string, variables map[string]any) string {
 	return result
 }
 
+// WorkflowParentDir returns the absolute path of the directory that contains
+// the workflow identified by scopeDir — the value of the {{wf_parent}} template
+// variable and the RAYMOND_WF_PARENT script environment variable.
+//
+// scopeDir names the workflow's source: a .yaml file, a .zip archive, or a
+// directory of state files. In every local case the parent is the directory
+// containing that file or folder:
+//
+//	/a/b/my_wf.yaml -> /a/b
+//	/a/b/my_wf.zip  -> /a/b
+//	/a/b/my_wf      -> /a/b   (the folder containing the state-file folder)
+//
+// This lets a workflow ship sibling guidance documents and reference them with
+// a stable path, e.g. {{wf_parent}}/docs/my_tool.md. The result is made
+// absolute so references resolve regardless of the agent's working directory.
+//
+// An empty scopeDir yields an empty string. Remote (URL-fetched) scopes are out
+// of scope: the path points into the local cache and is not guaranteed
+// meaningful.
+func WorkflowParentDir(scopeDir string) string {
+	if scopeDir == "" {
+		return ""
+	}
+	// Clean first so a trailing separator (e.g. "/a/b/my_wf/") does not make
+	// filepath.Dir treat the folder itself as the parent.
+	parent := filepath.Dir(filepath.Clean(scopeDir))
+	if abs, err := filepath.Abs(parent); err == nil {
+		return abs
+	}
+	return parent
+}
+
 // ResolveState maps stateName to a concrete filename inside scopeDir.
 //
 // Abstract names (no extension) are resolved by searching for files with

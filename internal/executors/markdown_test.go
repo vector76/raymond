@@ -271,6 +271,46 @@ func TestMarkdownExecutor_WorkflowIDSubstitutedInBody(t *testing.T) {
 	}
 }
 
+// TestMarkdownExecutor_WfParentSubstitutedInBody verifies that {{wf_parent}}
+// in the prompt body is replaced with the directory containing the workflow
+// scope (here, the parent of the temp scope dir).
+func TestMarkdownExecutor_WfParentSubstitutedInBody(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "START.md"), "See {{wf_parent}}/docs/tool.md")
+	write(t, filepath.Join(dir, "NEXT.md"), "next")
+
+	ws := &wfstate.WorkflowState{
+		WorkflowID: "wf-parent",
+		ScopeDir:   dir,
+		BudgetUSD:  10.0,
+		Agents:     []wfstate.AgentState{{ID: "main", CurrentState: "START.md", ScopeDir: dir, Stack: []wfstate.StackFrame{}}},
+	}
+
+	var capturedPrompt string
+	executors.SetInvokeStreamFn(func(_ context.Context, prompt string, _ string, _ string, _ string, _ float64, _ bool, _ bool, _ string, _ bool) <-chan ccwrap.StreamItem {
+		capturedPrompt = prompt
+		return makeMockStream([]map[string]any{
+			{"type": "content", "text": "<goto>NEXT.md</goto>"},
+			{"total_cost_usd": 0.01},
+		})
+	})
+	defer executors.ResetInvokeStreamFn()
+
+	execCtx := &executors.ExecutionContext{Bus: newBus(), WorkflowID: ws.WorkflowID}
+	_, err := executors.NewMarkdownExecutor().Execute(context.Background(), &ws.Agents[0], ws, execCtx)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	want := "See " + filepath.Dir(dir) + "/docs/tool.md"
+	if !strings.Contains(capturedPrompt, want) {
+		t.Errorf("prompt = %q, want it to contain %q", capturedPrompt, want)
+	}
+	if strings.Contains(capturedPrompt, "{{wf_parent}}") {
+		t.Errorf("prompt still contains literal {{wf_parent}}: %q", capturedPrompt)
+	}
+}
+
 // TestMarkdownExecutor_WorkflowIDSubstitutedInImplicitInput verifies that
 // {{workflow_id}} in an implicit transition's input attribute is substituted.
 func TestMarkdownExecutor_WorkflowIDSubstitutedInImplicitInput(t *testing.T) {
@@ -520,10 +560,10 @@ func TestMarkdownExecutor_AskIDSubstitutedInImmediatelyFollowingState(t *testing
 		ScopeDir:   dir,
 		BudgetUSD:  10.0,
 		Agents: []wfstate.AgentState{{
-			ID:             "main",
-			CurrentState:   "START.md",
-			ScopeDir:       dir,
-			Stack:          []wfstate.StackFrame{},
+			ID:           "main",
+			CurrentState: "START.md",
+			ScopeDir:     dir,
+			Stack:        []wfstate.StackFrame{},
 			PendingAskID: "input-abc-123",
 		}},
 	}

@@ -94,6 +94,9 @@ func (e *MarkdownExecutor) Execute(
 	// fresh session). Rendered before this turn runs, so it does not include
 	// the prompt about to be sent.
 	variables["context_tokens"] = agent.ContextTokens
+	// Directory containing this workflow, so prompts can reference sibling
+	// guidance documents with a stable path, e.g. {{wf_parent}}/docs/my_tool.md.
+	variables["wf_parent"] = prompts.WorkflowParentDir(scopeDir)
 	basePrompt := prompts.RenderPrompt(body, variables)
 
 	// Determine model and effort (frontmatter takes precedence over defaults).
